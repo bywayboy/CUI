@@ -77,10 +77,10 @@ static void on_frame(UiApp *app, void *user)
 	(void)user;
 
 	/* 背景 + 标题 */
-	Gfx_FillRoundRectGradV(gfx, Ui_Rect(0, 0, app->w, app->h), 14.0f,
+	Gfx_FillRoundRectGradV(gfx, Ui_Rect(0, 0, app->w, app->h), t->windowRadius,
 		t->page, t->page2);
 	Gfx_StrokeRoundRect(gfx, Ui_Rect(0.5f, 0.5f, app->w - 1.0f, app->h - 1.0f),
-		13.5f, t->frame, 1.0f);
+		t->windowRadius - 0.5f, t->frame, 1.0f);
 	Gfx_FillRoundRectGradV(gfx, Ui_Rect(24, 26, 4, 26), 2.0f,
 		t->blue2, t->blue);
 	Gfx_Text(gfx, t->fBig, "CUI Demo",

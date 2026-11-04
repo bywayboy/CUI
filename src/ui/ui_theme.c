@@ -145,6 +145,7 @@ static void theme_write_neutral(UiTheme *t)
 static void theme_apply_preset(UiTheme *t, UiThemeId id)
 {
 	t->themeId = id;
+	t->windowRadius = 14.0f;
 	t->panelRadius = 14.0f;
 	t->buttonRadius = 7.0f;
 	t->progressRadius = 5.0f;

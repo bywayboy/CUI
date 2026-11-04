@@ -119,6 +119,7 @@ typedef struct UiTheme {
 	UiColorRole neutral;   /* default: 中性按钮/次要控件 */
 
 	uint32_t themeRev;     /* 每次换肤 +1; overlay/layer 用它判断重建 */
+	float windowRadius;       /* 窗口外轮廓圆角: 主窗背景与 Toast 整窗遮罩共用 */
 	float panelRadius, buttonRadius, progressRadius, toastRadius;
 } UiTheme;
 

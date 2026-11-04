@@ -310,6 +310,9 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
 - 窗口缩放回归：`UiApp` 默认 `WS_THICKFRAME` + `WM_NCCALCSIZE`；200% DPI 下
   左右/上/右下命中 `HTLEFT/HTTOP/HTBOTTOMRIGHT`，实际拖拽 1440×1120 →
   1600×1220；600×480/800×600/1000×700 三档布局截图正常，客户区=窗口。
+- 合成器 z 次序回归：修正 DComp `AddVisual(insertAbove, reference=NULL)` 的反直觉
+  语义（FALSE=置顶，TRUE=置底）；最小 600×480 下 Toast 卡片与进度条重叠时卡片
+  在上。Toast 遮罩使用 `theme.windowRadius`，底部左右圆角不再被方角遮罩覆盖。
 - GPU 效果回归：D2D 内置 Blur/Shadow/ColorMatrix 与本机自定义 `Grain` HLSL
   全部走通；Toast 卡片=软阴影+颗粒，只画一次，CPU 仍 **0.00%**；12 次连续
   显示/关闭无崩溃；`Gfx_DrawWithEffects` 的离屏/恢复/效果链正常。

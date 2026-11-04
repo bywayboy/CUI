@@ -158,8 +158,8 @@ struct GfxOverlay {
 };
 
 /* 通用合成器 layer: 整块内容画在独立 swapchain 上, 由 DComp 子 visual
- * 显示; 内容只重画一次, 透明度交给 DWM 补间。z 次序固定在所有 overlay
- * 之上 (AddVisual(TRUE)), 因此进度 overlay 可以继续在它下面更新。 */
+ * 显示; 内容只重画一次, 透明度交给 DWM 补间。reference=NULL 时
+ * AddVisual(FALSE) 才是"置于所有兄弟之上", 因此进度 overlay 在它下面更新。 */
 struct GfxLayer {
 	Gfx *g;
 	IDXGISwapChain1 *swap;
@@ -188,6 +188,19 @@ struct GfxEffect {
 };
 
 static void LayerRelease(GfxLayer *l);
+
+/* reference=NULL 时 DComp 的 insertAbove 语义反直觉:
+ * FALSE = 放到所有兄弟之上, TRUE = 放到所有兄弟之下.
+ * 用命名包装, 避免再把 overlay/layer 的次序写反. */
+static HRESULT CompAddTop(IDCompositionVisual *root, IDCompositionVisual *v)
+{
+	return root->AddVisual(v, FALSE, NULL);
+}
+
+static HRESULT CompAddBottom(IDCompositionVisual *root, IDCompositionVisual *v)
+{
+	return root->AddVisual(v, TRUE, NULL);
+}
 
 static D2D1_COLOR_F ToColor(GfxColor c)
 {
@@ -802,7 +815,7 @@ static int OverlayBuild(GfxOverlay *o)
 	/* 重建时直接恢复到当前比例, 避免先闪一帧空条 */
 	o->clip->SetRight((float)o->pw * o->reveal);
 	o->visual->SetClip(o->clip);
-	g->compVisual->AddVisual(o->visual, FALSE, NULL);
+	CompAddBottom(g->compVisual, o->visual);
 	g->compDevice->Commit();
 	o->valid = 1;
 	return 1;
@@ -1010,9 +1023,8 @@ static int LayerBuild(GfxLayer *l)
 		return 0;
 	}
 
-	/* insertAbove=TRUE, reference=NULL: 放在所有已有 overlay/layer 之上。
-	 * overlay 用 FALSE 插入最底层, 所以进度条始终在 Toast 下面继续动。 */
-	hr = g->compVisual->AddVisual(l->visual, TRUE, NULL);
+	/* layer 永远在 overlay 上面, 所以 Toast 卡片能盖住进度条. */
+	hr = CompAddTop(g->compVisual, l->visual);
 	if (FAILED(hr)) {
 		Log_Write("[layer] addvisual hr=%x", (unsigned)hr);
 		return 0;

@@ -1104,7 +1104,8 @@ UiTheme_Shutdown(&theme, gfx);
 - 进度条：`progressTrack/progressFill/progressFill2`。
 - Toast：`toastBg/toastBorder/toastText/toastOverlay`。
 - 安装器：`inputBg/inputBorder/inputFocus/hint/danger/dangerBg/okBg`。
-- 圆角：`panelRadius/buttonRadius/progressRadius/toastRadius`。
+- 圆角：`windowRadius/panelRadius/buttonRadius/progressRadius/toastRadius`。
+  `windowRadius` 同时用于主窗背景和 Toast 整窗遮罩，保证底部圆角不被遮罩填方。
 
 **语义色角色**：
 
@@ -1285,14 +1286,17 @@ UiToast_Shutdown(&toast);
 
 - 视觉不变：全窗**竖向渐变遮罩**（顶部透明 → 底部 `toastOverlay`）+ 底部居中卡片；
   卡片按 `UI_TOAST_INFO/SUCCESS/ERROR` 用蓝/绿/红竖条强调。
+- 遮罩使用 `theme.windowRadius` 圆角，不能画成直角矩形；否则底部 alpha 较高时会
+  盖住主窗的左右下圆角，看起来窗口变成方角。ULW 回退的主窗渐变同样用该半径。
 - **只画一次**：渐变/卡片/文本在 `UiToast_EndFrame` 中画进 layer 的 swapchain；
   淡入、停留、淡出都不再重绘。透明度补间由 DWM 完成（`Gfx_LayerSetOpacity`）。
 - **卡片效果**：卡片轮廓过一次 D2D Shadow 得到软阴影，底板+强调条过一次自定义
   Grain（HLSL），文字最后直接画保持清晰。效果只在显示时计算一次，所以停留期间
   没有额外 GPU/CPU 工作。
-- **z 次序固定**：layer 用 `AddVisual(TRUE)` 置顶，`GfxOverlay` 用
-  `AddVisual(FALSE)` 置底。所以 Toast 永远在进度 overlay 上面，进度条可以继续
-  在遮罩下面更新，不需要 `UiProgress_SetHidden`。
+- **z 次序固定**：DComp 的 `AddVisual(insertAbove, reference=NULL)` 语义反直觉：
+  `FALSE` 才是置顶，`TRUE` 是置底。所以 layer 用 `AddVisual(FALSE, NULL)`，
+  `GfxOverlay` 用 `AddVisual(TRUE, NULL)`。Toast 永远在进度 overlay 上面，
+  进度条可以继续在遮罩下面更新，不需要 `UiProgress_SetHidden`。
 - **输入隔离**：layer 模式只调用 `Ui_SetModal(&ui, UiToast_BackdropId())`；它让
   命中返回 backdrop，但鼠标移动/按下**不会失效控件**，因此主窗不会因为 Toast 重绘。
   `UiToast_Tick` 在 Toast 结束（淡出完成）时自动解除 modal。
@@ -1527,9 +1531,10 @@ if (!Gfx_OverlayAlive(ov)) {
 - **仅 DComp 路径可用**：ULW 回退时 `Gfx_CreateOverlay` 返回 `NULL`，应用应退回
   主窗局部绘制（demo 用 `barP` 回退）。
 - 创建/改尺寸必须在 `Gfx_End` 之后；销毁必须在 `Gfx_Shutdown` 之前。
-- **z 次序**：overlay 用 `AddVisual(FALSE)` 插入根 visual 最底层；`GfxLayer` 用
-  `AddVisual(TRUE)` 置顶。合成器 Toast（9.8）在 overlay 上面，所以进度条可以继续
-  在它下面跑，**不需要** `SetOpacity(0)`。
+- **z 次序**：注意 `AddVisual(insertAbove, reference=NULL)` 的反直觉语义：
+  `TRUE` 表示放到所有兄弟之下，`FALSE` 表示放到所有兄弟之上。因此 overlay 用
+  `AddVisual(TRUE)` 置底，`GfxLayer` 用 `AddVisual(FALSE)` 置顶。合成器 Toast
+  （9.8）在 overlay 上面，进度条可以继续在它下面跑，**不需要** `SetOpacity(0)`。
 - 只有**主窗内绘制**的模态遮罩才需要 overlay 让位：`Gfx_OverlaySetOpacity(ov, 0)`。
   透明度属性在新系统走 `IDCompositionVisual3::SetOpacity`，老系统自动退回
   `IDCompositionEffectGroup::SetOpacity`（Win8+）。
@@ -1568,7 +1573,8 @@ static void draw_toast(Gfx *g, void *user)
 
 - **独立 swapchain + DComp 子 visual**，与主窗口的 swapchain 完全解耦；主窗不
   Present 也能更新。
-- **稳定置顶**：创建时 `AddVisual(TRUE, NULL)`，永远在已有 overlay/layer 之上；
+- **稳定置顶**：创建时 `AddVisual(FALSE, NULL)`（reference=NULL 时 FALSE 才是
+  置顶；TRUE 是置底），永远在已有 overlay/layer 之上；
   多个 layer 按创建顺序叠放。
 - **绘制约定**：`Gfx_LayerDraw` 在 `Gfx_End` 之后调用；内部临时把 `Gfx` 目标切到
   layer 的 back buffer、清透明、按 DPI 设置缩放，回调返回后 `EndDraw + Present`
@@ -2663,6 +2669,9 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
   `HTLEFT/HTTOP/HTBOTTOMRIGHT`；实际鼠标拖右下角 1440×1120 → 1600×1220；
   `WM_NCCALCSIZE` 后客户区=窗口；MoveWindow 600×480 / 800×600 / 1000×700
   三档布局截图正常，`UiFlex` 弹簧与卡片宽度自适应。
+- **合成器 z 次序/圆角回归**：修正 DComp `AddVisual(insertAbove, reference=NULL)`
+  的语义（FALSE 置顶、TRUE 置底）后，最小 600×480 下 Toast 卡片与进度条重叠时
+  卡片正确盖住进度条；Toast 遮罩按 `windowRadius` 圆角裁剪，底部左右圆角保持。
 - **自定义主题回归**：demo 的“品牌主题”用 `UiTheme_SetColors` 设置
   `primary=#E4572E / warning=#F2A93B / success=#2FA56B / error=#D64545 /
   neutral=#F3F5F9`；主按钮、标题条、进度条、焦点色同步变橙，中性按钮变浅灰，

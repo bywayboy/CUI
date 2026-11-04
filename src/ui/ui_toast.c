@@ -101,9 +101,9 @@ static void toast_layer_draw(Gfx *g, void *user)
 	UiRect card;
 	GfxEffect *shadow, *grain;
 
-	/* 全窗渐变遮罩: 上透明, 下压暗 */
-	Gfx_FillRoundRectGradV(g, Ui_Rect(0, 0, ui->width, ui->height), 0.0f,
-		Ui_ColorAlpha(th->toastOverlay, 0),
+	/* 全窗渐变遮罩: 上透明, 下压暗; 用窗口圆角, 不能盖掉主窗四角. */
+	Gfx_FillRoundRectGradV(g, Ui_Rect(0, 0, ui->width, ui->height),
+		th->windowRadius, Ui_ColorAlpha(th->toastOverlay, 0),
 		Ui_ColorAlpha(th->toastOverlay, 170));
 
 	card = toast_card_rect(t);
@@ -299,8 +299,8 @@ void UiToast_Draw(UiContext *ui, UiToast *t, double nowMs,
 	Ui_PushLayer(ui, UI_Z_TOAST - 1);
 	if (t->blockInput)
 		Ui_RegisterWidget(ui, UiToast_BackdropId(), Ui_Rect(0, 0, viewW, viewH));
-	Gfx_FillRoundRectGradV(g, Ui_Rect(0, 0, viewW, viewH), 0.0f,
-		Ui_ColorAlpha(th->toastOverlay, 0),
+	Gfx_FillRoundRectGradV(g, Ui_Rect(0, 0, viewW, viewH),
+		th->windowRadius, Ui_ColorAlpha(th->toastOverlay, 0),
 		Ui_ColorAlpha(th->toastOverlay, 170));
 	Ui_PopLayer(ui);
 
