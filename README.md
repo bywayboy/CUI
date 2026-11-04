@@ -38,7 +38,8 @@ CUI/
    ├─ lib/crtstub.c       0CRT 存根（mem*/str*/sprintf/malloc/浮点等）
    ├─ gfx/
    │  ├─ gfx.h            后端无关 2D 接口（DIP 坐标 / 0xAARRGGBB）
-   │  └─ gfx_d2d.cpp      Direct2D + DWrite + D3D11/DComp 实现（ULW 回退）
+   │  ├─ gfx_d2d.cpp      Direct2D + DWrite + D3D11/DComp 实现（ULW 回退）
+   │  └─ grain.hlsl       自定义 D2D 颗粒像素着色器（fxc 离线编译）
    └─ ui/
       ├─ ui_types.h       矩形/颜色/稳定 ID（FNV）
       ├─ ui_context.*     即时模式上下文：注册/命中/z-index/拖动/单帧事件
@@ -58,7 +59,8 @@ CUI/
 
 ## 2. 构建与运行
 
-要求：Windows 10 1809+，Visual Studio 2019/2022/2026（C++ 桌面工作负载）。
+要求：Windows 10 1809+，Visual Studio 2019/2022/2026（C++ 桌面工作负载，
+含 Windows SDK `fxc.exe`，用于离线编译自定义效果着色器）。
 
 ```bat
 cd C:\Users\Administrator\CUI
@@ -171,6 +173,8 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | | `Gfx_PushClip/PopClip` `Gfx_SetDirtyRect` `Gfx_IsVisible` `Gfx_PushAlpha/PopAlpha` | 裁剪/脏区/可见性/整帧透明度 |
 | | `Gfx_CreateOverlay/OverlaySetReveal/OverlaySetRect/OverlaySetOpacity/OverlayAlive/OverlayDestroy` | 合成器动画 overlay（仅 DComp；ULW 返回 NULL） |
 | | `Gfx_CreateLayer/LayerDraw/LayerSetOpacity/LayerResize/LayerAlive/LayerDestroy` | 通用合成器图层：独立 swapchain + 绘制回调 + DWM opacity 补间 |
+| | `Gfx_CreateBlur/Shadow/ColorMatrix/Grain` `Gfx_DrawWithEffects` | D2D 内置效果 + 自定义 HLSL（离线 fxc）；离屏内容→效果链→合成 |
+| | `Gfx_SetFrameEffects` `Gfx_EffectSetColorMatrix` | 整帧后处理（颜色矩阵/无障碍）；只覆盖主窗 uiTarget |
 | `UiContext` | `Ui_BeginFrame/EndFrame` | 一帧的注册周期；EndFrame 清单帧事件 |
 | | `Ui_State` `Ui_DrawSurface` | 交互状态与统一表面 |
 | | `Ui_PushLayer/Ui_PopLayer` | z-index 注册层；命中取最高 z |
@@ -296,6 +300,12 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   下方进度 overlay 持续移动；点击/Esc 关闭、重复显示、Toast 中 resize 均正常。
   本机 Win10 19045 无 `IDCompositionVisual3`，透明度自动走
   `IDCompositionEffectGroup`。`SCV2_ULW=1` 自动回退主窗渐变 + 进度让位。
+- GPU 效果回归：D2D 内置 Blur/Shadow/ColorMatrix 与本机自定义 `Grain` HLSL
+  全部走通；Toast 卡片=软阴影+颗粒，只画一次，CPU 仍 **0.00%**；12 次连续
+  显示/关闭无崩溃；`Gfx_DrawWithEffects` 的离屏/恢复/效果链正常。
+  整帧 `Gfx_SetFrameEffects` 灰度矩阵对主窗 UI 生效（CPU 0.00%）；进度
+  overlay/Toast layer 是独立 DComp visual，不受整帧矩阵影响（已记录限制）。
+  DComp `IDCompositionDevice2/3`、`Visual3` 本机 `E_NOINTERFACE`，未依赖。
 - 0CRT 自测：printf 格式/边界、SIMD 内存分档（0…10000B）、字符串、分配器、
   qsort/bsearch 全部通过；三份 exe 在新 crtstub 下正常启动/输入/关闭。
 - 无桌面环境（SSH/Session 0）不能目视验证，但编译与链接判据（0CRT/无未解析符号）

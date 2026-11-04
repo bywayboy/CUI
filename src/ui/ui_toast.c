@@ -1,6 +1,18 @@
 #include <windows.h>
 #include "ui/ui_toast.h"
 
+static void toast_drop_effects(UiToast *t)
+{
+	if (t->fxShadow) {
+		Gfx_EffectDestroy(t->fxShadow);
+		t->fxShadow = NULL;
+	}
+	if (t->fxGrain) {
+		Gfx_EffectDestroy(t->fxGrain);
+		t->fxGrain = NULL;
+	}
+}
+
 static void toast_drop_layer(UiToast *t)
 {
 	if (t && t->layer) {
@@ -21,43 +33,92 @@ static void toast_engage_fallback(UiToast *t)
 	/* modal blocker 保留: 回退绘制完成前也不让点击穿透; 结束时统一解除. */
 }
 
+static UiRect toast_card_rect(const UiToast *t)
+{
+	UiContext *ui = t->ui;
+	float viewW = ui->width, viewH = ui->height;
+	float w = viewW - 48.0f, h = 60.0f, x, y;
+	if (w > 420.0f) w = 420.0f;
+	if (w < 140.0f) w = 140.0f;
+	x = (viewW - w) * 0.5f;
+	y = viewH - 96.0f;
+	if (y < 16.0f) y = 16.0f;
+	if (y + h > viewH - 8.0f) y = viewH - 8.0f - h;
+	return Ui_Rect(x, y, w, h);
+}
+
+static void toast_ensure_effects(UiToast *t, Gfx *g)
+{
+	if (t->fxShadow && !Gfx_EffectAlive(t->fxShadow)) {
+		Gfx_EffectDestroy(t->fxShadow);
+		t->fxShadow = NULL;
+	}
+	if (t->fxGrain && !Gfx_EffectAlive(t->fxGrain)) {
+		Gfx_EffectDestroy(t->fxGrain);
+		t->fxGrain = NULL;
+	}
+	if (!t->fxShadow) t->fxShadow = Gfx_CreateShadow(g, 10.0f, 0x66000000u);
+	if (!t->fxGrain) t->fxGrain = Gfx_CreateGrain(g, 0.055f);
+}
+
+/* 软阴影的输入: 只画卡片轮廓, 颜色由 shadow effect 决定. */
+static void toast_draw_shadow_shape(Gfx *g, void *user)
+{
+	UiToast *t = (UiToast *)user;
+	UiRect card = toast_card_rect(t);
+	Gfx_FillRoundRect(g, card, t->ui->theme->toastRadius, 0xFFFFFFFFu);
+}
+
+static void toast_draw_card_bg(Gfx *g, void *user)
+{
+	UiToast *t = (UiToast *)user;
+	UiTheme *th = t->ui->theme;
+	UiRect card = toast_card_rect(t);
+	UiColor accent = th->blue2;
+	if (t->kind == UI_TOAST_SUCCESS) accent = th->green;
+	else if (t->kind == UI_TOAST_ERROR) accent = th->danger;
+	Gfx_FillRoundRect(g, card, th->toastRadius, th->toastBg);
+	Gfx_StrokeRoundRect(g, card, th->toastRadius, th->toastBorder, 1.0f);
+	Gfx_FillRoundRect(g, Ui_Rect(card.x + 12.0f, card.y + 14.0f,
+		4.0f, card.h - 28.0f), 2.0f, accent);
+}
+
+static void toast_draw_card_text(Gfx *g, void *user)
+{
+	UiToast *t = (UiToast *)user;
+	UiTheme *th = t->ui->theme;
+	UiRect card = toast_card_rect(t);
+	Gfx_Text(g, th->fBody, t->text,
+		Ui_Rect(card.x + 28.0f, card.y, card.w - 44.0f, card.h),
+		th->toastText, GFX_TEXT_VCENTER);
+}
+
 static void toast_layer_draw(Gfx *g, void *user)
 {
 	UiToast *t = (UiToast *)user;
 	UiContext *ui = t->ui;
 	UiTheme *th = ui->theme;
-	float viewW = ui->width, viewH = ui->height;
-	float cardW, cardH, x, y;
 	UiRect card;
-	UiColor accent;
+	GfxEffect *shadow, *grain;
 
 	/* 全窗渐变遮罩: 上透明, 下压暗 */
-	Gfx_FillRoundRectGradV(g, Ui_Rect(0, 0, viewW, viewH), 0.0f,
+	Gfx_FillRoundRectGradV(g, Ui_Rect(0, 0, ui->width, ui->height), 0.0f,
 		Ui_ColorAlpha(th->toastOverlay, 0),
 		Ui_ColorAlpha(th->toastOverlay, 170));
 
-	/* 底部居中卡片 (位置固定, 淡入淡出由 DWM 做; 不再逐帧画) */
-	cardW = viewW - 48.0f;
-	if (cardW > 420.0f) cardW = 420.0f;
-	if (cardW < 140.0f) cardW = 140.0f;
-	cardH = 60.0f;
-	x = (viewW - cardW) * 0.5f;
-	y = viewH - 96.0f;
-	if (y < 16.0f) y = 16.0f;
-	if (y + cardH > viewH - 8.0f) y = viewH - 8.0f - cardH;
-	card = Ui_Rect(x, y, cardW, cardH);
+	card = toast_card_rect(t);
+	toast_ensure_effects(t, g);
 
-	Gfx_FillRoundRect(g, card, th->toastRadius, th->toastBg);
-	Gfx_StrokeRoundRect(g, card, th->toastRadius, th->toastBorder, 1.0f);
+	/* 阴影只画一次: 输入是卡片轮廓, 输出是卡片外扩的软阴影. */
+	shadow = t->fxShadow;
+	if (shadow)
+		Gfx_DrawWithEffects(g, &shadow, 1, toast_draw_shadow_shape, t, card);
 
-	accent = th->blue2;
-	if (t->kind == UI_TOAST_SUCCESS) accent = th->green;
-	else if (t->kind == UI_TOAST_ERROR) accent = th->danger;
-	Gfx_FillRoundRect(g, Ui_Rect(card.x + 12.0f, card.y + 14.0f,
-		4.0f, card.h - 28.0f), 2.0f, accent);
-	Gfx_Text(g, th->fBody, t->text,
-		Ui_Rect(card.x + 28.0f, card.y, card.w - 44.0f, card.h),
-		th->toastText, GFX_TEXT_VCENTER);
+	/* 卡片底板 + 强调条过一次颗粒; 文字随后直接画, 保持清晰. */
+	grain = t->fxGrain;
+	if (!grain || !Gfx_DrawWithEffects(g, &grain, 1, toast_draw_card_bg, t, card))
+		toast_draw_card_bg(g, t);
+	toast_draw_card_text(g, t);
 }
 
 /* 创建/改尺寸/重画/淡入淡出. 返回 0 表示 layer 不可用, 应退回主窗. */
@@ -124,6 +185,7 @@ void UiToast_Attach(UiToast *t, UiContext *ui)
 	if (!t) return;
 	if (t->ui != ui) {
 		toast_drop_layer(t);
+		toast_drop_effects(t);
 		t->fallback = 0;
 	}
 	t->ui = ui;
@@ -294,5 +356,6 @@ void UiToast_Shutdown(UiToast *t)
 	if (t->ui && t->ui->modal == UiToast_BackdropId())
 		Ui_SetModal(t->ui, UI_ID_NONE);
 	toast_drop_layer(t);
+	toast_drop_effects(t);
 	t->visible = 0;
 }

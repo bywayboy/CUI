@@ -31,8 +31,17 @@ IF NOT EXIST build MKDIR build
 IF NOT EXIST build\obj MKDIR build\obj
 del /q build\obj\*.obj bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe 2>nul
 
+REM 自定义 D2D 效果的着色器: 离线编译成字节数组, 运行时不需要 d3dcompiler.dll
+SET "FXC=%WindowsSdkVerBinPath%x64\fxc.exe"
+IF NOT EXIST "%FXC%" (
+    ECHO [cui] fxc.exe not found - install Windows SDK
+    EXIT /B 1
+)
+ECHO [cui] src\gfx\grain.hlsl
+"%FXC%" /nologo /T ps_4_0 /E main /Fh build\grain_cso.h /Vn g_grainCso src\gfx\grain.hlsl || GOTO :err
+
 SET "CFLAGS=/nologo /c /std:c11 /O1 /Oi- /GS- /Gy /Gs32768 /W3 /utf-8 /wd4244 /wd4996 /DNO_CRT_NO_DEFAULTLIB /D_WIN32_WINNT=0x0A00 /DUNICODE /D_UNICODE /I. /Isrc /Isrc\ui /Isrc\gfx /Isrc\lib"
-SET "CXXFLAGS=/nologo /c /std:c++17 /O1 /GS- /Gy /Gs32768 /W3 /utf-8 /wd4244 /wd4996 /EHs-c- /GR- /D_HAS_EXCEPTIONS=0 /DNO_CRT_NO_DEFAULTLIB /D_WIN32_WINNT=0x0A00 /DUNICODE /D_UNICODE /I. /Isrc /Isrc\ui /Isrc\gfx /Isrc\lib"
+SET "CXXFLAGS=/nologo /c /std:c++17 /O1 /GS- /Gy /Gs32768 /W3 /utf-8 /wd4244 /wd4996 /EHs-c- /GR- /D_HAS_EXCEPTIONS=0 /DNO_CRT_NO_DEFAULTLIB /D_WIN32_WINNT=0x0A00 /DUNICODE /D_UNICODE /I. /Isrc /Isrc\ui /Isrc\gfx /Isrc\lib /Ibuild"
 SET "LIBS=kernel32.lib user32.lib gdi32.lib d2d1.lib dwrite.lib d3d11.lib dxgi.lib dcomp.lib ole32.lib advapi32.lib shell32.lib imm32.lib winmm.lib"
 
 SET "OBJS="

@@ -17,18 +17,24 @@
  *  - 不用 STL / new / 静态局部对象 / 异常 / RTTI；编译器需 /EHs-c- /GR-。
  *  - 文本抗锯齿必须 GRAYSCALE：ClearType 会写不透明像素，破坏透明 alpha。
  */
+#define INITGUID
 #include <windows.h>
 #include <d2d1_1.h>
 #include <d2d1_1helper.h>
+#include <d2d1effects.h>
+#include <d2d1effectauthor.h>
+#include <d2d1effecthelpers.h>
 #include <dwrite.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <dxgi1_3.h>
 #include <dcomp.h>
+#include <new>
 #include <stdint.h>
 
 #include "gfx.h"
 #include "log.h"
+#include "grain_cso.h"   /* fxc 生成: g_grainCso / g_grainCsoSize */
 
 extern "C" void *memset(void *d, int c, size_t n);
 extern "C" void *memcpy(void *d, const void *s, size_t n);
@@ -123,6 +129,12 @@ struct Gfx {
 
 	GfxOverlay *overlays;
 	GfxLayer *layers;
+	GfxEffect *effects;
+	ID2D1Image *currentTarget;   /* 当前 Draw 目标 (借用, 不 AddRef) */
+	GfxEffect *frameFx[GFX_MAX_FRAME_EFFECTS];
+	int frameFxCount;
+	int grainFxRegistered;
+	int fxDepth;
 };
 
 /* 合成器动画 overlay: 独立小 swapchain + 子 visual + 可动画矩形裁剪。
@@ -159,6 +171,20 @@ struct GfxLayer {
 	float opacity;
 	int valid;
 	GfxLayer *next;
+};
+
+enum {
+	GFX_FX_OTHER = 0,
+	GFX_FX_COLOR_MATRIX
+};
+
+struct GfxEffect {
+	Gfx *g;
+	ID2D1Effect *fx;
+	float pad;          /* 模糊/阴影外扩 (DIP), 离屏内容四周留白 */
+	int kind;
+	int valid;
+	GfxEffect *next;
 };
 
 static void LayerRelease(GfxLayer *l);
@@ -376,6 +402,12 @@ static void ReleaseDcomp(Gfx *g)
 	}
 	for (GfxLayer *l = g->layers; l; l = l->next)
 		LayerRelease(l);
+	for (GfxEffect *e = g->effects; e; e = e->next) {
+		e->valid = 0;
+		SAFE_RELEASE(e->fx);
+	}
+	g->currentTarget = NULL;
+	g->frameFxCount = 0;
 	ReleaseDcompTargets(g, 1);
 	SAFE_RELEASE(g->compVisual);
 	SAFE_RELEASE(g->compTarget);
@@ -633,6 +665,12 @@ void Gfx_Shutdown(Gfx *g)
 		GfxLayer *l = g->layers;
 		g->layers = l->next;
 		HeapFree(GetProcessHeap(), 0, l);
+	}
+	while (g->effects) {
+		GfxEffect *e = g->effects;
+		g->effects = e->next;
+		SAFE_RELEASE(e->fx);
+		HeapFree(GetProcessHeap(), 0, e);
 	}
 	HeapFree(GetProcessHeap(), 0, g);
 }
@@ -1051,6 +1089,7 @@ int Gfx_LayerDraw(GfxLayer *l, GfxLayerDrawFn fn, void *user)
 	g->dc->GetTransform(&savedTransform);
 
 	g->dc->SetTarget(l->target);
+	g->currentTarget = (ID2D1Image *)l->target;
 	g->rt = (ID2D1RenderTarget *)g->dc;
 	g->rt->BeginDraw();
 	g->rt->Clear(&clear);
@@ -1075,6 +1114,7 @@ int Gfx_LayerDraw(GfxLayer *l, GfxLayerDrawFn fn, void *user)
 	hr = g->rt->EndDraw();
 
 	g->dc->SetTarget(savedTarget);
+	g->currentTarget = savedTarget;
 	if (savedTarget) savedTarget->Release();
 	g->dc->SetTransform(&savedTransform);
 	g->rt = savedRt;
@@ -1187,6 +1227,492 @@ void Gfx_LayerDestroy(GfxLayer *l)
 	HeapFree(GetProcessHeap(), 0, l);
 }
 
+/* ── GPU 效果: D2D 内置效果 + 自定义 Grain ────────────────────────── */
+
+static const GUID kCuiGrainEffectId =
+	{ 0x8f0d2e61, 0x4b7a, 0x4e2d, { 0x9a, 0x35, 0x6c, 0x11, 0x2f, 0x0d, 0x7e, 0x51 } };
+static const GUID kCuiGrainShaderId =
+	{ 0xc3b1a9d4, 0x7e62, 0x4f18, { 0x8d, 0x55, 0x2a, 0x91, 0x6c, 0x0e, 0x3f, 0x77 } };
+
+struct alignas(16) GrainConstants {
+	float intensity;
+	float pad[3];
+};
+
+class GrainEffect final : public ID2D1EffectImpl, public ID2D1DrawTransform
+{
+public:
+	GrainEffect() : m_ref(1), m_context(NULL), m_drawInfo(NULL), m_intensity(0.05f) {}
+
+	IFACEMETHOD(QueryInterface)(REFIID riid, void **ppv) override;
+	IFACEMETHOD_(ULONG, AddRef)() override;
+	IFACEMETHOD_(ULONG, Release)() override;
+
+	IFACEMETHOD(Initialize)(ID2D1EffectContext *context,
+		ID2D1TransformGraph *graph) override;
+	IFACEMETHOD(PrepareForRender)(D2D1_CHANGE_TYPE changeType) override;
+	IFACEMETHOD(SetGraph)(ID2D1TransformGraph *graph) override;
+
+	IFACEMETHOD(SetDrawInfo)(ID2D1DrawInfo *drawInfo) override;
+	IFACEMETHOD(MapOutputRectToInputRects)(const D2D1_RECT_L *outputRect,
+		D2D1_RECT_L *inputRects, UINT32 inputRectsCount) const override;
+	IFACEMETHOD(MapInputRectsToOutputRect)(const D2D1_RECT_L *inputRects,
+		const D2D1_RECT_L *inputOpaqueSubRects, UINT32 inputRectCount,
+		D2D1_RECT_L *outputRect, D2D1_RECT_L *outputOpaqueSubRect) override;
+	IFACEMETHOD(MapInvalidRect)(UINT32 inputIndex, D2D1_RECT_L invalidInputRect,
+		D2D1_RECT_L *invalidOutputRect) const override;
+	IFACEMETHOD_(UINT32, GetInputCount)() const override { return 1; }
+
+	HRESULT SetIntensity(float value);
+	float GetIntensity() const { return m_intensity; }
+
+private:
+	LONG m_ref;
+	ID2D1EffectContext *m_context;
+	ID2D1DrawInfo *m_drawInfo;
+	float m_intensity;
+};
+
+HRESULT GrainEffect::QueryInterface(REFIID riid, void **ppv)
+{
+	if (!ppv) return E_POINTER;
+	if (IsEqualIID(riid, __uuidof(IUnknown)) || IsEqualIID(riid, __uuidof(ID2D1EffectImpl)))
+		*ppv = static_cast<ID2D1EffectImpl *>(this);
+	else if (IsEqualIID(riid, __uuidof(ID2D1DrawTransform)))
+		*ppv = static_cast<ID2D1DrawTransform *>(this);
+	else if (IsEqualIID(riid, __uuidof(ID2D1Transform)))
+		*ppv = static_cast<ID2D1Transform *>(this);
+	else if (IsEqualIID(riid, __uuidof(ID2D1TransformNode)))
+		*ppv = static_cast<ID2D1TransformNode *>(this);
+	else {
+		*ppv = NULL;
+		return E_NOINTERFACE;
+	}
+	AddRef();
+	return S_OK;
+}
+
+ULONG GrainEffect::AddRef()
+{
+	return (ULONG)InterlockedIncrement(&m_ref);
+}
+
+ULONG GrainEffect::Release()
+{
+	LONG ref = InterlockedDecrement(&m_ref);
+	if (ref == 0) {
+		this->~GrainEffect();
+		HeapFree(GetProcessHeap(), 0, this);
+	}
+	return (ULONG)ref;
+}
+
+HRESULT GrainEffect::Initialize(ID2D1EffectContext *context,
+	ID2D1TransformGraph *graph)
+{
+	if (!context || !graph) return E_POINTER;
+	SAFE_RELEASE(m_context);
+	m_context = context;
+	m_context->AddRef();
+	/* 同一个 shader GUID 只加载一次; 多个 effect 实例复用. */
+	HRESULT hr = context->LoadPixelShader(kCuiGrainShaderId,
+		g_grainCso, (UINT32)sizeof(g_grainCso));
+	if (FAILED(hr)) return hr;
+	return graph->SetSingleTransformNode(static_cast<ID2D1DrawTransform *>(this));
+}
+
+HRESULT GrainEffect::PrepareForRender(D2D1_CHANGE_TYPE changeType)
+{
+	(void)changeType;
+	if (!m_drawInfo) return S_OK;
+	GrainConstants cb;
+	cb.intensity = m_intensity;
+	cb.pad[0] = cb.pad[1] = cb.pad[2] = 0.0f;
+	m_drawInfo->SetPixelShader(kCuiGrainShaderId);
+	return m_drawInfo->SetPixelShaderConstantBuffer(
+		(const BYTE *)&cb, (UINT32)sizeof(cb));
+}
+
+HRESULT GrainEffect::SetGraph(ID2D1TransformGraph *graph)
+{
+	(void)graph;
+	return S_OK;
+}
+
+HRESULT GrainEffect::SetDrawInfo(ID2D1DrawInfo *drawInfo)
+{
+	GrainConstants cb;
+	m_drawInfo = drawInfo;
+	if (!drawInfo) return E_POINTER;
+	cb.intensity = m_intensity;
+	cb.pad[0] = cb.pad[1] = cb.pad[2] = 0.0f;
+	drawInfo->SetPixelShader(kCuiGrainShaderId);
+	return drawInfo->SetPixelShaderConstantBuffer(
+		(const BYTE *)&cb, (UINT32)sizeof(cb));
+}
+
+HRESULT GrainEffect::MapOutputRectToInputRects(const D2D1_RECT_L *outputRect,
+	D2D1_RECT_L *inputRects, UINT32 inputRectsCount) const
+{
+	if (!outputRect || !inputRects || inputRectsCount < 1) return E_INVALIDARG;
+	inputRects[0] = *outputRect;
+	return S_OK;
+}
+
+HRESULT GrainEffect::MapInputRectsToOutputRect(const D2D1_RECT_L *inputRects,
+	const D2D1_RECT_L *inputOpaqueSubRects, UINT32 inputRectCount,
+	D2D1_RECT_L *outputRect, D2D1_RECT_L *outputOpaqueSubRect)
+{
+	(void)inputOpaqueSubRects;
+	if (!inputRects || !outputRect || !outputOpaqueSubRect || inputRectCount != 1)
+		return E_INVALIDARG;
+	*outputRect = inputRects[0];
+	/* 文档要求: 没改变透明度时直接沿用输入的 opaque 子矩形. */
+	*outputOpaqueSubRect = inputOpaqueSubRects[0];
+	return S_OK;
+}
+
+HRESULT GrainEffect::MapInvalidRect(UINT32 inputIndex,
+	D2D1_RECT_L invalidInputRect, D2D1_RECT_L *invalidOutputRect) const
+{
+	(void)inputIndex;
+	if (!invalidOutputRect) return E_POINTER;
+	*invalidOutputRect = invalidInputRect;
+	return S_OK;
+}
+
+HRESULT GrainEffect::SetIntensity(float value)
+{
+	if (value < 0.0f) value = 0.0f;
+	if (value > 1.0f) value = 1.0f;
+	m_intensity = value;
+	return S_OK;
+}
+
+static HRESULT CALLBACK GrainEffectCreate(IUnknown **effect)
+{
+	if (!effect) return E_POINTER;
+	void *mem = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(GrainEffect));
+	if (!mem) return E_OUTOFMEMORY;
+	GrainEffect *impl = new (mem) GrainEffect();
+	*effect = static_cast<ID2D1EffectImpl *>(impl);
+	return S_OK;
+}
+
+static const WCHAR kGrainXml[] =
+	L"<?xml version='1.0'?>"
+	L"<Effect>"
+	L"<Property name='DisplayName' type='string' value='CUI Grain'/>"
+	L"<Property name='Author' type='string' value='CUI'/>"
+	L"<Property name='Category' type='string' value='CUI'/>"
+	L"<Property name='Description' type='string' value='Film grain overlay'/>"
+	L"<Inputs><Input name='Source'/></Inputs>"
+	L"<Property name='Intensity' type='float'>"
+	L"<Property name='DisplayName' type='string' value='Intensity'/>"
+	L"<Property name='Min' type='float' value='0.0'/>"
+	L"<Property name='Max' type='float' value='1.0'/>"
+	L"<Property name='Default' type='float' value='0.05'/>"
+	L"</Property>"
+	L"</Effect>";
+
+static const D2D1_PROPERTY_BINDING kGrainBindings[] = {
+	D2D1_VALUE_TYPE_BINDING(L"Intensity", &GrainEffect::SetIntensity, &GrainEffect::GetIntensity)
+};
+
+static GfxEffect *EffectWrap(Gfx *g, ID2D1Effect *fx, float pad, int kind)
+{
+	GfxEffect *e;
+	if (!g || !fx) return NULL;
+	e = (GfxEffect *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(GfxEffect));
+	if (!e) {
+		fx->Release();
+		return NULL;
+	}
+	e->g = g;
+	e->fx = fx;
+	e->pad = pad;
+	e->kind = kind;
+	e->valid = 1;
+	e->next = g->effects;
+	g->effects = e;
+	return e;
+}
+
+static int FxSetFloat(ID2D1Effect *fx, UINT32 prop, float value)
+{
+	if (!fx) return 0;
+	return SUCCEEDED(fx->SetValue(prop, D2D1_PROPERTY_TYPE_FLOAT,
+		(const BYTE *)&value, (UINT32)sizeof(value)));
+}
+
+GfxEffect *Gfx_CreateBlur(Gfx *g, float stdDev, int borderMode)
+{
+	ID2D1Effect *fx = NULL;
+	int mode;
+	if (!g || !g->useDcomp || !g->dc || stdDev <= 0.0f) return NULL;
+	if (FAILED(g->dc->CreateEffect(CLSID_D2D1GaussianBlur, &fx)) || !fx) return NULL;
+	FxSetFloat(fx, D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, stdDev);
+	mode = borderMode ? (int)D2D1_BORDER_MODE_HARD : (int)D2D1_BORDER_MODE_SOFT;
+	fx->SetValue(D2D1_GAUSSIANBLUR_PROP_BORDER_MODE, D2D1_PROPERTY_TYPE_ENUM,
+		(const BYTE *)&mode, (UINT32)sizeof(mode));
+	return EffectWrap(g, fx, stdDev * 3.0f, GFX_FX_OTHER);
+}
+
+GfxEffect *Gfx_CreateShadow(Gfx *g, float stdDev, GfxColor color)
+{
+	ID2D1Effect *fx = NULL;
+	D2D1_COLOR_F c;
+	if (!g || !g->useDcomp || !g->dc || stdDev <= 0.0f) return NULL;
+	if (FAILED(g->dc->CreateEffect(CLSID_D2D1Shadow, &fx)) || !fx) return NULL;
+	FxSetFloat(fx, D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION, stdDev);
+	c = ToColor(color);
+	fx->SetValue(D2D1_SHADOW_PROP_COLOR, D2D1_PROPERTY_TYPE_VECTOR4,
+		(const BYTE *)&c, (UINT32)sizeof(c));
+	return EffectWrap(g, fx, stdDev * 3.0f + 4.0f, GFX_FX_OTHER);
+}
+
+GfxEffect *Gfx_CreateColorMatrix(Gfx *g, const float *matrix20)
+{
+	ID2D1Effect *fx = NULL;
+	D2D1_MATRIX_5X4_F m;
+	if (!g || !g->useDcomp || !g->dc || !matrix20) return NULL;
+	if (FAILED(g->dc->CreateEffect(CLSID_D2D1ColorMatrix, &fx)) || !fx) return NULL;
+	memcpy(&m, matrix20, sizeof(m));
+	fx->SetValue(D2D1_COLORMATRIX_PROP_COLOR_MATRIX, D2D1_PROPERTY_TYPE_MATRIX_5X4,
+		(const BYTE *)&m, (UINT32)sizeof(m));
+	return EffectWrap(g, fx, 0.0f, GFX_FX_COLOR_MATRIX);
+}
+
+GfxEffect *Gfx_CreateGrain(Gfx *g, float intensity)
+{
+	ID2D1Effect *fx = NULL;
+	if (!g || !g->useDcomp || !g->dc || !g->d2d) return NULL;
+	if (!g->grainFxRegistered) {
+		g->d2d->RegisterEffectFromString(kCuiGrainEffectId, kGrainXml,
+			kGrainBindings, 1, GrainEffectCreate);
+		g->grainFxRegistered = 1;
+	}
+	if (FAILED(g->dc->CreateEffect(kCuiGrainEffectId, &fx)) || !fx) return NULL;
+	if (intensity < 0.0f) intensity = 0.0f;
+	if (intensity > 1.0f) intensity = 1.0f;
+	fx->SetValue(0, D2D1_PROPERTY_TYPE_FLOAT,
+		(const BYTE *)&intensity, (UINT32)sizeof(intensity));
+	return EffectWrap(g, fx, 0.0f, GFX_FX_OTHER);
+}
+
+int Gfx_EffectSetColorMatrix(GfxEffect *fx, const float *matrix20)
+{
+	D2D1_MATRIX_5X4_F m;
+	if (!fx || !fx->valid || !fx->fx || fx->kind != GFX_FX_COLOR_MATRIX || !matrix20)
+		return 0;
+	memcpy(&m, matrix20, sizeof(m));
+	return SUCCEEDED(fx->fx->SetValue(D2D1_COLORMATRIX_PROP_COLOR_MATRIX,
+		D2D1_PROPERTY_TYPE_MATRIX_5X4, (const BYTE *)&m, (UINT32)sizeof(m)));
+}
+
+int Gfx_EffectAlive(GfxEffect *fx)
+{
+	return fx && fx->valid && fx->fx && fx->g && fx->g->useDcomp;
+}
+
+static int FrameEffectsReady(Gfx *g)
+{
+	int i;
+	if (!g || g->frameFxCount <= 0) return 0;
+	for (i = 0; i < g->frameFxCount; i++)
+		if (!Gfx_EffectAlive(g->frameFx[i])) return 0;
+	return 1;
+}
+
+static ID2D1Image *EffectChainOutput(GfxEffect *const *effects, int count,
+	ID2D1Image *input)
+{
+	ID2D1Effect *prev = NULL;
+	ID2D1Image *out = NULL;
+	int i;
+	if (!effects || count <= 0 || !input) return NULL;
+	for (i = 0; i < count; i++) {
+		if (!effects[i] || !effects[i]->valid || !effects[i]->fx)
+			return NULL;
+		if (i == 0)
+			effects[i]->fx->SetInput(0, input);
+		else
+			effects[i]->fx->SetInputEffect(0, prev, TRUE);
+		prev = effects[i]->fx;
+	}
+	if (prev) prev->GetOutput(&out);
+	return out;
+}
+
+int Gfx_SetFrameEffects(Gfx *g, GfxEffect *const *effects, int count)
+{
+	int i;
+	if (!g || count < 0 || count > GFX_MAX_FRAME_EFFECTS) return 0;
+	if (count == 0) {
+		g->frameFxCount = 0;
+		return 1;
+	}
+	for (i = 0; i < count; i++) {
+		if (!Gfx_EffectAlive(effects[i]) || effects[i]->g != g)
+			return 0;
+	}
+	for (i = 0; i < count; i++) g->frameFx[i] = effects[i];
+	g->frameFxCount = count;
+	return 1;
+}
+
+void Gfx_EffectDestroy(GfxEffect *fx)
+{
+	Gfx *g;
+	GfxEffect **pp;
+	if (!fx) return;
+	g = fx->g;
+	if (g) {
+		for (pp = &g->effects; *pp; pp = &(*pp)->next) {
+			if (*pp == fx) {
+				*pp = fx->next;
+				break;
+			}
+		}
+		for (int i = 0; i < g->frameFxCount; i++) {
+			if (g->frameFx[i] == fx) {
+				for (int j = i; j + 1 < g->frameFxCount; j++)
+					g->frameFx[j] = g->frameFx[j + 1];
+				g->frameFxCount--;
+				break;
+			}
+		}
+	}
+	SAFE_RELEASE(fx->fx);
+	HeapFree(GetProcessHeap(), 0, fx);
+}
+
+int Gfx_DrawWithEffects(Gfx *g, GfxEffect *const *effects, int count,
+	GfxEffectDrawFn fn, void *user, GfxRect bounds)
+{
+	ID2D1Bitmap1 *content = NULL;
+	ID2D1Image *out = NULL;
+	ID2D1Image *savedTarget;
+	D2D1_MATRIX_3X2_F savedTransform;
+	D2D1_MATRIX_3X2_F contentTransform;
+	D2D1_MATRIX_3X2_F identity = D2D1::Matrix3x2F::Identity();
+	D2D1_BITMAP_PROPERTIES1 bp;
+	D2D1_COLOR_F clear = { 0.0f, 0.0f, 0.0f, 0.0f };
+	GfxRect savedDirty;
+	int savedDirtyFull, savedForceFull;
+	float scale, pad = 0.0f;
+	int padPx, wPx, hPx, i, ok = 0;
+	HRESULT hr;
+
+	if (!g || !effects || count <= 0 || !fn) return 0;
+	if (!g->useDcomp || !g->dc || !g->inFrame || !g->currentTarget) return 0;
+	if (!g->rt || g->clipDepth || g->alphaDepth || g->dirtyClip || g->fxDepth) return 0;
+	for (i = 0; i < count; i++) {
+		if (!effects[i] || !effects[i]->valid || !effects[i]->fx ||
+			effects[i]->g != g)
+			return 0;
+		if (effects[i]->pad > pad) pad = effects[i]->pad;
+	}
+	if (bounds.w <= 0.0f || bounds.h <= 0.0f) return 0;
+	scale = g->scale > 0.0f ? g->scale : 1.0f;
+	padPx = (int)(pad * scale + 0.5f);
+	wPx = (int)(bounds.w * scale + 0.5f) + padPx * 2;
+	hPx = (int)(bounds.h * scale + 0.5f) + padPx * 2;
+	if (wPx <= 0 || hPx <= 0) return 0;
+
+	bp = D2D1::BitmapProperties1(
+		D2D1_BITMAP_OPTIONS_TARGET,
+		D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+		96.0f, 96.0f);
+	hr = g->dc->CreateBitmap(D2D1::SizeU((UINT32)wPx, (UINT32)hPx),
+		NULL, 0, &bp, &content);
+	if (FAILED(hr) || !content) return 0;
+
+	savedTarget = g->currentTarget;
+	savedDirty = g->dirty;
+	savedDirtyFull = g->dirtyFull;
+	savedForceFull = g->forceFull;
+	g->rt->GetTransform(&savedTransform);
+	contentTransform = D2D1::Matrix3x2F::Scale(scale, scale) *
+		D2D1::Matrix3x2F::Translation((float)padPx - bounds.x * scale,
+			(float)padPx - bounds.y * scale);
+
+	/* 离屏内容必须另起一帧: D2D 不允许在 BeginDraw 中切换目标. */
+	hr = g->rt->EndDraw();
+	if (FAILED(hr)) {
+		SAFE_RELEASE(content);
+		return 0;
+	}
+
+	g->dc->SetTarget(content);
+	g->currentTarget = (ID2D1Image *)content;
+	g->rt = (ID2D1RenderTarget *)g->dc;
+	g->rt->BeginDraw();
+	g->rt->Clear(&clear);
+	g->rt->SetTransform(&contentTransform);
+	g->rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+	g->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+	g->clipDepth = 0;
+	g->alphaDepth = 0;
+	g->dirtyClip = 0;
+	g->dirtyFull = 1;
+	g->forceFull = 0;
+	g->inFrame = 1;
+	g->fxDepth++;
+	fn(g, user);
+	g->fxDepth--;
+	while (g->alphaDepth > 0) { g->rt->PopLayer(); g->alphaDepth--; }
+	while (g->clipDepth > 0) { g->rt->PopAxisAlignedClip(); g->clipDepth--; }
+	hr = g->rt->EndDraw();
+
+	/* 恢复原目标并重新 BeginDraw, 调用方可以继续画. */
+	g->dc->SetTarget(savedTarget);
+	g->currentTarget = savedTarget;
+	g->rt = (ID2D1RenderTarget *)g->dc;
+	g->rt->BeginDraw();
+	g->rt->SetTransform(&savedTransform);
+	g->rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+	g->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+	g->clipDepth = 0;
+	g->alphaDepth = 0;
+	g->dirtyClip = 0;
+	g->dirty = savedDirty;
+	g->dirtyFull = savedDirtyFull;
+	g->forceFull = savedForceFull;
+	g->inFrame = 1;
+
+	if (SUCCEEDED(hr)) {
+		out = EffectChainOutput(effects, count, (ID2D1Image *)content);
+		if (!out) hr = E_FAIL;
+		if (SUCCEEDED(hr) && out) {
+			D2D1_POINT_2F at;
+			at.x = bounds.x * scale - (float)padPx;
+			at.y = bounds.y * scale - (float)padPx;
+			g->rt->SetTransform(&identity);
+			g->dc->DrawImage(out, &at, NULL,
+				D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+			g->rt->SetTransform(&savedTransform);
+			ok = 1;
+		}
+	}
+	if (!ok) {
+		/* 效果链失败: 至少把内容原样合成回去, 不让调用方丢内容. */
+		D2D1_RECT_F dst;
+		dst.left = bounds.x * scale - (float)padPx;
+		dst.top = bounds.y * scale - (float)padPx;
+		dst.right = dst.left + (float)wPx;
+		dst.bottom = dst.top + (float)hPx;
+		g->rt->SetTransform(&identity);
+		g->rt->DrawBitmap(content, &dst, 1.0f,
+			D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+		g->rt->SetTransform(&savedTransform);
+		ok = 1;
+	}
+	SAFE_RELEASE(out);
+	SAFE_RELEASE(content);
+	return ok;
+}
+
 int Gfx_Resize(Gfx *g, int pixelW, int pixelH, float scale)
 {
 	if (!g || pixelW <= 0 || pixelH <= 0) return 0;
@@ -1276,7 +1802,12 @@ void Gfx_Begin(Gfx *g)
 	/* 始终画到离屏 uiTarget: 局部重绘要把"上一帧的其余部分"拷回去, 必须有持久层。
 	 * 曾试过整帧直画后缓冲, 省下的拷贝被 Present 等 vsync 掩盖 (无收益), 却让
 	 * 之后的局部重绘拷到从未画过的离屏内容 → 控件整块消失 (真机)。 */
-	if (g->useDcomp && g->dc && g->uiTarget) g->dc->SetTarget(g->uiTarget);
+	if (g->useDcomp && g->dc && g->uiTarget) {
+		g->dc->SetTarget(g->uiTarget);
+		g->currentTarget = (ID2D1Image *)g->uiTarget;
+	} else {
+		g->currentTarget = NULL;
+	}
 	g->rt->BeginDraw();
 	if (g->useDcomp && g->dirtyFull) {
 		D2D1_COLOR_F clear = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -1318,13 +1849,28 @@ int Gfx_End(Gfx *g)
 			return 0;
 		}
 		g->dc->SetTarget(g->swapTarget);
+		g->currentTarget = (ID2D1Image *)g->swapTarget;
 		g->dc->SetTransform(D2D1::Matrix3x2F::Identity());
 		g->dc->BeginDraw();
 		D2D1_COLOR_F clear = { 0.0f, 0.0f, 0.0f, 0.0f };
 		g->dc->Clear(&clear);
-		D2D1_RECT_F dst = { 0.0f, 0.0f, (FLOAT)g->pw, (FLOAT)g->ph };
-		g->dc->DrawBitmap(g->uiTarget, &dst, 1.0f,
-			D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+		{
+			ID2D1Image *fxOut = NULL;
+			if (FrameEffectsReady(g))
+				fxOut = EffectChainOutput(g->frameFx, g->frameFxCount,
+					(ID2D1Image *)g->uiTarget);
+			if (fxOut) {
+				D2D1_POINT_2F at = { 0.0f, 0.0f };
+				g->dc->DrawImage(fxOut, &at, NULL,
+					D2D1_INTERPOLATION_MODE_LINEAR,
+					D2D1_COMPOSITE_MODE_SOURCE_OVER);
+				fxOut->Release();
+			} else {
+				D2D1_RECT_F dst = { 0.0f, 0.0f, (FLOAT)g->pw, (FLOAT)g->ph };
+				g->dc->DrawBitmap(g->uiTarget, &dst, 1.0f,
+					D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+			}
+		}
 		HRESULT phr = g->dc->EndDraw();
 		if (FAILED(phr)) {
 			Log_Write("[gfx] DComp present draw failed 0x%08X", (unsigned)phr);

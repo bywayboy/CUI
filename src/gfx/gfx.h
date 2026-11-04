@@ -16,6 +16,10 @@ typedef struct GfxFont GfxFont;
 typedef struct GfxBitmap GfxBitmap;
 typedef struct GfxOverlay GfxOverlay;
 typedef struct GfxLayer GfxLayer;
+typedef struct GfxEffect GfxEffect;
+
+/* 效果内容的绘制回调. 和普通绘制一样用 Gfx_* (DIP); 不要调用 Begin/End. */
+typedef void (*GfxEffectDrawFn)(Gfx *g, void *user);
 
 /* 通用 DComp 子 visual 内容绘制回调。回调里用 Gfx_* 画 (DIP 坐标),
  * 不要调用 Gfx_Begin/Gfx_End; 透明度由 Gfx_LayerSetOpacity 控制。 */
@@ -133,6 +137,36 @@ int  Gfx_LayerSetOpacity(GfxLayer *l, float opacity, int animateMs);
 int  Gfx_LayerResize(GfxLayer *l, int pixelW, int pixelH);
 int  Gfx_LayerAlive(GfxLayer *l);
 void Gfx_LayerDestroy(GfxLayer *l);
+
+/* ── GPU 效果 (D2D effect) ──────────────────────────────────────────
+ * 先支持 D2D 内置效果 + 一个自定义 HLSL (Grain). 仅 DComp 路径可用;
+ * ULW 回退时创建失败, 应用应跳过效果直接绘制.
+ * 生命周期: 创建后可复用; 必须在 Gfx_Shutdown 之前 Destroy. */
+
+GfxEffect *Gfx_CreateBlur(Gfx *g, float stdDev, int borderMode);
+GfxEffect *Gfx_CreateShadow(Gfx *g, float stdDev, GfxColor color);
+GfxEffect *Gfx_CreateColorMatrix(Gfx *g, const float *matrix20);
+GfxEffect *Gfx_CreateGrain(Gfx *g, float intensity);
+int  Gfx_EffectAlive(GfxEffect *fx);
+void Gfx_EffectDestroy(GfxEffect *fx);
+
+/* 把 fn 画到离屏内容, 依次应用 effects, 再把结果合成回当前目标.
+ * bounds 是 fn 内容在 DIP 下的包围盒 (也是离屏内容/阴影的基准).
+ * 必须在 Gfx_Begin/End 或 Gfx_LayerDraw 回调内调用, 且调用点不能有
+ * 未闭合的 clip/alpha 层 (内部会 EndDraw -> 离屏 -> 恢复并重新 BeginDraw).
+ * 返回 1 成功; 0 表示效果不可用/状态不允许, 调用方应直接绘制. */
+int  Gfx_DrawWithEffects(Gfx *g, GfxEffect *const *effects, int count,
+	GfxEffectDrawFn fn, void *user, GfxRect bounds);
+
+/* 更新 ColorMatrix 效果的 20 个系数 (D2D 行主序 5x4, 含 alpha). */
+int  Gfx_EffectSetColorMatrix(GfxEffect *fx, const float *matrix20);
+
+/* 整帧后处理: UI 画完后、Present 前把效果链作用到整个 uiTarget.
+ * 适合颜色矩阵/无障碍/整窗滤镜; 仅 DComp 路径生效. effects 由应用持有,
+ * 必须比 Gfx 活得久 (至少到下一次 SetFrameEffects 或 Gfx_Shutdown).
+ * count=0 清除; 返回 1 成功. */
+#define GFX_MAX_FRAME_EFFECTS 4
+int  Gfx_SetFrameEffects(Gfx *g, GfxEffect *const *effects, int count);
 
 #ifdef __cplusplus
 }

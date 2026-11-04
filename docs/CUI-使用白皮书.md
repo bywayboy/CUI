@@ -38,6 +38,13 @@
 >    hover/press/soft/对比文字；`UiColorRole` 同时开放给组件。新增
 >    `UI_BTN_WARNING/SUCCESS/ERROR/DEFAULT` 变体；`themeRev` 让进度 overlay 与
 >    Toast layer 在任意换肤后自动重建/重画。demo 增加“品牌主题”循环。
+> 10. 新增 `GfxEffect`：D2D 内置 Blur/Shadow/ColorMatrix 包装 + 自定义 HLSL
+>    `Grain`（离线 fxc、内嵌 cso、注册 `ID2D1EffectImpl` + `ID2D1DrawTransform`）。
+>    提供 `Gfx_DrawWithEffects`（离屏内容 → 效果链 → 合成回目标）。Toast 卡片使用
+>    软阴影 + 颗粒，仍只绘制一次，显示/停留期间应用 CPU 0.00%。
+>    **本机探测**：DComp `IDCompositionDevice2/3`、`Visual3` 均 `E_NOINTERFACE`，
+>    DComp 内置滤镜不可用；D2D `GaussianBlur/ColorMatrix/Shadow/Turbulence`
+>    全部 `S_OK`，因此效果走 D2D 路径。
 
 ---
 
@@ -143,7 +150,8 @@ CUI 的取舍是：**只做安装器/工具类窗口需要的那一层**。体�
 ### 3.1 环境要求
 
 - Windows 10 1809 或更高（DComp 与高精度定时器）。
-- Visual Studio 2019 / 2022 / 2026，安装 **使用 C++ 的桌面开发** 工作负载。
+- Visual Studio 2019 / 2022 / 2026，安装 **使用 C++ 的桌面开发** 工作负载
+  （含 Windows SDK 的 `fxc.exe`，用于离线编译自定义效果着色器）。
 - x64 工具链。
 - 不需要 CMake、vcpkg、NuGet 或任何第三方库。
 
@@ -160,16 +168,20 @@ build.cmd
 1. 在 `C:\Program Files\Microsoft Visual Studio\{18,2022,2019}\{Community,Professional,Enterprise}`
    下寻找 `vcvarsall.bat`，并加载 x64 环境。
 2. 创建 `build\obj`、`bin`。
-3. 用 `/std:c11 /O1 /GS- /utf-8 /DNO_CRT_NO_DEFAULTLIB` 编译 C 文件。
-4. 用 `/std:c++17 /EHs-c- /GR- /D_HAS_EXCEPTIONS=0` 编译唯一的 C++ 文件 `gfx_d2d.cpp`。
-5. 链接 `/SUBSYSTEM:WINDOWS /NODEFAULTLIB /ENTRY:startup /MANIFEST:NO`。
-6. 用 `dumpbin /imports` 检查导入表，若出现 `msvcrt / ucrtbase / api-ms-win-crt-*`
+3. 用 `%WindowsSdkVerBinPath%x64\fxc.exe` 把 `src\gfx\grain.hlsl` 编译成
+   `build\grain_cso.h`（内嵌字节数组，运行时不依赖 d3dcompiler）。
+4. 用 `/std:c11 /O1 /GS- /utf-8 /DNO_CRT_NO_DEFAULTLIB` 编译 C 文件。
+5. 用 `/std:c++17 /EHs-c- /GR- /D_HAS_EXCEPTIONS=0` 编译 `gfx_d2d.cpp`。
+6. 链接 `/SUBSYSTEM:WINDOWS /NODEFAULTLIB /ENTRY:startup /MANIFEST:NO`。
+7. 用 `dumpbin /imports` 检查导入表，若出现 `msvcrt / ucrtbase / api-ms-win-crt-*`
    就判定 0CRT 构建失败。
 
 产物：
 
 ```text
 bin\cui_demo.exe
+bin\cui_minimal.exe
+bin\cui_advanced.exe
 ```
 
 成功输出示例：
@@ -180,6 +192,9 @@ bin\cui_demo.exe
 Output: ...\bin\cui_demo.exe (47104 bytes)
 ```
 
+> 注意：`build.cmd` 必须保持 **CRLF** 行尾；改成 LF 后 cmd 在多行括号块/标签处
+> 可能直接卡住（无输出、无子进程）。编辑后可用 `file build.cmd` 检查。
+>
 > 注意：`build.cmd` 使用 `del /q build\obj\*.obj` 清理旧对象，属于正常构建步骤；
 > 它只删除构建目录中的中间文件，不碰源码。
 
@@ -1261,6 +1276,9 @@ UiToast_Shutdown(&toast);
   卡片按 `UI_TOAST_INFO/SUCCESS/ERROR` 用蓝/绿/红竖条强调。
 - **只画一次**：渐变/卡片/文本在 `UiToast_EndFrame` 中画进 layer 的 swapchain；
   淡入、停留、淡出都不再重绘。透明度补间由 DWM 完成（`Gfx_LayerSetOpacity`）。
+- **卡片效果**：卡片轮廓过一次 D2D Shadow 得到软阴影，底板+强调条过一次自定义
+  Grain（HLSL），文字最后直接画保持清晰。效果只在显示时计算一次，所以停留期间
+  没有额外 GPU/CPU 工作。
 - **z 次序固定**：layer 用 `AddVisual(TRUE)` 置顶，`GfxOverlay` 用
   `AddVisual(FALSE)` 置底。所以 Toast 永远在进度 overlay 上面，进度条可以继续
   在遮罩下面更新，不需要 `UiProgress_SetHidden`。
@@ -1490,6 +1508,105 @@ static void draw_toast(Gfx *g, void *user)
   应改用主窗脏区绘制或 `GfxOverlay`。
 - 实测：Toast 全窗 layer（1440×1120）显示 2.2 秒 + 淡入淡出，应用进程 CPU
   **0.00%**；期间主窗零次 `WM_PAINT`。
+
+### 9.9 GPU 效果与自定义着色器
+
+`GfxEffect` 把一块内容先画到离屏位图，再经过 D2D 效果链，最后合成回当前目标：
+
+```c
+GfxEffect *shadow = Gfx_CreateShadow(gfx, 10.0f, 0x66000000u);
+GfxEffect *grain  = Gfx_CreateGrain(gfx, 0.055f);
+
+/* 单效果 */
+Gfx_DrawWithEffects(gfx, &shadow, 1, draw_shape, user, cardRc);
+
+/* 线性效果链: 前一个效果的输出作为下一个的输入 */
+GfxEffect *chain[2] = { blur, colorMatrix };
+Gfx_DrawWithEffects(gfx, chain, 2, draw_content, user, contentRc);
+
+Gfx_EffectDestroy(shadow);
+Gfx_EffectDestroy(grain);
+```
+
+可用工厂：
+
+| API | 底层 | 外扩 pad |
+|---|---|---|
+| `Gfx_CreateBlur(g, stdDev, hardBorder)` | `CLSID_D2D1GaussianBlur` | `3*stdDev` |
+| `Gfx_CreateShadow(g, stdDev, color)` | `CLSID_D2D1Shadow` | `3*stdDev+4` |
+| `Gfx_CreateColorMatrix(g, matrix20)` | `CLSID_D2D1ColorMatrix` | 0 |
+| `Gfx_CreateGrain(g, intensity)` | 自定义 `CuiGrain` HLSL | 0 |
+
+- **调用位置**：只能在 `Gfx_Begin/End` 或 `Gfx_LayerDraw` 回调内，且调用点不能有
+  未闭合的 `Gfx_PushClip` / `Gfx_PushAlpha`。内部会结束当前帧、画离屏内容、
+  恢复目标并重新 `BeginDraw`，调用方可以继续画（例如 Toast 在效果之后画文字）。
+- **效果链是线性的**：每个效果输出替换内容。Shadow 的输出只有阴影，所以
+  “卡片 + 阴影”要像 Toast 一样分两次：先画轮廓过 shadow，再画卡片本体。
+- **仅 DComp 路径**：ULW 没有 D3D 设备，所有 `Gfx_Create*Effect` 返回 `NULL`；
+  应用应跳过效果直接绘制。
+- 效果对象可复用；必须在 `Gfx_Shutdown` 之前 `Gfx_EffectDestroy`。设备丢失后
+  `Gfx_EffectAlive` 变 0，销毁后重建即可。
+- **创建时机**：DComp 在首次 `Gfx_Resize` 才初始化，所以 `Gfx_Create*Effect`
+  必须在首帧之后调用（demo 的 Toast 是在 layer 绘制时懒创建）。
+
+**整帧后处理（颜色矩阵/无障碍/整窗滤镜）**：
+
+```c
+/* D2D 5x4 是 column-major: 每 4 个数 = 输入 R/G/B/A 对输出 RGBA 的贡献 */
+static const float mono[20] = {
+    0.299f, 0.299f, 0.299f, 0.0f,   /* from R */
+    0.587f, 0.587f, 0.587f, 0.0f,   /* from G */
+    0.114f, 0.114f, 0.114f, 0.0f,   /* from B */
+    0.0f,   0.0f,   0.0f,   1.0f,   /* from A */
+    0.0f,   0.0f,   0.0f,   0.0f    /* offset */
+};
+
+GfxEffect *monoFx = Gfx_CreateColorMatrix(gfx, mono);
+GfxEffect *chain[1] = { monoFx };
+Gfx_SetFrameEffects(gfx, chain, 1);   /* 0 = 清除 */
+...
+Gfx_EffectSetColorMatrix(monoFx, newMatrix20);  /* 逐帧动画矩阵 */
+Gfx_EffectDestroy(monoFx);                       /* 会自动从 frame 链移除 */
+```
+
+- `Gfx_SetFrameEffects` 在 `Gfx_End` 把 UI 已画好的 `uiTarget` 作为输入，跑效果链后
+  再合成到 swapchain；不需要把 UI 绘制包进额外回调。
+- **只作用于主窗 UI 内容**。进度 `GfxOverlay`、Toast `GfxLayer` 是独立的 DComp
+  子 visual，不经过 `uiTarget`，所以整帧颜色矩阵不会改变它们。需要全局一致
+  滤镜时，应把动态内容改画到主窗，或在图层内容上也应用同一效果。
+- 每帧应用一次整窗 pass；静态滤镜可常驻，颜色过渡/无障碍切换按需开。
+- 本机已验证灰度矩阵对主窗 UI 生效（按钮/文字/背景变灰），应用 CPU 仍 0.00%
+  （GPU 合成）；进度 overlay 因是独立 visual 保持原色，符合上述限制。
+
+**自定义 HLSL 的硬性要求**（`src/gfx/grain.hlsl` 是完整样例）：
+
+1. 像素着色器签名必须是：
+   ```hlsl
+   float4 main(float4 clip : SV_POSITION,
+               float4 scene : SCENE_POSITION,
+               float4 tex : TEXCOORD0) : SV_TARGET
+   ```
+   缺 `SCENE_POSITION` 会导致效果输出空白。
+2. `MapInputRectsToOutputRect` 里 `outputRect = inputRects[0]`，
+   `outputOpaqueSubRect = inputOpaqueSubRects[0]`。opaque 区写错会把圆角切成方角
+   或直接剔除输出。
+3. 在 `SetDrawInfo`/`PrepareForRender` 里 `SetPixelShader(shaderGuid)` 并
+   `SetPixelShaderConstantBuffer`（16 字节对齐）；shader 先 `LoadPixelShader`。
+4. 用 XML + `D2D1_PROPERTY_BINDING` 注册 `ID2D1EffectImpl`，`Initialize` 里
+   `SetSingleTransformNode` 连接 1 个输入。
+5. 着色器**离线编译**：`fxc /T ps_4_0 /E main /Fh build\grain_cso.h /Vn g_grainCso`，
+   代码内嵌 cso；运行时不需要 `d3dcompiler.dll`，0CRT 判据不受影响。
+
+**本机能力探测（Windows 10 19045）**：
+
+| 接口 | 结果 |
+|---|---|
+| `IDCompositionDevice2/3`、`IDCompositionVisual3` | `E_NOINTERFACE` |
+| `DCompositionCreateDevice2/3` | 失败 |
+| D2D `GaussianBlur/ColorMatrix/Shadow/Turbulence` | 全部 `S_OK` |
+
+所以 DComp 内置滤镜（零应用 CPU 的 blur/shadow）在本机不可用；当前效果统一走
+D2D。Toast 卡片 = 软阴影 + 颗粒，只画一次，显示/停留期间应用 CPU 仍 **0.00%**。
 
 ---
 
@@ -2147,6 +2264,17 @@ README 第 10 节给出了路线。核心步骤：
 22. **没有 per-component 主题覆盖**：同一 `UiTheme*` 下所有组件共享令牌；
     需要局部差异时，在调用组件前临时改字段并 `UiTheme_Touch`，或复制一份
     `UiTheme` 给子树使用。
+23. **`GfxEffect` 仅 DComp 路径**：ULW 回退没有 D3D 设备，效果创建返回 `NULL`；
+    应用必须直接绘制。效果内容会额外占用一张离屏位图，尽量只用于“画一次”的
+    图层，不要每帧对每个控件使用。
+24. **自定义 D2D effect 样板较重**：需要 `ID2D1EffectImpl` +
+    `ID2D1DrawTransform`、XML/binding 注册、离线 fxc；目前只内置 Grain 一个
+    自定义效果。DComp 内置滤镜在本机不可用，不要把它当作必然能力。
+25. **`Gfx_DrawWithEffects` 不能在有未闭合 clip/alpha 层时调用**：内部会
+    EndDraw/重新 BeginDraw；调用方应在干净的绘制点使用。
+26. **整帧效果只覆盖主窗 `uiTarget`**：`GfxOverlay`（进度）和 `GfxLayer`
+    （Toast）是独立 DComp visual，不经过整帧效果；需要全局一致颜色时，应把
+    动态内容并入主窗或在图层内容上再次应用同一效果。
 
 ---
 
@@ -2257,6 +2385,9 @@ Gfx_CreateOverlay / Gfx_OverlaySetReveal / Gfx_OverlaySetRect
 Gfx_OverlaySetOpacity / Gfx_OverlayAlive / Gfx_OverlayDestroy
 Gfx_CreateLayer / Gfx_LayerDraw / Gfx_LayerSetOpacity
 Gfx_LayerResize / Gfx_LayerAlive / Gfx_LayerDestroy
+Gfx_CreateBlur / Gfx_CreateShadow / Gfx_CreateColorMatrix / Gfx_CreateGrain
+Gfx_DrawWithEffects / Gfx_EffectSetColorMatrix / Gfx_EffectAlive / Gfx_EffectDestroy
+Gfx_SetFrameEffects
 ```
 
 **UiContext**
@@ -2375,13 +2506,17 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 | 帧时钟等待 | [src/ui/ui_frame.c:109](../src/ui/ui_frame.c#L109) |
 | DComp 初始化 | [src/gfx/gfx_d2d.cpp:357](../src/gfx/gfx_d2d.cpp#L357) |
 | 合成器动画 overlay | [src/gfx/gfx_d2d.cpp:773](../src/gfx/gfx_d2d.cpp#L773) |
-| 合成器图层 GfxLayer | [src/gfx/gfx_d2d.cpp:987](../src/gfx/gfx_d2d.cpp#L987) |
+| 合成器图层 GfxLayer | [src/gfx/gfx_d2d.cpp:1016](../src/gfx/gfx_d2d.cpp#L1016) |
+| GPU 效果 GfxEffect | [src/gfx/gfx_d2d.cpp:1448](../src/gfx/gfx_d2d.cpp#L1448) |
+| 整帧效果 | [src/gfx/gfx_d2d.cpp:1547](../src/gfx/gfx_d2d.cpp#L1547) |
+| 效果合成 DrawWithEffects | [src/gfx/gfx_d2d.cpp:1590](../src/gfx/gfx_d2d.cpp#L1590) |
+| Grain 着色器 | [src/gfx/grain.hlsl](../src/gfx/grain.hlsl) |
 | demo overlay 接线 | [src/demo.c:122](../src/demo.c#L122) |
 | z-index / 命中 | [src/ui/ui_context.c:116](../src/ui/ui_context.c#L116) |
 | 模态 blocker | [src/ui/ui_context.c:41](../src/ui/ui_context.c#L41) |
 | 主题切换 | [src/ui/ui_theme.c:21](../src/ui/ui_theme.c#L21) |
 | 组件库 | [src/ui/ui_widgets.c:4](../src/ui/ui_widgets.c#L4) |
-| Toast layer 绘制 | [src/ui/ui_toast.c:25](../src/ui/ui_toast.c#L25) |
+| Toast layer 绘制 | [src/ui/ui_toast.c:96](../src/ui/ui_toast.c#L96) |
 | Toast 主窗回退 | [src/ui/ui_toast.c:201](../src/ui/ui_toast.c#L201) |
 | 脏区转换 | [src/gfx/gfx_d2d.cpp:622](../src/gfx/gfx_d2d.cpp#L622) |
 | 呈现 | [src/gfx/gfx_d2d.cpp:680](../src/gfx/gfx_d2d.cpp#L680) |

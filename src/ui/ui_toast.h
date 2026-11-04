@@ -36,6 +36,8 @@ typedef struct UiToast {
 	/* 合成器 layer 状态 (UiToast_Attach 后使用) */
 	UiContext *ui;
 	GfxLayer *layer;
+	GfxEffect *fxShadow;     /* D2D 软阴影 */
+	GfxEffect *fxGrain;      /* 自定义 HLSL 颗粒 */
 	int layerW, layerH;
 	int layerDirty;
 	int layerIn, layerOut;
