@@ -91,8 +91,8 @@ static int toast_sync_layer(UiToast *t, double nowMs)
 		t->layerDirty = 1;
 	}
 
-	if (t->themeId != th->themeId) {
-		t->themeId = th->themeId;
+	if (t->themeRev != th->themeRev) {
+		t->themeRev = th->themeRev;
 		t->layerDirty = 1;
 	}
 	if (t->layerDirty) {
@@ -147,7 +147,7 @@ void UiToast_Show(UiToast *t, const char *text, double nowMs,
 	t->layerOut = 0;
 	if (t->ui) {
 		t->fallback = 0;    /* 设备恢复后允许重新尝试 layer */
-		if (t->ui->theme) t->themeId = t->ui->theme->themeId;
+		if (t->ui->theme) t->themeRev = t->ui->theme->themeRev;
 		if (t->blockInput) Ui_SetModal(t->ui, UiToast_BackdropId());
 	}
 }

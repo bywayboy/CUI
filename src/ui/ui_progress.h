@@ -19,7 +19,7 @@ typedef struct UiProgress {
 	UiContext *ui;
 	GfxOverlay *overlay;
 	UiRect rc;
-	UiThemeId themeId;
+	uint32_t themeRev;  /* UiTheme.themeRev: 任意换肤都会重建 overlay */
 	float value;        /* 0..1 */
 	float cycleMs;
 	int paused;

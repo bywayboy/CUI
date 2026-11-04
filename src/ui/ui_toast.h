@@ -40,7 +40,7 @@ typedef struct UiToast {
 	int layerDirty;
 	int layerIn, layerOut;
 	int fallback;            /* layer 不可用, 退回主窗绘制 */
-	UiThemeId themeId;
+	uint32_t themeRev;       /* UiTheme.themeRev: 任意换肤都会重画 layer */
 } UiToast;
 
 void UiToast_Init(UiToast *t);

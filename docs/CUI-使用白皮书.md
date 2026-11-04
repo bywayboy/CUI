@@ -21,7 +21,7 @@
 >    （Button/Panel/ProgressBar）、亮/暗主题切换（`UiTheme_SetTheme`）和带渐变
 >    overlay 的 Toast（最高 z、默认阻断输入、自动超时）。
 > 6. 新增 `UiApp` 窗口壳、`UiInput` 表单输入、`UiProgress` 进度组件；标准 demo
->    重写为壳版本（893 → 300 行），新增 `samples/minimal.c`（最小样例）和
+>    重写为壳版本（893 → 315 行），新增 `samples/minimal.c`（最小样例）和
 >    `samples/advanced.c`（高级样例）。构建产出 `cui_demo` / `cui_minimal` /
 >    `cui_advanced` 三个 0CRT exe。
 > 7. 参照 `RemoteCtrl/agent` 增强 0CRT：/GS/SEH 运行时、SSE2/AVX2/ERMSB 内存与
@@ -33,6 +33,11 @@
 >    重绘，也不再隐藏进度 overlay。Toast 显示/停留/淡出期间应用 CPU 实测 **0.00%**。
 >    opacity 优先用 `IDCompositionVisual3`，本机 Win10 19045 无此接口时自动退回
 >    `IDCompositionEffectGroup`（Win8+）。ULW/图层创建失败仍走原主窗回退。
+> 9. 新增自定义语义色主题：`UiThemeColors` + `UiTheme_SetColors` 覆盖
+>    `primary/warning/success/error/neutral(default)` 五个角色，自动派生
+>    hover/press/soft/对比文字；`UiColorRole` 同时开放给组件。新增
+>    `UI_BTN_WARNING/SUCCESS/ERROR/DEFAULT` 变体；`themeRev` 让进度 overlay 与
+>    Toast layer 在任意换肤后自动重建/重画。demo 增加“品牌主题”循环。
 
 ---
 
@@ -251,7 +256,7 @@ Direct2D / DirectWrite / D3D11 / DirectComposition
 | `src/gfx/gfx_d2d.cpp` | D2D/DWrite/D3D/DComp 实现 | 唯一的 C++ 单元，无 STL/异常/RTTI |
 | `src/ui/ui_types.h` | 矩形/颜色/稳定 ID | `UiId` 必须跨帧稳定 |
 | `src/ui/ui_context.*` | 注册、命中、拖动、单帧事件 | 每帧 Begin/End |
-| `src/ui/ui_theme.*` | 字体/颜色令牌 | 组件不写死颜色 |
+| `src/ui/ui_theme.*` | 字体/颜色令牌 | 亮暗预设 + 5 语义色自定义；`themeRev` 通知重建 |
 | `src/ui/ui_paint.*` | 统一交互表面 | 填充/描边/光晕/渐变叠加 |
 | `src/ui/ui_anim.*` | 动画通道 | 64 条目 × 16 通道，零分配 |
 | `src/ui/ui_frame.*` | 帧时钟 | 刷新率检测 + 高精度等待 |
@@ -369,7 +374,7 @@ int WINAPI WinMain(HINSTANCE i, HINSTANCE p, LPSTR c, int s) {
 - 动作请在 `after_frame`（`Gfx_End` 之后）执行，避免绘制中重入。
 - 低层 API 完全保留；非常规窗口（多窗口/自定义命中/特殊循环）仍可按 5.1–5.6 手写。
 - 完整可运行代码：[samples/minimal.c](../samples/minimal.c)（约 150 行）；
-  标准样例：[src/demo.c](../src/demo.c)（约 300 行）。
+  标准样例：[src/demo.c](../src/demo.c)（约 315 行）。
 
 ### 5.1 窗口与进程准备
 
@@ -1075,22 +1080,53 @@ UiTheme_Shutdown(&theme, gfx);
 - 安装器：`inputBg/inputBorder/inputFocus/hint/danger/dangerBg/okBg`。
 - 圆角：`panelRadius/buttonRadius/progressRadius/toastRadius`。
 
-**亮/暗主题切换**：
+**语义色角色**：
+
+每种状态都有一组 `UiColorRole`（组件只读这里）：
+
+| 角色 | 用途 | 字段 |
+|---|---|---|
+| `primary` | 主按钮、焦点、进度、开关 | `base/hover/press/soft/text/border` |
+| `warning` | 警告 | 同上 |
+| `success` | 成功 | 同上 |
+| `error` | 错误/危险 | 同上 |
+| `neutral` | default：中性/次要按钮 | 同上 |
+
+**亮/暗预设**：
 
 ```c
 UiTheme_SetTheme(&theme, UI_THEME_LIGHT);   /* 或 UI_THEME_DARK */
-InvalidateRect(hwnd, NULL, FALSE);          /* 整窗重绘 */
-/* 若用了 GfxOverlay: 先 Gfx_OverlayDestroy, 下一帧用新令牌重建 */
-/* 合成器 Toast: UiToast_EndFrame 检测 themeId, 自动重画 layer (无需手动) */
+UiApp_Invalidate(app);                      /* 整窗重绘 */
 ```
 
-- `UiTheme_SetTheme` 只改颜色/圆角，不重建字体；共享同一个 `UiTheme*` 的所有控件
-  下一帧一起换肤。这个共享实例就是“全局主题”，没有隐藏的全局单例。
-- 字体字号属于主题初始化的一部分；如果不同主题要换字体，需要自行重建
-  `UiTheme` 或用 `Gfx_CreateFont` 另行管理。
-- 自定义主题：复制 `UiTheme_SetTheme` 的 light 分支改值，或直接给 `UiTheme`
-  的令牌赋值；组件只读令牌。
-- demo 的“深色/浅色”按钮就是运行时切换；切换时销毁进度 overlay，让新颜色生效。
+**自定义 5 个语义色**：
+
+```c
+static const UiThemeColors brand = {
+    0xFFE4572E,   /* primary */
+    0xFFF2A93B,   /* warning */
+    0xFF2FA56B,   /* success */
+    0xFFD64545,   /* error */
+    0xFFF3F5F9    /* neutral = default */
+};
+UiTheme_SetColors(&theme, UI_THEME_LIGHT, &brand);  /* 深色外壳传 DARK */
+UiApp_Invalidate(app);
+```
+
+- `UiTheme_SetColors` 先应用 light/dark 外壳（页面/卡片/文字），再覆盖 5 个语义色；
+  hover/press/soft/对比文字/描边全部自动派生，不需要手算。
+- `UiThemeColors` 字段传 `0` 表示保留该角色的预设；整个指针传 `NULL` 等价于
+  `UiTheme_SetTheme(t, base)`。
+- `neutral` 就是组件库里的 `default`（C 关键字不能作字段名）。
+- 这 5 个色会同步写入旧令牌（`blue/blue2/btnPrimary*/progressFill*/green/orange/
+  danger/dangerBg/btnBg/...`），所以老代码和所有内置组件一起换肤。
+- `UiTheme_SetTheme/SetColors` 都会让 `themeRev+1`；`UiProgress` 用 `themeRev`
+  判断重建 overlay，`UiToast` 用它判断重画 layer。**任意换肤都不需要手动销毁**。
+- 只想要完整自定义（页面/卡片/文字也改）时：直接改 `UiTheme` 字段，再调用
+  `UiTheme_Touch(&theme)` 通知 overlay/Toast。
+- 字体字号属于主题初始化的一部分；换字体需要自行重建 `UiTheme` 或另行管理
+  `Gfx_CreateFont`。
+- demo 的按钮按 浅色 → 品牌色 → 深色 循环，品牌色就是上面这段代码。
 
 ### 8.5 自绘关闭键示例
 
@@ -1132,7 +1168,9 @@ Ui_ProgressBar(&ui, barRc, progress, drawFill);
 ```
 
 - `Ui_Button` 变体：`UI_BTN_PRIMARY / UI_BTN_SECONDARY / UI_BTN_DANGER`，
-  标签 UTF-8；返回 `ui->clicked == id`。禁用时自动用 `btnDisabled*` 令牌。
+  以及 `UI_BTN_WARNING / UI_BTN_SUCCESS`；`UI_BTN_DEFAULT` 是 `SECONDARY` 别名，
+  `UI_BTN_ERROR` 是 `DANGER` 别名。标签 UTF-8；返回 `ui->clicked == id`。
+  禁用时自动用 `neutral.soft` 与 `btnDisabledText`。
 - `Ui_Panel` 画 `panelBg/panelBorder/panelRadius` 的卡片。
 - `Ui_ProgressBar` 画 `progressTrack` + 可选填充
   `progressFill -> progressFill2`；`drawFill=0` 时只画轨道，填充交给
@@ -2103,6 +2141,12 @@ README 第 10 节给出了路线。核心步骤：
     在它上方，不需要 `UiProgress_SetHidden`；只有主窗内模态遮罩才需要让位。
 20. **layer 内容不应每帧重画**：它的收益来自“一次绘制 + DWM 补间”；持续变化的
     内容请用主窗脏区绘制或 `GfxOverlay`。
+21. **自定义主题只覆盖 5 个语义角色**：页面/卡片/文字/输入框外壳仍由
+    light/dark 基座决定。要连外壳一起改，直接改 `UiTheme` 字段后调用
+    `UiTheme_Touch`。
+22. **没有 per-component 主题覆盖**：同一 `UiTheme*` 下所有组件共享令牌；
+    需要局部差异时，在调用组件前临时改字段并 `UiTheme_Touch`，或复制一份
+    `UiTheme` 给子树使用。
 
 ---
 
@@ -2230,7 +2274,8 @@ Ui_OnMouseLeave / Ui_OnCaptureChanged
 
 ```c
 Ui_DrawSurface
-UiTheme_Init / UiTheme_Shutdown / UiTheme_SetTheme
+UiTheme_Init / UiTheme_Shutdown
+UiTheme_SetTheme / UiTheme_SetColors / UiTheme_Touch
 ```
 
 **UiWidgets / UiToast / UiInput / UiProgress**
@@ -2377,12 +2422,17 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 - 组件/主题回归：Button/Panel/ProgressBar 走主题令牌；亮/暗切换即时生效，
   进度 overlay 按新令牌重建；浅色/深色截图均正常。
 - 壳/输入/进度回归：`cui_minimal.exe` 输入、回车提交、退出正常；`cui_demo.exe`
-  由 `UiApp + UiInput + UiProgress` 重写为 **299 行**（原 893 行），前台 60Hz
+  由 `UiApp + UiInput + UiProgress` 重写为 **315 行**（原 893 行），前台 60Hz
   无 Toast 时应用进程 CPU 约 **0.00%**；三份 exe 均为 0CRT。
 - 0CRT 增强回归：独立自测程序覆盖 `%d/%u/%x/%s/%c/%lld/%zu/%08x/%.2f/%-5d`
   与边界截断、内存 0/7/15/16/31/32/63/64/65/511/512/513/4095/4096/4097/
   8192/10000 字节、字符串、malloc/calloc/realloc/qsort/bsearch，退出码 0；
   三份 exe 在新 crtstub 下均正常启动/输入/关闭。
+- **自定义主题回归**：demo 的“品牌主题”用 `UiTheme_SetColors` 设置
+  `primary=#E4572E / warning=#F2A93B / success=#2FA56B / error=#D64545 /
+  neutral=#F3F5F9`；主按钮、标题条、进度条、焦点色同步变橙，中性按钮变浅灰，
+  切回深色/浅色预设正常；Toast layer 通过 `themeRev` 自动重画。
+  `UI_BTN_WARNING/SUCCESS` 在浅色下分别呈琥珀/绿色描边与文字，悬停底板正确。
 - **合成器 Toast（GfxLayer）回归**：`cui_demo.exe` 提交后 Toast 由独立
   layer 显示，渐变/卡片只绘制一次；淡入淡出由 DWM 补间；Toast 的 2.2 秒停留
   与淡出期间应用进程 CPU **0.00%**，主窗 `WM_PAINT` 次数为 0；下方的进度

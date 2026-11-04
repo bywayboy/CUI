@@ -22,11 +22,21 @@ typedef struct Demo {
 	UiToast toast;
 	UiProgress progress;
 	int pending;        /* 1=提交 2=重置 3=关闭 4=动画 5=主题 */
+	int themeMode;      /* 0=浅色 1=品牌色 2=深色 */
 	int dismissToast;
 	char status[192];
 } Demo;
 
 static Demo g;
+
+/* 品牌色示例: 5 个语义色即可换肤, 其余 hover/press/soft/文字自动派生. */
+static const UiThemeColors kBrand = {
+	0xFFE4572E,   /* primary */
+	0xFFF2A93B,   /* warning */
+	0xFF2FA56B,   /* success */
+	0xFFD64545,   /* error */
+	0xFFF3F5F9    /* neutral (default) */
+};
 
 static void set_status(const char *s)
 {
@@ -115,7 +125,7 @@ static void on_frame(UiApp *app, void *user)
 			UI_BTN_SECONDARY, 1))
 		g.pending = 4;
 	if (Ui_Button(ui, Ui_Id("demo.theme", 0, 0), Ui_Rect(x + 346, y, 110, 38),
-			t->themeId == UI_THEME_LIGHT ? "深色主题" : "浅色主题",
+			g.themeMode == 0 ? "品牌主题" : (g.themeMode == 1 ? "深色主题" : "浅色主题"),
 			UI_BTN_SECONDARY, 1))
 		g.pending = 5;
 
@@ -164,8 +174,13 @@ static void on_after_frame(UiApp *app, void *user)
 			UiProgress_SetPaused(&g.progress, !UiProgress_Paused(&g.progress));
 			UiApp_Invalidate(app);
 		} else if (act == 5) {
-			UiTheme_SetTheme(&app->theme,
-				app->theme.themeId == UI_THEME_LIGHT ? UI_THEME_DARK : UI_THEME_LIGHT);
+			g.themeMode = (g.themeMode + 1) % 3;
+			if (g.themeMode == 1)
+				UiTheme_SetColors(&app->theme, UI_THEME_LIGHT, &kBrand);
+			else if (g.themeMode == 2)
+				UiTheme_SetTheme(&app->theme, UI_THEME_DARK);
+			else
+				UiTheme_SetTheme(&app->theme, UI_THEME_LIGHT);
 			UiApp_Invalidate(app);
 		} else if (act == 3) {
 			UiApp_Close(app);

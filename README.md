@@ -6,7 +6,7 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
 
 工程包含三个样例，公共代码在 `src/ui`：
 
-- `src/demo.c`：**标准样例（约 299 行）**。基于 `UiApp` 壳 + `UiInput` 表单 +
+- `src/demo.c`：**标准样例（约 315 行）**。基于 `UiApp` 壳 + `UiInput` 表单 +
   `UiButton/Panel/ProgressBar` + `UITheme` + 合成器 `UiToast`（`GfxLayer`），
   只写业务 UI。
 - `samples/minimal.c`：最小接入（约 150 行，含注释），一个输入框 + 提交/退出。
@@ -32,7 +32,7 @@ CUI/
 │  ├─ minimal.c           最小接入样例
 │  └─ advanced.c          高级样例（overlay/Toast/IME 全细节）
 └─ src/
-   ├─ demo.c              标准样例（UiApp 壳 + 组件，约 300 行）
+   ├─ demo.c              标准样例（UiApp 壳 + 组件，约 315 行）
    ├─ edit.c / edit.h     自绘单行编辑框 UiEdit（选区/剪贴板/滚动/IME 组合）
    ├─ log.c / log.h       调试日志（OutputDebugString；可选 /DSC_LOG_FILE 落盘）
    ├─ lib/crtstub.c       0CRT 存根（mem*/str*/sprintf/malloc/浮点等）
@@ -42,7 +42,7 @@ CUI/
    └─ ui/
       ├─ ui_types.h       矩形/颜色/稳定 ID（FNV）
       ├─ ui_context.*     即时模式上下文：注册/命中/z-index/拖动/单帧事件
-      ├─ ui_theme.*       颜色与字体令牌（亮/暗主题，组件不写死颜色）
+      ├─ ui_theme.*       颜色/字体令牌（亮/暗 + 自定义 5 语义色）
       ├─ ui_paint.*       Ui_DrawSurface：填充/描边/光晕的统一外观
       ├─ ui_anim.*        动画内核（指数平滑 + 显式补间，固定池零分配）
       ├─ ui_frame.*       vsync 对齐的帧时钟（合成器时钟 / 高精度定时器）
@@ -176,8 +176,8 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | | `Ui_PushLayer/Ui_PopLayer` | z-index 注册层；命中取最高 z |
 | | `Ui_SetModal` | 不可见全窗输入 blocker（合成器 Toast 用，不触发重绘） |
 | | `Ui_OnMouse*` `Ui_SetFocusId` | 输入与键盘焦点 |
-| `UiTheme` | `UiTheme_SetTheme` | 亮/暗主题切换（只换颜色/圆角，不重建字体） |
-| `UiWidgets` | `Ui_Button/Ui_Panel/Ui_ProgressBar` | 主题化 Button/Panel/ProgressBar（UTF-8 标签） |
+| `UiTheme` | `UiTheme_SetTheme/SetColors/Touch` | 亮/暗预设 + 5 语义色自定义；任意换肤自动通知 overlay/Toast |
+| `UiWidgets` | `Ui_Button/Ui_Panel/Ui_ProgressBar` | 主题化组件；按钮含 primary/warning/success/error/default 变体 |
 | `UiToast` | `UiToast_Init/Attach/Show/Hide/Tick/Draw/EndFrame` | 渐变 Toast；layer 模式主窗零重绘，ULW 回退主窗 |
 | | `UiToast_UsingLayer/Shutdown` | 判断当前是否合成器路径 / 释放 layer |
 | `UiInput` | `UiInput_Init/Add/Draw/BeginFrame/Key/Char/Mouse*` | 表单焦点/光标/拖选/IME 封装 |
@@ -285,9 +285,11 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   前台 1440×1120@60Hz 播放时应用进程 CPU 约 **0.00%**，暂停/恢复/6 秒回卷正常；
   输入/提交时主窗局部重绘；`SCV2_ULW=1` 回退自动改为主窗局部绘制。
 - 主题/组件回归：Button/Panel/ProgressBar 只读主题令牌，亮/暗切换即时生效；
-  进度 overlay 按新令牌重建。Toast 渐变遮罩 + 底部卡片、点击遮罩/Esc 关闭均通过。
+  `UiTheme_SetColors` 的品牌色（primary/warning/success/error/default）同步刷新
+  主按钮、标题条、进度条、Toast；`themeRev` 让 overlay/layer 自动重建。
+  Toast 渐变遮罩 + 底部卡片、点击遮罩/Esc 关闭均通过。
 - 采样/壳回归：`cui_minimal.exe` 输入/回车提交/退出正常；`cui_demo.exe` 已改为
-  `UiApp` 壳 + `UiInput` + `UiProgress`，**299 行**（原 893 行），前台 60Hz
+  `UiApp` 壳 + `UiInput` + `UiProgress`，**315 行**（原 893 行），前台 60Hz
   无 Toast 时应用进程 CPU 约 **0.00%**；三份 exe 均为 0CRT。
 - 合成器 Toast（`GfxLayer`）回归：渐变/卡片只画一次，淡入淡出由 DWM 补间；
   Toast 显示/停留/淡出期间应用进程 CPU **0.00%**、主窗 0 次 `WM_PAINT`；

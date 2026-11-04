@@ -26,7 +26,7 @@ void UiProgress_Init(UiProgress *p, UiContext *ui, int cycleMs)
 	ZeroMemory(p, sizeof(*p));
 	p->ui = ui;
 	p->cycleMs = cycleMs > 0 ? (float)cycleMs : 6000.0f;
-	p->themeId = (ui && ui->theme) ? ui->theme->themeId : UI_THEME_LIGHT;
+	p->themeRev = (ui && ui->theme) ? ui->theme->themeRev : 0;
 }
 
 void UiProgress_Tick(UiProgress *p, double dtMs)
@@ -92,9 +92,9 @@ void UiProgress_EndFrame(UiProgress *p)
 
 	if (p->overlay && !Gfx_OverlayAlive(p->overlay))
 		progress_drop_overlay(p);
-	if (p->overlay && p->themeId != t->themeId)
+	if (p->overlay && p->themeRev != t->themeRev)
 		progress_drop_overlay(p);
-	p->themeId = t->themeId;
+	p->themeRev = t->themeRev;
 
 	if (p->hidden) {
 		if (p->overlay && !Gfx_OverlaySetOpacity(p->overlay, 0.0f))

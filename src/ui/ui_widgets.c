@@ -14,42 +14,58 @@ int Ui_Button(UiContext *ui, UiId id, UiRect rc, const char *label,
 	t = ui->theme;
 
 	ZeroMemory(&ss, sizeof(ss));
-	ss.bg = t->btnBg;
-	ss.hoverBg = t->btnHoverBg;
-	ss.pressBg = t->btnPressBg;
-	ss.border = t->btnBorder;
+	ss.bg = t->neutral.base;
+	ss.hoverBg = t->neutral.hover;
+	ss.pressBg = t->neutral.press;
+	ss.border = t->neutral.border;
 	ss.hoverBorder = t->btnHoverBorder;
-	ss.focusBorder = t->btnBorder;
-	text = t->btnText;
+	ss.focusBorder = t->neutral.border;
+	text = t->neutral.text;
 	glow = 0;
 
 	if (variant == UI_BTN_PRIMARY) {
 		ss.bg = t->btnPrimary;
 		ss.bg2 = t->btnPrimary2;
-		ss.hoverBg = t->btnPrimaryHover;
-		ss.pressBg = t->btnPrimaryPress;
-		ss.border = t->btnPrimaryBorder;
-		ss.hoverBorder = t->btnPrimaryBorder;
-		ss.focusBorder = t->btnPrimaryBorder;
+		ss.hoverBg = t->primary.hover;
+		ss.pressBg = t->primary.press;
+		ss.border = t->primary.border;
+		ss.hoverBorder = t->primary.border;
+		ss.focusBorder = t->primary.border;
 		ss.overlayTint = 1;
-		text = t->btnPrimaryText;
-		glow = Ui_ColorAlpha(t->blue2, 110);
+		text = t->primary.text;
+		glow = Ui_ColorAlpha(t->primary.base, 110);
 	} else if (variant == UI_BTN_DANGER) {
-		ss.hoverBg = t->dangerBg;
-		ss.pressBg = Ui_ColorShift(t->dangerBg, -8);
-		ss.border = Ui_ColorAlpha(t->danger, 150);
-		ss.hoverBorder = t->danger;
-		ss.focusBorder = t->danger;
-		text = t->danger;
-		glow = Ui_ColorAlpha(t->danger, 80);
+		ss.hoverBg = t->error.hover;
+		ss.pressBg = t->error.press;
+		ss.border = Ui_ColorAlpha(t->error.base, 150);
+		ss.hoverBorder = t->error.base;
+		ss.focusBorder = t->error.base;
+		text = t->error.text;
+		glow = Ui_ColorAlpha(t->error.base, 80);
+	} else if (variant == UI_BTN_WARNING) {
+		ss.hoverBg = t->warning.hover;
+		ss.pressBg = t->warning.press;
+		ss.border = Ui_ColorAlpha(t->warning.base, 150);
+		ss.hoverBorder = t->warning.base;
+		ss.focusBorder = t->warning.base;
+		text = t->warning.text;
+		glow = Ui_ColorAlpha(t->warning.base, 80);
+	} else if (variant == UI_BTN_SUCCESS) {
+		ss.hoverBg = t->success.hover;
+		ss.pressBg = t->success.press;
+		ss.border = Ui_ColorAlpha(t->success.base, 150);
+		ss.hoverBorder = t->success.base;
+		ss.focusBorder = t->success.base;
+		text = t->success.text;
+		glow = Ui_ColorAlpha(t->success.base, 80);
 	}
 
 	if (!enabled) {
-		ss.bg = t->btnDisabledBg;
+		ss.bg = t->neutral.soft;
 		ss.bg2 = 0;
 		ss.hoverBg = 0;
 		ss.pressBg = 0;
-		ss.border = t->btnBorder;
+		ss.border = t->neutral.border;
 		ss.hoverBorder = 0;
 		ss.focusBorder = 0;
 		ss.overlayTint = 0;
