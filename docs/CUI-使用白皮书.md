@@ -21,7 +21,7 @@
 >    （Button/Panel/ProgressBar）、亮/暗主题切换（`UiTheme_SetTheme`）和带渐变
 >    overlay 的 Toast（最高 z、默认阻断输入、自动超时）。
 > 6. 新增 `UiApp` 窗口壳、`UiInput` 表单输入、`UiProgress` 进度组件；标准 demo
->    重写为壳版本（893 → 315 行），新增 `samples/minimal.c`（最小样例）和
+>    重写为壳版本（893 → 340 行），新增 `samples/minimal.c`（最小样例）和
 >    `samples/advanced.c`（高级样例）。构建产出 `cui_demo` / `cui_minimal` /
 >    `cui_advanced` 三个 0CRT exe。
 > 7. 参照 `RemoteCtrl/agent` 增强 0CRT：/GS/SEH 运行时、SSE2/AVX2/ERMSB 内存与
@@ -38,7 +38,10 @@
 >    hover/press/soft/对比文字；`UiColorRole` 同时开放给组件。新增
 >    `UI_BTN_WARNING/SUCCESS/ERROR/DEFAULT` 变体；`themeRev` 让进度 overlay 与
 >    Toast layer 在任意换肤后自动重建/重画。demo 增加“品牌主题”循环。
-> 10. 新增 `GfxEffect`：D2D 内置 Blur/Shadow/ColorMatrix 包装 + 自定义 HLSL
+> 10. 新增 `UiStack` / `UiFlex` 布局：只计算矩形，容器 padding/gap；
+>    `UiStack` 固定+Fill，`UiFlex` basis+grow 权重（不做百分比归一化）。
+>    支持 min/max 夹取与右/底对齐，零分配；demo 表单和按钮行已迁移。
+> 11. 新增 `GfxEffect`：D2D 内置 Blur/Shadow/ColorMatrix 包装 + 自定义 HLSL
 >    `Grain`（离线 fxc、内嵌 cso、注册 `ID2D1EffectImpl` + `ID2D1DrawTransform`）。
 >    提供 `Gfx_DrawWithEffects`（离屏内容 → 效果链 → 合成回目标）。Toast 卡片使用
 >    软阴影 + 颗粒，仍只绘制一次，显示/停留期间应用 CPU 0.00%。
@@ -271,6 +274,7 @@ Direct2D / DirectWrite / D3D11 / DirectComposition
 | `src/gfx/gfx_d2d.cpp` | D2D/DWrite/D3D/DComp 实现 | 唯一的 C++ 单元，无 STL/异常/RTTI |
 | `src/ui/ui_types.h` | 矩形/颜色/稳定 ID | `UiId` 必须跨帧稳定 |
 | `src/ui/ui_context.*` | 注册、命中、拖动、单帧事件 | 每帧 Begin/End |
+| `src/ui/ui_layout.*` | UiStack / UiFlex 布局 | 只算矩形；padding/gap；固定+Fill / basis+grow |
 | `src/ui/ui_theme.*` | 字体/颜色令牌 | 亮暗预设 + 5 语义色自定义；`themeRev` 通知重建 |
 | `src/ui/ui_paint.*` | 统一交互表面 | 填充/描边/光晕/渐变叠加 |
 | `src/ui/ui_anim.*` | 动画通道 | 64 条目 × 16 通道，零分配 |
@@ -385,11 +389,15 @@ int WINAPI WinMain(HINSTANCE i, HINSTANCE p, LPSTR c, int s) {
 
 - 壳负责：窗口创建、Per-Monitor DPI、鼠标捕获、键盘/字符、IME 消息与候选窗、
   530ms 光标闪烁定时器、动画节拍、Gfx/Theme/UiContext/UiIme/UiFrame 生命周期、关闭。
+- **可拖边缩放**：`UiApp` 默认带 `WS_THICKFRAME`，用 `WM_NCCALCSIZE` 把客户区
+  铺满窗口，`WM_NCHITTEST` 在 6 DIP 边缘返回 `HTLEFT/HTTOP/...`；应用的
+  `nchittest` 只负责标题栏/客户区，不处理边缘。`app->minW/minH`（DIP）控制
+  最小尺寸，默认 320×240，可在 `init` 里改；demo 设为 600×480。
 - 应用负责：布局、控件、状态、业务动作。
 - 动作请在 `after_frame`（`Gfx_End` 之后）执行，避免绘制中重入。
 - 低层 API 完全保留；非常规窗口（多窗口/自定义命中/特殊循环）仍可按 5.1–5.6 手写。
 - 完整可运行代码：[samples/minimal.c](../samples/minimal.c)（约 150 行）；
-  标准样例：[src/demo.c](../src/demo.c)（约 315 行）。
+  标准样例：[src/demo.c](../src/demo.c)（约 340 行）。
 
 ### 5.1 窗口与进程准备
 
@@ -407,6 +415,9 @@ HWND hwnd = CreateWindowExW(
 - `WS_EX_NOREDIRECTIONBITMAP` **必须在创建时指定**。运行时用
   `SetWindowLongPtr` 增删无效。它是 DComp 直出的前提。
 - `WS_POPUP` 表示无系统边框；标题栏、关闭键由你自绘。
+- 手写窗口要可缩放时，加 `WS_THICKFRAME`，在 `WM_NCCALCSIZE` 返回 0 让客户区
+  铺满，并在 `WM_NCHITTEST` 返回 `HTLEFT/HTRIGHT/HTTOP/HTBOTTOM` 及四角；
+  `UiApp` 已内置这套逻辑（6 DIP 边缘）和 `WM_GETMINMAXINFO` 最小尺寸。
 - 如果希望任务栏显示图标，保留 `WS_EX_APPWINDOW`。
 - 回退到 ULW 时，`Gfx` 会自动追加 `WS_EX_LAYERED` 并调用
   `SetWindowPos(... SWP_FRAMECHANGED)`，应用无需改代码。
@@ -1294,6 +1305,71 @@ UiToast_Shutdown(&toast);
 - 一次只显示一条 Toast；需要排队/堆叠时在应用层扩展。
 - 实测：前台 1440×1120@60Hz，Toast 淡入/停留/淡出期间应用进程 CPU **0.00%**；
   Toast 下进度条持续移动；点击遮罩/Esc 关闭、resize/重复显示均正常。
+
+### 8.8 布局：UiStack / UiFlex
+
+布局只计算矩形，不绘制、不注册控件、不持有控件状态。组件仍按 `UiRect` 工作，
+因此布局是**可选**的：Toast/进度 overlay 继续绝对定位。
+
+**UiStack（游标式）**
+
+```c
+UiStack col;
+Ui_StackBeginPad(&col, card, UI_COLUMN, 0.0f, 28, 26, 28, 26);
+UiRect title = Ui_StackTake(&col, 18);
+Ui_StackSkip(&col, 6);
+UiRect input = Ui_StackTake(&col, 40);
+Ui_StackSkip(&col, 20);
+UiRect row   = Ui_StackTake(&col, 38);
+UiRect status = Ui_StackTakeFill(&col);
+/* 不需要 End: UiStack 在栈上, 用完即可丢弃 */
+```
+
+- `Ui_StackBegin` 统一 padding；`Ui_StackBeginPad` 四边不同。
+- `Take` 固定 DIP；`TakeFill` 吃掉剩余（**每个 stack 最多一个 Fill**）；
+  `TakeRight` 主轴末端对齐；`Skip` 显式留白。
+- `TakeAligned(main, cross, align)` 控制交叉轴 start/center/end。
+- **没有 per-item margin**：用 gap + Skip；避免 margin 折叠/叠加规则。
+- `Ui_StackInner` 返回 padding 后的内容区；背景仍用 `Ui_Panel(ui, outer)`。
+
+**UiFlex（声明式，basis + grow）**
+
+```c
+UiFlexItem items[5] = {
+    { 110, 0, 0, 0 },   /* 固定 110 */
+    { 90,  0, 0, 0 },   /* 固定 90 */
+    { 110, 0, 0, 0 },   /* 固定 110 */
+    { 0,   1, 0, 0 },   /* grow=1, 空白弹簧 */
+    { 110, 0, 0, 0 }    /* 主题按钮靠右 */
+};
+UiRect out[5];
+Ui_FlexRow(rowRc, 12, items, 5, out);
+```
+
+- `basis` 是固定基础尺寸（DIP）；`grow` 是**剩余空间权重**，不是百分比。
+- 固定 200 + 两个 `{0, 50}` / `{0, 80}`：先扣 200 和 gap，剩余按 50:80 分——
+  这才等同于 flex-grow；不存在“50% 再归一化”的第二种语义。
+- `minSize/maxSize` 会夹取；触到 max 的项冻结，余量最多再分 4 轮。
+- **不做 shrink**：basis 总和超过容器就是溢出，由应用决定换行/滚动/裁剪。
+- 交叉轴默认铺满；百分比固定宽由应用自己算 `basis = pct * inner.w/h`。
+- `Ui_FlexRow/Col` 纯函数、零分配，`out` 由调用方提供。
+
+**规则总结**
+
+| 项 | 规则 |
+|---|---|
+| padding | 容器四边，默认统一 |
+| margin | 不支持；gap + `Ui_StackSkip` |
+| 背景/边框 | 布局不画；外层 `Ui_Panel` 或自绘 |
+| 固定尺寸 | `Ui_StackTake` / `basis` |
+| 剩余空间 | `TakeFill` / `grow` 权重 |
+| 百分比 | 不作为独立模式；需要就换算成 basis |
+| 溢出 | 不压缩，调用方处理 |
+| 分配 | 栈上结构/调用方数组，无堆分配 |
+
+demo 的卡片表单已改为 `UiStack` 纵向排布，按钮行用 `UiFlex`（中间 grow 弹簧，
+主题按钮靠右）；窗口可拖边缩放，600×480 到 1000×700 之间布局自动重算，最小
+尺寸在 demo 初始化为 600×480（再小按钮行会按“无 shrink”规则溢出）。
 
 ---
 
@@ -2275,6 +2351,11 @@ README 第 10 节给出了路线。核心步骤：
 26. **整帧效果只覆盖主窗 `uiTarget`**：`GfxOverlay`（进度）和 `GfxLayer`
     （Toast）是独立 DComp visual，不经过整帧效果；需要全局一致颜色时，应把
     动态内容并入主窗或在图层内容上再次应用同一效果。
+27. **布局没有 margin / 百分比 / shrink**：间距用 gap + `Ui_StackSkip`；
+    剩余空间用 `TakeFill` / `grow`；溢出由应用处理。`UiStack` 每个 stack
+    最多一个 Fill。
+28. **布局不绘制背景/边框**：需要卡片时先 `Ui_Panel(ui, outer)`，再把同一
+    outer 交给 `Ui_StackBegin`；布局不参与 z-index 或命中测试。
 
 ---
 
@@ -2401,6 +2482,15 @@ Ui_OnMouseMove / Ui_OnMouseDown / Ui_OnMouseUp
 Ui_OnMouseLeave / Ui_OnCaptureChanged
 ```
 
+**UiLayout**
+
+```c
+Ui_StackBegin / Ui_StackBeginPad / Ui_StackInner / Ui_StackRemaining
+Ui_StackTake / Ui_StackTakeFill / Ui_StackTakeRight / Ui_StackTakeAligned
+Ui_StackSkip
+Ui_FlexRow / Ui_FlexCol
+```
+
 **UiPaint / UiTheme**
 
 ```c
@@ -2512,6 +2602,8 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 | 效果合成 DrawWithEffects | [src/gfx/gfx_d2d.cpp:1590](../src/gfx/gfx_d2d.cpp#L1590) |
 | Grain 着色器 | [src/gfx/grain.hlsl](../src/gfx/grain.hlsl) |
 | demo overlay 接线 | [src/demo.c:122](../src/demo.c#L122) |
+| 布局 UiStack/UiFlex | [src/ui/ui_layout.c](../src/ui/ui_layout.c) |
+| 窗口拖边缩放 | [src/ui/ui_app.c:102](../src/ui/ui_app.c#L102) |
 | z-index / 命中 | [src/ui/ui_context.c:116](../src/ui/ui_context.c#L116) |
 | 模态 blocker | [src/ui/ui_context.c:41](../src/ui/ui_context.c#L41) |
 | 主题切换 | [src/ui/ui_theme.c:21](../src/ui/ui_theme.c#L21) |
@@ -2557,12 +2649,20 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 - 组件/主题回归：Button/Panel/ProgressBar 走主题令牌；亮/暗切换即时生效，
   进度 overlay 按新令牌重建；浅色/深色截图均正常。
 - 壳/输入/进度回归：`cui_minimal.exe` 输入、回车提交、退出正常；`cui_demo.exe`
-  由 `UiApp + UiInput + UiProgress` 重写为 **315 行**（原 893 行），前台 60Hz
+  由 `UiApp + UiInput + UiProgress` 重写为 **340 行**（原 893 行），前台 60Hz
   无 Toast 时应用进程 CPU 约 **0.00%**；三份 exe 均为 0CRT。
 - 0CRT 增强回归：独立自测程序覆盖 `%d/%u/%x/%s/%c/%lld/%zu/%08x/%.2f/%-5d`
   与边界截断、内存 0/7/15/16/31/32/63/64/65/511/512/513/4095/4096/4097/
   8192/10000 字节、字符串、malloc/calloc/realloc/qsort/bsearch，退出码 0；
   三份 exe 在新 crtstub 下均正常启动/输入/关闭。
+- **布局回归**：纯矩形自测覆盖 `UiStack` padding/gap/固定/Fill/Right/对齐、
+  `UiFlex` basis+grow（50:80）、max 夹取重分、无 shrink 溢出；demo 表单
+  迁移为 `UiStack`，按钮行用 `UiFlex` 弹簧把主题按钮推到右侧；200% DPI、
+  Toast/进度 overlay 正常，布局零堆分配。
+- **窗口缩放回归**：200% DPI 下 `WM_NCHITTEST` 左上/上/右下分别返回
+  `HTLEFT/HTTOP/HTBOTTOMRIGHT`；实际鼠标拖右下角 1440×1120 → 1600×1220；
+  `WM_NCCALCSIZE` 后客户区=窗口；MoveWindow 600×480 / 800×600 / 1000×700
+  三档布局截图正常，`UiFlex` 弹簧与卡片宽度自适应。
 - **自定义主题回归**：demo 的“品牌主题”用 `UiTheme_SetColors` 设置
   `primary=#E4572E / warning=#F2A93B / success=#2FA56B / error=#D64545 /
   neutral=#F3F5F9`；主按钮、标题条、进度条、焦点色同步变橙，中性按钮变浅灰，

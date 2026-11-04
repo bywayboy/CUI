@@ -59,6 +59,7 @@ struct UiApp {
 	UiThemeId themeId;
 	float scale;
 	float w, h;              /* 客户区 DIP */
+	float minW, minH;        /* 最小窗口尺寸 (DIP), 默认 320x240 */
 	int minimized;
 	int fullRedraw;
 	int tracking;

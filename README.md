@@ -6,7 +6,7 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
 
 工程包含三个样例，公共代码在 `src/ui`：
 
-- `src/demo.c`：**标准样例（约 315 行）**。基于 `UiApp` 壳 + `UiInput` 表单 +
+- `src/demo.c`：**标准样例（约 340 行）**。基于 `UiApp` 壳 + `UiInput` 表单 +
   `UiButton/Panel/ProgressBar` + `UITheme` + 合成器 `UiToast`（`GfxLayer`），
   只写业务 UI。
 - `samples/minimal.c`：最小接入（约 150 行，含注释），一个输入框 + 提交/退出。
@@ -32,7 +32,7 @@ CUI/
 │  ├─ minimal.c           最小接入样例
 │  └─ advanced.c          高级样例（overlay/Toast/IME 全细节）
 └─ src/
-   ├─ demo.c              标准样例（UiApp 壳 + 组件，约 315 行）
+   ├─ demo.c              标准样例（UiApp 壳 + 组件，约 340 行）
    ├─ edit.c / edit.h     自绘单行编辑框 UiEdit（选区/剪贴板/滚动/IME 组合）
    ├─ log.c / log.h       调试日志（OutputDebugString；可选 /DSC_LOG_FILE 落盘）
    ├─ lib/crtstub.c       0CRT 存根（mem*/str*/sprintf/malloc/浮点等）
@@ -43,6 +43,7 @@ CUI/
    └─ ui/
       ├─ ui_types.h       矩形/颜色/稳定 ID（FNV）
       ├─ ui_context.*     即时模式上下文：注册/命中/z-index/拖动/单帧事件
+      ├─ ui_layout.*      UiStack / UiFlex 布局：只算矩形，零分配
       ├─ ui_theme.*       颜色/字体令牌（亮/暗 + 自定义 5 语义色）
       ├─ ui_paint.*       Ui_DrawSurface：填充/描边/光晕的统一外观
       ├─ ui_anim.*        动画内核（指数平滑 + 显式补间，固定池零分配）
@@ -175,6 +176,8 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | | `Gfx_CreateLayer/LayerDraw/LayerSetOpacity/LayerResize/LayerAlive/LayerDestroy` | 通用合成器图层：独立 swapchain + 绘制回调 + DWM opacity 补间 |
 | | `Gfx_CreateBlur/Shadow/ColorMatrix/Grain` `Gfx_DrawWithEffects` | D2D 内置效果 + 自定义 HLSL（离线 fxc）；离屏内容→效果链→合成 |
 | | `Gfx_SetFrameEffects` `Gfx_EffectSetColorMatrix` | 整帧后处理（颜色矩阵/无障碍）；只覆盖主窗 uiTarget |
+| `UiLayout` | `Ui_StackBegin/Take/TakeFill/TakeRight/TakeAligned` | 游标布局：padding/gap、固定+Fill |
+| | `Ui_FlexRow/Ui_FlexCol` | basis+grow 权重、min/max；零分配 |
 | `UiContext` | `Ui_BeginFrame/EndFrame` | 一帧的注册周期；EndFrame 清单帧事件 |
 | | `Ui_State` `Ui_DrawSurface` | 交互状态与统一表面 |
 | | `Ui_PushLayer/Ui_PopLayer` | z-index 注册层；命中取最高 z |
@@ -186,7 +189,7 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | | `UiToast_UsingLayer/Shutdown` | 判断当前是否合成器路径 / 释放 layer |
 | `UiInput` | `UiInput_Init/Add/Draw/BeginFrame/Key/Char/Mouse*` | 表单焦点/光标/拖选/IME 封装 |
 | `UiProgress` | `UiProgress_Init/Tick/Draw/EndFrame/SetPaused` | 循环进度 + GfxOverlay + 回退 |
-| `UiApp` | `UiApp_Run/Invalidate/InvalidateRect/Close` | 可选窗口壳：消息/DPI/IME/帧循环 |
+| `UiApp` | `UiApp_Run/Invalidate/InvalidateRect/Close` | 可选窗口壳：消息/DPI/IME/帧循环；默认 6 DIP 拖边缩放 + `minW/minH` |
 | `UiAnim` | `Ui_AnimSmooth/To/Set/Get/Advance/Busy` | 通道式动画（`UI_AN_*`） |
 | `UiFrame` | `UiFrame_Init/Tick/Delay/ResetTick` | 合成器时钟优先，失败退高精度定时器 |
 | `UiEdit` | `Edit_Init/SetText/TextUtf8/Draw/Key/Char` | 单行编辑框（UTF-16 存储） |
@@ -293,13 +296,20 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   主按钮、标题条、进度条、Toast；`themeRev` 让 overlay/layer 自动重建。
   Toast 渐变遮罩 + 底部卡片、点击遮罩/Esc 关闭均通过。
 - 采样/壳回归：`cui_minimal.exe` 输入/回车提交/退出正常；`cui_demo.exe` 已改为
-  `UiApp` 壳 + `UiInput` + `UiProgress`，**315 行**（原 893 行），前台 60Hz
+  `UiApp` 壳 + `UiInput` + `UiProgress`，**340 行**（原 893 行），前台 60Hz
   无 Toast 时应用进程 CPU 约 **0.00%**；三份 exe 均为 0CRT。
 - 合成器 Toast（`GfxLayer`）回归：渐变/卡片只画一次，淡入淡出由 DWM 补间；
   Toast 显示/停留/淡出期间应用进程 CPU **0.00%**、主窗 0 次 `WM_PAINT`；
   下方进度 overlay 持续移动；点击/Esc 关闭、重复显示、Toast 中 resize 均正常。
   本机 Win10 19045 无 `IDCompositionVisual3`，透明度自动走
   `IDCompositionEffectGroup`。`SCV2_ULW=1` 自动回退主窗渐变 + 进度让位。
+- 布局回归：`UiStack` 的 padding/gap/固定/Fill/Right/对齐与 `UiFlex`
+  的 basis+grow/min-max 通过纯矩形数学测试；demo 表单改用 `UiStack`、按钮行
+  改用 `UiFlex`（主题按钮右对齐），100%/200% DPI、Toast/进度 overlay
+  均正常，布局零堆分配。
+- 窗口缩放回归：`UiApp` 默认 `WS_THICKFRAME` + `WM_NCCALCSIZE`；200% DPI 下
+  左右/上/右下命中 `HTLEFT/HTTOP/HTBOTTOMRIGHT`，实际拖拽 1440×1120 →
+  1600×1220；600×480/800×600/1000×700 三档布局截图正常，客户区=窗口。
 - GPU 效果回归：D2D 内置 Blur/Shadow/ColorMatrix 与本机自定义 `Grain` HLSL
   全部走通；Toast 卡片=软阴影+颗粒，只画一次，CPU 仍 **0.00%**；12 次连续
   显示/关闭无崩溃；`Gfx_DrawWithEffects` 的离屏/恢复/效果链正常。

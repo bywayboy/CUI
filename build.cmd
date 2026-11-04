@@ -45,7 +45,7 @@ SET "CXXFLAGS=/nologo /c /std:c++17 /O1 /GS- /Gy /Gs32768 /W3 /utf-8 /wd4244 /wd
 SET "LIBS=kernel32.lib user32.lib gdi32.lib d2d1.lib dwrite.lib d3d11.lib dxgi.lib dcomp.lib ole32.lib advapi32.lib shell32.lib imm32.lib winmm.lib"
 
 SET "OBJS="
-FOR %%F IN (src\edit.c src\log.c src\lib\crtstub.c src\ui\ui_anim.c src\ui\ui_context.c src\ui\ui_frame.c src\ui\ui_ime.c src\ui\ui_paint.c src\ui\ui_theme.c src\ui\ui_widgets.c src\ui\ui_toast.c src\ui\ui_input.c src\ui\ui_app.c src\ui\ui_progress.c) DO (
+FOR %%F IN (src\edit.c src\log.c src\lib\crtstub.c src\ui\ui_anim.c src\ui\ui_context.c src\ui\ui_layout.c src\ui\ui_frame.c src\ui\ui_ime.c src\ui\ui_paint.c src\ui\ui_theme.c src\ui\ui_widgets.c src\ui\ui_toast.c src\ui\ui_input.c src\ui\ui_app.c src\ui\ui_progress.c) DO (
     ECHO [cui] %%F
     cl %CFLAGS% "%%F" /Fobuild\obj\%%~nF.obj || GOTO :err
     SET "OBJS=!OBJS! build\obj\%%~nF.obj"

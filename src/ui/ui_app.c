@@ -97,6 +97,33 @@ static void app_enable_dpi_awareness(void)
 	SetProcessDPIAware();
 }
 
+/* 窗口边缘拖拽缩放: 先于应用的标题栏命中, 只认 6 DIP 边框.
+ * 返回 0 表示不在边缘, 继续走 DefWindowProc/应用回调. */
+static int app_resize_edge(UiApp *app, HWND hwnd, LPARAM lp)
+{
+	RECT wr;
+	POINT pt;
+	int b, left, right, top, bottom;
+	if (!app || !GetWindowRect(hwnd, &wr)) return 0;
+	pt.x = (short)LOWORD(lp);
+	pt.y = (short)HIWORD(lp);
+	b = (int)(6.0f * app->scale + 0.5f);
+	if (b < 4) b = 4;
+	left = pt.x >= wr.left && pt.x < wr.left + b;
+	right = pt.x >= wr.right - b && pt.x < wr.right;
+	top = pt.y >= wr.top && pt.y < wr.top + b;
+	bottom = pt.y >= wr.bottom - b && pt.y < wr.bottom;
+	if (top && left) return HTTOPLEFT;
+	if (top && right) return HTTOPRIGHT;
+	if (bottom && left) return HTBOTTOMLEFT;
+	if (bottom && right) return HTBOTTOMRIGHT;
+	if (left) return HTLEFT;
+	if (right) return HTRIGHT;
+	if (top) return HTTOP;
+	if (bottom) return HTBOTTOM;
+	return 0;
+}
+
 static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	UiApp *app = (UiApp *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
@@ -134,15 +161,37 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		return 1;
 
 	case WM_NCHITTEST: {
-		LRESULT hit = DefWindowProcW(hwnd, msg, wp, lp);
-		POINT pt = { (short)LOWORD(lp), (short)HIWORD(lp) };
-		LRESULT custom = hit;
+		LRESULT hit;
+		POINT pt;
+		LRESULT custom;
+		int edge = app_resize_edge(app, hwnd, lp);
+		if (edge) return edge;
+		hit = DefWindowProcW(hwnd, msg, wp, lp);
+		pt.x = (short)LOWORD(lp);
+		pt.y = (short)HIWORD(lp);
+		custom = hit;
 		ScreenToClient(hwnd, &pt);
 		if (app && app->cb && app->cb->nchittest &&
 			app->cb->nchittest(app, pt.x, pt.y, &custom, app->user))
 			return custom;
 		return hit;
 	}
+
+	case WM_NCCALCSIZE:
+		/* 无客户区边框: 客户区铺满整个窗口, 圆角/阴影由我们自己的绘制负责. */
+		if (wp) return 0;
+		break;
+
+	case WM_GETMINMAXINFO:
+		if (app) {
+			MINMAXINFO *mm = (MINMAXINFO *)lp;
+			float s = app->scale > 0.0f ? app->scale : 1.0f;
+			float mw = app->minW > 0.0f ? app->minW : 320.0f;
+			float mh = app->minH > 0.0f ? app->minH : 240.0f;
+			mm->ptMinTrackSize.x = (LONG)(mw * s + 0.5f);
+			mm->ptMinTrackSize.y = (LONG)(mh * s + 0.5f);
+		}
+		return 0;
 
 	case WM_MOUSEMOVE: {
 		POINT pt = { (short)LOWORD(lp), (short)HIWORD(lp) };
@@ -309,6 +358,8 @@ int UiApp_Run(const wchar_t *title, int widthDip, int heightDip,
 	app->user = user;
 	app->themeId = theme;
 	app->scale = 1.0f;
+	app->minW = 320.0f;
+	app->minH = 240.0f;
 
 	app_enable_dpi_awareness();
 	CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
@@ -333,7 +384,7 @@ int UiApp_Run(const wchar_t *title, int widthDip, int heightDip,
 
 	hwnd = CreateWindowExW(WS_EX_APPWINDOW | WS_EX_NOREDIRECTIONBITMAP,
 		L"CuiAppWnd", title ? title : L"CUI",
-		WS_POPUP, 0, 0, 0, 0, NULL, NULL, inst, app);
+		WS_POPUP | WS_THICKFRAME, 0, 0, 0, 0, NULL, NULL, inst, app);
 	app->hwnd = hwnd;
 	if (!hwnd) {
 		Log_Write("[app] CreateWindow failed");

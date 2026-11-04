@@ -11,6 +11,7 @@
 #include "ui/ui_widgets.h"
 #include "ui/ui_toast.h"
 #include "ui/ui_progress.h"
+#include "ui/ui_layout.h"
 #include "edit.h"
 
 #define DEMO_W 720.0f
@@ -46,6 +47,9 @@ static void set_status(const char *s)
 static void on_init(UiApp *app, void *user)
 {
 	(void)user;
+	/* 布局不需要 shrink; 600x480 下按钮行正好放得下, 再小会溢出. */
+	app->minW = 600.0f;
+	app->minH = 480.0f;
 	UiInput_Init(&g.form, &app->ui, &app->ime);
 	g.name = UiInput_Add(&g.form, Ui_Id("demo.name", 0, 0),
 		63, 0, NULL, L"输入名称");
@@ -65,7 +69,10 @@ static void on_frame(UiApp *app, void *user)
 	UiContext *ui = &app->ui;
 	Gfx *gfx = app->gfx;
 	UiRect card;
-	float x, y, w;
+	UiStack col;
+	UiRect nameLabel, nameRc, passLabel, passRc, rowRc;
+	UiRect progressLabel, barRc, statusRc;
+	UiRect buttons[5] = { { 0, 0, 0, 0 } };
 
 	(void)user;
 
@@ -90,55 +97,78 @@ static void on_frame(UiApp *app, void *user)
 
 	UiInput_BeginFrame(&g.form);
 
-	/* 卡片与表单 */
+	/* 卡片与表单: 纵向 UiStack */
 	card = Ui_Rect(24, 96, app->w - 48, app->h - 132);
 	Ui_Panel(ui, card);
-	x = card.x + 28;
-	y = card.y + 26;
-	w = card.w - 56;
+	Ui_StackBeginPad(&col, card, UI_COLUMN, 0.0f, 28.0f, 26.0f, 28.0f, 26.0f);
 
-	Gfx_Text(gfx, t->fLabel, "名称", Ui_Rect(x, y, 120, 18),
-		t->text2, GFX_TEXT_VCENTER);
+	nameLabel = Ui_StackTake(&col, 18.0f);
+	Ui_StackSkip(&col, 6.0f);
+	nameRc = Ui_StackTake(&col, 40.0f);
+	Ui_StackSkip(&col, 20.0f);
+
+	passLabel = Ui_StackTake(&col, 18.0f);
+	Ui_StackSkip(&col, 6.0f);
+	passRc = Ui_StackTake(&col, 40.0f);
+	Ui_StackSkip(&col, 28.0f);
+
+	rowRc = Ui_StackTake(&col, 38.0f);
+	Ui_StackSkip(&col, 28.0f);
+
+	progressLabel = Ui_StackTake(&col, 18.0f);
+	Ui_StackSkip(&col, 6.0f);
+	barRc = Ui_StackTake(&col, 10.0f);
+	Ui_StackSkip(&col, 24.0f);
+
+	statusRc = Ui_StackTake(&col, 22.0f);
+
+	Gfx_Text(gfx, t->fLabel, "名称", nameLabel, t->text2, GFX_TEXT_VCENTER);
 	Gfx_Text(gfx, t->fSmall, "支持中文输入法 (组合串就地绘制)",
-		Ui_Rect(x + 70, y, 380, 18), t->hint, GFX_TEXT_VCENTER);
-	UiInput_SetRect(&g.form, g.name, Ui_Rect(x, y + 24, w, 40));
+		Ui_Rect(nameLabel.x + 70.0f, nameLabel.y, col.inner.w - 70.0f, 18.0f),
+		t->hint, GFX_TEXT_VCENTER);
+	UiInput_SetRect(&g.form, g.name, nameRc);
 	UiInput_Draw(&g.form, g.name);
 
-	y += 84;
-	Gfx_Text(gfx, t->fLabel, "密码", Ui_Rect(x, y, 120, 18),
-		t->text2, GFX_TEXT_VCENTER);
+	Gfx_Text(gfx, t->fLabel, "密码", passLabel, t->text2, GFX_TEXT_VCENTER);
 	Gfx_Text(gfx, t->fSmall, "已禁用输入法 (ImmAssociateContext(NULL))",
-		Ui_Rect(x + 70, y, 420, 18), t->hint, GFX_TEXT_VCENTER);
-	UiInput_SetRect(&g.form, g.pass, Ui_Rect(x, y + 24, w, 40));
+		Ui_Rect(passLabel.x + 70.0f, passLabel.y, col.inner.w - 70.0f, 18.0f),
+		t->hint, GFX_TEXT_VCENTER);
+	UiInput_SetRect(&g.form, g.pass, passRc);
 	UiInput_Draw(&g.form, g.pass);
 
-	/* 按钮行 */
-	y += 92;
-	if (Ui_Button(ui, Ui_Id("demo.submit", 0, 0), Ui_Rect(x, y, 110, 38),
+	/* 按钮行: UiFlex 固定项 + grow 空白项, 主题按钮靠右 */
+	{
+		UiFlexItem items[5] = {
+			{ 110.0f, 0.0f, 0.0f, 0.0f },   /* 提交 */
+			{ 90.0f, 0.0f, 0.0f, 0.0f },    /* 重置 */
+			{ 110.0f, 0.0f, 0.0f, 0.0f },   /* 动画 */
+			{ 0.0f, 1.0f, 0.0f, 0.0f },     /* spacer */
+			{ 110.0f, 0.0f, 0.0f, 0.0f }    /* 主题 */
+		};
+		if (!Ui_FlexRow(rowRc, 12.0f, items, 5, buttons))
+			buttons[0] = buttons[1] = buttons[2] = buttons[3] = buttons[4] =
+				Ui_Rect(0, 0, 0, 0);
+	}
+
+	if (Ui_Button(ui, Ui_Id("demo.submit", 0, 0), buttons[0],
 			"提交", UI_BTN_PRIMARY, 1))
 		g.pending = 1;
-	if (Ui_Button(ui, Ui_Id("demo.reset", 0, 0), Ui_Rect(x + 122, y, 90, 38),
+	if (Ui_Button(ui, Ui_Id("demo.reset", 0, 0), buttons[1],
 			"重置", UI_BTN_SECONDARY, 1))
 		g.pending = 2;
-	if (Ui_Button(ui, Ui_Id("demo.anim", 0, 0), Ui_Rect(x + 224, y, 110, 38),
+	if (Ui_Button(ui, Ui_Id("demo.anim", 0, 0), buttons[2],
 			UiProgress_Paused(&g.progress) ? "播放动画" : "暂停动画",
 			UI_BTN_SECONDARY, 1))
 		g.pending = 4;
-	if (Ui_Button(ui, Ui_Id("demo.theme", 0, 0), Ui_Rect(x + 346, y, 110, 38),
+	if (Ui_Button(ui, Ui_Id("demo.theme", 0, 0), buttons[4],
 			g.themeMode == 0 ? "品牌主题" : (g.themeMode == 1 ? "深色主题" : "浅色主题"),
 			UI_BTN_SECONDARY, 1))
 		g.pending = 5;
 
-	/* 进度条 */
-	y += 66;
-	Gfx_Text(gfx, t->fLabel, "进度 (动画节拍)",
-		Ui_Rect(x, y, 200, 18), t->text2, GFX_TEXT_VCENTER);
-	UiProgress_Draw(&g.progress, Ui_Rect(x, y + 24, w, 10));
-
-	/* 状态 */
-	y += 58;
-	Gfx_Text(gfx, t->fBody, g.status, Ui_Rect(x, y, w, 22),
+	Gfx_Text(gfx, t->fLabel, "进度 (动画节拍)", progressLabel,
 		t->text2, GFX_TEXT_VCENTER);
+	UiProgress_Draw(&g.progress, barRc);
+	Gfx_Text(gfx, t->fBody, g.status, statusRc, t->text2, GFX_TEXT_VCENTER);
 
 	/* Toast (含渐变遮罩/z-index) */
 	UiToast_Draw(ui, &g.toast, UiFrame_Now(), app->w, app->h);
