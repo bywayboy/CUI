@@ -28,6 +28,23 @@ typedef void (*GfxLayerDrawFn)(Gfx *g, void *user);
 typedef struct { float x, y, w, h; } GfxRect;
 typedef uint32_t GfxColor;
 
+/* 四角独立圆角: tl/tr/br/bl 均为 DIP; 0 = 直角. */
+typedef struct GfxCorners {
+	float tl, tr, br, bl;
+} GfxCorners;
+
+static __inline GfxCorners Gfx_Corners(float tl, float tr, float br, float bl)
+{
+	GfxCorners c;
+	c.tl = tl; c.tr = tr; c.br = br; c.bl = bl;
+	return c;
+}
+
+static __inline GfxCorners Gfx_CornersAll(float r)
+{
+	return Gfx_Corners(r, r, r, r);
+}
+
 enum {
 	GFX_TEXT_CENTER   = 1u << 0,
 	GFX_TEXT_RIGHT    = 1u << 1,
@@ -71,6 +88,16 @@ void Gfx_FillRoundRectGradV(Gfx *g, GfxRect r, float radius, GfxColor top, GfxCo
 void Gfx_FillRoundRectGradH(Gfx *g, GfxRect r, float radius, GfxColor left, GfxColor right);
 void Gfx_FillRoundRectMultiGrad(Gfx *g, GfxRect r, float radius,
 	const GfxColor *colors, const float *positions, int count, int horizontal);
+
+/* 四角独立圆角 (path geometry). 半径自动 clamp 到 min(w,h)/2.
+ * 内部按量化尺寸/半径缓存几何, 固定尺寸控件不应产生每帧 geometry 创建. */
+void Gfx_FillRoundRectCorners(Gfx *g, GfxRect r, GfxCorners corners, GfxColor c);
+void Gfx_FillRoundRectCornersGradV(Gfx *g, GfxRect r, GfxCorners corners,
+	GfxColor top, GfxColor bottom);
+void Gfx_StrokeRoundRectCorners(Gfx *g, GfxRect r, GfxCorners corners,
+	GfxColor c, float width);
+void Gfx_StrokeRoundRectCornersDashed(Gfx *g, GfxRect r, GfxCorners corners,
+	GfxColor c, float width);
 void Gfx_FillEllipse(Gfx *g, float cx, float cy, float rx, float ry, GfxColor c);
 void Gfx_FillEllipseGradV(Gfx *g, float cx, float cy, float r, GfxColor top, GfxColor bottom);
 void Gfx_StrokeRoundRect(Gfx *g, GfxRect r, float radius, GfxColor c, float width);

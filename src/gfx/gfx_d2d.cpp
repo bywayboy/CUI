@@ -77,6 +77,14 @@ typedef struct {
 	ID2D1GradientStopCollection *stops;
 } GfxGradientCache;
 
+#define GFX_CORNER_CACHE_MAX 32
+typedef struct {
+	int wq, hq;          /* 0.25 DIP 量化 */
+	int tlq, trq, brq, blq;
+	uint32_t lastUse;
+	ID2D1PathGeometry *geo;
+} GfxCornerCache;
+
 struct Gfx {
 	HWND hwnd;
 	ID2D1Factory1 *d2d;
@@ -110,6 +118,7 @@ struct Gfx {
 	int forceFull;
 	GfxRect dirty;
 	ID2D1StrokeStyle *roundStroke;
+	ID2D1StrokeStyle *dashStroke;
 	ID2D1Layer *alphaLayer;
 	int alphaDepth;
 	IDWriteInlineObject *ellipsis;
@@ -126,6 +135,9 @@ struct Gfx {
 
 	GfxGradientCache grads[GFX_GRAD_CACHE_MAX];
 	uint32_t gradClock;
+
+	GfxCornerCache corners[GFX_CORNER_CACHE_MAX];
+	uint32_t cornerClock;
 
 	GfxOverlay *overlays;
 	GfxLayer *layers;
@@ -630,6 +642,14 @@ int Gfx_Init(Gfx **out, HWND hwnd)
 	sp.dashCap = D2D1_CAP_STYLE_ROUND;
 	sp.lineJoin = D2D1_LINE_JOIN_ROUND;
 	g->d2d->CreateStrokeStyle(&sp, NULL, 0, &g->roundStroke);
+	ZeroMemory(&sp, sizeof(sp));
+	sp.startCap = D2D1_CAP_STYLE_FLAT;
+	sp.endCap = D2D1_CAP_STYLE_FLAT;
+	sp.dashCap = D2D1_CAP_STYLE_FLAT;
+	sp.lineJoin = D2D1_LINE_JOIN_MITER;
+	sp.miterLimit = 4.0f;
+	sp.dashStyle = D2D1_DASH_STYLE_DASH;
+	g->d2d->CreateStrokeStyle(&sp, NULL, 0, &g->dashStroke);
 
 	hr = g->dw->CreateTextFormat(L"Microsoft YaHei", NULL,
 		DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
@@ -664,7 +684,10 @@ void Gfx_Shutdown(Gfx *g)
 	SAFE_RELEASE(g->ellipsis);
 	SAFE_RELEASE(g->ellipsisFmt);
 	SAFE_RELEASE(g->roundStroke);
+	SAFE_RELEASE(g->dashStroke);
 	SAFE_RELEASE(g->alphaLayer);
+	for (int i = 0; i < GFX_CORNER_CACHE_MAX; i++)
+		SAFE_RELEASE(g->corners[i].geo);
 	SAFE_RELEASE(g->dw);
 	SAFE_RELEASE(g->d2d);
 	/* 应用若忘了 Destruction, 这里兜底释放 overlay 结构 (DComp 资源已在
@@ -2120,6 +2143,201 @@ void Gfx_FillRoundRectMultiGrad(Gfx *g, GfxRect r, float radius,
 	if (!br) return;
 	FillRounded(g, r, radius, br);
 	if (transient) { SAFE_RELEASE(br); SAFE_RELEASE(gs); }
+}
+
+/* ── 四角独立圆角 ─────────────────────────────────────────────────── */
+
+static void corner_clamp(GfxRect r, GfxCorners *c)
+{
+	float maxR;
+	if (!c) return;
+	maxR = (r.w < r.h ? r.w : r.h) * 0.5f;
+	if (maxR < 0.0f) maxR = 0.0f;
+	if (c->tl < 0.0f) c->tl = 0.0f;
+	if (c->tr < 0.0f) c->tr = 0.0f;
+	if (c->br < 0.0f) c->br = 0.0f;
+	if (c->bl < 0.0f) c->bl = 0.0f;
+	if (c->tl > maxR) c->tl = maxR;
+	if (c->tr > maxR) c->tr = maxR;
+	if (c->br > maxR) c->br = maxR;
+	if (c->bl > maxR) c->bl = maxR;
+}
+
+static void corner_add_arc(ID2D1GeometrySink *sink, float x, float y, float r)
+{
+	D2D1_ARC_SEGMENT a;
+	a.point = D2D1::Point2F(x, y);
+	a.size = D2D1::SizeF(r, r);
+	a.rotationAngle = 0.0f;
+	a.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+	a.arcSize = D2D1_ARC_SIZE_SMALL;
+	sink->AddArc(&a);
+}
+
+static ID2D1PathGeometry *corner_geometry(Gfx *g, GfxRect r, GfxCorners c)
+{
+	int wq, hq, tlq, trq, brq, blq;
+	GfxCornerCache *slot = NULL;
+	uint32_t oldest = 0xFFFFFFFFu;
+	ID2D1PathGeometry *geo = NULL;
+	ID2D1GeometrySink *sink = NULL;
+	int i;
+	float w, h;
+
+	if (!g || !g->d2d || r.w <= 0.0f || r.h <= 0.0f) return NULL;
+	corner_clamp(r, &c);
+	wq = (int)(r.w * 4.0f + 0.5f);
+	hq = (int)(r.h * 4.0f + 0.5f);
+	tlq = (int)(c.tl * 4.0f + 0.5f);
+	trq = (int)(c.tr * 4.0f + 0.5f);
+	brq = (int)(c.br * 4.0f + 0.5f);
+	blq = (int)(c.bl * 4.0f + 0.5f);
+	for (i = 0; i < GFX_CORNER_CACHE_MAX; i++) {
+		GfxCornerCache *e = &g->corners[i];
+		if (e->geo && e->wq == wq && e->hq == hq &&
+			e->tlq == tlq && e->trq == trq && e->brq == brq && e->blq == blq) {
+			e->lastUse = ++g->cornerClock;
+			return e->geo;
+		}
+	}
+	for (i = 0; i < GFX_CORNER_CACHE_MAX; i++) {
+		GfxCornerCache *e = &g->corners[i];
+		if (!e->geo) { slot = e; break; }
+		if (e->lastUse < oldest) { oldest = e->lastUse; slot = e; }
+	}
+	if (!slot) return NULL;
+	if (FAILED(g->d2d->CreatePathGeometry(&geo)) || !geo) return NULL;
+	if (FAILED(geo->Open(&sink)) || !sink) {
+		SAFE_RELEASE(geo);
+		return NULL;
+	}
+	w = r.w;
+	h = r.h;
+	sink->BeginFigure(D2D1::Point2F(c.tl, 0.0f), D2D1_FIGURE_BEGIN_FILLED);
+	if (c.tr > 0.0f) {
+		sink->AddLine(D2D1::Point2F(w - c.tr, 0.0f));
+		corner_add_arc(sink, w, c.tr, c.tr);
+	} else {
+		sink->AddLine(D2D1::Point2F(w, 0.0f));
+	}
+	if (c.br > 0.0f) {
+		sink->AddLine(D2D1::Point2F(w, h - c.br));
+		corner_add_arc(sink, w - c.br, h, c.br);
+	} else {
+		sink->AddLine(D2D1::Point2F(w, h));
+	}
+	if (c.bl > 0.0f) {
+		sink->AddLine(D2D1::Point2F(c.bl, h));
+		corner_add_arc(sink, 0.0f, h - c.bl, c.bl);
+	} else {
+		sink->AddLine(D2D1::Point2F(0.0f, h));
+	}
+	if (c.tl > 0.0f) {
+		sink->AddLine(D2D1::Point2F(0.0f, c.tl));
+		corner_add_arc(sink, c.tl, 0.0f, c.tl);
+	} else {
+		sink->AddLine(D2D1::Point2F(0.0f, 0.0f));
+	}
+	sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+	HRESULT hr = sink->Close();
+	SAFE_RELEASE(sink);
+	if (FAILED(hr)) { SAFE_RELEASE(geo); return NULL; }
+
+	if (slot->geo) slot->geo->Release();
+	slot->wq = wq; slot->hq = hq;
+	slot->tlq = tlq; slot->trq = trq; slot->brq = brq; slot->blq = blq;
+	slot->lastUse = ++g->cornerClock;
+	slot->geo = geo;
+	return geo;
+}
+
+static void corner_set_origin(Gfx *g, GfxRect r, D2D1_MATRIX_3X2_F *saved)
+{
+	D2D1_MATRIX_3X2_F cur;
+	if (!g || !g->rt || !saved) return;
+	g->rt->GetTransform(&cur);
+	*saved = cur;
+	{
+		D2D1::Matrix3x2F base(cur._11, cur._12, cur._21, cur._22, cur._31, cur._32);
+		D2D1::Matrix3x2F m = D2D1::Matrix3x2F::Translation(r.x, r.y) * base;
+		g->rt->SetTransform(&m);
+	}
+}
+
+void Gfx_FillRoundRectCorners(Gfx *g, GfxRect r, GfxCorners c, GfxColor color)
+{
+	ID2D1PathGeometry *geo;
+	ID2D1SolidColorBrush *br;
+	D2D1_MATRIX_3X2_F saved;
+	if (!g || !g->rt || !IsVisible(g, r)) return;
+	geo = corner_geometry(g, r, c);
+	br = GetBrush(g, color);
+	if (!geo || !br) {
+		float maxR = (r.w < r.h ? r.w : r.h) * 0.5f;
+		Gfx_FillRoundRect(g, r, maxR, color);
+		return;
+	}
+	corner_set_origin(g, r, &saved);
+	g->rt->FillGeometry(geo, br);
+	g->rt->SetTransform(&saved);
+}
+
+void Gfx_FillRoundRectCornersGradV(Gfx *g, GfxRect r, GfxCorners c,
+	GfxColor top, GfxColor bottom)
+{
+	ID2D1PathGeometry *geo;
+	ID2D1GradientStopCollection *gs = NULL;
+	ID2D1LinearGradientBrush *br;
+	GfxColor colors[2];
+	float pos[2] = { 0.0f, 1.0f };
+	GfxRect local = { 0.0f, 0.0f, r.w, r.h };
+	D2D1_MATRIX_3X2_F saved;
+	int transient = 0;
+	if (!g || !g->rt || !IsVisible(g, r)) return;
+	geo = corner_geometry(g, r, c);
+	colors[0] = top; colors[1] = bottom;
+	br = GetGradientBrush(g, local, colors, pos, 2, 0, &gs, &transient);
+	if (!geo || !br) {
+		float maxR = (r.w < r.h ? r.w : r.h) * 0.5f;
+		if (transient) { SAFE_RELEASE(br); SAFE_RELEASE(gs); }
+		Gfx_FillRoundRectGradV(g, r, maxR, top, bottom);
+		return;
+	}
+	corner_set_origin(g, r, &saved);
+	g->rt->FillGeometry(geo, br);
+	g->rt->SetTransform(&saved);
+	if (transient) { SAFE_RELEASE(br); SAFE_RELEASE(gs); }
+}
+
+static void corner_stroke(Gfx *g, GfxRect r, GfxCorners c, GfxColor color,
+	float width, int dashed)
+{
+	ID2D1PathGeometry *geo;
+	ID2D1SolidColorBrush *br;
+	D2D1_MATRIX_3X2_F saved;
+	if (!g || !g->rt || !IsVisible(g, r) || width <= 0.0f) return;
+	geo = corner_geometry(g, r, c);
+	br = GetBrush(g, color);
+	if (!geo || !br) {
+		float maxR = (r.w < r.h ? r.w : r.h) * 0.5f;
+		Gfx_StrokeRoundRect(g, r, maxR, color, width);
+		return;
+	}
+	corner_set_origin(g, r, &saved);
+	g->rt->DrawGeometry(geo, br, width, dashed ? g->dashStroke : g->roundStroke);
+	g->rt->SetTransform(&saved);
+}
+
+void Gfx_StrokeRoundRectCorners(Gfx *g, GfxRect r, GfxCorners c,
+	GfxColor color, float width)
+{
+	corner_stroke(g, r, c, color, width, 0);
+}
+
+void Gfx_StrokeRoundRectCornersDashed(Gfx *g, GfxRect r, GfxCorners c,
+	GfxColor color, float width)
+{
+	corner_stroke(g, r, c, color, width, 1);
 }
 
 void Gfx_FillEllipse(Gfx *g, float cx, float cy, float rx, float ry, GfxColor c)

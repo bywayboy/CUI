@@ -151,15 +151,15 @@ int UiButtonGroup_Draw(UiContext *ui, UiButtonGroup *g, UiRect rc,
 	if (g->focus >= g->count) g->focus = g->count - 1;
 	if (g->selected >= g->count) g->selected = g->count - 1;
 
-	/* 融合外框: 整个组只画一次背景和描边 */
+	/* 融合外框: 背景先画, 描边最后画, 保证贴边选中段不会盖掉外轮廓 */
 	Gfx_FillRoundRect(gfx, rc, t->buttonRadius, t->neutral.base);
-	Gfx_StrokeRoundRect(gfx, rc, t->buttonRadius, t->neutral.border, 1.0f);
 
 	x = rc.x;
 	for (i = 0; i < g->count; i++) {
 		UiWidgetState st;
 		UiRect seg;
 		UiRect fill;
+		GfxCorners corners;
 		float w;
 		int en = enabled ? (enabled[i] != 0) : 1;
 		int selected = (g->mode == UI_BG_SINGLE && g->selected == i)
@@ -184,30 +184,32 @@ int UiButtonGroup_Draw(UiContext *ui, UiButtonGroup *g, UiRect rc,
 			group_invalidate(ui, g);
 		}
 
-		fill = Ui_Rect(seg.x + 2.0f, seg.y + 2.0f,
-			seg.w - 4.0f, seg.h - 4.0f);
+		/* 首/尾段只在外侧保留圆角, 中间段直角; 选中/hover 贴边填充. */
+		corners.tl = (i == 0) ? t->buttonRadius : 0.0f;
+		corners.tr = (i == g->count - 1) ? t->buttonRadius : 0.0f;
+		corners.br = (i == g->count - 1) ? t->buttonRadius : 0.0f;
+		corners.bl = (i == 0) ? t->buttonRadius : 0.0f;
+		fill = seg;
 		if (fill.w > 0.0f && fill.h > 0.0f) {
-			float r = t->buttonRadius - 2.0f;
-			if (r < 2.0f) r = 2.0f;
 			if (selected) {
 				UiColor c = accent->soft;
 				if (st.hover > 0.004f)
 					c = Ui_ColorMix(c, accent->base, st.hover * 0.14f);
 				if (st.press > 0.004f)
 					c = Ui_ColorMix(c, accent->base, st.press * 0.18f);
-				Gfx_FillRoundRect(gfx, fill, r, c);
+				Gfx_FillRoundRectCorners(gfx, fill, corners, c);
 			} else {
 				if (st.hover > 0.004f)
-					Gfx_FillRoundRect(gfx, fill, r,
+					Gfx_FillRoundRectCorners(gfx, fill, corners,
 						Ui_ColorAlpha(t->neutral.hover,
 							(int)(st.hover * 255.0f)));
 				if (st.press > 0.004f)
-					Gfx_FillRoundRect(gfx, fill, r,
+					Gfx_FillRoundRectCorners(gfx, fill, corners,
 						Ui_ColorAlpha(t->neutral.press,
 							(int)(st.press * 255.0f)));
 			}
 			if (ui->navId == g->id && g->focus == i)
-				Gfx_StrokeRoundRect(gfx, fill, r,
+				Gfx_StrokeRoundRectCorners(gfx, fill, corners,
 					Ui_ColorAlpha(accent->base, 180), 1.5f);
 		}
 		Gfx_Text(gfx, t->fBtn, labels[i], seg,
@@ -225,6 +227,9 @@ int UiButtonGroup_Draw(UiContext *ui, UiButtonGroup *g, UiRect rc,
 		Gfx_Line(gfx, x, rc.y + 4.0f, x, rc.y + rc.h - 4.0f,
 			Ui_ColorAlpha(t->neutral.border, 150), 1.0f);
 	}
+
+	/* 外轮廓最后画: 选中段贴边时仍然保留组边框/圆角. */
+	Gfx_StrokeRoundRect(gfx, rc, t->buttonRadius, t->neutral.border, 1.0f);
 
 	g->clicked = clicked;
 	return clicked;

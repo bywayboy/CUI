@@ -61,6 +61,12 @@
 >    selected/mask/focus；`Ui_SetNavId` + 方向键/Home/End/Space 键盘导航。
 >    新增 `samples/mvvm.c`（ButtonGroup + MVVM-lite + 显式命令）；构建产出
 >    `cui_mvvm.exe`。
+> 16. 新增每角独立圆角几何 `GfxCorners` 与虚线描边：`Gfx_FillRoundRectCorners
+>    [GradV]` / `Gfx_StrokeRoundRectCorners[Dashed]`，路径几何按 0.25 DIP
+>    量化缓存（32 条，LRU 淘汰）。`UiSurfaceStyle` 支持 `corners/useCorners/
+>    dashed`。新增 Element-Plus 风格 `UiButtonStyle`（type × appearance ×
+>    shape × dashed）与 `Ui_ButtonEx`；`UiButtonGroup` 选中/hover 改为一像素
+>    铺满到外轮廓的每角圆角填充。
 
 ---
 
@@ -77,6 +83,7 @@
    - [8.8 布局：UiStack / UiFlex](#88-布局uistack--uiflex)
    - [8.9 ButtonGroup 与键盘导航](#89-buttongroup-与键盘导航)
    - [8.10 MVVM-lite](#810-mvvm-lite)
+   - [8.11 按钮样式与每角圆角](#811-按钮样式与每角圆角)
 9. [UiAnim 动画内核](#9-uianim-动画内核)
 10. [UiFrame 帧时钟](#10-uiframe-帧时钟)
 11. [UiEdit 编辑框](#11-uiedit-编辑框)
@@ -1470,8 +1477,9 @@ int clicked = UiButtonGroup_Draw(&ui, &theme, rc,
 - `widths=NULL` 等分；否则按 DIP 宽度排列。`enabled` 可按项禁用。
 - `variant` 决定选中段的强调角色：PRIMARY/SECONDARY -> primary，
   WARNING/SUCCESS/DANGER -> 对应角色；普通模式只影响键盘焦点色。
-- 视觉：外层背景/边框只画一次；hover/press/selected 用内缩 2 DIP 的 pill，
-  避免首尾段方角盖住外轮廓。
+- 视觉：外层背景/边框只画一次；hover/press/selected **铺满整段**，首/中/尾
+  分别使用 `{R,0,0,R}`、`{0,0,0,0}`、`{0,R,R,0}` 的每角圆角，因此强调色会
+  一直填到组的外轮廓。外边框最后绘制，选中填充不会盖住它。
 - 键盘：
   - `Ui_SetNavId(&ui, group.id)` 让组成为导航焦点；
   - `UiButtonGroup_Key(&ui, &group, vk)` 处理方向键/Home/End/Space/Enter；
@@ -1509,6 +1517,149 @@ static void form_view(UiContext *ui, FormVM *vm)
 - 主题仍是全局的：VM 里切主题组 -> `UiTheme_SetTheme` -> 所有窗口重绘。
 - 不做 property/binding 引擎；需要跨模块通知时用显式 command + Invalidate。
 - 完整样例：[samples/mvvm.c](../samples/mvvm.c)（单选/多选/普通组 + 键盘导航）。
+
+### 8.11 按钮样式与每角圆角
+
+#### 8.11.1 为什么需要每角圆角
+
+融合按钮组、分段控件、页签、输入框前后缀都要求**四个角不同**：组内首段是
+左圆右直，中间全直，末段左直右圆。用“统一 radius + 内缩”模拟会在强调色和
+外轮廓之间留下缝隙，也会破坏 1px 描边。CUI 的解法是直接把四个角作为几何：
+
+```c
+typedef struct GfxCorners { float tl, tr, br, bl; } GfxCorners; /* 顺时针 */
+
+static __inline GfxCorners Gfx_Corners(float tl, float tr, float br, float bl);
+static __inline GfxCorners Gfx_CornersAll(float r);
+
+void Gfx_FillRoundRectCorners(Gfx *g, GfxRect r, GfxCorners corners, GfxColor c);
+void Gfx_FillRoundRectCornersGradV(Gfx *g, GfxRect r, GfxCorners corners,
+    GfxColor top, GfxColor bottom);
+void Gfx_StrokeRoundRectCorners(Gfx *g, GfxRect r, GfxCorners corners,
+    GfxColor c, float width);
+void Gfx_StrokeRoundRectCornersDashed(Gfx *g, GfxRect r, GfxCorners corners,
+    GfxColor c, float width);
+```
+
+示例：
+
+```c
+GfxRect r = { 24, 24, 120, 32 };
+
+/* 胶囊左端 */
+Gfx_FillRoundRectCorners(g, r, Gfx_Corners(16, 0, 0, 16), 0xFF3B82F6);
+/* 普通独立按钮 */
+Gfx_StrokeRoundRectCorners(g, r, Gfx_CornersAll(8), 0xFF94A3B8, 1.0f);
+/* 虚线提醒按钮 */
+Gfx_StrokeRoundRectCornersDashed(g, r, Gfx_CornersAll(8), 0xFFD64545, 1.0f);
+```
+
+实现约束（`gfx_d2d.cpp`）：
+
+- 四段独立 `arc` 组成一条顺时针 `ID2D1PathGeometry`；半径先夹到
+  `min(w,h)/2`，因此极端矩形不会自交。
+- 几何以 **0.25 DIP 量化**后缓存：`(w,h,tl,tr,br,bl)` 为键，共 32 条，
+  超出时淘汰最久未用的。按钮组每帧复用同一条几何，不产生堆分配/COM 对象抖动。
+- 绘制时把缓存几何的局部原点平移到 `r.x/r.y`，并叠加当前 D2D 变换，
+  所以 `Gfx_PushClip`、DPI 缩放、离屏效果都照常生效。
+- 虚线使用 `Gfx_Init` 创建的 `ID2D1StrokeStyle`（flat cap / miter join），
+  线宽仍由调用方给出；`Gfx_Shutdown` 统一释放几何缓存与虚线样式。
+- 找不到路径几何（内存不足）时自动退回统一圆角的 `Fill/StrokeRoundRect`，
+  调用方无需分支。
+
+> 性能提示：每角几何只在**尺寸/角半径变化**时新建。做 hover 动画时请只改颜色，
+> 不要把半径连续插值到小数后不停变化的值，否则会持续生成缓存条目。
+
+#### 8.11.2 UiSurfaceStyle 接入
+
+```c
+typedef struct UiSurfaceStyle {
+    /* ... bg/bg2/hoverBg/pressBg/border/... 见 8.3 ... */
+    GfxCorners corners;   /* useCorners=1 时生效 */
+    int        useCorners;
+    int        dashed;    /* 边框用虚线 */
+} UiSurfaceStyle;
+```
+
+- `useCorners=0`：沿用 `radius`（统一圆角）。
+- `useCorners=1`：填充与边框都走每角路径；`radius` 只用于光晕。
+- `dashed=1`：边框虚线；填充不变。实心按钮通常不需要虚线，常用在 plain/text。
+- 光晕仍是统一圆角外扩：缓存几何 + 光晕叠加的复杂度不值得，视觉上也几乎不可见。
+
+#### 8.11.3 UiButtonStyle 与 Ui_ButtonEx
+
+按钮样式拆成四个正交维度，组合方式与 Element Plus 一致：
+
+| 维度 | 取值 | 含义 |
+|---|---|---|
+| `type` | `UI_BTYPE_DEFAULT/PRIMARY/SUCCESS/WARNING/ERROR` | 语义角色，取主题的 `neutral/primary/success/warning/error` |
+| `appearance` | `UI_BAPPEAR_SOLID/PLAIN/TEXT` | 实心 / 浅底彩字 / 无底无框 |
+| `shape` | `UI_BSHAPE_RECT/ROUND/CIRCLE` | 主题圆角 / 胶囊 / 圆形 |
+| `flags` | `UI_BFLAG_DASHED` | 虚线描边 |
+
+```c
+#include "ui/ui_widgets.h"
+
+UiButtonStyle solid = UiButtonStyle_Make(
+    UI_BTYPE_PRIMARY, UI_BAPPEAR_SOLID, UI_BSHAPE_RECT, 0);
+UiButtonStyle plain = UiButtonStyle_Make(
+    UI_BTYPE_SUCCESS, UI_BAPPEAR_PLAIN, UI_BSHAPE_RECT, 0);
+UiButtonStyle text = UiButtonStyle_Make(
+    UI_BTYPE_WARNING, UI_BAPPEAR_TEXT, UI_BSHAPE_RECT, 0);
+UiButtonStyle dashed = UiButtonStyle_Make(
+    UI_BTYPE_ERROR, UI_BAPPEAR_PLAIN, UI_BSHAPE_RECT, UI_BFLAG_DASHED);
+UiButtonStyle round = UiButtonStyle_Make(
+    UI_BTYPE_DEFAULT, UI_BAPPEAR_SOLID, UI_BSHAPE_ROUND, 0);
+
+Ui_ButtonEx(&ui, Ui_Id("form.submit", 0, 0), submitRc, "提交", &solid, 1);
+Ui_ButtonEx(&ui, Ui_Id("form.help", 0, 0), helpRc, "帮助", &text, 1);
+```
+
+派生规则：
+
+- **SOLID + default**：`neutral.base/hover/press`，文字 `neutral.text`；
+  非 default 用 `role.base/hover/press`，文字按亮度自动选深/浅对比色
+  （`btn_on`），并带角色色光晕。
+- **PLAIN + default**：`neutral.soft` 底、`neutral.text` 字；
+  非 default 用 `role.soft` 底、`role.base` 字与 150 alpha 描边。悬停时底色
+  渐变为 `role.base`，文字同时混合到对比色，保证任意品牌色下都可读。
+- **TEXT**：常态透明；default 用 `neutral.soft`、非 default 用 `role.soft`
+  作为悬停/按下底，文字为 `text2` 或 `role.base`。
+- **shape**：`RECT` 用 `theme.buttonRadius`；`ROUND` 取 `h/2`；
+  `CIRCLE` 取 `min(w,h)/2`（配合等宽高即为正圆）。
+- **disabled**：统一压成 `neutral.soft` 底、`neutral.border` 边、
+  `btnDisabledText` 文字，并关闭光晕与 hover/press。
+- 标签用主题 `fBtn`、UTF-8、水平垂直居中。返回值仍是“本帧是否点击”，
+  动作请推迟到 `Ui_EndFrame` 之后执行。
+
+旧接口 `Ui_Button(ui, id, rc, label, variant, enabled)` 保留为兼容包装：
+
+| 旧 variant | 映射 |
+|---|---|
+| `UI_BTN_SECONDARY` / `UI_BTN_DEFAULT` | default + SOLID |
+| `UI_BTN_PRIMARY` | primary + SOLID |
+| `UI_BTN_SUCCESS` | success + PLAIN |
+| `UI_BTN_WARNING` | warning + PLAIN |
+| `UI_BTN_DANGER` / `UI_BTN_ERROR` | error + PLAIN |
+
+#### 8.11.4 在 ButtonGroup 中使用
+
+`UiButtonGroup_Draw` 内部已经利用每角几何实现真正的“融合”：
+
+```text
+首段: Gfx_Corners(R, 0, 0, R)
+中间: Gfx_Corners(0, 0, 0, 0)
+末段: Gfx_Corners(0, R, R, 0)
+```
+
+- 选中/hover/按下都铺满整个分段矩形，不再内缩；强调色直接贴到组的外轮廓。
+- 分段之间画 1px 分隔线；外边框最后绘制，避免被选中填充覆盖。
+- 只有 2 段时首段即末段，自动得到左圆右圆；1 段等价于普通圆角按钮。
+- 组的外圆角取 `theme.buttonRadius`，与独立按钮视觉一致。
+
+完整可运行样例见 [samples/mvvm.c](../samples/mvvm.c) 顶部样式条：
+Solid / Plain / Text / Dashed / Round 五个按钮，以及其下的三组 ButtonGroup。
+
 
 ---
 
@@ -2657,10 +2808,18 @@ UiTheme_Init / UiTheme_Shutdown
 UiTheme_SetTheme / UiTheme_SetColors / UiTheme_Touch
 ```
 
+**Gfx 每角几何**
+
+```c
+Gfx_Corners / Gfx_CornersAll
+Gfx_FillRoundRectCorners / Gfx_FillRoundRectCornersGradV
+Gfx_StrokeRoundRectCorners / Gfx_StrokeRoundRectCornersDashed
+```
+
 **UiWidgets / UiToast / UiInput / UiProgress**
 
 ```c
-Ui_Button / Ui_Panel / Ui_ProgressBar
+Ui_Button / Ui_ButtonEx / UiButtonStyle_Make / Ui_Panel / Ui_ProgressBar
 UiToast_Init / UiToast_Attach / UiToast_Show / UiToast_Hide
 UiToast_IsVisible / UiToast_Tick / UiToast_Draw / UiToast_EndFrame
 UiToast_UsingLayer / UiToast_Shutdown
@@ -2822,6 +2981,11 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 - **ButtonGroup/MVVM 回归**：`cui_mvvm.exe` 的普通/单选/多选三组按钮融合显示；
   单选组切换全局主题，多选组更新 mask，普通组命令提交/重置/退出；Tab/方向键/
   Space 键盘导航正常；selected/mask/focus 全部在 `FormVM`，无隐藏状态。
+- **按钮样式/每角圆角回归**：`cui_mvvm.exe` 样式条同时显示 SOLID(primary)、
+  PLAIN(success)、TEXT(warning)、PLAIN+DASHED(error)、ROUND(default) 五种按钮，
+  hover/press/disabled 状态与对比文字正常；ButtonGroup 首/中/尾段分别呈
+  左圆-全直-右圆，选中色铺满到外轮廓且外边框不被覆盖；2 段/3 段/宽度不等
+  三种布点均通过截图检查；每角路径几何在连续帧中复用缓存，未见新增长期缓存项。
 - **多窗口/全局主题/模态回归**：`cui_multi.exe` 两个 HWND 各自持有
   Gfx/UiTheme/UiContext/UiProgress/UiToast；在主窗切主题，二级窗同步换肤并
   自动重绘（像素从浅色 245,248,254 变为深色 15,20,29）；二级窗独立 Toast

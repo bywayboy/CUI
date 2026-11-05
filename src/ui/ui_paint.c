@@ -22,6 +22,19 @@ static void draw_glow(Gfx *g, UiRect rc, const UiSurfaceStyle *s, float intensit
 	}
 }
 
+static void fill_flat(Gfx *g, UiRect rc, const UiSurfaceStyle *s, UiColor c)
+{
+	if (s->useCorners) Gfx_FillRoundRectCorners(g, rc, s->corners, c);
+	else Gfx_FillRoundRect(g, rc, s->radius, c);
+}
+
+static void fill_grad(Gfx *g, UiRect rc, const UiSurfaceStyle *s,
+	UiColor top, UiColor bottom)
+{
+	if (s->useCorners) Gfx_FillRoundRectCornersGradV(g, rc, s->corners, top, bottom);
+	else Gfx_FillRoundRectGradV(g, rc, s->radius, top, bottom);
+}
+
 UiWidgetState Ui_DrawSurface(UiContext *ui, UiId id, UiRect rc,
 	const UiSurfaceStyle *s, int enabled)
 {
@@ -46,12 +59,12 @@ UiWidgetState Ui_DrawSurface(UiContext *ui, UiId id, UiRect rc,
 	if (s->bg2 && s->overlayTint
 		&& (!s->hoverBg || (s->hoverBg >> 24) == 0xFF)
 		&& (!s->pressBg || (s->pressBg >> 24) == 0xFF)) {
-		Gfx_FillRoundRectGradV(g, rc, s->radius, s->bg, s->bg2);
+		fill_grad(g, rc, s, s->bg, s->bg2);
 		if (s->hoverBg && st.hover > 0.004f)
-			Gfx_FillRoundRect(g, rc, s->radius,
+			fill_flat(g, rc, s,
 				Ui_ColorAlpha(s->hoverBg, (int)(st.hover * 255.0f + 0.5f)));
 		if (s->pressBg && st.press > 0.004f)
-			Gfx_FillRoundRect(g, rc, s->radius,
+			fill_flat(g, rc, s,
 				Ui_ColorAlpha(s->pressBg, (int)(st.press * 255.0f + 0.5f)));
 	} else {
 		fill = s->bg;
@@ -62,9 +75,9 @@ UiWidgetState Ui_DrawSurface(UiContext *ui, UiId id, UiRect rc,
 			UiColor lo = s->bg2;
 			if (s->hoverBg) lo = Ui_ColorMix(lo, s->hoverBg, st.hover);
 			if (s->pressBg) lo = Ui_ColorMix(lo, s->pressBg, st.press);
-			Gfx_FillRoundRectGradV(g, rc, s->radius, fill, lo);
+			fill_grad(g, rc, s, fill, lo);
 		} else {
-			Gfx_FillRoundRect(g, rc, s->radius, fill);
+			fill_flat(g, rc, s, fill);
 		}
 	}
 
@@ -74,7 +87,17 @@ UiWidgetState Ui_DrawSurface(UiContext *ui, UiId id, UiRect rc,
 		if (s->focusBorder) border = Ui_ColorMix(border, s->focusBorder, st.focus);
 		bw = s->borderW > 0.0f ? s->borderW : 1.0f;
 		bw += 0.6f * st.focus;
-		Gfx_StrokeRoundRect(g, rc, s->radius, border, bw);
+		if (s->useCorners) {
+			if (s->dashed)
+				Gfx_StrokeRoundRectCornersDashed(g, rc, s->corners, border, bw);
+			else
+				Gfx_StrokeRoundRectCorners(g, rc, s->corners, border, bw);
+		} else if (s->dashed) {
+			Gfx_StrokeRoundRectCornersDashed(g, rc,
+				Gfx_CornersAll(s->radius), border, bw);
+		} else {
+			Gfx_StrokeRoundRect(g, rc, s->radius, border, bw);
+		}
 	}
 	return st;
 }

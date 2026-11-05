@@ -85,7 +85,7 @@ static void on_init(UiApp *app, void *user)
 	vm->reset = vm_do_reset;
 	vm->pendingAction = -1;
 	app->minW = 520.0f;
-	app->minH = 440.0f;
+	app->minH = 590.0f;
 
 	UiButtonGroup_Init(&vm->themeGroup, Ui_Id("vm.theme", 0, 0), UI_BG_SINGLE, 2);
 	UiButtonGroup_SetSelected(&vm->themeGroup, app->theme.themeId == UI_THEME_DARK ? 1 : 0);
@@ -103,7 +103,9 @@ static void on_frame(UiApp *app, void *user)
 	Gfx *gfx = app->gfx;
 	UiRect card;
 	UiStack col;
-	UiRect line1, labelTheme, themeRc, labelFlags, flagsRc, labelActions, actionsRc, statusRc;
+	UiRect line1, labelTheme, themeRc, labelFlags, flagsRc, labelActions, actionsRc;
+	UiRect labelStyles, stylesRc, statusRc;
+	UiRect styleButtons[5] = { { 0, 0, 0, 0 } };
 
 	Gfx_FillRoundRectGradV(gfx, Ui_Rect(0, 0, app->w, app->h), t->windowRadius,
 		t->page, t->page2);
@@ -133,7 +135,11 @@ static void on_frame(UiApp *app, void *user)
 	labelActions = Ui_StackTake(&col, 18.0f);
 	Ui_StackSkip(&col, 6.0f);
 	actionsRc = Ui_StackTake(&col, 38.0f);
-	Ui_StackSkip(&col, 22.0f);
+	Ui_StackSkip(&col, 20.0f);
+	labelStyles = Ui_StackTake(&col, 18.0f);
+	Ui_StackSkip(&col, 6.0f);
+	stylesRc = Ui_StackTake(&col, 34.0f);
+	Ui_StackSkip(&col, 18.0f);
 	statusRc = Ui_StackTakeFill(&col);
 
 	Gfx_Text(gfx, t->fBody,
@@ -153,6 +159,28 @@ static void on_frame(UiApp *app, void *user)
 		labelActions, t->text2, GFX_TEXT_VCENTER);
 	UiButtonGroup_Draw(ui, &vm->actionGroup, actionsRc, kActionLabels, NULL, NULL,
 		UI_BTN_SECONDARY);
+
+	Gfx_Text(gfx, t->fLabel, "按钮样式（solid / plain / text / dashed / round）",
+		labelStyles, t->text2, GFX_TEXT_VCENTER);
+	{
+		UiFlexItem items[5] = {
+			{ 0, 1, 0, 0 }, { 0, 1, 0, 0 }, { 0, 1, 0, 0 },
+			{ 0, 1, 0, 0 }, { 0, 1, 0, 0 }
+		};
+		UiButtonStyle s0 = UiButtonStyle_Make(UI_BTYPE_PRIMARY, UI_BAPPEAR_SOLID, UI_BSHAPE_RECT, 0);
+		UiButtonStyle s1 = UiButtonStyle_Make(UI_BTYPE_SUCCESS, UI_BAPPEAR_PLAIN, UI_BSHAPE_RECT, 0);
+		UiButtonStyle s2 = UiButtonStyle_Make(UI_BTYPE_WARNING, UI_BAPPEAR_TEXT, UI_BSHAPE_RECT, 0);
+		UiButtonStyle s3 = UiButtonStyle_Make(UI_BTYPE_ERROR, UI_BAPPEAR_PLAIN, UI_BSHAPE_RECT, UI_BFLAG_DASHED);
+		UiButtonStyle s4 = UiButtonStyle_Make(UI_BTYPE_DEFAULT, UI_BAPPEAR_SOLID, UI_BSHAPE_ROUND, 0);
+		if (!Ui_FlexRow(stylesRc, 8.0f, items, 5, styleButtons)) {
+			for (int i = 0; i < 5; i++) styleButtons[i] = Ui_Rect(0, 0, 0, 0);
+		}
+		Ui_ButtonEx(ui, Ui_Id("style.solid", 0, 0), styleButtons[0], "Solid", &s0, 1);
+		Ui_ButtonEx(ui, Ui_Id("style.plain", 0, 0), styleButtons[1], "Plain", &s1, 1);
+		Ui_ButtonEx(ui, Ui_Id("style.text", 0, 0), styleButtons[2], "Text", &s2, 1);
+		Ui_ButtonEx(ui, Ui_Id("style.dash", 0, 0), styleButtons[3], "Dashed", &s3, 1);
+		Ui_ButtonEx(ui, Ui_Id("style.round", 0, 0), styleButtons[4], "Round", &s4, 1);
+	}
 
 	Gfx_Text(gfx, t->fBody, vm->status, statusRc, t->text2, GFX_TEXT_VCENTER);
 }
@@ -225,7 +253,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 	cb.frame = on_frame;
 	cb.after_frame = on_after_frame;
 	cb.key = on_key;
-	return UiApp_Run(L"CUI MVVM-lite", 560, 460,
+	return UiApp_Run(L"CUI MVVM-lite", 560, 620,
 		UI_THEME_LIGHT, &cb, &g_vm);
 }
 

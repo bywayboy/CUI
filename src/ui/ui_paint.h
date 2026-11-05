@@ -17,7 +17,10 @@ typedef struct {
 	UiColor hoverBg, pressBg;              /* pressBg 可 0 = 不区分 */
 	UiColor border, hoverBorder, focusBorder;
 	UiColor glow;                          /* 含 alpha; 0 = 不发光 */
-	float   radius;
+	float   radius;                        /* useCorners=0 时使用 */
+	GfxCorners corners;                    /* 四角独立圆角 */
+	int     useCorners;                    /* 1 = 用 corners 代替 radius */
+	int     dashed;                        /* 1 = 虚线描边 */
 	float   borderW;
 	float   glowW;                         /* 光晕外扩宽度 (DIP) */
 	unsigned glowMask;                     /* UI_GLOW_* 位掩码 */

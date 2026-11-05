@@ -10,7 +10,7 @@
 #include "ui/ui_context.h"
 
 enum {
-	UI_BTN_SECONDARY = 0,   /* = default: 中性按钮 */
+	UI_BTN_SECONDARY = 0,   /* 旧 variant: 兼容包装 */
 	UI_BTN_PRIMARY = 1,
 	UI_BTN_DANGER = 2,      /* = error */
 	UI_BTN_WARNING = 3,
@@ -18,6 +18,50 @@ enum {
 	UI_BTN_DEFAULT = 0,
 	UI_BTN_ERROR = 2
 };
+
+/* 新按钮样式: 类型 × 外观 × 形状, 类似 Element Plus. */
+typedef enum {
+	UI_BTYPE_DEFAULT = 0,
+	UI_BTYPE_PRIMARY,
+	UI_BTYPE_SUCCESS,
+	UI_BTYPE_WARNING,
+	UI_BTYPE_ERROR
+} UiButtonType;
+
+typedef enum {
+	UI_BAPPEAR_SOLID = 0,   /* 实心 */
+	UI_BAPPEAR_PLAIN,       /* 浅底 + 彩色文字/描边 */
+	UI_BAPPEAR_TEXT         /* 无底无边框 */
+} UiButtonAppearance;
+
+typedef enum {
+	UI_BSHAPE_RECT = 0,
+	UI_BSHAPE_ROUND,        /* 胶囊 */
+	UI_BSHAPE_CIRCLE        /* 圆形 */
+} UiButtonShape;
+
+enum { UI_BFLAG_DASHED = 1u << 0 };
+
+typedef struct UiButtonStyle {
+	int type;         /* UiButtonType */
+	int appearance;   /* UiButtonAppearance */
+	int shape;        /* UiButtonShape */
+	unsigned flags;   /* UI_BFLAG_* */
+} UiButtonStyle;
+
+static __inline UiButtonStyle UiButtonStyle_Make(int type, int appearance,
+	int shape, unsigned flags)
+{
+	UiButtonStyle s;
+	s.type = type;
+	s.appearance = appearance;
+	s.shape = shape;
+	s.flags = flags;
+	return s;
+}
+
+int  Ui_ButtonEx(UiContext *ui, UiId id, UiRect rc, const char *label,
+	const UiButtonStyle *style, int enabled);
 
 /* 返回 1 = 本帧被点击 (ui->clicked == id)。 */
 int  Ui_Button(UiContext *ui, UiId id, UiRect rc, const char *label,

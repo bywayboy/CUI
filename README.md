@@ -16,7 +16,8 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
   UiContext / UiProgress / UiToast，共享一个帧时钟和消息循环；主题全局同步，
   进度/Toast 独立；支持禁用父窗口的模态对话框，关闭主窗会连带退出。
 - `samples/mvvm.c`：ButtonGroup + MVVM-lite。普通/单选/多选融合按钮组，
-  selected/mask/focus 存在 ViewModel 字段，命令在 after_frame 执行。
+  selected/mask/focus 存在 ViewModel 字段，命令在 after_frame 执行；顶部
+  样式条演示 `Ui_ButtonEx` 的 solid/plain/text/dashed/round。
 
 > 来源：RMControl `installer/src`（提交 `1bc6929` 时的实现）。
 > 安装器目前仍保留自己的副本；CUI 是**独立可复用**版本，后续可让安装器切到它。
@@ -180,6 +181,7 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | `Gfx` | `Gfx_Init/Shutdown/Resize` | D2D 设备与绘制表面；resize 按 DPI 重建 |
 | | `Gfx_Begin/End/Clear` | 一帧；`End` 提交并在内部等 vsync |
 | | `Gfx_FillRoundRect[GradV/H/MultiGrad]` `Gfx_StrokeRoundRect` | 圆角矩形/渐变/描边 |
+| | `Gfx_Corners/CornersAll` `Gfx_FillRoundRectCorners[GradV]` `Gfx_StrokeRoundRectCorners[Dashed]` | 每角独立圆角（0.25 DIP 几何缓存）+ 虚线描边 |
 | | `Gfx_Text/TextWidth/TextHeight` | UTF-8 文本，DirectWrite 排版 |
 | | `Gfx_PushClip/PopClip` `Gfx_SetDirtyRect` `Gfx_IsVisible` `Gfx_PushAlpha/PopAlpha` | 裁剪/脏区/可见性/整帧透明度 |
 | | `Gfx_CreateOverlay/OverlaySetReveal/OverlaySetRect/OverlaySetOpacity/OverlayAlive/OverlayDestroy` | 合成器动画 overlay（仅 DComp；ULW 返回 NULL） |
@@ -195,7 +197,7 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | `UiButtonGroup` | `Init/SetSelected/SetMask/Draw/Key` | 融合按钮组：NORMAL/SINGLE/MULTI、selected/mask/focus |
 | | `Ui_OnMouse*` `Ui_SetFocusId` | 输入与键盘焦点 |
 | `UiTheme` | `UiTheme_SetTheme/SetColors/Touch` | 进程级全局换肤：所有窗口同步并自动重绘；5 语义色自定义 |
-| `UiWidgets` | `Ui_Button/Ui_Panel/Ui_ProgressBar` | 主题化组件；按钮含 primary/warning/success/error/default 变体 |
+| `UiWidgets` | `Ui_Button/Ui_ButtonEx/Ui_Panel/Ui_ProgressBar` | 主题化组件；`Ui_ButtonEx` 支持 type×appearance×shape×dashed（Element-Plus 风格） |
 | `UiToast` | `UiToast_Init/Attach/Show/Hide/Tick/Draw/EndFrame` | 渐变 Toast；layer 模式主窗零重绘，ULW 回退主窗 |
 | | `UiToast_UsingLayer/Shutdown` | 判断当前是否合成器路径 / 释放 layer |
 | `UiInput` | `UiInput_Init/Add/Draw/BeginFrame/Key/Char/Mouse*` | 表单焦点/光标/拖选/IME 封装 |
@@ -321,6 +323,10 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
 - ButtonGroup/MVVM 回归：`cui_mvvm.exe` 普通/单选/多选三组按钮融合显示；单选组
   点击切全局主题，多选组 mask 状态更新，普通组命令提交/重置/退出；Tab/方向键/
   Space 导航正常；selected/mask/focus 全部在 `FormVM`，无隐藏状态。
+- 按钮样式/每角圆角回归：样式条同时显示 SOLID(primary)、PLAIN(success)、
+  TEXT(warning)、PLAIN+DASHED(error)、ROUND(default)；ButtonGroup 首/中/尾段
+  为左圆-全直-右圆，选中色铺满到外轮廓、外边框不被覆盖；每角几何按 0.25 DIP
+  量化缓存复用，hover 动画不产生新几何。
 - 多窗口回归：`cui_multi.exe` 两个 HWND 各自 Gfx/Theme/UiContext/Progress/Toast；
   切主题时两个窗口同步换肤并自动重绘；二级窗独立弹 Toast 不阻塞主窗；模态对话框
   打开后 `EnableWindow` 禁用两个父窗，关闭后恢复焦点；两窗口同时动画 CPU
