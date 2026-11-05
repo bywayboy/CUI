@@ -29,7 +29,7 @@ IF ERRORLEVEL 1 (
 IF NOT EXIST bin MKDIR bin
 IF NOT EXIST build MKDIR build
 IF NOT EXIST build\obj MKDIR build\obj
-del /q build\obj\*.obj bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe 2>nul
+del /q build\obj\*.obj bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe 2>nul
 
 REM 自定义 D2D 效果的着色器: 离线编译成字节数组, 运行时不需要 d3dcompiler.dll
 SET "FXC=%WindowsSdkVerBinPath%x64\fxc.exe"
@@ -65,6 +65,8 @@ ECHO [cui] samples\minimal.c
 cl %CFLAGS% samples\minimal.c /Fobuild\obj\minimal.obj || GOTO :err
 ECHO [cui] samples\advanced.c
 cl %CFLAGS% samples\advanced.c /Fobuild\obj\advanced.obj || GOTO :err
+ECHO [cui] samples\multiwindow.c
+cl %CFLAGS% samples\multiwindow.c /Fobuild\obj\multiwindow.obj || GOTO :err
 
 ECHO [cui] link demo
 link /nologo /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:startup /MANIFEST:NO ^
@@ -78,8 +80,12 @@ ECHO [cui] link advanced
 link /nologo /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:startup /MANIFEST:NO ^
     /OUT:bin\cui_advanced.exe !OBJS! build\obj\advanced.obj %LIBS% || GOTO :err
 
+ECHO [cui] link multiwindow
+link /nologo /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:startup /MANIFEST:NO ^
+    /OUT:bin\cui_multi.exe !OBJS! build\obj\multiwindow.obj %LIBS% || GOTO :err
+
 ECHO.
-FOR %%E IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe) DO (
+FOR %%E IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe) DO (
     dumpbin /imports %%E | findstr /i "msvcrt ucrtbase api-ms-win-crt" >NUL
     IF ERRORLEVEL 1 (
         ECHO [OK] no CRT dependency: %%E
@@ -89,7 +95,7 @@ FOR %%E IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe) DO (
     )
 )
 ECHO === BUILD OK ===
-FOR %%I IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe) DO ECHO Output: %%~fI (%%~zI bytes)
+FOR %%I IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe) DO ECHO Output: %%~fI (%%~zI bytes)
 EXIT /B 0
 
 :err

@@ -28,6 +28,7 @@ void Ui_ContextInit(UiContext *ctx, HWND hwnd, Gfx *gfx, UiTheme *theme)
 	ctx->hwnd = hwnd;
 	ctx->gfx = gfx;
 	ctx->theme = theme;
+	if (theme) theme->notifyHwnd = hwnd;   /* 全局换肤后自动失效该窗口 */
 	ctx->scale = 1.0f;
 	ctx->popupOpen = 0;
 	ctx->focusId = UI_ID_NONE;

@@ -119,7 +119,12 @@ typedef struct UiTheme {
 	UiColorRole neutral;   /* default: 中性按钮/次要控件 */
 
 	uint32_t themeRev;     /* 每次换肤 +1; overlay/layer 用它判断重建 */
-	float windowRadius;       /* 窗口外轮廓圆角: 主窗背景与 Toast 整窗遮罩共用 */
+
+	/* 内部: 全局主题同步 (应用不要直接改) */
+	HWND notifyHwnd;       /* 关联窗口: 换肤后自动 InvalidateRect */
+	struct UiTheme *syncNext;
+
+	float windowRadius;    /* 窗口外轮廓圆角: 主窗背景与 Toast 整窗遮罩共用 */
 	float panelRadius, buttonRadius, progressRadius, toastRadius;
 } UiTheme;
 
@@ -136,17 +141,17 @@ typedef struct UiThemeColors {
 void UiTheme_Init(UiTheme *t, Gfx *gfx);
 void UiTheme_Shutdown(UiTheme *t, Gfx *gfx);
 
-/* 只切换颜色/圆角, 不重建字体; 共享同一个 UiTheme* 的控件下一帧全部换肤。
- * 应用切换后应整窗失效; overlay/Toast layer 通过 themeRev 自动重建/重画。 */
+/* 全局换肤: 进程内所有已注册 UiTheme 实例一起应用, 每个实例按 notifyHwnd
+ * 自动整窗失效; 只换颜色/圆角, 不重建字体. 新窗口 Init 会继承当前全局主题. */
 void UiTheme_SetTheme(UiTheme *t, UiThemeId id);
 
-/* 在 base (亮/暗外壳) 上覆盖 5 个语义色, 并自动派生 hover/press/soft/文字.
+/* 全局覆盖 5 个语义色, 自动派生 hover/press/soft/文字.
  * colors 为 NULL 时等价于 UiTheme_SetTheme(t, base).
- * themeRev 会 +1, 进度 overlay 与 Toast layer 在下一帧自动更新. */
+ * 所有实例 themeRev+1, 进度 overlay / Toast layer 下一帧自动更新. */
 void UiTheme_SetColors(UiTheme *t, UiThemeId base, const UiThemeColors *colors);
 
-/* 直接改了 UiTheme 的令牌后调用: themeRev+1, overlay/Toast layer 下一帧重建.
- * SetTheme/SetColors 已自动调用, 只有手改字段时才需要. */
+/* 仅当前实例: 直接改了该 UiTheme 的令牌后调用, themeRev+1 并失效它的窗口.
+ * 不广播到其它窗口; 全局换肤请用 SetTheme/SetColors. */
 void UiTheme_Touch(UiTheme *t);
 
 #endif /* SCV2_UI_THEME_H */

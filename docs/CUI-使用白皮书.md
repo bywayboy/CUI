@@ -48,6 +48,15 @@
 >    **本机探测**：DComp `IDCompositionDevice2/3`、`Visual3` 均 `E_NOINTERFACE`，
 >    DComp 内置滤镜不可用；D2D `GaussianBlur/ColorMatrix/Shadow/Turbulence`
 >    全部 `S_OK`，因此效果走 D2D 路径。
+> 12. 主题改为**进程级全局同步**：所有 UiTheme 注册到内部链，
+>    `UiTheme_SetTheme/SetColors` 广播到全部窗口并按 `notifyHwnd` 自动重绘；
+>    新窗口继承当前全局主题。
+> 13. 新增 `samples/multiwindow.c`：两个 HWND 各自 Gfx/UiContext/Progress/Toast，
+>    共享全局主题、帧时钟与消息循环；新增禁用父窗口的模态对话框模式；关闭主窗
+>    连带退出。构建产出增加 `cui_multi.exe`。
+> 14. 修正 DComp `AddVisual(insertAbove, reference=NULL)` 的反直觉次序（FALSE
+>    置顶、TRUE 置底）：Toast layer 现在正确盖住进度 overlay；新增
+>    `theme.windowRadius`，Toast 整窗遮罩按主窗圆角绘制，不再吃掉底部圆角。
 
 ---
 
@@ -61,6 +70,7 @@
 6. [Gfx 渲染层](#6-gfx-渲染层)
 7. [UiContext 交互层](#7-uicontext-交互层)
 8. [UiPaint 与 UiTheme](#8-uipaint-与-uitheme)
+   - [8.8 布局：UiStack / UiFlex](#88-布局uistack--uiflex)
 9. [UiAnim 动画内核](#9-uianim-动画内核)
 10. [UiFrame 帧时钟](#10-uiframe-帧时钟)
 11. [UiEdit 编辑框](#11-uiedit-编辑框)
@@ -85,8 +95,9 @@ CUI 是一套 **纯 C/C++、零 CRT、即时模式（Immediate Mode）** 的 Win
 2. **需要轻量交互动画**：hover / press / focus / glow 指数平滑，转场补间，帧率无关。
 3. **自绘控件也要能输入中文**：IMM32 组合串、候选窗定位、密码框禁用输入法。
 
-它 **不提供** 布局引擎、控件对象树、数据绑定、MVVM、样式表解析。界面就是每帧按顺序
-“画 + 注册”，交互状态从稳定 ID 读取。
+它提供**可选**的 rect-only 布局（`UiStack` 游标 / `UiFlex` basis+grow），但**不提供**
+保留式布局树、控件对象树、数据绑定、MVVM 引擎或样式表解析。界面就是每帧按顺序
+“算矩形 → 画 + 注册”，交互状态从稳定 ID 读取。
 
 | 维度 | 说明 |
 |---|---|
@@ -100,7 +111,7 @@ CUI 是一套 **纯 C/C++、零 CRT、即时模式（Immediate Mode）** 的 Win
 | 交互 | 即时模式，稳定 `UiId`，单帧事件 |
 | 动画 | 固定池：64 条目 × 16 通道，零分配 |
 | 输入法 | IMM32，组合串就地绘制，候选窗跟随插入点 |
-| 产物 | `bin/cui_demo.exe`（约 47 KB） |
+| 产物 | `cui_demo` / `cui_minimal` / `cui_advanced` / `cui_multi`（约 56–80 KB） |
 
 ---
 
@@ -122,7 +133,7 @@ CUI 的取舍是：**只做安装器/工具类窗口需要的那一层**。体�
 - 不是通用桌面 UI 框架，不追求覆盖所有控件。
 - 不是声明式框架，没有“改状态 → 自动 diff → 更新 DOM”的机制。
 - 不是跨平台库，只支持 Windows。
-- 不提供布局引擎。demo 全部使用绝对坐标（DIP）。
+- 布局是薄封装：`UiStack/UiFlex` 只算矩形；没有 grid、换行、滚动容器或自动内容测量。
 
 ### 2.3 能力矩阵
 
@@ -139,7 +150,7 @@ CUI 的取舍是：**只做安装器/工具类窗口需要的那一层**。体�
 | 中文输入法 | ✅ | 组合串、候选窗、上屏 |
 | 密码框禁用 IME | ✅ | `Edit_SetImeEnabled` + `ImmAssociateContext` |
 | 多行文本/富文本 | ❌ | 编辑框仅单行 |
-| 布局系统 | ❌ | 应用自己算矩形 |
+| 布局系统 | ✅ | `UiStack` 固定+Fill；`UiFlex` basis+grow；无 grid/wrap |
 | 滚动容器 | ❌ | 应用自己维护偏移与裁剪 |
 | 撤销/重做 | ❌ | 编辑框无撤销栈 |
 | 原生文件对话框 | 由应用调用 | 注意动作延后，避免渲染重入 |
@@ -185,6 +196,7 @@ build.cmd
 bin\cui_demo.exe
 bin\cui_minimal.exe
 bin\cui_advanced.exe
+bin\cui_multi.exe
 ```
 
 成功输出示例：
@@ -467,6 +479,9 @@ UiFrame_Init(&clock, hwnd);           /* 6. 帧时钟 */
 
 注意：
 
+- **先 `Log_Init()` 再 `Gfx_Init`**，退出时 `Log_Close()`。`Gfx_Init` 内部会调用
+  `Log_Write`，而后者依赖 `Log_Init` 初始化的临界区；漏掉会在 `WM_CREATE` 里直接
+  卡死（多窗口样例踩过）。
 - `Gfx_Init` 只创建工厂，**真正的渲染表面在第一次 `Gfx_Resize` 时创建**。
   因此 `WM_CREATE` 里窗口尺寸为 0 也没关系。
 - `UiTheme_Init` 创建的字体必须在 `Gfx_Shutdown` 之前销毁：
@@ -723,6 +738,48 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 不要在自己的绘制函数里直接 `DestroyWindow`：`WM_DESTROY` 会释放 `Gfx`，而当前栈
 还在 `Gfx_End`/`Ui_EndFrame` 里，容易出现 use-after-free。用 `PostMessage` 把关闭
 推到消息队列，是最稳的做法。
+
+### 5.7 多窗口（低层 API）
+
+`UiApp_Run` 是**单窗口阻塞壳**；多窗口直接用低层 API，每个 HWND 一套：
+
+```text
+HWND A -> Gfx A + UiTheme A + UiContext A + UiProgress A + UiToast A
+HWND B -> Gfx B + UiTheme B + UiContext B + UiProgress B + UiToast B
+          共享 UiFrameClock + 一个 GetMessage/PeekMessage 循环
+```
+
+规则：
+
+- **不要跨 HWND 共享 `UiContext`**：注册表、hover/pressed、focus、模态 blocker
+  都是窗口私有的。共享会导致一个窗口的鼠标状态污染另一个。
+- `Gfx`、`UiProgress`、`UiToast` 每窗口独立；进度动画和 Toast 模态互不影响。
+- `UiTheme` 每个窗口仍持有一个实例（字体绑定各自 Gfx），但**主题是全局的**：
+  `UiTheme_SetTheme/SetColors` 广播到所有已注册实例，并按各自 `notifyHwnd`
+  自动整窗失效；新窗口 `UiTheme_Init` 继承当前全局主题。
+- 一个 `UiFrameClock` 就够；每帧对所有窗口 `Ui_AnimAdvance` / `UiProgress_Tick` /
+  `UiToast_Tick`，再分别 `UpdateWindow`。
+- 每个窗口的 `WM_PAINT` 里独立执行 `Gfx_SetDirtyRect` → `Gfx_Begin` → UI →
+  `Gfx_End`，然后 `UiToast_EndFrame` / `UiProgress_EndFrame`。
+- 关闭一个窗口只清它自己的 Gfx/Theme/Context；最后一个窗口销毁时 `PostQuitMessage`。
+  主窗口关闭时若想连带退出，在 `WM_CLOSE` 里先 `DestroyWindow` 其它窗口。
+- `Log_Init/Log_Close` 仍是进程级一次。
+
+### 5.8 模态对话框（多窗口）
+
+CUI 不提供阻塞式 `DialogBox`；模态窗口用普通 HWND + 共享消息循环实现：
+
+1. 先创建主/二级窗口；对话框作为 `WS_POPUP` 窗口，`hWndParent` 指向 owner。
+2. 创建后对所有其它 CUI 窗口 `EnableWindow(hwnd, FALSE)`，只保留对话框可用。
+3. 对话框仍走同一个消息循环和 `UiFrameClock`，不需要嵌套 modal loop。
+4. 对话框 `WM_CLOSE/WM_DESTROY` 时恢复 `EnableWindow(..., TRUE)`、把焦点还给
+   owner，并销毁自己的 Gfx/Theme/Context。
+5. 主题仍是全局的：在对话框里切主题，主窗/二级窗会一起重绘。
+
+完整样例：[samples/multiwindow.c](../samples/multiwindow.c)。两个窗口共享全局主题，
+各自有 4.5/6 秒进度 overlay 和独立 Toast；主窗按钮打开/聚焦二级窗口，也可以打开
+一个禁用父窗口的模态对话框；关闭主窗会一并销毁二级窗和对话框。实测两窗口同时
+动画时应用 CPU 约 **0.00%**。
 
 ---
 
@@ -1119,14 +1176,14 @@ UiTheme_Shutdown(&theme, gfx);
 | `error` | 错误/危险 | 同上 |
 | `neutral` | default：中性/次要按钮 | 同上 |
 
-**亮/暗预设**：
+**亮/暗预设（全局）**：
 
 ```c
 UiTheme_SetTheme(&theme, UI_THEME_LIGHT);   /* 或 UI_THEME_DARK */
-UiApp_Invalidate(app);                      /* 整窗重绘 */
+/* 所有窗口一起换肤并自动 InvalidateRect; 不需要再手动失效 */
 ```
 
-**自定义 5 个语义色**：
+**自定义 5 个语义色（全局）**：
 
 ```c
 static const UiThemeColors brand = {
@@ -1137,9 +1194,13 @@ static const UiThemeColors brand = {
     0xFFF3F5F9    /* neutral = default */
 };
 UiTheme_SetColors(&theme, UI_THEME_LIGHT, &brand);  /* 深色外壳传 DARK */
-UiApp_Invalidate(app);
+/* 同样广播到所有窗口并自动重绘 */
 ```
 
+- **全局主题**：进程内所有 `UiTheme` 实例注册到内部链；
+  `UiTheme_SetTheme/SetColors` 会应用到全部实例，按每个实例的 `notifyHwnd`
+  整窗失效（`Ui_ContextInit` 自动绑定 HWND）。新建窗口的 `UiTheme_Init`
+  继承当前全局主题。
 - `UiTheme_SetColors` 先应用 light/dark 外壳（页面/卡片/文字），再覆盖 5 个语义色；
   hover/press/soft/对比文字/描边全部自动派生，不需要手算。
 - `UiThemeColors` 字段传 `0` 表示保留该角色的预设；整个指针传 `NULL` 等价于
@@ -1147,10 +1208,10 @@ UiApp_Invalidate(app);
 - `neutral` 就是组件库里的 `default`（C 关键字不能作字段名）。
 - 这 5 个色会同步写入旧令牌（`blue/blue2/btnPrimary*/progressFill*/green/orange/
   danger/dangerBg/btnBg/...`），所以老代码和所有内置组件一起换肤。
-- `UiTheme_SetTheme/SetColors` 都会让 `themeRev+1`；`UiProgress` 用 `themeRev`
-  判断重建 overlay，`UiToast` 用它判断重画 layer。**任意换肤都不需要手动销毁**。
-- 只想要完整自定义（页面/卡片/文字也改）时：直接改 `UiTheme` 字段，再调用
-  `UiTheme_Touch(&theme)` 通知 overlay/Toast。
+- `UiTheme_SetTheme/SetColors` 会让**每个**实例 `themeRev+1`；`UiProgress` 用
+  `themeRev` 判断重建 overlay，`UiToast` 用它判断重画 layer。任意换肤都不需要手动销毁。
+- 只想要某个窗口的完整自定义（页面/卡片/文字也改）时：直接改该 `UiTheme` 字段，
+  再调用 `UiTheme_Touch(&theme)`；这是实例级操作，不会广播到其它窗口。
 - 字体字号属于主题初始化的一部分；换字体需要自行重建 `UiTheme` 或另行管理
   `Gfx_CreateFont`。
 - demo 的按钮按 浅色 → 品牌色 → 深色 循环，品牌色就是上面这段代码。
@@ -1202,7 +1263,7 @@ Ui_ProgressBar(&ui, barRc, progress, drawFill);
 - `Ui_ProgressBar` 画 `progressTrack` + 可选填充
   `progressFill -> progressFill2`；`drawFill=0` 时只画轨道，填充交给
   `GfxOverlay`（demo 就是这么做的）。
-- 组件不持有布局：矩形由应用按 DIP 计算；没有自动换行/流式布局。
+- 组件自身不持有布局：矩形由应用或 `UiStack/UiFlex` 计算；组件内部没有自动换行/流式布局。
 - 组件只读 `ui->theme`，不写死颜色；换主题下一帧生效。
 - 组件身份仍是调用方的 `UiId`；同一帧内必须唯一。
 
@@ -2311,7 +2372,8 @@ README 第 10 节给出了路线。核心步骤：
 
 ## 17. 已知限制与设计取舍
 
-1. **没有布局引擎**：绝对坐标，窗口缩放/动态内容需要应用自己算。
+1. **布局是可选薄层**：`UiStack/UiFlex` 只算矩形；没有 grid、自动换行、滚动容器、
+   内容测量或保留式布局树。复杂页面仍可由应用自己算坐标。
 2. **编辑框单行**：无多行、自动折行、垂直滚动、撤销栈、右键菜单。
 3. **内置亮/暗两套主题**：更多主题需扩展 `UiTheme_SetTheme`；切换不重建字体。
 4. **控件表 256 项**：超出静默丢弃。大列表用虚拟化/分页。
@@ -2362,6 +2424,9 @@ README 第 10 节给出了路线。核心步骤：
     最多一个 Fill。
 28. **布局不绘制背景/边框**：需要卡片时先 `Ui_Panel(ui, outer)`，再把同一
     outer 交给 `Ui_StackBegin`；布局不参与 z-index 或命中测试。
+29. **主题是进程级全局的**：`UiTheme_SetTheme/SetColors` 会改变所有窗口；
+    只有 `UiTheme_Touch` 是单实例操作。多个 UiTheme 实例必须各自 Init/Shutdown，
+    不要跨窗口共享同一个实例。
 
 ---
 
@@ -2609,6 +2674,8 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 | Grain 着色器 | [src/gfx/grain.hlsl](../src/gfx/grain.hlsl) |
 | demo overlay 接线 | [src/demo.c:122](../src/demo.c#L122) |
 | 布局 UiStack/UiFlex | [src/ui/ui_layout.c](../src/ui/ui_layout.c) |
+| 全局主题同步 | [src/ui/ui_theme.c](../src/ui/ui_theme.c) |
+| 多窗口/模态样例 | [samples/multiwindow.c](../samples/multiwindow.c) |
 | 窗口拖边缩放 | [src/ui/ui_app.c:102](../src/ui/ui_app.c#L102) |
 | z-index / 命中 | [src/ui/ui_context.c:116](../src/ui/ui_context.c#L116) |
 | 模态 blocker | [src/ui/ui_context.c:41](../src/ui/ui_context.c#L41) |
@@ -2656,15 +2723,21 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
   进度 overlay 按新令牌重建；浅色/深色截图均正常。
 - 壳/输入/进度回归：`cui_minimal.exe` 输入、回车提交、退出正常；`cui_demo.exe`
   由 `UiApp + UiInput + UiProgress` 重写为 **340 行**（原 893 行），前台 60Hz
-  无 Toast 时应用进程 CPU 约 **0.00%**；三份 exe 均为 0CRT。
+  无 Toast 时应用进程 CPU 约 **0.00%**；四份 exe 均为 0CRT。
 - 0CRT 增强回归：独立自测程序覆盖 `%d/%u/%x/%s/%c/%lld/%zu/%08x/%.2f/%-5d`
   与边界截断、内存 0/7/15/16/31/32/63/64/65/511/512/513/4095/4096/4097/
   8192/10000 字节、字符串、malloc/calloc/realloc/qsort/bsearch，退出码 0；
-  三份 exe 在新 crtstub 下均正常启动/输入/关闭。
+  四份 exe 在新 crtstub 下均正常启动/输入/关闭。
 - **布局回归**：纯矩形自测覆盖 `UiStack` padding/gap/固定/Fill/Right/对齐、
   `UiFlex` basis+grow（50:80）、max 夹取重分、无 shrink 溢出；demo 表单
   迁移为 `UiStack`，按钮行用 `UiFlex` 弹簧把主题按钮推到右侧；200% DPI、
   Toast/进度 overlay 正常，布局零堆分配。
+- **多窗口/全局主题/模态回归**：`cui_multi.exe` 两个 HWND 各自持有
+  Gfx/UiTheme/UiContext/UiProgress/UiToast；在主窗切主题，二级窗同步换肤并
+  自动重绘（像素从浅色 245,248,254 变为深色 15,20,29）；二级窗独立 Toast
+  不阻塞主窗；打开模态对话框后 `IsWindowEnabled` 对两个父窗均为 FALSE，
+  对话框内切主题仍广播到父窗，关闭后父窗恢复可用；两窗口同时动画 CPU
+  **0.00%**；关闭主窗后二级窗/对话框一并销毁。
 - **窗口缩放回归**：200% DPI 下 `WM_NCHITTEST` 左上/上/右下分别返回
   `HTLEFT/HTTOP/HTBOTTOMRIGHT`；实际鼠标拖右下角 1440×1120 → 1600×1220；
   `WM_NCCALCSIZE` 后客户区=窗口；MoveWindow 600×480 / 800×600 / 1000×700

@@ -1,5 +1,13 @@
 #include "ui/ui_theme.h"
 
+/* ── 全局主题同步 ───────────────────────────────────────────────────
+ * 进程内所有 UiTheme 实例串成一条链; SetTheme/SetColors 广播到全部窗口,
+ * 并按 notifyHwnd 自动 InvalidateRect. 多窗口共享同一套主题. */
+static UiTheme *g_themeList;
+static UiThemeId g_globalTheme = UI_THEME_LIGHT;
+static UiThemeColors g_globalColors;
+static int g_globalHasColors;
+
 /* ── 语义色派生 ───────────────────────────────────────────────────── */
 
 static int theme_luma(UiColor c)
@@ -308,9 +316,86 @@ static void theme_apply_preset(UiTheme *t, UiThemeId id)
 	t->toastOverlay = 0xFF0B1020;
 }
 
+static int theme_is_registered(const UiTheme *t)
+{
+	const UiTheme *it;
+	for (it = g_themeList; it; it = it->syncNext)
+		if (it == t) return 1;
+	return 0;
+}
+
+static void theme_invalidate(const UiTheme *t)
+{
+	if (t && t->notifyHwnd && IsWindow(t->notifyHwnd))
+		InvalidateRect(t->notifyHwnd, NULL, FALSE);
+}
+
+static void theme_apply_overrides(UiTheme *t, const UiThemeColors *colors)
+{
+	if (!colors) return;
+	if (colors->primary) {
+		role_set_fill(&t->primary, t, colors->primary);
+		theme_write_primary(t);
+	}
+	if (colors->warning) {
+		role_set_accent(&t->warning, t, colors->warning);
+		theme_write_warning(t);
+	}
+	if (colors->success) {
+		role_set_accent(&t->success, t, colors->success);
+		theme_write_success(t);
+	}
+	if (colors->error) {
+		role_set_accent(&t->error, t, colors->error);
+		theme_write_error(t);
+	}
+	if (colors->neutral) {
+		role_set_neutral(&t->neutral, colors->neutral);
+		theme_write_neutral(t);
+	}
+}
+
+static void theme_apply_global(UiTheme *t)
+{
+	theme_apply_preset(t, g_globalTheme);
+	theme_bind_roles(t);
+	if (g_globalHasColors) theme_apply_overrides(t, &g_globalColors);
+}
+
+static void theme_broadcast(void)
+{
+	UiTheme *it;
+	for (it = g_themeList; it; it = it->syncNext) {
+		theme_apply_global(it);
+		it->themeRev++;
+		theme_invalidate(it);
+	}
+}
+
+static void theme_register(UiTheme *t)
+{
+	t->syncNext = g_themeList;
+	g_themeList = t;
+}
+
+static void theme_unregister(UiTheme *t)
+{
+	UiTheme **pp = &g_themeList;
+	while (*pp) {
+		if (*pp == t) {
+			*pp = t->syncNext;
+			break;
+		}
+		pp = &(*pp)->syncNext;
+	}
+	t->syncNext = NULL;
+}
+
 void UiTheme_Init(UiTheme *t, Gfx *gfx)
 {
 	if (!t || !gfx) return;
+	t->notifyHwnd = NULL;
+	t->syncNext = NULL;
 	t->fTitle = Gfx_CreateFont(gfx, 16.0f, 700);
 	t->fHead = Gfx_CreateFont(gfx, 15.0f, 700);
 	t->fBody = Gfx_CreateFont(gfx, 13.0f, 400);
@@ -323,55 +408,54 @@ void UiTheme_Init(UiTheme *t, Gfx *gfx)
 	t->fLabel = Gfx_CreateFont(gfx, 12.0f, 700);
 	t->fBig = Gfx_CreateFont(gfx, 22.0f, 700);
 
-	UiTheme_SetTheme(t, UI_THEME_LIGHT);
+	theme_apply_global(t);
+	t->themeRev++;
+	theme_register(t);
 }
 
 void UiTheme_Touch(UiTheme *t)
 {
-	if (t) t->themeRev++;
+	if (!t) return;
+	t->themeRev++;
+	theme_invalidate(t);
 }
 
 void UiTheme_SetTheme(UiTheme *t, UiThemeId id)
 {
 	if (!t) return;
-	theme_apply_preset(t, id);
-	theme_bind_roles(t);
-	UiTheme_Touch(t);
+	g_globalTheme = id;
+	g_globalHasColors = 0;
+	theme_broadcast();          /* 所有已注册窗口一起换肤并重绘 */
+	if (!theme_is_registered(t)) {
+		theme_apply_global(t);
+		t->themeRev++;
+		theme_invalidate(t);
+	}
 }
 
 void UiTheme_SetColors(UiTheme *t, UiThemeId base, const UiThemeColors *colors)
 {
 	if (!t) return;
-	theme_apply_preset(t, base);
-	theme_bind_roles(t);
-	if (colors) {
-		if (colors->primary) {
-			role_set_fill(&t->primary, t, colors->primary);
-			theme_write_primary(t);
-		}
-		if (colors->warning) {
-			role_set_accent(&t->warning, t, colors->warning);
-			theme_write_warning(t);
-		}
-		if (colors->success) {
-			role_set_accent(&t->success, t, colors->success);
-			theme_write_success(t);
-		}
-		if (colors->error) {
-			role_set_accent(&t->error, t, colors->error);
-			theme_write_error(t);
-		}
-		if (colors->neutral) {
-			role_set_neutral(&t->neutral, colors->neutral);
-			theme_write_neutral(t);
-		}
+	if (!colors) {
+		UiTheme_SetTheme(t, base);
+		return;
 	}
-	UiTheme_Touch(t);
+	g_globalTheme = base;
+	g_globalColors = *colors;
+	g_globalHasColors = 1;
+	theme_broadcast();
+	if (!theme_is_registered(t)) {
+		theme_apply_global(t);
+		t->themeRev++;
+		theme_invalidate(t);
+	}
 }
 
 void UiTheme_Shutdown(UiTheme *t, Gfx *gfx)
 {
 	if (!t) return;
+	theme_unregister(t);
+	t->notifyHwnd = NULL;
 	Gfx_DestroyFont(gfx, t->fTitle);
 	Gfx_DestroyFont(gfx, t->fHead);
 	Gfx_DestroyFont(gfx, t->fBody);
