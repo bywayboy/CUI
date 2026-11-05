@@ -57,6 +57,10 @@
 > 14. 修正 DComp `AddVisual(insertAbove, reference=NULL)` 的反直觉次序（FALSE
 >    置顶、TRUE 置底）：Toast layer 现在正确盖住进度 overlay；新增
 >    `theme.windowRadius`，Toast 整窗遮罩按主窗圆角绘制，不再吃掉底部圆角。
+> 15. 新增 `UiButtonGroup`：普通/单选/多选融合按钮组，管理器保存
+>    selected/mask/focus；`Ui_SetNavId` + 方向键/Home/End/Space 键盘导航。
+>    新增 `samples/mvvm.c`（ButtonGroup + MVVM-lite + 显式命令）；构建产出
+>    `cui_mvvm.exe`。
 
 ---
 
@@ -71,6 +75,8 @@
 7. [UiContext 交互层](#7-uicontext-交互层)
 8. [UiPaint 与 UiTheme](#8-uipaint-与-uitheme)
    - [8.8 布局：UiStack / UiFlex](#88-布局uistack--uiflex)
+   - [8.9 ButtonGroup 与键盘导航](#89-buttongroup-与键盘导航)
+   - [8.10 MVVM-lite](#810-mvvm-lite)
 9. [UiAnim 动画内核](#9-uianim-动画内核)
 10. [UiFrame 帧时钟](#10-uiframe-帧时钟)
 11. [UiEdit 编辑框](#11-uiedit-编辑框)
@@ -111,7 +117,7 @@ CUI 是一套 **纯 C/C++、零 CRT、即时模式（Immediate Mode）** 的 Win
 | 交互 | 即时模式，稳定 `UiId`，单帧事件 |
 | 动画 | 固定池：64 条目 × 16 通道，零分配 |
 | 输入法 | IMM32，组合串就地绘制，候选窗跟随插入点 |
-| 产物 | `cui_demo` / `cui_minimal` / `cui_advanced` / `cui_multi`（约 56–80 KB） |
+| 产物 | `cui_demo` / `cui_minimal` / `cui_advanced` / `cui_multi` / `cui_mvvm` |
 
 ---
 
@@ -197,6 +203,7 @@ bin\cui_demo.exe
 bin\cui_minimal.exe
 bin\cui_advanced.exe
 bin\cui_multi.exe
+bin\cui_mvvm.exe
 ```
 
 成功输出示例：
@@ -287,6 +294,7 @@ Direct2D / DirectWrite / D3D11 / DirectComposition
 | `src/ui/ui_types.h` | 矩形/颜色/稳定 ID | `UiId` 必须跨帧稳定 |
 | `src/ui/ui_context.*` | 注册、命中、拖动、单帧事件 | 每帧 Begin/End |
 | `src/ui/ui_layout.*` | UiStack / UiFlex 布局 | 只算矩形；padding/gap；固定+Fill / basis+grow |
+| `src/ui/ui_button_group.*` | 融合按钮组管理器 | NORMAL/SINGLE/MULTI、selected/mask/focus、键盘 |
 | `src/ui/ui_theme.*` | 字体/颜色令牌 | 亮暗预设 + 5 语义色自定义；`themeRev` 通知重建 |
 | `src/ui/ui_paint.*` | 统一交互表面 | 填充/描边/光晕/渐变叠加 |
 | `src/ui/ui_anim.*` | 动画通道 | 64 条目 × 16 通道，零分配 |
@@ -1436,6 +1444,72 @@ demo 的卡片表单已改为 `UiStack` 纵向排布，按钮行用 `UiFlex`（�
 主题按钮靠右）；窗口可拖边缩放，600×480 到 1000×700 之间布局自动重算，最小
 尺寸在 demo 初始化为 600×480（再小按钮行会按“无 shrink”规则溢出）。
 
+### 8.9 ButtonGroup 与键盘导航
+
+`UiButtonGroup` 是一个**应用持有的状态管理器**，不是全局注册表。视觉上相邻按钮
+共用外框/圆角，内部用 1px 分隔线融合。
+
+```c
+#include "ui/ui_button_group.h"
+
+UiButtonGroup theme;
+UiButtonGroup_Init(&theme, Ui_Id("vm.theme", 0, 0), UI_BG_SINGLE, 2);
+UiButtonGroup_SetSelected(&theme, 0);
+Ui_SetNavId(&ui, theme.id);
+
+const char *const labels[2] = { "浅色", "深色" };
+int clicked = UiButtonGroup_Draw(&ui, &theme, rc,
+    labels, NULL /*等分*/, NULL /*全可用*/, UI_BTN_SECONDARY);
+/* theme.selected / theme.changed 已更新; clicked 是本帧点击 index */
+```
+
+- 模式：
+  - `UI_BG_NORMAL`：普通动作按钮分组，不保存选中；`clicked` 给应用执行命令。
+  - `UI_BG_SINGLE`：单选，`selected` 由管理器维护。
+  - `UI_BG_MULTI`：多选，`mask` 位图（最多 32 项）。
+- `widths=NULL` 等分；否则按 DIP 宽度排列。`enabled` 可按项禁用。
+- `variant` 决定选中段的强调角色：PRIMARY/SECONDARY -> primary，
+  WARNING/SUCCESS/DANGER -> 对应角色；普通模式只影响键盘焦点色。
+- 视觉：外层背景/边框只画一次；hover/press/selected 用内缩 2 DIP 的 pill，
+  避免首尾段方角盖住外轮廓。
+- 键盘：
+  - `Ui_SetNavId(&ui, group.id)` 让组成为导航焦点；
+  - `UiButtonGroup_Key(&ui, &group, vk)` 处理方向键/Home/End/Space/Enter；
+  - 返回 1 时立刻读取 `group.clicked`（键盘事件在帧外发生，下一帧 Draw 会清空它）；
+  - Tab 在组之间切换由应用负责（`Ui_SetNavId`）。
+- 事件语义：`clicked` 是本帧点击/键盘激活 index；`changed` 表示 selected/mask
+  真的变了。鼠标点击在 Draw 中写回，键盘激活在 Key 中写回。
+
+### 8.10 MVVM-lite
+
+CUI 不提供属性通知/绑定表达式；推荐 **VM struct + 纯 View + 显式命令**：
+
+```c
+typedef struct FormVM {
+    UiButtonGroup themeGroup;   /* SINGLE */
+    UiButtonGroup flagGroup;    /* MULTI */
+    UiButtonGroup actionGroup;  /* NORMAL */
+    void (*submit)(struct FormVM *);
+    char status[192];
+} FormVM;
+
+static void form_view(UiContext *ui, FormVM *vm)
+{
+    UiButtonGroup_Draw(ui, &vm->themeGroup, themeRc,
+        themeLabels, NULL, NULL, UI_BTN_SECONDARY);
+    UiButtonGroup_Draw(ui, &vm->flagGroup, flagRc,
+        flagLabels, NULL, NULL, UI_BTN_SECONDARY);
+    UiButtonGroup_Draw(ui, &vm->actionGroup, actionRc,
+        actionLabels, NULL, NULL, UI_BTN_SECONDARY);
+}
+```
+
+- View 每帧读取 VM，并把控件的 `selected/mask/focus` 存在 VM 里；没有隐藏状态。
+- 命中后在 `after_frame` 执行命令（提交/重置/退出），避免绘制中重入。
+- 主题仍是全局的：VM 里切主题组 -> `UiTheme_SetTheme` -> 所有窗口重绘。
+- 不做 property/binding 引擎；需要跨模块通知时用显式 command + Invalidate。
+- 完整样例：[samples/mvvm.c](../samples/mvvm.c)（单选/多选/普通组 + 键盘导航）。
+
 ---
 
 ## 9. UiAnim 动画内核
@@ -2427,6 +2501,11 @@ README 第 10 节给出了路线。核心步骤：
 29. **主题是进程级全局的**：`UiTheme_SetTheme/SetColors` 会改变所有窗口；
     只有 `UiTheme_Touch` 是单实例操作。多个 UiTheme 实例必须各自 Init/Shutdown，
     不要跨窗口共享同一个实例。
+30. **ButtonGroup 状态在应用侧**：selected/mask/focus 由应用持有的
+    `UiButtonGroup` 保存；MULTI 最多 32 项。键盘事件返回 1 后要立即读取
+    `group.clicked`，下一帧 Draw 会清空本帧事件。
+31. **没有 Radio/Checkbox 内置控件**：目前只提供 ButtonGroup；RadioGroup/
+    Checkbox 可按同一“应用持有状态 + 本帧事件”模式扩展。
 
 ---
 
@@ -2547,7 +2626,8 @@ Gfx_SetFrameEffects
 ```c
 Ui_ContextInit / Ui_SetViewport
 Ui_BeginFrame / Ui_EndFrame
-Ui_RegisterWidget / Ui_HitTest / Ui_State / Ui_SetFocusId / Ui_SetModal
+Ui_RegisterWidget / Ui_HitTest / Ui_State / Ui_SetFocusId / Ui_SetNavId
+Ui_SetModal
 Ui_PushLayer / Ui_PopLayer
 Ui_OnMouseMove / Ui_OnMouseDown / Ui_OnMouseUp
 Ui_OnMouseLeave / Ui_OnCaptureChanged
@@ -2560,6 +2640,13 @@ Ui_StackBegin / Ui_StackBeginPad / Ui_StackInner / Ui_StackRemaining
 Ui_StackTake / Ui_StackTakeFill / Ui_StackTakeRight / Ui_StackTakeAligned
 Ui_StackSkip
 Ui_FlexRow / Ui_FlexCol
+```
+
+**UiButtonGroup**
+
+```c
+UiButtonGroup_Init / UiButtonGroup_SetCount / UiButtonGroup_SetSelected
+UiButtonGroup_SetMask / UiButtonGroup_Draw / UiButtonGroup_Key
 ```
 
 **UiPaint / UiTheme**
@@ -2723,15 +2810,18 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
   进度 overlay 按新令牌重建；浅色/深色截图均正常。
 - 壳/输入/进度回归：`cui_minimal.exe` 输入、回车提交、退出正常；`cui_demo.exe`
   由 `UiApp + UiInput + UiProgress` 重写为 **340 行**（原 893 行），前台 60Hz
-  无 Toast 时应用进程 CPU 约 **0.00%**；四份 exe 均为 0CRT。
+  无 Toast 时应用进程 CPU 约 **0.00%**；五份 exe 均为 0CRT。
 - 0CRT 增强回归：独立自测程序覆盖 `%d/%u/%x/%s/%c/%lld/%zu/%08x/%.2f/%-5d`
   与边界截断、内存 0/7/15/16/31/32/63/64/65/511/512/513/4095/4096/4097/
   8192/10000 字节、字符串、malloc/calloc/realloc/qsort/bsearch，退出码 0；
-  四份 exe 在新 crtstub 下均正常启动/输入/关闭。
+  五份 exe 在新 crtstub 下均正常启动/输入/关闭。
 - **布局回归**：纯矩形自测覆盖 `UiStack` padding/gap/固定/Fill/Right/对齐、
   `UiFlex` basis+grow（50:80）、max 夹取重分、无 shrink 溢出；demo 表单
   迁移为 `UiStack`，按钮行用 `UiFlex` 弹簧把主题按钮推到右侧；200% DPI、
   Toast/进度 overlay 正常，布局零堆分配。
+- **ButtonGroup/MVVM 回归**：`cui_mvvm.exe` 的普通/单选/多选三组按钮融合显示；
+  单选组切换全局主题，多选组更新 mask，普通组命令提交/重置/退出；Tab/方向键/
+  Space 键盘导航正常；selected/mask/focus 全部在 `FormVM`，无隐藏状态。
 - **多窗口/全局主题/模态回归**：`cui_multi.exe` 两个 HWND 各自持有
   Gfx/UiTheme/UiContext/UiProgress/UiToast；在主窗切主题，二级窗同步换肤并
   自动重绘（像素从浅色 245,248,254 变为深色 15,20,29）；二级窗独立 Toast

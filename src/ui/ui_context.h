@@ -51,6 +51,7 @@ struct UiContext {
 	UiId pressed;
 	UiId active;
 	UiId focusId;             /* 由 App 每帧设置: 键盘焦点所在控件 (编辑框) */
+	UiId navId;               /* 键盘导航焦点: ButtonGroup 等非文本控件 */
 	UiId clicked;             /* 单帧: 同一控件内按下并抬起 */
 	UiId down;                /* 单帧: 本次按下的控件 (编辑框立即定位光标用) */
 	UiId released;            /* 单帧: 按下过的控件被抬起（滑块提交用） */
@@ -92,6 +93,9 @@ void Ui_PushLayer(UiContext *ctx, int z);
 void Ui_PopLayer(UiContext *ctx);
 UiWidgetState Ui_State(UiContext *ctx, UiId id, UiRect rc, int enabled);
 void Ui_SetFocusId(UiContext *ctx, UiId id);
+
+/* 非文本控件的键盘导航焦点 (ButtonGroup). 与编辑框 focusId 分开, 避免 IME 冲突. */
+void Ui_SetNavId(UiContext *ctx, UiId id);
 
 /* 不可见的全窗输入 blocker: 设置后所有命中都返回 id, 但不会触发控件重绘.
  * 用于合成器 Toast (遮罩在独立的 DComp layer 上, 主窗不需要重画).

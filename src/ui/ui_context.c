@@ -39,6 +39,11 @@ void Ui_SetFocusId(UiContext *ctx, UiId id)
 	if (ctx) ctx->focusId = id;
 }
 
+void Ui_SetNavId(UiContext *ctx, UiId id)
+{
+	if (ctx) ctx->navId = id;
+}
+
 void Ui_SetModal(UiContext *ctx, UiId id)
 {
 	if (!ctx || ctx->modal == id) return;

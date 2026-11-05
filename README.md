@@ -4,7 +4,7 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
 纯 C/C++、零 CRT、Direct2D + DirectComposition 渲染，自带一套"hover/press/focus
 平滑 + 转场补间"的轻动画内核和一个支持中文输入法（IMM32）的单行编辑框。
 
-工程包含四个样例，公共代码在 `src/ui`：
+工程包含五个样例，公共代码在 `src/ui`：
 
 - `src/demo.c`：**标准样例（约 340 行）**。基于 `UiApp` 壳 + `UiInput` 表单 +
   `UiButton/Panel/ProgressBar` + `UITheme` + 合成器 `UiToast`（`GfxLayer`），
@@ -15,6 +15,8 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
 - `samples/multiwindow.c`：多窗口样例。两个 HWND 各自拥有 Gfx / UiTheme /
   UiContext / UiProgress / UiToast，共享一个帧时钟和消息循环；主题全局同步，
   进度/Toast 独立；支持禁用父窗口的模态对话框，关闭主窗会连带退出。
+- `samples/mvvm.c`：ButtonGroup + MVVM-lite。普通/单选/多选融合按钮组，
+  selected/mask/focus 存在 ViewModel 字段，命令在 after_frame 执行。
 
 > 来源：RMControl `installer/src`（提交 `1bc6929` 时的实现）。
 > 安装器目前仍保留自己的副本；CUI 是**独立可复用**版本，后续可让安装器切到它。
@@ -34,7 +36,8 @@ CUI/
 ├─ samples/
 │  ├─ minimal.c           最小接入样例
 │  ├─ advanced.c          高级样例（overlay/Toast/IME 全细节）
-│  └─ multiwindow.c       多窗口样例（独立 Gfx/Theme/UiContext/Toast）
+│  ├─ multiwindow.c       多窗口样例（全局主题/独立进度/模态对话框）
+│  └─ mvvm.c              ButtonGroup + MVVM-lite 表单
 └─ src/
    ├─ demo.c              标准样例（UiApp 壳 + 组件，约 340 行）
    ├─ edit.c / edit.h     自绘单行编辑框 UiEdit（选区/剪贴板/滚动/IME 组合）
@@ -48,6 +51,7 @@ CUI/
       ├─ ui_types.h       矩形/颜色/稳定 ID（FNV）
       ├─ ui_context.*     即时模式上下文：注册/命中/z-index/拖动/单帧事件
       ├─ ui_layout.*      UiStack / UiFlex 布局：只算矩形，零分配
+      ├─ ui_button_group.* 融合按钮组管理器（NORMAL/SINGLE/MULTI + 键盘）
       ├─ ui_theme.*       颜色/字体令牌（亮/暗 + 自定义 5 语义色）
       ├─ ui_paint.*       Ui_DrawSurface：填充/描边/光晕的统一外观
       ├─ ui_anim.*        动画内核（指数平滑 + 显式补间，固定池零分配）
@@ -74,6 +78,7 @@ bin\cui_minimal.exe     REM 最小样例
 bin\cui_demo.exe        REM 标准样例 (UiApp + 组件)
 bin\cui_advanced.exe    REM 高级样例 (overlay/Toast/IME 细节)
 bin\cui_multi.exe       REM 多窗口样例
+bin\cui_mvvm.exe        REM ButtonGroup + MVVM-lite
 ```
 
 构建是 **0CRT**：`/NODEFAULTLIB` + `/ENTRY:startup`，由 `crtstub.c` 提供
@@ -186,7 +191,8 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | `UiContext` | `Ui_BeginFrame/EndFrame` | 一帧的注册周期；EndFrame 清单帧事件 |
 | | `Ui_State` `Ui_DrawSurface` | 交互状态与统一表面 |
 | | `Ui_PushLayer/Ui_PopLayer` | z-index 注册层；命中取最高 z |
-| | `Ui_SetModal` | 不可见全窗输入 blocker（合成器 Toast 用，不触发重绘） |
+| | `Ui_SetModal` `Ui_SetNavId` | 模态 blocker / 非文本控件键盘导航焦点 |
+| `UiButtonGroup` | `Init/SetSelected/SetMask/Draw/Key` | 融合按钮组：NORMAL/SINGLE/MULTI、selected/mask/focus |
 | | `Ui_OnMouse*` `Ui_SetFocusId` | 输入与键盘焦点 |
 | `UiTheme` | `UiTheme_SetTheme/SetColors/Touch` | 进程级全局换肤：所有窗口同步并自动重绘；5 语义色自定义 |
 | `UiWidgets` | `Ui_Button/Ui_Panel/Ui_ProgressBar` | 主题化组件；按钮含 primary/warning/success/error/default 变体 |
@@ -302,7 +308,7 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   Toast 渐变遮罩 + 底部卡片、点击遮罩/Esc 关闭均通过。
 - 采样/壳回归：`cui_minimal.exe` 输入/回车提交/退出正常；`cui_demo.exe` 已改为
   `UiApp` 壳 + `UiInput` + `UiProgress`，**340 行**（原 893 行），前台 60Hz
-  无 Toast 时应用进程 CPU 约 **0.00%**；四份 exe 均为 0CRT。
+  无 Toast 时应用进程 CPU 约 **0.00%**；五份 exe 均为 0CRT。
 - 合成器 Toast（`GfxLayer`）回归：渐变/卡片只画一次，淡入淡出由 DWM 补间；
   Toast 显示/停留/淡出期间应用进程 CPU **0.00%**、主窗 0 次 `WM_PAINT`；
   下方进度 overlay 持续移动；点击/Esc 关闭、重复显示、Toast 中 resize 均正常。
@@ -312,6 +318,9 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   的 basis+grow/min-max 通过纯矩形数学测试；demo 表单改用 `UiStack`、按钮行
   改用 `UiFlex`（主题按钮右对齐），100%/200% DPI、Toast/进度 overlay
   均正常，布局零堆分配。
+- ButtonGroup/MVVM 回归：`cui_mvvm.exe` 普通/单选/多选三组按钮融合显示；单选组
+  点击切全局主题，多选组 mask 状态更新，普通组命令提交/重置/退出；Tab/方向键/
+  Space 导航正常；selected/mask/focus 全部在 `FormVM`，无隐藏状态。
 - 多窗口回归：`cui_multi.exe` 两个 HWND 各自 Gfx/Theme/UiContext/Progress/Toast；
   切主题时两个窗口同步换肤并自动重绘；二级窗独立弹 Toast 不阻塞主窗；模态对话框
   打开后 `EnableWindow` 禁用两个父窗，关闭后恢复焦点；两窗口同时动画 CPU
@@ -329,6 +338,6 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   overlay/Toast layer 是独立 DComp visual，不受整帧矩阵影响（已记录限制）。
   DComp `IDCompositionDevice2/3`、`Visual3` 本机 `E_NOINTERFACE`，未依赖。
 - 0CRT 自测：printf 格式/边界、SIMD 内存分档（0…10000B）、字符串、分配器、
-  qsort/bsearch 全部通过；四份 exe 在新 crtstub 下正常启动/输入/关闭。
+  qsort/bsearch 全部通过；五份 exe 在新 crtstub 下正常启动/输入/关闭。
 - 无桌面环境（SSH/Session 0）不能目视验证，但编译与链接判据（0CRT/无未解析符号）
   可在 CI 里跑。

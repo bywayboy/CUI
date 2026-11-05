@@ -134,6 +134,8 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 			app->hwnd = hwnd;
 			SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)app);
 		}
+		/* 让默认处理保存 CREATESTRUCT 的窗口标题; 直接 return TRUE 会丢标题. */
+		DefWindowProcW(hwnd, msg, wp, lp);
 		return TRUE;
 
 	case WM_CREATE:
