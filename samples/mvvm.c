@@ -42,6 +42,7 @@ static void vm_set_status(FormVM *vm)
 		vm->app->ui.navId == vm->themeGroup.id ? "主题组" :
 		(vm->app->ui.navId == vm->flagGroup.id ? "选项组" :
 		 (vm->app->ui.navId == vm->actionGroup.id ? "操作组" : "无")));
+	UiApp_Invalidate(vm->app);
 }
 
 static void vm_apply_theme(FormVM *vm)
@@ -57,6 +58,7 @@ static void vm_do_submit(FormVM *vm)
 	wsprintfA(vm->status, "已提交: flags=0x%X, 主题=%s",
 		vm->flagGroup.mask, vm->themeGroup.selected == 1 ? "深色" : "浅色");
 	vm->pendingAction = -1;
+	UiApp_Invalidate(vm->app);
 }
 
 static void vm_do_reset(FormVM *vm)
@@ -105,7 +107,7 @@ static void on_frame(UiApp *app, void *user)
 	UiStack col;
 	UiRect line1, labelTheme, themeRc, labelFlags, flagsRc, labelActions, actionsRc;
 	UiRect labelStyles, stylesRc, statusRc;
-	UiRect styleButtons[5] = { { 0, 0, 0, 0 } };
+	UiRect styleButtons[6] = { { 0, 0, 0, 0 } };
 
 	Gfx_FillRoundRectGradV(gfx, Ui_Rect(0, 0, app->w, app->h), t->windowRadius,
 		t->page, t->page2);
@@ -160,26 +162,28 @@ static void on_frame(UiApp *app, void *user)
 	UiButtonGroup_Draw(ui, &vm->actionGroup, actionsRc, kActionLabels, NULL, NULL,
 		UI_BTN_SECONDARY);
 
-	Gfx_Text(gfx, t->fLabel, "按钮样式（solid / plain / text / dashed / round）",
+	Gfx_Text(gfx, t->fLabel, "按钮样式（solid / plain / text / dashed / round / disabled）",
 		labelStyles, t->text2, GFX_TEXT_VCENTER);
 	{
-		UiFlexItem items[5] = {
+		UiFlexItem items[6] = {
 			{ 0, 1, 0, 0 }, { 0, 1, 0, 0 }, { 0, 1, 0, 0 },
-			{ 0, 1, 0, 0 }, { 0, 1, 0, 0 }
+			{ 0, 1, 0, 0 }, { 0, 1, 0, 0 }, { 0, 1, 0, 0 }
 		};
 		UiButtonStyle s0 = UiButtonStyle_Make(UI_BTYPE_PRIMARY, UI_BAPPEAR_SOLID, UI_BSHAPE_RECT, 0);
 		UiButtonStyle s1 = UiButtonStyle_Make(UI_BTYPE_SUCCESS, UI_BAPPEAR_PLAIN, UI_BSHAPE_RECT, 0);
 		UiButtonStyle s2 = UiButtonStyle_Make(UI_BTYPE_WARNING, UI_BAPPEAR_TEXT, UI_BSHAPE_RECT, 0);
 		UiButtonStyle s3 = UiButtonStyle_Make(UI_BTYPE_ERROR, UI_BAPPEAR_PLAIN, UI_BSHAPE_RECT, UI_BFLAG_DASHED);
 		UiButtonStyle s4 = UiButtonStyle_Make(UI_BTYPE_DEFAULT, UI_BAPPEAR_SOLID, UI_BSHAPE_ROUND, 0);
-		if (!Ui_FlexRow(stylesRc, 8.0f, items, 5, styleButtons)) {
-			for (int i = 0; i < 5; i++) styleButtons[i] = Ui_Rect(0, 0, 0, 0);
+		UiButtonStyle s5 = UiButtonStyle_Make(UI_BTYPE_PRIMARY, UI_BAPPEAR_SOLID, UI_BSHAPE_RECT, 0);
+		if (!Ui_FlexRow(stylesRc, 8.0f, items, 6, styleButtons)) {
+			for (int i = 0; i < 6; i++) styleButtons[i] = Ui_Rect(0, 0, 0, 0);
 		}
 		Ui_ButtonEx(ui, Ui_Id("style.solid", 0, 0), styleButtons[0], "Solid", &s0, 1);
 		Ui_ButtonEx(ui, Ui_Id("style.plain", 0, 0), styleButtons[1], "Plain", &s1, 1);
 		Ui_ButtonEx(ui, Ui_Id("style.text", 0, 0), styleButtons[2], "Text", &s2, 1);
 		Ui_ButtonEx(ui, Ui_Id("style.dash", 0, 0), styleButtons[3], "Dashed", &s3, 1);
 		Ui_ButtonEx(ui, Ui_Id("style.round", 0, 0), styleButtons[4], "Round", &s4, 1);
+		Ui_ButtonEx(ui, Ui_Id("style.disabled", 0, 0), styleButtons[5], "禁用", &s5, 0);
 	}
 
 	Gfx_Text(gfx, t->fBody, vm->status, statusRc, t->text2, GFX_TEXT_VCENTER);
@@ -210,16 +214,20 @@ static int on_key(UiApp *app, UINT vk, void *user)
 	int i;
 
 	if (vk == VK_TAB) {
+		UiButtonGroup *groups[3];
+		int next;
 		ids[0] = vm->themeGroup.id;
 		ids[1] = vm->flagGroup.id;
 		ids[2] = vm->actionGroup.id;
+		groups[0] = &vm->themeGroup;
+		groups[1] = &vm->flagGroup;
+		groups[2] = &vm->actionGroup;
 		for (i = 0; i < 3; i++) {
-			if (app->ui.navId == ids[i]) {
-				Ui_SetNavId(&app->ui, ids[(i + 1) % 3]);
-				break;
-			}
+			if (app->ui.navId == ids[i]) break;
 		}
-		if (i == 3) Ui_SetNavId(&app->ui, ids[0]);
+		next = (i < 3) ? (i + 1) % 3 : 0;
+		Ui_SetNavId(&app->ui, ids[next]);
+		UiButtonGroup_SetFocusVisible(groups[next], 1);
 		UiApp_Invalidate(app);
 		return 1;
 	}

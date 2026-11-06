@@ -27,6 +27,7 @@ typedef struct UiButtonGroup {
 	int selected;       /* SINGLE: 0..count-1, -1 = 无 */
 	unsigned mask;      /* MULTI: 每位一个选项 */
 	int focus;          /* 键盘焦点 index, -1 = 无 */
+	int focusVisible;   /* 1 = 显示焦点环 (键盘导航); 鼠标点击置 0 */
 	int changed;        /* 本帧 selected/mask 变化 */
 	int clicked;        /* 本帧点击/键盘激活 index, -1 = 无 */
 	UiRect rc;          /* 最近一次绘制矩形 (键盘失效用) */
@@ -36,6 +37,10 @@ void UiButtonGroup_Init(UiButtonGroup *g, UiId id, int mode, int count);
 void UiButtonGroup_SetCount(UiButtonGroup *g, int count);
 void UiButtonGroup_SetSelected(UiButtonGroup *g, int index);
 void UiButtonGroup_SetMask(UiButtonGroup *g, unsigned mask);
+
+/* 键盘焦点环可见性: Tab 进入组时由应用置 1; 鼠标点击会自动置 0,
+ * 方向键/Space/Enter 会重新置 1 (focus-visible 语义). */
+void UiButtonGroup_SetFocusVisible(UiButtonGroup *g, int visible);
 
 /* labels 长度 >= count; widths=NULL 等分, enabled=NULL 全可用.
  * variant 选择选中段的强调角色 (PRIMARY/SECONDARY -> primary,

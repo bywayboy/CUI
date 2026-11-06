@@ -67,6 +67,25 @@
 >    dashed`。新增 Element-Plus 风格 `UiButtonStyle`（type × appearance ×
 >    shape × dashed）与 `Ui_ButtonEx`；`UiButtonGroup` 选中/hover 改为一像素
 >    铺满到外轮廓的每角圆角填充。
+> 17. 修正 ButtonGroup 选中态边框：组外框内缩 0.5 DIP；选中段不再额外描边；
+>    与选中段相邻的分隔线跳过；键盘焦点环改为 `focusVisible` 控制并内缩
+>    2 DIP，鼠标点击不显示，消除外框/相邻边界的双线与半像素外溢。
+> 18. 新增 `UiScrollView` + `UiScrollLayout`：视口裁剪、输入命中裁剪、
+>    可见区间、高度 measure 缓存/前缀和、滚轮平滑、惯性甩动、触摸回弹、
+>    el-scrollbar 风格自动隐藏滚动条；`UiApp` 增加 `WM_MOUSEWHEEL` 与
+>    `wheel` 回调。新增 `samples/scrollview.c`，构建产出 `cui_scroll.exe`。
+> 19. 修正 ScrollView 在“滚动到底部 → 展开/收起最后一项”后无法回滚：
+>    内容变矮导致 `maxOffset` 变小时立即夹取 offset 并清速度；惯性不再
+>    每帧覆盖滚轮 target；小越界直接吸附，消除无法落到边界的死区。
+> 20. 按钮光晕改为预烘焙柔光纹理 + 一次 `DrawBitmap`（按尺寸/圆角/颜色/
+>    DPI 的 24 条 LRU 缓存），失败回退 3 圈描边；MVVM 样式条增加 disabled
+>    按钮，验证禁用底色/文字/无 hover/无点击。
+> 21. 新增 `UiTabBar` + `UiTabPager`：LINE/PILL/CARD header、指示条滑动、
+>    禁用项/键盘导航；横向/纵向/仅淡入转场、reverse、转场输入锁。
+>    新增 `samples/tabs.c`，构建产出 `cui_tabs.exe`。
+> 22. 完成 CARD 样式：`Gfx_StrokeRoundRectOpen` 缺边描边、
+>    `UiTabBar_ActiveRect` + `UiTabBar_DrawActive` 两阶段接缝、
+>    `cardBg/contentBg/mergeContent` 样式字段。
 
 ---
 
@@ -84,6 +103,8 @@
    - [8.9 ButtonGroup 与键盘导航](#89-buttongroup-与键盘导航)
    - [8.10 MVVM-lite](#810-mvvm-lite)
    - [8.11 按钮样式与每角圆角](#811-按钮样式与每角圆角)
+   - [8.12 ScrollView 滚动容器](#812-scrollview-滚动容器)
+   - [8.13 TabBar 与 TabPager](#813-tabbar-与-tabpager)
 9. [UiAnim 动画内核](#9-uianim-动画内核)
 10. [UiFrame 帧时钟](#10-uiframe-帧时钟)
 11. [UiEdit 编辑框](#11-uiedit-编辑框)
@@ -124,7 +145,7 @@ CUI 是一套 **纯 C/C++、零 CRT、即时模式（Immediate Mode）** 的 Win
 | 交互 | 即时模式，稳定 `UiId`，单帧事件 |
 | 动画 | 固定池：64 条目 × 16 通道，零分配 |
 | 输入法 | IMM32，组合串就地绘制，候选窗跟随插入点 |
-| 产物 | `cui_demo` / `cui_minimal` / `cui_advanced` / `cui_multi` / `cui_mvvm` |
+| 产物 | `cui_demo` / `cui_minimal` / `cui_advanced` / `cui_multi` / `cui_mvvm` / `cui_scroll` / `cui_tabs` |
 
 ---
 
@@ -211,6 +232,8 @@ bin\cui_minimal.exe
 bin\cui_advanced.exe
 bin\cui_multi.exe
 bin\cui_mvvm.exe
+bin\cui_scroll.exe
+bin\cui_tabs.exe
 ```
 
 成功输出示例：
@@ -1479,12 +1502,20 @@ int clicked = UiButtonGroup_Draw(&ui, &theme, rc,
   WARNING/SUCCESS/DANGER -> 对应角色；普通模式只影响键盘焦点色。
 - 视觉：外层背景/边框只画一次；hover/press/selected **铺满整段**，首/中/尾
   分别使用 `{R,0,0,R}`、`{0,0,0,0}`、`{0,R,R,0}` 的每角圆角，因此强调色会
-  一直填到组的外轮廓。外边框最后绘制，选中填充不会盖住它。
+  一直填到组的外轮廓。外边框最后绘制并**内缩 0.5 DIP**，1px 描边完整落在
+  组内，不会被选中填充盖住或产生半像素外溢。
+- 边框/分隔线：
+  - 相邻分段之间画 1px 分隔线；**与选中段相邻的分隔线不画**，避免灰线压在
+    强调色填充上，选中块靠颜色本身与邻段区分。
+  - 选中段不再额外画“选中边框”；边框只有组外轮廓和未选中段之间的分隔线。
+  - 键盘焦点环是内缩 2 DIP 的独立描边，不压外框和分隔线；**鼠标点击不显示
+    焦点环**（`focusVisible=0`），方向键/Home/End/Space/Enter 才置 1。
 - 键盘：
   - `Ui_SetNavId(&ui, group.id)` 让组成为导航焦点；
   - `UiButtonGroup_Key(&ui, &group, vk)` 处理方向键/Home/End/Space/Enter；
   - 返回 1 时立刻读取 `group.clicked`（键盘事件在帧外发生，下一帧 Draw 会清空它）；
-  - Tab 在组之间切换由应用负责（`Ui_SetNavId`）。
+  - Tab 在组之间切换由应用负责（`Ui_SetNavId`）；进入新组时调用
+    `UiButtonGroup_SetFocusVisible(&group, 1)` 显示焦点环，纯鼠标操作保持隐藏。
 - 事件语义：`clicked` 是本帧点击/键盘激活 index；`changed` 表示 selected/mask
   真的变了。鼠标点击在 Draw 中写回，键盘激活在 Key 中写回。
 
@@ -1618,11 +1649,13 @@ Ui_ButtonEx(&ui, Ui_Id("form.help", 0, 0), helpRc, "帮助", &text, 1);
 派生规则：
 
 - **SOLID + default**：`neutral.base/hover/press`，文字 `neutral.text`；
-  非 default 用 `role.base/hover/press`，文字按亮度自动选深/浅对比色
-  （`btn_on`），并带角色色光晕。
-- **PLAIN + default**：`neutral.soft` 底、`neutral.text` 字；
-  非 default 用 `role.soft` 底、`role.base` 字与 150 alpha 描边。悬停时底色
-  渐变为 `role.base`，文字同时混合到对比色，保证任意品牌色下都可读。
+  悬停底色进一步混向 `neutral.press`，并加一层 `primary` 混合描边，避免白底
+  按钮 hover 不明显；非 default 用 `role.base/hover/press`，文字按亮度自动
+  选深/浅对比色（`btn_on`），并带角色色光晕。
+- **PLAIN + default**：`neutral.soft` 底、`neutral.text` 字；悬停底色
+  混向 `neutral.press` 并加 `primary` 混合描边。非 default 用 `role.soft`
+  底、`role.base` 字与 150 alpha 描边。悬停时底色渐变为 `role.base`，
+  文字同时混合到对比色，保证任意品牌色下都可读。
 - **TEXT**：常态透明；default 用 `neutral.soft`、非 default 用 `role.soft`
   作为悬停/按下底，文字为 `text2` 或 `role.base`。
 - **shape**：`RECT` 用 `theme.buttonRadius`；`ROUND` 取 `h/2`；
@@ -1653,12 +1686,379 @@ Ui_ButtonEx(&ui, Ui_Id("form.help", 0, 0), helpRc, "帮助", &text, 1);
 ```
 
 - 选中/hover/按下都铺满整个分段矩形，不再内缩；强调色直接贴到组的外轮廓。
-- 分段之间画 1px 分隔线；外边框最后绘制，避免被选中填充覆盖。
+- 相邻选中段的填充各向外重叠 0.5 DIP，消除两段独立抗锯齿在交界留下的
+  背景色细缝；整段连续选中时看起来是一块完整的强调色。
+- 选中段相邻的分隔线省略，未选中段之间保留 1px 分隔线；组外边框最后绘制，
+  内缩 0.5 DIP，完整覆盖填充边缘。
+- 键盘焦点环内缩 2 DIP，只在 `focusVisible=1` 时显示；鼠标点击会清除它，
+  不会出现“选中边框”压在分隔线/外框上的双线。
 - 只有 2 段时首段即末段，自动得到左圆右圆；1 段等价于普通圆角按钮。
 - 组的外圆角取 `theme.buttonRadius`，与独立按钮视觉一致。
 
 完整可运行样例见 [samples/mvvm.c](../samples/mvvm.c) 顶部样式条：
-Solid / Plain / Text / Dashed / Round 五个按钮，以及其下的三组 ButtonGroup。
+Solid / Plain / Text / Dashed / Round / Disabled 六个按钮，以及其下的三组
+ButtonGroup。
+
+#### 8.11.5 光晕纹理与 disabled
+
+`Ui_DrawSurface` 的光晕优先走 `Gfx_DrawGlowRect()`：
+
+- 后端按 `(宽, 高, 圆角, glowW, 颜色 RGB, DPI)` 生成一张预乘 alpha 的
+  柔光纹理并缓存（24 条 LRU），动画只改 `DrawBitmap` 的 opacity；
+- 一次 `DrawBitmap` 完成，不再每帧画 3 圈描边，也没有离屏 RT /
+  `EndDraw` 目标切换；
+- 纹理创建失败（尺寸过大/内存不足）才回退原来的 3 圈描边；
+- 颜色/主题变化会按新 RGB 生成，旧纹理按 LRU 淘汰；resize/设备重建按
+  `generation` 清空缓存；
+- 光晕仍是统一圆角外扩，每角圆角按钮的填充/描边不受影响。
+
+按钮 disabled 已支持：
+
+```c
+Ui_ButtonEx(ui, id, rc, "禁用", &style, 0);   /* 最后一个参数 enabled=0 */
+```
+
+- 视觉：`neutral.soft` 底、`neutral.border` 边、`btnDisabledText` 字，
+  关闭光晕/hover/press；
+- 交互：`Ui_State` 不注册命中，`Ui_ButtonEx` 返回 `enabled && clicked`，
+  不会触发命令；
+- `Ui_Button` 的 `enabled` 参数同样生效；MVVM 样式条已放一个 disabled
+  按钮做回归样例。
+
+### 8.12 ScrollView 滚动容器
+
+设计细节与取舍见 [CUI-ScrollView-设计方案.md](CUI-ScrollView-设计方案.md)。
+这里只给上手用法。
+
+#### 8.12.1 定位
+
+`UiScrollView` 不是列表控件，而是“固定视口 + 可溢出内容面”：
+
+- 它只负责视口、`offset`、裁剪、物理和滚动条；
+- 内容尺寸 `contentW/contentH` 由应用用 `UiScrollLayout` 或自己的布局算好后传入；
+- 应用只遍历 `VisibleRange` 内的块绘制，完全在视口外的块不绘制、不注册命中；
+- 状态由应用持有（建议放 ViewModel），不是全局注册表。
+
+#### 8.12.2 最小用法
+
+```c
+#include "ui/ui_scroll.h"
+
+UiScrollView sv;
+UiScrollConfig cfg = UiScrollConfig_Desktop();
+
+UiScrollView_Init(&sv, Ui_Id("list", 0, 0), &cfg, NULL);
+
+/* 每帧 */
+UiScrollView_Tick(&sv, &app->ui, (float)dtMs);          /* 动画帧才需要 */
+UiScrollView_Begin(&sv, &app->ui, viewport, contentW, contentH);
+
+UiRect content = UiScrollView_ContentRect(&sv);          /* 已含 -offset */
+for (i = first; i <= last; i++) {
+    UiRect rc = ...;                                     /* 局部 y + content.y */
+    if (UiScrollView_Cull(&sv, rc)) continue;            /* 视口外直接跳过 */
+    draw_block(ui, i, rc);
+}
+
+UiScrollView_End(&sv, &app->ui);                         /* 弹裁剪 + 画滚动条 */
+```
+
+- `UiScrollView_ContentRect()` 的 `y` 已经减去 offset，直接当屏幕坐标用。
+- `UiScrollView_Cull()` 只做视口相交判断；绘制前调用可以省掉文本排版/UTF-8 转换。
+- `Begin/End` 内部成对调用 `Gfx_PushClip` 与 `Ui_PushClipRect`，因此**视口外露出的
+  部分也不会被点击**。
+- `UiScrollView_Busy()` 在惯性、回弹、滚动条淡出/隐藏倒计时期间返回 1，
+  在 `UiApp` 的 `animating` 回调里 OR 上它；静止后不再请求帧。
+
+#### 8.12.3 固定行高
+
+```c
+UiScrollLayout fixed;
+
+UiScrollLayout_Init(&fixed, NULL, 0);
+UiScrollLayout_SetPadding(&fixed, 6, 8);
+UiScrollLayout_SetFixed(&fixed, 10000, 34.0f);
+UiScrollLayout_Commit(&fixed);
+
+UiScrollView_Begin(&sv, &ui, viewport, viewport.w, fixed.contentH);
+UiScrollLayout_VisibleRange(&fixed, sv.offset, viewport.h, &first, &last);
+for (i = first; i <= last; i++) {
+    UiRect row = UiScrollLayout_ItemRect(&fixed, i, UiScrollView_ContentRect(&sv));
+    if (UiScrollView_Cull(&sv, row)) continue;
+    /* 只画可见行 */
+}
+UiScrollView_End(&sv, &ui);
+```
+
+固定模式 `contentH` 是公式，`VisibleRange` 直接算下标，不需要每项缓存。
+
+#### 8.12.4 变高内容与 measure 缓存
+
+```c
+UiScrollLayout lay;
+UiScrollItem items[COUNT];          /* 调用方数组, 库不分配 */
+
+UiScrollLayout_Init(&lay, items, COUNT);
+UiScrollLayout_SetPadding(&lay, 8, 8);
+UiScrollLayout_SetGap(&lay, 10);
+UiScrollLayout_SetCount(&lay, COUNT);
+for (i = 0; i < COUNT; i++)
+    UiScrollLayout_SetItemFlags(&lay, i, UI_SCROLL_ITEM_WIDTH_DEPENDENT);
+
+/* 每帧, 只重测失效项 */
+UiScrollLayout_SetWidth(&lay, innerW);
+for (i = 0; i < COUNT; i++) {
+    if (UiScrollLayout_ItemNeedsMeasure(&lay, i, block[i].rev)) {
+        float h = block_measure(&block[i], innerW);
+        UiScrollLayout_SetItemHeight(&lay, i, block[i].rev, h);
+    }
+}
+UiScrollLayout_Commit(&lay);         /* 重算前缀 y / contentH, revision++ */
+
+UiScrollView_Begin(&sv, &ui, viewport, innerW, lay.contentH);
+UiScrollLayout_VisibleRange(&lay, sv.offset, viewport.h, &first, &last);
+for (i = first; i <= last; i++) {
+    UiRect rc = UiScrollLayout_ItemRect(&lay, i, UiScrollView_ContentRect(&sv));
+    if (UiScrollView_Cull(&sv, rc)) continue;
+    draw_card(ui, &block[i], rc);
+}
+UiScrollView_End(&sv, &ui);
+```
+
+失效规则：
+
+- 块内容变了：应用把该块 `rev++`；下一帧 `ItemNeedsMeasure` 返回 1，
+  只重测这一项，`Commit` 更新它之后所有项的 y 与 contentH。
+- 容器宽度变了：`SetWidth` 只失效带 `UI_SCROLL_ITEM_WIDTH_DEPENDENT` 的项；
+  固定高度/图片块不受影响。
+- 字体、DPI、主题字体变了：由应用递增相关 `rev` 或调用
+  `UiScrollLayout_InvalidateAll`。
+- 滚动帧不 measure、不 Commit；只做可见区间和绘制。
+
+> `UiScrollLayout` 负责“缓存 + 前缀和 + 可见区间”，不负责知道子控件类型。
+> 任意嵌套布局只要最终测出每块高度，就能接入。
+
+#### 8.12.5 滚轮、惯性与回弹
+
+`UiApp` 已接 `WM_MOUSEWHEEL`，滚动容器每帧登记视口；滚轮落在哪个视口，
+`UiContext` 就把目标 id 交给该容器。应用只需：
+
+```c
+cb.tick = on_tick;
+cb.animating = on_animating;
+
+static void on_tick(UiApp *app, double dtMs, void *user)
+{
+    UiScrollView_Tick(&vm->sv, &app->ui, (float)dtMs);
+}
+
+static int on_animating(UiApp *app, void *user)
+{
+    return UiScrollView_Busy(&vm->sv);
+}
+```
+
+配置：
+
+```c
+UiScrollConfig c = UiScrollConfig_Desktop();
+c.wheelStep = 48.0f;       /* DIP / 格 */
+c.wheelTauMs = 120.0f;     /* 0 = 立即 */
+c.flingDecel = 2600.0f;    /* 惯性减速度 */
+c.bounce = 0;              /* 桌面默认不回弹 */
+c.maxOverscroll = 40.0f;
+
+UiScrollConfig t = UiScrollConfig_Touch();  /* bounce=1 */
+```
+
+- 滚轮只做短平滑，不做长惯性；惯性主要给 `UiScrollView_Fling()` 或后续触摸手势。
+- 回弹只允许 `maxOverscroll`，用阻尼弹簧回 0；`overscrollResist` 控制外向速度衰减。
+- 内容/视口变矮导致 `maxOffset` 变小时，`Begin` 会**立即把 offset 夹到新的底部**
+  并清速度，滚动条 thumb 位置同帧刷新；不会出现 thumb 停在越界位置、滚轮被
+  回弹状态吞掉的情况。
+- 惯性积分只在速度归零时把 target 对齐实际位置；滚轮可以随时中断惯性/回弹，
+  不会被每帧的 target 覆盖。
+- `UiScrollView_ScrollTo(sv, ui, offset, animate)` 可做“回到顶部/定位”。
+- `UiScrollView_EnsureVisible(sv, ui, localY, h)` 可做键盘/表单聚焦自动滚入。
+
+#### 8.12.6 el-scrollbar 风格滚动条
+
+- overlay，不占内容宽度；默认宽 6 DIP、thumb 最小 24 DIP、右侧内缩 2 DIP。
+- 悬停/滚动时淡入，停止后 `barHideDelayMs` 开始淡出，`barFadeMs` 完成。
+- thumb 可拖拽；点击轨道翻页；完全隐藏时不注册命中，不挡内容点击。
+- 颜色从 `UiTheme` 解析，换肤自动生效。可覆盖：
+
+```c
+UiScrollbarStyle bs = UiScrollbarStyle_Default();
+bs.width = 8.0f;
+bs.minThumb = 32.0f;
+bs.thumb = 0x663B82F6;       /* 0 = 主题默认 */
+bs.thumbHover = 0xAA3B82F6;
+bs.alwaysVisible = 1;        /* 覆盖 autoHideBar */
+bs.reserveSpace = 1;         /* 内容右侧预留 thumb 槽, 不遮挡控件 */
+
+UiScrollView_Init(&sv, id, &cfg, &bs);
+```
+
+#### 8.12.6.1 四向 padding 与不遮挡
+
+```c
+UiScrollPadding pad = { 6, 4, 8, 6 };   /* left, top, right, bottom */
+UiScrollView_SetPadding(&sv, pad);
+
+/* measure 前先取内容可用宽度, 与 Begin 内部计算一致 */
+float cw = UiScrollView_ContentWidth(&sv, viewport);
+contentHeight = measure_blocks(cw, ...);
+
+UiScrollView_Begin(&sv, &ui, viewport, cw, contentHeight);
+```
+
+- `viewport` 是外层矩形：滚轮/hover/滚动条以它为准。
+- `viewport` 去掉四向 padding，得到内容裁剪框 `inner`；上下 padding 固定，
+  不随内容滚动，左右 padding 缩窄内容宽度。
+- `reserveSpace=1` 时再扣除 `bar.width + bar.margin`，thumb 完全落在内容区
+  右侧的槽里，不会压住按钮/文字；默认 0 是 el-scrollbar 的 overlay 行为。
+- 如果只想留一点缝而不预留整条槽，可只设 `pad.right`（大于 thumb 宽即可）。
+- `UiScrollView_Cull()`、输入命中和 `ContentRect` 都使用 `inner`，所以 padding
+  区域不会误命中内容控件。
+
+#### 8.12.7 命中裁剪与 wheel 目标
+
+`Ui_PushClipRect/PopClipRect` 维护输入裁剪栈：控件注册时保存与裁剪的交集，
+`Ui_HitTest` 同时检查控件矩形和裁剪。这样部分露出视口的行不会在视口外被点击。
+`Ui_RegisterWheelTarget` 让 `Ui_OnMouseWheel` 选择最后登记（内层/后画优先）的
+滚动视口；v1 不做滚动链。
+
+#### 8.12.8 性能与边界
+
+- 视口 400 DIP、行高 34 DIP：绘制约 12~13 行，10k 行与 100 行绘制成本相同。
+- `UI_MAX_WIDGETS` 只有 256，长列表必须虚拟化；这不是可选优化，而是正确性要求。
+- 滚动时整视口失效是必要的；只做滚动条淡出时只失效滚动条窄条。
+- 文本布局缓存 128 条，可见行通常远小于该上限。
+- 不在滚动内容里创建 D2D layer/effect；滚动条用普通绘制 + alpha。
+- v1 限制：纵向滚动、不自动做滚动锚定、圆角视口按矩形裁剪、
+  嵌套滚动不向上传递、双轴自由画布未开放。锚定可用
+  `UiScrollLayout_ItemY()` 计算 delta 后由应用调整 `offset`。
+
+完整样例：[samples/scrollview.c](../samples/scrollview.c)（10k 固定行 + 40 个
+变高卡片 + 展开/收起 + 回弹 + 自动隐藏滚动条）。
+
+### 8.13 TabBar 与 TabPager
+
+设计说明：[CUI-Tab-设计方案.md](CUI-Tab-设计方案.md)。
+
+#### 8.13.1 分层
+
+- `UiTabBar`：只画 header，维护 `selected/focus/disabledMask/changed`。
+- `UiTabPager`：只维护 `from/to/progress`，用回调绘制当前页/旧页/新页。
+- 页面仍是即时模式绘制，不保存控件树；两个状态都由应用持有。
+
+```c
+#include "ui/ui_tab.h"
+
+UiTabBar bar;
+UiTabPager pager;
+UiTabStyle style = UiTabStyle_Line();
+
+UiTabBar_Init(&bar, Ui_Id("tabs.bar", 0, 0), 4);
+UiTabPager_Init(&pager, Ui_Id("tabs.pager", 0, 0), NULL);
+
+/* 每帧 */
+int prev = bar.selected;
+int clicked = UiTabBar_Draw(&bar, &ui, headerRc, labels, &style, 1);
+if (clicked >= 0 && bar.selected != prev)
+    UiTabPager_GoTo(&pager, &ui, bar.selected, 1);
+UiTabPager_Draw(&pager, &ui, contentRc, draw_page, vm);
+```
+
+页面回调：
+
+```c
+static void draw_page(UiContext *ui, void *user, int index,
+    UiRect rc, int interactive)
+{
+    /* rc 已包含滑动偏移; 直接在其中布局.
+     * interactive=0 表示转场中, 但 UiContext 已经压了输入锁,
+     * 控件通常可以照常绘制. */
+}
+```
+
+#### 8.13.2 TabBar 样式
+
+| 样式 | 视觉 | 默认 |
+|---|---|---|
+| `UI_TAB_LINE` | 下划线指示条 + header 底部 1px 分隔线；悬停为浅色底 + 文字提亮 | 默认 |
+| `UI_TAB_PILL` | `neutral.soft` 胶囊底，选中项白底/边框，等宽 | 可选 |
+| `UI_TAB_CARD` | 活动 tab 顶部圆角、底边留空，与内容面板连通 | 可选 |
+
+```c
+UiTabStyle line = UiTabStyle_Line();
+line.stretch = 0;          /* 文字宽度+padX */
+line.showDivider = 1;
+
+UiTabStyle pill = UiTabStyle_Pill();
+pill.stretch = 1;          /* 等宽 */
+
+UiTabStyle card = UiTabStyle_Card();
+card.mergeContent = 1;    /* 活动 tab 与内容面板连通 */
+```
+
+CARD 需要两阶段绘制：
+
+```c
+UiTabBar_Draw(&bar, &ui, headerRc, labels, &card, 1); /* header/命中 */
+/* 应用画内容面板; 顶边在 UiTabBar_ActiveRect() 区间断开 */
+UiTabPager_Draw(&pager, &ui, contentRc, draw_page, vm);
+UiTabBar_DrawActive(&bar, &ui, labels, &card);        /* 活动 tab 覆盖接缝 */
+```
+
+- CARD 的 header/内容区之间不要留 gap；活动 tab 填充会向内容区延伸 1 DIP，
+  盖住面板顶边。
+- `UiTabBar_DrawActive` 只画不注册，不改变选中/命中；LINE/PILL 为空操作。
+- 内容面板由应用绘制，因此 `contentBg` 应设为面板实际底色（默认 `theme.card`）。
+
+- 指示条宽度 = 文字宽 + 12 DIP，夹在 tab 项宽度内；选中变化时平滑滑动。
+- LINE 悬停不加底色；PILL 悬停有 soft 底，按下再加深。
+- 禁用项：`disabledMask` 对应位为 1，鼠标不命中、键盘跳过、文字变灰。
+- 键盘：Tab 进入组后，方向键/Home/End **移动 focus**，Space/Enter 才切换
+  selected（与 ButtonGroup 一致）；`UiTabBar_SetFocusVisible` 控制焦点环。
+- 数量多时 v1 只裁剪不换行；后续复用横向 `UiScrollView`。
+
+#### 8.13.3 Pager 转场
+
+```c
+UiTabPagerConfig cfg;
+ZeroMemory(&cfg, sizeof(cfg));
+cfg.axis = UI_TAB_AXIS_HORIZONTAL;  /* 或 VERTICAL / NONE(仅淡入) */
+cfg.fade = 0;                       /* 1 = 滑动同时淡入淡出 */
+cfg.reverse = 0;                    /* 1 = 翻转滑动方向 */
+cfg.durationMs = 260.0f;
+
+UiTabPager_Init(&pager, Ui_Id("tabs.pager", 0, 0), &cfg);
+```
+
+- `GoTo(index, animate)`：转场中再次切换会先 snap 到当前目标，再开始新转场，
+  不会三页叠加。
+- `Tick(dtMs)` 推进 progress；`UiTabPager_Busy` 接入 `UiApp.animating`。
+- `Draw` 负责：
+  - 旧页/新页矩形按方向偏移（横/纵）；
+  - 可选 `Gfx_PushAlpha` 淡入淡出；
+  - `Gfx_PushClip` + `Ui_PushClipRect` 裁剪；
+  - `Ui_PushInputBlock`：转场期间页面控件不注册命中/滚轮目标，header 不受影响。
+- `reverse` 只翻转方向符号：从左向右/从右向左、从上向下/从下向上都能覆盖。
+- 页面内控件 ID 必须包含页索引，旧页/新页同时绘制才不会撞 ID。
+
+#### 8.13.4 边界
+
+- v1 不做关闭按钮、badge、手势滑动、自动高度、页面 keep-alive。
+  CARD 的几何、两阶段绘制和验收记录见
+  [CUI-Tab-设计方案.md](CUI-Tab-设计方案.md) 第 7 节。
+- 固定内容视口；不同页面高度不要自动改外层高度。
+- 转场期间页面输入整体锁定（约 260ms）；header 仍可点击、键盘仍可切页。
+- 滚轮不用于切页，避免和页面内 ScrollView 冲突；触摸手势后续做轴锁定。
+
+完整样例：[samples/tabs.c](../samples/tabs.c)（LINE/PILL/CARD、横/纵/淡入、
+reverse、键盘导航、转场输入锁）。
 
 
 ---
@@ -2657,6 +3057,17 @@ README 第 10 节给出了路线。核心步骤：
     `group.clicked`，下一帧 Draw 会清空本帧事件。
 31. **没有 Radio/Checkbox 内置控件**：目前只提供 ButtonGroup；RadioGroup/
     Checkbox 可按同一“应用持有状态 + 本帧事件”模式扩展。
+32. **ScrollView 只做纵向**：v1 不提供水平/双轴自由滚动；圆角视口按矩形裁剪，
+    嵌套滚动不向上传递。内容尺寸必须由应用的 measure/layout 提供，库不会
+    遍历控件树自动发现高度。
+33. **ScrollView 的 measure 是全量缓存**：改宽/数据变更时 O(N) 重算，滚动帧
+    仍是 O(可见)。上万异构项若不能接受首次全量 measure，需要后续 provider +
+    估算总高 + scroll anchoring；这不是 v1 的能力。
+34. **Tab 没有关闭按钮/badge**：CARD/LINE/PILL 已支持；关闭按钮、badge、
+    横向溢出滚动、手势滑动仍未实现。header 数量超出时只裁剪，不换行。
+35. **TabPager 转场期间页面输入整体锁定**（约 260ms），header 仍可操作；
+    页面内控件在转场前/后正常。若需要“新页先可点”，要重新设计命中矩形
+    随位移变化的注册方式。
 
 ---
 
@@ -2797,7 +3208,8 @@ Ui_FlexRow / Ui_FlexCol
 
 ```c
 UiButtonGroup_Init / UiButtonGroup_SetCount / UiButtonGroup_SetSelected
-UiButtonGroup_SetMask / UiButtonGroup_Draw / UiButtonGroup_Key
+UiButtonGroup_SetMask / UiButtonGroup_SetFocusVisible
+UiButtonGroup_Draw / UiButtonGroup_Key
 ```
 
 **UiPaint / UiTheme**
@@ -2814,6 +3226,32 @@ UiTheme_SetTheme / UiTheme_SetColors / UiTheme_Touch
 Gfx_Corners / Gfx_CornersAll
 Gfx_FillRoundRectCorners / Gfx_FillRoundRectCornersGradV
 Gfx_StrokeRoundRectCorners / Gfx_StrokeRoundRectCornersDashed
+Gfx_DrawGlowRect
+```
+
+**UiScrollView / UiScrollLayout**
+
+```c
+UiScrollView_Init / UiScrollView_Begin / UiScrollView_End
+UiScrollView_SetPadding / UiScrollView_ContentWidth
+UiScrollView_Tick / UiScrollView_Busy
+UiScrollView_ContentRect / UiScrollView_MaxOffset / UiScrollView_Cull
+UiScrollView_ScrollTo / UiScrollView_EnsureVisible / UiScrollView_Fling
+UiScrollView_Wheel
+UiScrollConfig_Desktop / UiScrollConfig_Touch / UiScrollbarStyle_Default
+UiScrollLayout_Init / SetCount / SetPadding / SetGap / SetFixed / SetWidth
+UiScrollLayout_ItemNeedsMeasure / SetItemFlags / SetItemHeight
+UiScrollLayout_InvalidateItem / InvalidateAll / Commit
+UiScrollLayout_ContentHeight / ItemY / VisibleRange / ItemRect
+```
+
+**UiTabBar / UiTabPager**
+
+```c
+UiTabStyle_Line / UiTabStyle_Pill / UiTabStyle_Card
+UiTabBar_Init / SetCount / SetSelected / SetDisabledMask / SetFocusVisible
+UiTabBar_Draw / DrawActive / ActiveRect / Key
+UiTabPager_Init / GoTo / Active / Busy / Tick / Draw
 ```
 
 **UiWidgets / UiToast / UiInput / UiProgress**
@@ -2882,7 +3320,8 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 | `WM_ERASEBKGND` | `return 1` | 避免闪烁 |
 | `WM_NCHITTEST` | 自绘标题带返回 `HTCAPTION` | 排除关闭键区域 |
 | `WM_MOUSEMOVE` | `TrackMouseEvent` + `Ui_OnMouseMove` | 坐标 / scale |
-| `WM_MOUSELEAVE` | `Ui_OnMouseLeave` | |
+| `WM_MOUSELEAVE` | `Ui_OnMouseLeave` | 清 hover、mouseOver |
+| `WM_MOUSEWHEEL` | `Ui_OnMouseWheel` + 可选 `wheel` 回调 | 屏幕坐标转客户区；`UiApp` 已内置 |
 | `WM_LBUTTONDOWN` | `SetCapture` + `SetFocus` + `Ui_OnMouseDown` | |
 | `WM_LBUTTONUP` | `Ui_OnMouseUp` + `ReleaseCapture` | |
 | `WM_CAPTURECHANGED` | `Ui_OnCaptureChanged` | |
@@ -2922,6 +3361,12 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 | 布局 UiStack/UiFlex | [src/ui/ui_layout.c](../src/ui/ui_layout.c) |
 | 全局主题同步 | [src/ui/ui_theme.c](../src/ui/ui_theme.c) |
 | 多窗口/模态样例 | [samples/multiwindow.c](../samples/multiwindow.c) |
+| ScrollView 容器 | [src/ui/ui_scroll.c](../src/ui/ui_scroll.c) |
+| ScrollView 设计 | [docs/CUI-ScrollView-设计方案.md](CUI-ScrollView-设计方案.md) |
+| ScrollView 样例 | [samples/scrollview.c](../samples/scrollview.c) |
+| Tab 容器 | [src/ui/ui_tab.c](../src/ui/ui_tab.c) |
+| Tab 设计 | [docs/CUI-Tab-设计方案.md](CUI-Tab-设计方案.md) |
+| Tab 样例 | [samples/tabs.c](../samples/tabs.c) |
 | 窗口拖边缩放 | [src/ui/ui_app.c:102](../src/ui/ui_app.c#L102) |
 | z-index / 命中 | [src/ui/ui_context.c:116](../src/ui/ui_context.c#L116) |
 | 模态 blocker | [src/ui/ui_context.c:41](../src/ui/ui_context.c#L41) |
@@ -2969,11 +3414,11 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
   进度 overlay 按新令牌重建；浅色/深色截图均正常。
 - 壳/输入/进度回归：`cui_minimal.exe` 输入、回车提交、退出正常；`cui_demo.exe`
   由 `UiApp + UiInput + UiProgress` 重写为 **340 行**（原 893 行），前台 60Hz
-  无 Toast 时应用进程 CPU 约 **0.00%**；五份 exe 均为 0CRT。
+  无 Toast 时应用进程 CPU 约 **0.00%**；七份 exe 均为 0CRT。
 - 0CRT 增强回归：独立自测程序覆盖 `%d/%u/%x/%s/%c/%lld/%zu/%08x/%.2f/%-5d`
   与边界截断、内存 0/7/15/16/31/32/63/64/65/511/512/513/4095/4096/4097/
   8192/10000 字节、字符串、malloc/calloc/realloc/qsort/bsearch，退出码 0；
-  五份 exe 在新 crtstub 下均正常启动/输入/关闭。
+  五份 exe 在新 crtstub 下均正常启动/输入/关闭；新增 `cui_scroll` 同样通过。
 - **布局回归**：纯矩形自测覆盖 `UiStack` padding/gap/固定/Fill/Right/对齐、
   `UiFlex` basis+grow（50:80）、max 夹取重分、无 shrink 溢出；demo 表单
   迁移为 `UiStack`，按钮行用 `UiFlex` 弹簧把主题按钮推到右侧；200% DPI、
@@ -2986,6 +3431,42 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
   hover/press/disabled 状态与对比文字正常；ButtonGroup 首/中/尾段分别呈
   左圆-全直-右圆，选中色铺满到外轮廓且外边框不被覆盖；2 段/3 段/宽度不等
   三种布点均通过截图检查；每角路径几何在连续帧中复用缓存，未见新增长期缓存项。
+- **ButtonGroup 选中边框/焦点环回归**：鼠标选中后不再出现蓝色“选中边框”，
+  外框为完整 1px 统一色；选中段两侧分隔线省略；键盘 Tab/Home/方向键显示
+  内缩 2 DIP 的焦点环，Space 切换后焦点环仍在，鼠标点击即隐藏；多选 A/B/C
+  连续选中时填充无抗锯齿接缝，整组呈连续强调色；深浅两套主题均通过截图检查。
+- **ScrollView 回归**：200% DPI 下 `cui_scroll.exe` 左侧 10,000 行列表只绘制
+  16~17 行，滚轮/甩动后 offset 从 0 到 144/304，状态栏可见区间正确推进；
+  拖动滚动条 thumb 可跳到 offset≈172482（5,073 行附近）；右侧 40 个变高卡片
+  点击展开/收起后只重测该项，contentH/可见区间/thumb 长度同步更新；
+  返回顶部按钮把 offset 平滑归零；“回弹”按钮使触摸配置的 var 视图出现
+  offset=-17 的越界，随后弹簧回到 0；鼠标离开视口 1.6 秒后两个滚动条
+  均淡出，静止 2 秒 CPU **0ms**；7 个 exe 全部 0CRT，原有 demo/minimal/mvvm
+  启动/关闭回归通过。
+- **ScrollView padding/滚动条槽回归**：样例设置 `{4,4,6,6}` 四向 padding 与
+  `reserveSpace=1`；100%/200% DPI 下首行与左右边缘保持内边距，行尾
+  “固定高度 34 DIP”不再被 thumb 遮挡，滚动条轨道落在预留槽内；
+  `ContentWidth` 与 Begin 内部宽度一致，变高卡片 measure 无横向跳动。
+- **ScrollView 缩高回滚回归**：在变高卡片视图滚动到底部 → 展开最后一张
+  (#39) → 再滚到新底部 → 收起 #39（contentH 变小）后，offset 立即夹到
+  新 `maxOffset`，thumb 回到合法底部，`Busy=0`，静止 CPU 0；随后滚轮
+  （offset 4594→4294）和拖动 thumb 均可正常回滚；修复前会出现
+  offset 略大于 max、速度/目标来回覆盖且 Busy 长期为 1 的 60Hz 空转。
+- **按钮悬停可见性/disabled 回归**：`cui_tabs.exe` 顶部工具栏按钮由 PLAIN
+  改为 SOLID 后，hover 呈明显灰/浅蓝底 + primary 混合描边；TabBar LINE 悬停
+  增加 primary 调和的浅色底，不再只有文字变化；PILL/CARD 非活动项悬停为
+  `primary.soft` 底 + primary alpha 描边，选中项仍保持白/面板底 + 蓝字；
+  disabled 仍保持灰底灰字、无 hover/光晕。
+- **光晕/disabled 回归**：Solid/Plain hover 光晕为预烘焙柔光纹理，一次
+  `DrawBitmap`，无 3 圈描边带；同尺寸/颜色连续 hover 缓存命中，主题切换
+  后按新角色色重建；`Ui_ButtonEx(..., enabled=0)` 不注册命中、不发光、
+  返回 false；7 个 exe 0CRT。
+- **TabBar/TabPager 回归**：`cui_tabs.exe` LINE/PILL/CARD 三种 header 正常；
+  CARD 活动项上圆角、底边留空并与内容面板连通，`ActiveRect` 分段顶边 +
+  `DrawActive` 覆盖后无 2px 双线；点击页签横向滑动 260ms，PILL 下选中胶囊
+  切换；反向翻页方向翻转；纵向模式上下滑动；仅淡入模式旧页/新页交叉淡出；
+  转场期间页面按钮不响应、header 仍可点击；Tab + 方向键 + Space 切换页并
+  显示焦点环；转场结束 progress=100%、静止 CPU 0；`cui_tabs.exe` 为 0CRT。
 - **多窗口/全局主题/模态回归**：`cui_multi.exe` 两个 HWND 各自持有
   Gfx/UiTheme/UiContext/UiProgress/UiToast；在主窗切主题，二级窗同步换肤并
   自动重绘（像素从浅色 245,248,254 变为深色 15,20,29）；二级窗独立 Toast

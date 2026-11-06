@@ -6,6 +6,10 @@ static void draw_glow(Gfx *g, UiRect rc, const UiSurfaceStyle *s, float intensit
 {
 	int base, k;
 	if (!g || !s->glow || intensity <= 0.004f) return;
+	/* 首选预烘焙柔光纹理: 一次 DrawBitmap, 无离屏 RT.
+	 * 纹理创建失败才退回 3 圈描边 (旧路径). */
+	if (Gfx_DrawGlowRect(g, rc, s->radius, s->glowW, s->glow, intensity))
+		return;
 	base = (int)((s->glow >> 24) & 0xFF);
 	for (k = 2; k >= 0; k--) {
 		/* 随亮度向外扩张: 0 -> 贴着边缘, 1 -> 完整光晕 "从边缘亮起来" */

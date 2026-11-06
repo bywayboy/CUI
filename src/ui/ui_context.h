@@ -15,6 +15,8 @@
 #include "ui/ui_anim.h"
 
 #define UI_MAX_WIDGETS 256
+#define UI_MAX_WHEEL_TARGETS 16
+#define UI_MAX_CLIP_DEPTH 8
 #define UI_LAYER_BASE    0
 #define UI_LAYER_OVERLAY 1
 
@@ -26,9 +28,16 @@
 typedef struct {
 	UiId id;
 	UiRect rect;
+	UiRect clip;      /* 注册时的输入裁剪; w<=0 = 无裁剪 */
 	int layer;
 	int z;
 } UiWidget;
+
+typedef struct {
+	UiId id;
+	UiRect rect;
+	UiRect clip;
+} UiWheelTarget;
 
 struct UiContext {
 	HWND hwnd;
@@ -38,6 +47,8 @@ struct UiContext {
 	float width, height;      /* 视口尺寸（DIP） */
 	float mouseX, mouseY;     /* 最近鼠标位置（DIP） */
 	int mouseDown;
+	int mouseOver;            /* 光标在窗口客户区内 (WM_MOUSELEAVE 清 0) */
+	int inputBlock;           /* >0: 本帧不注册控件/滚轮目标 (翻页转场) */
 
 	UiWidget widgets[UI_MAX_WIDGETS];
 	int widgetCount;
@@ -46,6 +57,18 @@ struct UiContext {
 	int zDepth;
 	int zStack[8];
 	int layerStack[8];
+
+	/* 输入裁剪: 注册控件时取当前裁剪与控件矩形的交集; 命中必须同时落在
+	 * clip 内. ScrollView 用它阻止部分露出视口的控件在视口外被点击. */
+	UiRect hitClip;           /* 当前裁剪 (w<=0 = 无) */
+	int hitClipDepth;
+	UiRect hitClipStack[UI_MAX_CLIP_DEPTH];
+
+	/* 滚轮路由: 本帧登记的滚动区域, 最后登记(内层/后画)优先. */
+	UiWheelTarget wheelTargets[UI_MAX_WHEEL_TARGETS];
+	int wheelTargetCount;
+	UiId wheelTarget;         /* 待消费的滚轮目标 */
+	float wheelDelta;         /* 累计滚轮格数 (+ = 向上) */
 
 	UiId hover;
 	UiId pressed;
@@ -101,6 +124,22 @@ void Ui_SetNavId(UiContext *ctx, UiId id);
  * 用于合成器 Toast (遮罩在独立的 DComp layer 上, 主窗不需要重画).
  * 传 UI_ID_NONE 解除. */
 void Ui_SetModal(UiContext *ctx, UiId id);
+
+/* 输入裁剪: 与 Gfx_PushClip 配套使用, 常与 Gfx_PushClip/PopClip 成对.
+ * 只影响命中/注册矩形, 不影响绘制. 可嵌套 (最多 UI_MAX_CLIP_DEPTH).
+ * 返回 1 = 已压栈 (必须对应 Pop); 0 = 栈满, 未改变状态. */
+int  Ui_PushClipRect(UiContext *ctx, UiRect rc);
+void Ui_PopClipRect(UiContext *ctx);
+
+/* 转场输入锁: 压栈期间 Ui_State 不产生 hover/press, 新控件不注册命中,
+ * 滚轮目标也不登记. 只影响输入, 不影响绘制. */
+void Ui_PushInputBlock(UiContext *ctx);
+void Ui_PopInputBlock(UiContext *ctx);
+
+/* 滚轮区域: 每帧由可滚动容器登记; Ui_OnMouseWheel 选择最后登记且命中的
+ * 目标, 把累计 delta 放入 wheelTarget/wheelDelta, 由容器在 Begin 中消费. */
+void Ui_RegisterWheelTarget(UiContext *ctx, UiId id, UiRect rc);
+void Ui_OnMouseWheel(UiContext *ctx, float x, float y, float delta);
 
 void Ui_OnMouseMove(UiContext *ctx, float x, float y);
 void Ui_OnMouseDown(UiContext *ctx, float x, float y);

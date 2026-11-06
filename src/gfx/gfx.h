@@ -98,6 +98,11 @@ void Gfx_StrokeRoundRectCorners(Gfx *g, GfxRect r, GfxCorners corners,
 	GfxColor c, float width);
 void Gfx_StrokeRoundRectCornersDashed(Gfx *g, GfxRect r, GfxCorners corners,
 	GfxColor c, float width);
+
+/* 缺边描边: edgeMask bit0=上, bit1=右, bit2=下, bit3=左; 0 = 全部.
+ * 用于 Card Tab 的活动项 (上/左/右, 底边留给内容面板). */
+void Gfx_StrokeRoundRectOpen(Gfx *g, GfxRect r, GfxCorners corners,
+	unsigned edgeMask, GfxColor c, float width);
 void Gfx_FillEllipse(Gfx *g, float cx, float cy, float rx, float ry, GfxColor c);
 void Gfx_FillEllipseGradV(Gfx *g, float cx, float cy, float r, GfxColor top, GfxColor bottom);
 void Gfx_StrokeRoundRect(Gfx *g, GfxRect r, float radius, GfxColor c, float width);
@@ -124,6 +129,13 @@ void Gfx_Text(Gfx *g, GfxFont *f, const char *utf8, GfxRect rc, GfxColor color, 
 GfxBitmap *Gfx_CreateBitmap(Gfx *g, int w, int h, const uint8_t *bgra);
 void Gfx_DestroyBitmap(Gfx *g, GfxBitmap *b);
 void Gfx_DrawBitmap(Gfx *g, GfxBitmap *b, GfxRect dst);
+
+/* 预烘焙柔光: 内部按 (尺寸/圆角/glowW/颜色/DPI) 缓存一张 9-slice 不可见,
+ * 直接拉伸的 RGBA 柔光纹理, 一次 DrawBitmap 完成; 纹理在小/中按钮尺寸下
+ * 缩放误差不可见. 返回 1 = 已绘制 (intensity<=0 或不可见也返回 1);
+ * 0 = 纹理创建失败, 调用方可退回描边光晕. */
+int Gfx_DrawGlowRect(Gfx *g, GfxRect rc, float radius, float glowW,
+	GfxColor color, float intensity);
 
 /* 合成器动画 overlay: 一条静态渐变条画在独立的小 swapchain 上, 由 DComp
  * 子 visual 显示; 只有 reveal (0..1) 变化时才 Commit, 由 DWM 做补间。

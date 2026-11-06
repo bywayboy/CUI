@@ -38,6 +38,7 @@
 
 extern "C" void *memset(void *d, int c, size_t n);
 extern "C" void *memcpy(void *d, const void *s, size_t n);
+extern "C" double sqrt(double x);
 
 #define SAFE_RELEASE(p) do { if (p) { (p)->Release(); (p) = NULL; } } while (0)
 
@@ -84,6 +85,15 @@ typedef struct {
 	uint32_t lastUse;
 	ID2D1PathGeometry *geo;
 } GfxCornerCache;
+
+#define GFX_GLOW_CACHE_MAX 24
+typedef struct {
+	int wq, hq, rq, gq;  /* 0.5 DIP 量化 */
+	int scaleq;
+	GfxColor rgb;
+	uint32_t lastUse;
+	GfxBitmap *bmp;
+} GfxGlowCache;
 
 struct Gfx {
 	HWND hwnd;
@@ -138,6 +148,10 @@ struct Gfx {
 
 	GfxCornerCache corners[GFX_CORNER_CACHE_MAX];
 	uint32_t cornerClock;
+
+	GfxGlowCache glows[GFX_GLOW_CACHE_MAX];
+	uint32_t glowClock;
+	int glowGen;
 
 	GfxOverlay *overlays;
 	GfxLayer *layers;
@@ -688,6 +702,13 @@ void Gfx_Shutdown(Gfx *g)
 	SAFE_RELEASE(g->alphaLayer);
 	for (int i = 0; i < GFX_CORNER_CACHE_MAX; i++)
 		SAFE_RELEASE(g->corners[i].geo);
+	for (int i = 0; i < GFX_GLOW_CACHE_MAX; i++) {
+		if (g->glows[i].bmp) {
+			SAFE_RELEASE(g->glows[i].bmp->bmp);
+			HeapFree(GetProcessHeap(), 0, g->glows[i].bmp);
+			g->glows[i].bmp = NULL;
+		}
+	}
 	SAFE_RELEASE(g->dw);
 	SAFE_RELEASE(g->d2d);
 	/* 应用若忘了 Destruction, 这里兜底释放 overlay 结构 (DComp 资源已在
@@ -2340,6 +2361,57 @@ void Gfx_StrokeRoundRectCornersDashed(Gfx *g, GfxRect r, GfxCorners c,
 	corner_stroke(g, r, c, color, width, 1);
 }
 
+void Gfx_StrokeRoundRectOpen(Gfx *g, GfxRect r, GfxCorners c,
+	unsigned edgeMask, GfxColor color, float width)
+{
+	float maxR, tl, tr, br, bl;
+	unsigned top, right, bottom, left;
+	if (!g || !g->rt || r.w <= 0.0f || r.h <= 0.0f || width <= 0.0f) return;
+	if (edgeMask == 0 || edgeMask == 15u) {
+		Gfx_StrokeRoundRectCorners(g, r, c, color, width);
+		return;
+	}
+	maxR = (r.w < r.h ? r.w : r.h) * 0.5f;
+	tl = c.tl < 0.0f ? 0.0f : (c.tl > maxR ? maxR : c.tl);
+	tr = c.tr < 0.0f ? 0.0f : (c.tr > maxR ? maxR : c.tr);
+	br = c.br < 0.0f ? 0.0f : (c.br > maxR ? maxR : c.br);
+	bl = c.bl < 0.0f ? 0.0f : (c.bl > maxR ? maxR : c.bl);
+	top = edgeMask & 1u;
+	right = edgeMask & 2u;
+	bottom = edgeMask & 4u;
+	left = edgeMask & 8u;
+
+	if (tl > 0.0f && top && left)
+		Gfx_StrokeArc(g, r.x + tl, r.y + tl, tl, 180.0f, 90.0f, color, width);
+	if (tr > 0.0f && top && right)
+		Gfx_StrokeArc(g, r.x + r.w - tr, r.y + tr, tr, 270.0f, 90.0f, color, width);
+	if (br > 0.0f && bottom && right)
+		Gfx_StrokeArc(g, r.x + r.w - br, r.y + r.h - br, br, 0.0f, 90.0f, color, width);
+	if (bl > 0.0f && bottom && left)
+		Gfx_StrokeArc(g, r.x + bl, r.y + r.h - bl, bl, 90.0f, 90.0f, color, width);
+
+	if (top) {
+		float x0 = (left ? r.x + tl : r.x);
+		float x1 = (right ? r.x + r.w - tr : r.x + r.w);
+		if (x1 > x0) Gfx_Line(g, x0, r.y, x1, r.y, color, width);
+	}
+	if (bottom) {
+		float x0 = (left ? r.x + bl : r.x);
+		float x1 = (right ? r.x + r.w - br : r.x + r.w);
+		if (x1 > x0) Gfx_Line(g, x0, r.y + r.h, x1, r.y + r.h, color, width);
+	}
+	if (left) {
+		float y0 = (top ? r.y + tl : r.y);
+		float y1 = (bottom ? r.y + r.h - bl : r.y + r.h);
+		if (y1 > y0) Gfx_Line(g, r.x, y0, r.x, y1, color, width);
+	}
+	if (right) {
+		float y0 = (top ? r.y + tr : r.y);
+		float y1 = (bottom ? r.y + r.h - br : r.y + r.h);
+		if (y1 > y0) Gfx_Line(g, r.x + r.w, y0, r.x + r.w, y1, color, width);
+	}
+}
+
 void Gfx_FillEllipse(Gfx *g, float cx, float cy, float rx, float ry, GfxColor c)
 {
 	if (!g || !g->rt) return;
@@ -2691,4 +2763,144 @@ void Gfx_DrawBitmap(Gfx *g, GfxBitmap *b, GfxRect dst)
 	if (!g || !g->rt || !b || !b->bmp || !IsVisible(g, dst)) return;
 	D2D1_RECT_F rc = { dst.x, dst.y, dst.x + dst.w, dst.y + dst.h };
 	g->rt->DrawBitmap(b->bmp, &rc, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, NULL);
+}
+
+/* ── 预烘焙柔光 ─────────────────────────────────────────────────────── */
+
+static void glow_cache_clear(Gfx *g)
+{
+	if (!g) return;
+	for (int i = 0; i < GFX_GLOW_CACHE_MAX; i++) {
+		if (g->glows[i].bmp) {
+			Gfx_DestroyBitmap(g, g->glows[i].bmp);
+			g->glows[i].bmp = NULL;
+		}
+		g->glows[i].lastUse = 0;
+	}
+	g->glowClock = 0;
+	g->glowGen = g->generation;
+}
+
+static GfxBitmap *glow_texture_make(Gfx *g, float w, float h, float radius,
+	float glowW, GfxColor color, float scale)
+{
+	int W, H, x, y;
+	uint8_t *pix;
+	GfxBitmap *bmp;
+	float halfW, halfH, r, glow, cx, cy;
+	int cr = (int)((color >> 16) & 0xFF);
+	int cg = (int)((color >> 8) & 0xFF);
+	int cb = (int)(color & 0xFF);
+
+	if (!g || w <= 0.0f || h <= 0.0f || glowW <= 0.0f) return NULL;
+	r = radius;
+	if (r < 0.0f) r = 0.0f;
+	if (r > (w < h ? w : h) * 0.5f) r = (w < h ? w : h) * 0.5f;
+	W = (int)((w + glowW * 2.0f) * scale + 0.5f);
+	H = (int)((h + glowW * 2.0f) * scale + 0.5f);
+	if (W < 2 || H < 2 || W > 2048 || H > 2048) return NULL;
+
+	pix = (uint8_t *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)W * H * 4);
+	if (!pix) return NULL;
+	halfW = w * scale * 0.5f;
+	halfH = h * scale * 0.5f;
+	r *= scale;
+	glow = glowW * scale;
+	cx = (float)W * 0.5f;
+	cy = (float)H * 0.5f;
+
+	for (y = 0; y < H; y++) {
+		for (x = 0; x < W; x++) {
+			float px = (float)x + 0.5f - cx;
+			float py = (float)y + 0.5f - cy;
+			float qx = (px < 0.0f ? -px : px) - (halfW - r);
+			float qy = (py < 0.0f ? -py : py) - (halfH - r);
+			float mx = qx > 0.0f ? qx : 0.0f;
+			float my = qy > 0.0f ? qy : 0.0f;
+			float mn = qx > qy ? qx : qy;
+			float d, t, a;
+			int ai, o = (y * W + x) * 4;
+			if (mn > 0.0f) mn = 0.0f;
+			d = (float)sqrt((double)(mx * mx + my * my)) + mn - r;
+			if (d <= 0.0f || d >= glow) {
+				pix[o] = pix[o + 1] = pix[o + 2] = pix[o + 3] = 0;
+				continue;
+			}
+			t = 1.0f - d / glow;
+			a = t * t * (3.0f - 2.0f * t) * 0.62f;
+			ai = (int)(a * 255.0f + 0.5f);
+			if (ai < 0) ai = 0;
+			if (ai > 255) ai = 255;
+			pix[o + 0] = (uint8_t)((cb * ai + 127) / 255);
+			pix[o + 1] = (uint8_t)((cg * ai + 127) / 255);
+			pix[o + 2] = (uint8_t)((cr * ai + 127) / 255);
+			pix[o + 3] = (uint8_t)ai;
+		}
+	}
+	bmp = Gfx_CreateBitmap(g, W, H, pix);
+	HeapFree(GetProcessHeap(), 0, pix);
+	return bmp;
+}
+
+int Gfx_DrawGlowRect(Gfx *g, GfxRect rc, float radius, float glowW,
+	GfxColor color, float intensity)
+{
+	GfxGlowCache *slot = NULL;
+	uint32_t oldest = 0xFFFFFFFFu;
+	int wq, hq, rq, gq, sq, i;
+	float opacity;
+	GfxRect dst;
+
+	if (!g || !g->rt) return 0;
+	if (intensity <= 0.004f || glowW <= 0.0f) return 1;
+	if (((color >> 24) & 0xFF) == 0) return 1;
+	dst.x = rc.x - glowW;
+	dst.y = rc.y - glowW;
+	dst.w = rc.w + glowW * 2.0f;
+	dst.h = rc.h + glowW * 2.0f;
+	if (dst.w <= 0.0f || dst.h <= 0.0f) return 1;
+	if (!IsVisible(g, dst)) return 1;
+
+	if (g->glowGen != g->generation) glow_cache_clear(g);
+
+	wq = (int)(rc.w * 2.0f + 0.5f);
+	hq = (int)(rc.h * 2.0f + 0.5f);
+	rq = (int)(radius * 2.0f + 0.5f);
+	gq = (int)(glowW * 2.0f + 0.5f);
+	sq = (int)(g->scale * 100.0f + 0.5f);
+	for (i = 0; i < GFX_GLOW_CACHE_MAX; i++) {
+		GfxGlowCache *e = &g->glows[i];
+		if (e->bmp && e->wq == wq && e->hq == hq && e->rq == rq &&
+			e->gq == gq && e->scaleq == sq && e->rgb == (color & 0x00FFFFFFu)) {
+			e->lastUse = ++g->glowClock;
+			slot = e;
+			break;
+		}
+	}
+	if (!slot) {
+		GfxBitmap *bmp;
+		for (i = 0; i < GFX_GLOW_CACHE_MAX; i++) {
+			GfxGlowCache *e = &g->glows[i];
+			if (!e->bmp) { slot = e; break; }
+			if (e->lastUse < oldest) { oldest = e->lastUse; slot = e; }
+		}
+		if (!slot) return 0;
+		bmp = glow_texture_make(g, (float)wq * 0.5f, (float)hq * 0.5f,
+			(float)rq * 0.5f, (float)gq * 0.5f, color, g->scale);
+		if (!bmp) return 0;
+		if (slot->bmp) Gfx_DestroyBitmap(g, slot->bmp);
+		slot->wq = wq; slot->hq = hq; slot->rq = rq; slot->gq = gq;
+		slot->scaleq = sq; slot->rgb = color & 0x00FFFFFFu;
+		slot->bmp = bmp;
+		slot->lastUse = ++g->glowClock;
+	}
+
+	opacity = (float)((color >> 24) & 0xFF) / 255.0f * intensity;
+	if (opacity > 1.0f) opacity = 1.0f;
+	{
+		D2D1_RECT_F dr = { dst.x, dst.y, dst.x + dst.w, dst.y + dst.h };
+		g->rt->DrawBitmap(slot->bmp->bmp, &dr, opacity,
+			D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, NULL);
+	}
+	return 1;
 }

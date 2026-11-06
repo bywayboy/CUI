@@ -41,6 +41,8 @@ typedef struct UiAppCallbacks {
 	int  (*animating)(UiApp *app, void *user);
 	void (*tick)(UiApp *app, double dtMs, void *user);
 	void (*mouse)(UiApp *app, int msg, float x, float y, void *user);
+	/* delta 为滚轮格数 (+ = 向上); x/y 已是 DIP 客户区坐标. */
+	void (*wheel)(UiApp *app, float x, float y, float delta, void *user);
 	int  (*key)(UiApp *app, UINT vk, void *user);
 	int  (*chr)(UiApp *app, wchar_t ch, void *user);
 	void (*ime)(UiApp *app, void *user);

@@ -1,5 +1,7 @@
 #include "ui/ui_context.h"
 
+static int rect_intersect(UiRect a, UiRect b, UiRect *out);
+
 /* 只失效一个控件矩形；找不到（控件集合变化）时退回整窗，保证正确性。 */
 static void InvalidateWidget(UiContext *ctx, UiId id)
 {
@@ -58,21 +60,125 @@ void Ui_SetModal(UiContext *ctx, UiId id)
 
 void Ui_SetViewport(UiContext *ctx, float w, float h, float scale)
 {
+	if (!ctx) return;
 	ctx->width = w;
 	ctx->height = h;
 	ctx->scale = scale > 0.0f ? scale : 1.0f;
 }
 
+int Ui_PushClipRect(UiContext *ctx, UiRect rc)
+{
+	UiRect clipped;
+	if (!ctx || rc.w <= 0.0f || rc.h <= 0.0f) return 0;
+	if (ctx->hitClipDepth >= UI_MAX_CLIP_DEPTH) return 0;
+	if (ctx->hitClip.w < 0.0f) {
+		clipped = Ui_Rect(-1, -1, 0, 0);
+	} else if (ctx->hitClip.w > 0.0f && ctx->hitClip.h > 0.0f) {
+		if (!rect_intersect(ctx->hitClip, rc, &clipped))
+			clipped = Ui_Rect(-1, -1, 0, 0);
+	} else {
+		clipped = rc;
+	}
+	ctx->hitClipStack[ctx->hitClipDepth++] = ctx->hitClip;
+	ctx->hitClip = clipped;
+	return 1;
+}
+
+void Ui_PopClipRect(UiContext *ctx)
+{
+	if (!ctx || ctx->hitClipDepth <= 0) return;
+	ctx->hitClip = ctx->hitClipStack[--ctx->hitClipDepth];
+}
+
+void Ui_PushInputBlock(UiContext *ctx)
+{
+	if (ctx) ctx->inputBlock++;
+}
+
+void Ui_PopInputBlock(UiContext *ctx)
+{
+	if (ctx && ctx->inputBlock > 0) ctx->inputBlock--;
+}
+
+void Ui_RegisterWheelTarget(UiContext *ctx, UiId id, UiRect rc)
+{
+	if (!ctx || !id || rc.w <= 0.0f || rc.h <= 0.0f) return;
+	if (ctx->inputBlock > 0) return;
+	if (ctx->wheelTargetCount >= UI_MAX_WHEEL_TARGETS) {
+		/* 保持“后登记优先”: 挤掉最早的一条. */
+		for (int i = 1; i < UI_MAX_WHEEL_TARGETS; i++)
+			ctx->wheelTargets[i - 1] = ctx->wheelTargets[i];
+		ctx->wheelTargetCount--;
+	}
+	ctx->wheelTargets[ctx->wheelTargetCount].id = id;
+	ctx->wheelTargets[ctx->wheelTargetCount].rect = rc;
+	ctx->wheelTargets[ctx->wheelTargetCount].clip =
+		(ctx->hitClipDepth > 0 && ctx->hitClip.w > 0.0f)
+		? ctx->hitClip : Ui_Rect(0, 0, 0, 0);
+	ctx->wheelTargetCount++;
+}
+
+void Ui_OnMouseWheel(UiContext *ctx, float x, float y, float delta)
+{
+	UiId target = UI_ID_NONE;
+	UiRect tr = { 0, 0, 0, 0 };
+	RECT r;
+	float s;
+	if (!ctx || delta == 0.0f) return;
+	ctx->mouseX = x;
+	ctx->mouseY = y;
+	ctx->mouseOver = 1;
+	if (ctx->modal) return;
+	for (int i = ctx->wheelTargetCount - 1; i >= 0; i--) {
+		UiWheelTarget *wt = &ctx->wheelTargets[i];
+		if (!Ui_RectContains(wt->rect, x, y)) continue;
+		if (wt->clip.w > 0.0f && wt->clip.h > 0.0f &&
+			!Ui_RectContains(wt->clip, x, y)) continue;
+		target = wt->id;
+		tr = wt->rect;
+		break;
+	}
+	if (!target) return;
+	ctx->wheelTarget = target;
+	ctx->wheelDelta += delta;
+	if (ctx->hwnd) {
+		s = ctx->scale > 0.0f ? ctx->scale : 1.0f;
+		r.left = (LONG)((tr.x - 2.0f) * s);
+		r.top = (LONG)((tr.y - 2.0f) * s);
+		r.right = (LONG)((tr.x + tr.w + 2.0f) * s) + 1;
+		r.bottom = (LONG)((tr.y + tr.h + 2.0f) * s) + 1;
+		InvalidateRect(ctx->hwnd, &r, FALSE);
+	}
+}
+
 void Ui_BeginFrame(UiContext *ctx)
 {
+	if (!ctx) return;
+	/* 兜底: WM_MOUSELEAVE 丢失时, 用真实光标位置判断是否已离开客户区,
+	 * 避免 hover/自动隐藏滚动条一直停在最后一帧. */
+	if (ctx->hwnd) {
+		POINT p;
+		RECT rc;
+		if (GetCursorPos(&p) && GetClientRect(ctx->hwnd, &rc)) {
+			ScreenToClient(ctx->hwnd, &p);
+			if (p.x < rc.left || p.y < rc.top ||
+				p.x >= rc.right || p.y >= rc.bottom)
+				ctx->mouseOver = 0;
+		}
+	}
 	ctx->widgetCount = 0;
 	ctx->layer = UI_LAYER_BASE;
 	ctx->z = UI_Z_BASE;
 	ctx->zDepth = 0;
+	ctx->hitClip = Ui_Rect(0, 0, 0, 0);
+	ctx->hitClipDepth = 0;
+	ctx->wheelTargetCount = 0;
+	ctx->inputBlock = 0;
 }
 
 void Ui_EndFrame(UiContext *ctx)
 {
+	if (!ctx) return;
 	if (ctx->released) ctx->drag.active = 0;
 	ctx->clicked = UI_ID_NONE;
 	ctx->down = UI_ID_NONE;
@@ -81,6 +187,12 @@ void Ui_EndFrame(UiContext *ctx)
 	ctx->layer = UI_LAYER_BASE;
 	ctx->z = UI_Z_BASE;
 	ctx->zDepth = 0;
+	ctx->hitClip = Ui_Rect(0, 0, 0, 0);
+	ctx->hitClipDepth = 0;
+	ctx->inputBlock = 0;
+	/* 未被任何 ScrollView 消费的滚轮到帧末丢弃. */
+	ctx->wheelTarget = UI_ID_NONE;
+	ctx->wheelDelta = 0.0f;
 }
 
 void Ui_PushLayer(UiContext *ctx, int z)
@@ -108,13 +220,32 @@ void Ui_PopLayer(UiContext *ctx)
 	}
 }
 
+static int rect_intersect(UiRect a, UiRect b, UiRect *out)
+{
+	float x0 = a.x > b.x ? a.x : b.x;
+	float y0 = a.y > b.y ? a.y : b.y;
+	float x1 = (a.x + a.w) < (b.x + b.w) ? (a.x + a.w) : (b.x + b.w);
+	float y1 = (a.y + a.h) < (b.y + b.h) ? (a.y + a.h) : (b.y + b.h);
+	if (x1 <= x0 || y1 <= y0) return 0;
+	out->x = x0; out->y = y0; out->w = x1 - x0; out->h = y1 - y0;
+	return 1;
+}
+
 void Ui_RegisterWidget(UiContext *ctx, UiId id, UiRect rc)
 {
-	if (!id || rc.w <= 0.0f || rc.h <= 0.0f) return;
+	if (!ctx || !id || rc.w <= 0.0f || rc.h <= 0.0f) return;
+	if (ctx->inputBlock > 0) return;
 	if (ctx->widgetCount >= UI_MAX_WIDGETS) return;
-	UiWidget *w = &ctx->widgets[ctx->widgetCount++];
+	UiWidget *w;
+	if (ctx->hitClipDepth > 0) {
+		/* w<0 = 被裁剪到空, 整个控件不可命中/注册. */
+		if (ctx->hitClip.w < 0.0f) return;
+	}
+	w = &ctx->widgets[ctx->widgetCount++];
 	w->id = id;
 	w->rect = rc;
+	w->clip = (ctx->hitClipDepth > 0 && ctx->hitClip.w > 0.0f)
+		? ctx->hitClip : Ui_Rect(0, 0, 0, 0);
 	w->layer = ctx->layer;
 	w->z = ctx->z;
 }
@@ -123,12 +254,16 @@ UiId Ui_HitTest(const UiContext *ctx, float x, float y)
 {
 	UiId best = UI_ID_NONE;
 	int bestZ = -2147483647;
+	if (!ctx) return UI_ID_NONE;
 	if (ctx->modal) return ctx->modal;
 	/* 从后往前: 同 z 时后注册(后画)的优先; 跨层取最高 z。 */
 	for (int i = ctx->widgetCount - 1; i >= 0; i--) {
 		const UiWidget *w = &ctx->widgets[i];
 		if (ctx->popupOpen && w->layer != UI_LAYER_OVERLAY) continue;
 		if (!Ui_RectContains(w->rect, x, y)) continue;
+		if (w->clip.w < 0.0f) continue;
+		if (w->clip.w > 0.0f && w->clip.h > 0.0f &&
+			!Ui_RectContains(w->clip, x, y)) continue;
 		if (w->z > bestZ) {
 			bestZ = w->z;
 			best = w->id;
@@ -154,9 +289,9 @@ UiWidgetState Ui_State(UiContext *ctx, UiId id, UiRect rc, int enabled)
 	}
 	Ui_RegisterWidget(ctx, id, rc);
 	Ui_AnimSetRect(ctx, id, rc);
-	st.hovered = (ctx->hover == id);
-	st.pressed = (ctx->mouseDown && ctx->pressed == id);
-	st.active = (ctx->drag.active && ctx->drag.id == id);
+	st.hovered = ctx->inputBlock == 0 && (ctx->hover == id);
+	st.pressed = ctx->inputBlock == 0 && ctx->mouseDown && ctx->pressed == id;
+	st.active = ctx->inputBlock == 0 && ctx->drag.active && ctx->drag.id == id;
 	focused = (ctx->focusId != UI_ID_NONE && ctx->focusId == id);
 	st.focused = focused;
 
@@ -177,6 +312,7 @@ void Ui_OnMouseMove(UiContext *ctx, float x, float y)
 {
 	ctx->mouseX = x;
 	ctx->mouseY = y;
+	ctx->mouseOver = 1;
 	if (ctx->modal) {
 		/* 模态期间 hover 固定在 blocker 上, 不触发任何控件失效/重绘:
 		 * Toast 的遮罩和卡片在 DComp layer 上, 主窗无需响应鼠标移动. */
@@ -204,6 +340,7 @@ void Ui_OnMouseDown(UiContext *ctx, float x, float y)
 {
 	ctx->mouseX = x;
 	ctx->mouseY = y;
+	ctx->mouseOver = 1;
 	if (ctx->modal) {
 		ctx->pressed = ctx->modal;
 		ctx->down = ctx->modal;
@@ -264,6 +401,7 @@ void Ui_OnMouseLeave(UiContext *ctx)
 	if (ctx->modal) {
 		ctx->mouseX = -10000.0f;
 		ctx->mouseY = -10000.0f;
+		ctx->mouseOver = 0;
 		ctx->hover = ctx->modal;
 		return;
 	}
@@ -273,6 +411,7 @@ void Ui_OnMouseLeave(UiContext *ctx)
 	ctx->hover = UI_ID_NONE;
 	ctx->mouseX = -10000.0f;
 	ctx->mouseY = -10000.0f;
+	ctx->mouseOver = 0;
 }
 
 void Ui_OnCaptureChanged(UiContext *ctx)

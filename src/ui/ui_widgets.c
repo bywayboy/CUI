@@ -67,10 +67,11 @@ int Ui_ButtonEx(UiContext *ui, UiId id, UiRect rc, const char *label,
 	if (appearance == UI_BAPPEAR_SOLID) {
 		if (type == UI_BTYPE_DEFAULT) {
 			ss.bg = t->neutral.base;
-			ss.hoverBg = t->neutral.hover;
-			ss.pressBg = t->neutral.press;
+			ss.hoverBg = Ui_ColorMix(t->neutral.hover, t->neutral.press, 0.55f);
+			ss.pressBg = Ui_ColorShift(t->neutral.press, -8);
 			ss.border = t->neutral.border;
-			ss.hoverBorder = t->neutral.border;
+			ss.hoverBorder = Ui_ColorMix(t->neutral.border, t->primary.base, 0.35f);
+			ss.focusBorder = t->primary.base;
 			text = t->neutral.text;
 		} else {
 			ss.bg = role->base;
@@ -85,10 +86,11 @@ int Ui_ButtonEx(UiContext *ui, UiId id, UiRect rc, const char *label,
 	} else if (appearance == UI_BAPPEAR_PLAIN) {
 		if (type == UI_BTYPE_DEFAULT) {
 			ss.bg = t->neutral.soft;
-			ss.hoverBg = t->neutral.hover;
-			ss.pressBg = t->neutral.press;
+			ss.hoverBg = Ui_ColorMix(t->neutral.hover, t->neutral.press, 0.6f);
+			ss.pressBg = Ui_ColorShift(t->neutral.press, -6);
 			ss.border = t->neutral.border;
-			ss.hoverBorder = t->neutral.border;
+			ss.hoverBorder = Ui_ColorMix(t->neutral.border, t->primary.base, 0.35f);
+			ss.focusBorder = t->primary.base;
 			text = t->neutral.text;
 		} else {
 			ss.bg = role->soft;

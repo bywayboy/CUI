@@ -195,6 +195,18 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		}
 		return 0;
 
+	case WM_MOUSEWHEEL: {
+		POINT pt = { (short)LOWORD(lp), (short)HIWORD(lp) };
+		float d = (float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA;
+		if (!app) return 0;
+		ScreenToClient(hwnd, &pt);
+		Ui_OnMouseWheel(&app->ui, pt.x / app->scale, pt.y / app->scale, d);
+		if (app->cb && app->cb->wheel)
+			app->cb->wheel(app, pt.x / app->scale, pt.y / app->scale,
+				d, app->user);
+		return 0;
+	}
+
 	case WM_MOUSEMOVE: {
 		POINT pt = { (short)LOWORD(lp), (short)HIWORD(lp) };
 		float x, y;
