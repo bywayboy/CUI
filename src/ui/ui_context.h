@@ -42,6 +42,7 @@ typedef struct {
 	int layer;
 	int z;
 	uint8_t cursor;   /* UI_CURSOR_*: 命中此控件时的鼠标形状 */
+	UiId scope;
 } UiWidget;
 
 typedef struct {
@@ -49,6 +50,7 @@ typedef struct {
 	UiRect rect;
 	UiRect clip;
 	int layer;        /* 弹层打开时只接受 overlay 滚轮目标 */
+	UiId scope;
 } UiWheelTarget;
 
 struct UiContext {
@@ -61,6 +63,8 @@ struct UiContext {
 	int mouseDown;
 	int mouseOver;            /* 光标在窗口客户区内 (WM_MOUSELEAVE 清 0) */
 	int inputBlock;           /* >0: 本帧不注册控件/滚轮目标 (翻页转场) */
+	UiId inputOwner;          /* 持续的模态输入 owner; 0 = 无 */
+	UiId inputScope;          /* 当前注册作用域; 帧开始/结束清零 */
 
 	UiWidget widgets[UI_MAX_WIDGETS];
 	int widgetCount;
@@ -120,6 +124,7 @@ void Ui_SetViewport(UiContext *ctx, float w, float h, float scale);
 void Ui_BeginFrame(UiContext *ctx);
 void Ui_EndFrame(UiContext *ctx);
 
+int Ui_InputAllowed(const UiContext *ctx);
 void Ui_RegisterWidget(UiContext *ctx, UiId id, UiRect rc);
 UiId Ui_HitTest(const UiContext *ctx, float x, float y);
 

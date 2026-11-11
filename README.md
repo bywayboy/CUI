@@ -31,7 +31,9 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
   Slider、IconButton + Tooltip；键盘导航和 disabled 状态。
 - `samples/overlays.c`：弹层样例。`UiPopupManager` + 单选/多选 Select、
   可搜索多选标签（内嵌 `UiEdit` + IME）+ 下拉菜单 + 右键上下文菜单；
-  长列表滚动、点击外部/Esc 关闭、焦点回归。
+  长列表滚动、点击外部/Esc 关闭、焦点回归；窗内 Dialog 与危险操作确认框，
+  支持开合动画、Tab 焦点循环、嵌套 Select 和背景输入阻断；自定义 Dialog
+  包含可编辑备注 TextArea。
 - `samples/textarea.c`：多行编辑器样例。软换行、垂直滚动、选区、剪贴板、
   IME、readonly/disabled；7000+ 字符动态追加与中段编辑。
 
@@ -63,7 +65,7 @@ CUI/
 │  ├─ tabs.c              TabBar/TabPager：LINE/PILL/CARD + 四向转场 + 输入锁
 │  ├─ icons.c             按钮/Toast/TabBar 图标样例（MDL2 glyph）
 │  ├─ controls.c          Checkbox/Radio/Switch/Slider + Tooltip
-│  ├─ overlays.c          Select 下拉 / 菜单 / 右键上下文菜单
+│  ├─ overlays.c          Select/Menu + Dialog/ConfirmDialog（含 TextArea 测试）
 │  └─ textarea.c          多行文本：软换行/滚动/选择/IME/readonly
 └─ src/
    ├─ demo.c              标准样例（UiApp 壳 + 组件，约 340 行）
@@ -84,6 +86,7 @@ CUI/
       ├─ ui_icon.*         图标 GLYPH 后端（Segoe MDL2 Assets）
       ├─ ui_controls.*     Checkbox/RadioGroup/Switch/Slider
       ├─ ui_popup.*        弹层定位 + UiPopupManager（外部点击/Esc/焦点回归）
+      ├─ ui_dialog.*       窗内 Dialog / ConfirmDialog（动画/焦点循环/输入隔离）
       ├─ ui_select.*       Select 下拉（长列表滚动/禁用项/键盘）
       ├─ ui_textarea.*     多行文本：动态缓冲/增量布局/IME/选择
       ├─ ui_menu.*         Menu / 右键上下文菜单（分隔/禁用/危险项）
@@ -119,7 +122,7 @@ bin\cui_scroll.exe      REM ScrollView（10k 行 / 变高卡片 / 惯性/回弹�
 bin\cui_tabs.exe        REM TabBar + TabPager（LINE/PILL/CARD / 四向转场）
 bin\cui_icons.exe       REM 按钮 / Toast / TabBar 图标（MDL2 glyph）
 bin\cui_controls.exe    REM Checkbox / Radio / Switch / Slider / Tooltip
-bin\cui_overlays.exe    REM Select 下拉 / 菜单 / 右键上下文菜单
+bin\cui_overlays.exe    REM Select/Menu + Dialog/ConfirmDialog（含 TextArea 测试）
 bin\cui_textarea.exe    REM 多行文本：软换行 / 滚动 / 选择 / IME
 ```
 
@@ -261,6 +264,9 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | | `SetPlaceholder/SetSearchHint` | 持久 placeholder（`Ui_Select` 参数优先）与搜索框提示 |
 | | `Ui_Select/UiSelect_DrawPopup/UiSelect_Key` | 触发器与帧末列表分离绘制；右侧矢量 chevron 180ms 旋转 |
 | `UiMenu` | `Init/SetItems/OpenAt/UiMenu_Draw/UiMenu_Key` | 下拉/右键菜单；分隔/禁用/危险/快捷键提示 |
+| `UiDialog` | `Init/AttachIme/SetFocusOrder/Open/Close/IsOpen` | 窗内模态；焦点保存/恢复、Tab 循环、背景输入隔离 |
+| | `Begin/End/Key/Tick/Busy/TakeResult` | body 仅布局；开合动画、Esc 取消、淡出后一次性结果 |
+| | `Ui_ConfirmDialog` | 标题/换行正文/取消/确认；危险操作样式 |
 | `UiTextArea` | `Init/Shutdown/SetText/SetTextUtf8/SetCaret/TextUtf8` | 多行动态缓冲、软换行、增量行布局、滚动/选择/IME |
 | | `SetPlaceholder/SetReadonly/AttachIme` | placeholder / 只读 / 输入法接线 |
 | | `Ui_TextArea/Key/Char/OnIme/Blink` | 绘制、键盘、字符、IME、光标闪烁 |
@@ -281,6 +287,11 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 
 `UiId` 是"作用域字符串 + 两个整数"的稳定哈希；**同一帧内必须唯一**，且跨帧保持
 不变（不要用地址/序号做 ID，否则动画与命中都会错位）。
+
+Dialog 的 body **仅是布局矩形**，不推入 Gfx/Ui 裁剪；控件命中仍用自身矩形，
+背景由 `inputOwner/inputScope` 隔离。正文控件与嵌套 Popup 都画在 Begin/End 内，
+Popup 自行提升层级；仅真实视口才使用显式裁剪或 ScrollView。鼠标编辑焦点保留，Tab 循环已注册目标，不每帧重写 `focusId`。
+详见白皮书 [8.18](docs/CUI-使用白皮书.md#818-dialog--confirmdialog)。
 
 ---
 

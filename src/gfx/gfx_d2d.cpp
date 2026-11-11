@@ -2671,13 +2671,20 @@ static IDWriteTextLayout *CreateLayout(Gfx *g, GfxFont *f, const char *utf8,
 	float maxW, float maxH, uint32_t flags)
 {
 	if (!g || !g->dw || !f || !f->fmt || !utf8 || !utf8[0]) return NULL;
-	WCHAR wbuf[1024];
-	if (!Utf8ToWide(utf8, wbuf, 1024)) return NULL;
+	WCHAR local[1024];
+	int count = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, NULL, 0);
+	if (count <= 1) return NULL;
+	WCHAR *text = count <= 1024 ? local : (WCHAR *)HeapAlloc(GetProcessHeap(), 0,
+		(size_t)count * sizeof(WCHAR));
+	if (!text) return NULL;
+	MultiByteToWideChar(CP_UTF8, 0, utf8, -1, text, count);
 	if (maxW < 1.0f) maxW = 1.0f;
 	if (maxH < 1.0f) maxH = 1.0f;
 	IDWriteTextLayout *layout = NULL;
-	HRESULT hr = g->dw->CreateTextLayout(wbuf, (UINT32)lstrlenW(wbuf), f->fmt, maxW, maxH, &layout);
+	HRESULT hr = g->dw->CreateTextLayout(text, (UINT32)(count - 1), f->fmt, maxW, maxH, &layout);
+	if (text != local) HeapFree(GetProcessHeap(), 0, text);
 	if (FAILED(hr) || !layout) return NULL;
+	if (flags & GFX_TEXT_WRAP) layout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
 	if (flags & GFX_TEXT_CENTER) layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
 	else if (flags & GFX_TEXT_RIGHT) layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
 	layout->SetParagraphAlignment((flags & GFX_TEXT_VCENTER)

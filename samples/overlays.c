@@ -7,10 +7,13 @@
 #include <windows.h>
 #include "ui/ui_app.h"
 #include "ui/ui_icon.h"
+#include "ui/ui_dialog.h"
+#include "ui/ui_controls.h"
 #include "ui/ui_layout.h"
 #include "ui/ui_menu.h"
 #include "ui/ui_popup.h"
 #include "ui/ui_select.h"
+#include "ui/ui_textarea.h"
 #include "ui/ui_widgets.h"
 
 static const char *const kThemeItems[] = {
@@ -56,6 +59,12 @@ typedef struct OverlaysDemo {
 	UiSelect tagSel;
 	UiMenu fileMenu;
 	UiMenu contextMenu;
+	UiDialog dialog, confirm;
+	UiSelect dialogSelect;
+	UiId dialogBtnId, confirmBtnId;
+	UiId dialogFocus[5];
+	UiCheckbox notifications;
+	UiTextArea notes;
 	UiId menuBtnId;
 	UiId themeBtnId;
 	UiRect menuBtnRc;
@@ -100,6 +109,30 @@ static void consume_select(OverlaysDemo *d, UiSelect *s, const char *name)
 			s->selected == 1 ? UI_THEME_DARK : UI_THEME_LIGHT);
 	}
 	UiApp_Invalidate(d->app);
+}
+
+static UiDialog *active_dialog(OverlaysDemo *d)
+{
+	if (UiDialog_IsOpen(&d->confirm)) return &d->confirm;
+	if (UiDialog_IsOpen(&d->dialog)) return &d->dialog;
+	return NULL;
+}
+
+static void open_dialog(OverlaysDemo *d, int confirm)
+{
+	UiPopupManager_Close(&d->pm, &d->app->ui);
+	UiDialog_Open(confirm ? &d->confirm : &d->dialog, &d->app->ui,
+		confirm ? d->confirmBtnId : d->dialogBtnId);
+}
+
+static void consume_dialogs(OverlaysDemo *d)
+{
+	int result = UiDialog_TakeResult(&d->confirm);
+	if (result) set_status(d, result == UI_DIALOG_ACCEPT
+		? "已确认删除（仅演示，没有删除文件）。" : "已取消删除，焦点返回触发器。");
+	result = UiDialog_TakeResult(&d->dialog);
+	if (result) set_status(d, result == UI_DIALOG_ACCEPT
+		? "Dialog 已完成，背景输入恢复。" : "Dialog 已取消，背景输入恢复。");
 }
 
 static void consume_menu(OverlaysDemo *d, UiMenu *m, const char *name)
@@ -149,6 +182,25 @@ static void on_init(UiApp *app, void *user)
 	d->menuBtnId = Ui_Id("ov.btn.menu", 0, 0);
 	d->themeBtnId = Ui_Id("ov.btn.theme", 0, 0);
 	d->app = app;
+	d->dialogBtnId = Ui_Id("ov.btn.dialog", 0, 0);
+	d->confirmBtnId = Ui_Id("ov.btn.confirm", 0, 0);
+	UiDialog_Init(&d->dialog, Ui_Id("ov.dialog", 0, 0));
+	UiDialog_Init(&d->confirm, Ui_Id("ov.confirm", 0, 0));
+	UiDialog_AttachIme(&d->dialog, &app->ime);
+	UiDialog_AttachIme(&d->confirm, &app->ime);
+	UiSelect_Init(&d->dialogSelect, Ui_Id("ov.dialog.select", 0, 0));
+	UiSelect_SetItems(&d->dialogSelect, kTagItems, 10);
+	UiSelect_SetSelected(&d->dialogSelect, 0);
+	UiTextArea_Init(&d->notes, Ui_Id("ov.dialog.notes", 0, 0), 0);
+	UiTextArea_AttachIme(&d->notes, &app->ime);
+	UiTextArea_SetPlaceholder(&d->notes, L"备注（支持多行输入）");
+	d->dialogFocus[0] = Ui_Id("ov.dialog.check", 0, 0);
+	d->dialogFocus[1] = d->dialogSelect.id;
+	d->dialogFocus[2] = d->notes.id;
+	d->dialogFocus[3] = Ui_Id("ov.dialog.disabled", 0, 0);
+	d->dialogFocus[4] = Ui_Id("ov.dialog.done", 0, 0);
+	UiCheckbox_Init(&d->notifications, d->dialogFocus[0], 1);
+	UiDialog_SetFocusOrder(&d->dialog, d->dialogFocus, 5);
 	app->minW = 720.0f;
 	app->minH = 560.0f;
 	set_status(d, "点击 Select 打开下拉；空白处右键打开上下文菜单。");
@@ -249,6 +301,13 @@ static void on_frame(UiApp *app, void *user)
 	Gfx_Text(g, t->fBody, line, Ui_RectInset(info, 12.0f), t->text,
 		GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 
+	Ui_StackSkip(&col, 14);
+	row = Ui_StackTake(&col, 34);
+	if (Ui_Button(ui, d->dialogBtnId, Ui_Rect(row.x, row.y, 148, row.h),
+		"打开 Dialog", UI_BTN_SECONDARY, 1)) open_dialog(d, 0);
+	if (Ui_Button(ui, d->confirmBtnId, Ui_Rect(row.x + 164, row.y, 148, row.h),
+		"删除确认…", UI_BTN_DANGER, 1)) open_dialog(d, 1);
+
 	Gfx_Text(g, t->fSmall, d->status,
 		Ui_Rect(24, app->h - 34, app->w - 48, 18), t->text3,
 		GFX_TEXT_VCENTER);
@@ -264,12 +323,48 @@ static void on_frame(UiApp *app, void *user)
 	consume_menu(d, &d->fileMenu, "菜单");
 	UiMenu_Draw(&d->contextMenu, &d->pm, ui);
 	consume_menu(d, &d->contextMenu, "右键菜单");
+
+	if (UiDialog_Begin(&d->dialog, ui, "通知设置", 480, 360, &row)) {
+		Gfx_Text(g, t->fBody, "Tab 在对话框内循环，跳过禁用项；Esc 先关下拉，再关对话框。",
+			Ui_Rect(row.x, row.y, row.w, 42), t->text2, GFX_TEXT_WRAP);
+		Ui_Checkbox(&d->notifications, ui, Ui_Rect(row.x, row.y + 48, row.w, 28),
+			"启用通知", 1);
+		Ui_Select(&d->dialogSelect, &d->pm, ui,
+			Ui_Rect(row.x, row.y + 90, row.w, 36), "通知类别", 1);
+		Ui_TextArea(&d->notes, ui, Ui_Rect(row.x, row.y + 138, row.w, 72), 1);
+		Ui_Button(ui, d->dialogFocus[3],
+			Ui_Rect(row.x, row.y + row.h - 36, 120, 36), "禁用操作", UI_BTN_SECONDARY, 0);
+		if (Ui_Button(ui, d->dialogFocus[4],
+			Ui_Rect(row.x + row.w - 96, row.y + row.h - 36, 96, 36),
+			"完成", UI_BTN_PRIMARY, 1)) UiDialog_Close(&d->dialog, ui, UI_DIALOG_ACCEPT);
+		UiSelect_DrawPopup(&d->dialogSelect, &d->pm, ui);
+		UiDialog_End(&d->dialog, ui);
+	}
+	Ui_ConfirmDialog(&d->confirm, ui, "删除这个项目？",
+		"此操作将移除项目及其设置，无法撤销。请确认是否继续。这个样例仅演示交互，不会删除任何文件。",
+		"确认删除", "取消", 1);
+	consume_dialogs(d);
+}
+
+static int on_animating(UiApp *app, void *user)
+{
+	OverlaysDemo *d = (OverlaysDemo *)user;
+	(void)app;
+	return UiDialog_Busy(&d->dialog) || UiDialog_Busy(&d->confirm);
+}
+
+static void on_tick(UiApp *app, double dtMs, void *user)
+{
+	OverlaysDemo *d = (OverlaysDemo *)user;
+	UiDialog_Tick(&d->dialog, &app->ui, dtMs);
+	UiDialog_Tick(&d->confirm, &app->ui, dtMs);
+	consume_dialogs(d);
 }
 
 static void on_mouse(UiApp *app, int msg, float x, float y, void *user)
 {
 	OverlaysDemo *d = (OverlaysDemo *)user;
-	if (msg != UI_APP_MOUSE_RDOWN) return;
+	if (active_dialog(d) || msg != UI_APP_MOUSE_RDOWN) return;
 	UiMenu_OpenAt(&d->contextMenu, &d->pm, &app->ui, UI_ID_NONE,
 		Ui_Rect(x, y, 0, 0), 0);
 	UiApp_Invalidate(app);
@@ -278,6 +373,11 @@ static void on_mouse(UiApp *app, int msg, float x, float y, void *user)
 static int on_chr(UiApp *app, wchar_t ch, void *user)
 {
 	OverlaysDemo *d = (OverlaysDemo *)user;
+	if (active_dialog(d)) {
+		if (UiDialog_IsOpen(&d->dialog) && !d->dialog.closing && !app->ui.popupOpen)
+			UiTextArea_Char(&d->notes, &app->ui, ch);
+		return 1;
+	}
 	if (UiSelect_Char(&d->tagSel, &app->ui, ch)) return 1;
 	return 0;
 }
@@ -285,13 +385,16 @@ static int on_chr(UiApp *app, wchar_t ch, void *user)
 static void on_ime(UiApp *app, void *user)
 {
 	OverlaysDemo *d = (OverlaysDemo *)user;
-	UiSelect_OnIme(&d->tagSel, &app->ui);
+	if (!active_dialog(d)) UiSelect_OnIme(&d->tagSel, &app->ui);
+	else if (UiDialog_IsOpen(&d->dialog) && !d->dialog.closing && !app->ui.popupOpen)
+		UiTextArea_OnIme(&d->notes, &app->ui);
 }
 
 static void on_timer(UiApp *app, void *user)
 {
 	OverlaysDemo *d = (OverlaysDemo *)user;
 	UiSelect_Blink(&d->tagSel, &app->ui);
+	if (UiDialog_IsOpen(&d->dialog)) UiTextArea_Blink(&d->notes, &app->ui);
 }
 
 static void on_shutdown(UiApp *app, void *user)
@@ -301,15 +404,39 @@ static void on_shutdown(UiApp *app, void *user)
 	UiSelect_Shutdown(&d->themeSel);
 	UiSelect_Shutdown(&d->citySel);
 	UiSelect_Shutdown(&d->tagSel);
+	UiSelect_Shutdown(&d->dialogSelect);
+	UiTextArea_Shutdown(&d->notes);
 }
 
 static int on_key(UiApp *app, UINT vk, void *user)
 {
 	OverlaysDemo *d = (OverlaysDemo *)user;
 	UiContext *ui = &app->ui;
-	UiId navs[4];
+	UiId navs[6];
+	UiDialog *dialog = active_dialog(d);
 	int i;
 
+	if (dialog) {
+		if (UiPopupManager_AnyOpen(&d->pm)) {
+			if (UiPopupManager_Key(&d->pm, ui, vk) ||
+				UiSelect_Key(&d->dialogSelect, &d->pm, ui, vk))
+				UiApp_Invalidate(app);
+			return 1;
+		}
+		if (UiDialog_Key(dialog, ui, vk)) return 1;
+		if (dialog == &d->dialog) {
+			if (UiTextArea_Key(&d->notes, ui, vk) ||
+				UiCheckbox_Key(&d->notifications, ui, vk) ||
+				UiSelect_Key(&d->dialogSelect, &d->pm, ui, vk)) {
+				UiApp_Invalidate(app);
+				return 1;
+			}
+			if (ui->navId == d->dialogFocus[4] &&
+				(vk == VK_RETURN || vk == VK_SPACE))
+				UiDialog_Close(dialog, ui, UI_DIALOG_ACCEPT);
+		}
+		return 1;
+	}
 	if (UiPopupManager_Key(&d->pm, ui, vk)) {
 		set_status(d, "Esc 关闭弹层。");
 		return 1;
@@ -346,10 +473,19 @@ static int on_key(UiApp *app, UINT vk, void *user)
 	navs[1] = d->citySel.id;
 	navs[2] = d->tagSel.id;
 	navs[3] = d->menuBtnId;
+	navs[4] = d->dialogBtnId;
+	navs[5] = d->confirmBtnId;
 	if (vk == VK_TAB) {
-		for (i = 0; i < 4; i++) if (ui->navId == navs[i]) break;
-		Ui_SetNavId(ui, navs[(i + 1) % 4]);
+		int dir = (GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1;
+		for (i = 0; i < 6; i++) if (ui->navId == navs[i]) break;
+		if (i == 6) i = dir > 0 ? 5 : 0;
+		Ui_SetNavId(ui, navs[(i + dir + 6) % 6]);
 		UiApp_Invalidate(app);
+		return 1;
+	}
+	if ((ui->navId == d->dialogBtnId || ui->navId == d->confirmBtnId) &&
+		(vk == VK_RETURN || vk == VK_SPACE)) {
+		open_dialog(d, ui->navId == d->confirmBtnId);
 		return 1;
 	}
 	if (ui->navId == d->menuBtnId &&
@@ -369,6 +505,8 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 	ZeroMemory(&cb, sizeof(cb));
 	cb.init = on_init;
 	cb.frame = on_frame;
+	cb.animating = on_animating;
+	cb.tick = on_tick;
 	cb.mouse = on_mouse;
 	cb.key = on_key;
 	cb.chr = on_chr;

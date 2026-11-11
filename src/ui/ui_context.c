@@ -92,6 +92,12 @@ void Ui_PopClipRect(UiContext *ctx)
 	ctx->hitClip = ctx->hitClipStack[--ctx->hitClipDepth];
 }
 
+int Ui_InputAllowed(const UiContext *ctx)
+{
+	return ctx && ctx->inputBlock == 0 &&
+		(!ctx->inputOwner || ctx->inputScope == ctx->inputOwner);
+}
+
 void Ui_PushInputBlock(UiContext *ctx)
 {
 	if (ctx) ctx->inputBlock++;
@@ -105,7 +111,7 @@ void Ui_PopInputBlock(UiContext *ctx)
 void Ui_RegisterWheelTarget(UiContext *ctx, UiId id, UiRect rc)
 {
 	if (!ctx || !id || rc.w <= 0.0f || rc.h <= 0.0f) return;
-	if (ctx->inputBlock > 0) return;
+	if (!Ui_InputAllowed(ctx)) return;
 	if (ctx->wheelTargetCount >= UI_MAX_WHEEL_TARGETS) {
 		/* 保持“后登记优先”: 挤掉最早的一条. */
 		for (int i = 1; i < UI_MAX_WHEEL_TARGETS; i++)
@@ -118,6 +124,7 @@ void Ui_RegisterWheelTarget(UiContext *ctx, UiId id, UiRect rc)
 		(ctx->hitClipDepth > 0 && ctx->hitClip.w > 0.0f)
 		? ctx->hitClip : Ui_Rect(0, 0, 0, 0);
 	ctx->wheelTargets[ctx->wheelTargetCount].layer = ctx->layer;
+	ctx->wheelTargets[ctx->wheelTargetCount].scope = ctx->inputScope;
 	ctx->wheelTargetCount++;
 }
 
@@ -134,6 +141,7 @@ void Ui_OnMouseWheel(UiContext *ctx, float x, float y, float delta)
 	if (ctx->modal) return;
 	for (int i = ctx->wheelTargetCount - 1; i >= 0; i--) {
 		UiWheelTarget *wt = &ctx->wheelTargets[i];
+		if (ctx->inputOwner && wt->scope != ctx->inputOwner) continue;
 		if (ctx->popupOpen && wt->layer != UI_LAYER_OVERLAY) continue;
 		if (!Ui_RectContains(wt->rect, x, y)) continue;
 		if (wt->clip.w > 0.0f && wt->clip.h > 0.0f &&
@@ -178,6 +186,7 @@ void Ui_BeginFrame(UiContext *ctx)
 	ctx->hitClipDepth = 0;
 	ctx->wheelTargetCount = 0;
 	ctx->inputBlock = 0;
+	ctx->inputScope = UI_ID_NONE;
 }
 
 void Ui_EndFrame(UiContext *ctx)
@@ -194,6 +203,7 @@ void Ui_EndFrame(UiContext *ctx)
 	ctx->hitClip = Ui_Rect(0, 0, 0, 0);
 	ctx->hitClipDepth = 0;
 	ctx->inputBlock = 0;
+	ctx->inputScope = UI_ID_NONE;
 	/* 未被任何 ScrollView 消费的滚轮到帧末丢弃. */
 	ctx->wheelTarget = UI_ID_NONE;
 	ctx->wheelDelta = 0.0f;
@@ -238,7 +248,7 @@ static int rect_intersect(UiRect a, UiRect b, UiRect *out)
 void Ui_RegisterWidget(UiContext *ctx, UiId id, UiRect rc)
 {
 	if (!ctx || !id || rc.w <= 0.0f || rc.h <= 0.0f) return;
-	if (ctx->inputBlock > 0) return;
+	if (!Ui_InputAllowed(ctx)) return;
 	if (ctx->widgetCount >= UI_MAX_WIDGETS) return;
 	UiWidget *w;
 	if (ctx->hitClipDepth > 0) {
@@ -253,6 +263,7 @@ void Ui_RegisterWidget(UiContext *ctx, UiId id, UiRect rc)
 	w->layer = ctx->layer;
 	w->z = ctx->z;
 	w->cursor = UI_CURSOR_ARROW;
+	w->scope = ctx->inputScope;
 }
 
 /* 命中控件下标; -1 = 无. 从后往前: 同 z 时后注册(后画)的优先. */
@@ -263,6 +274,7 @@ static int widget_at(const UiContext *ctx, float x, float y)
 	if (!ctx) return -1;
 	for (int i = ctx->widgetCount - 1; i >= 0; i--) {
 		const UiWidget *w = &ctx->widgets[i];
+		if (ctx->inputOwner && w->scope != ctx->inputOwner) continue;
 		if (ctx->popupOpen && w->layer != UI_LAYER_OVERLAY) continue;
 		if (!Ui_RectContains(w->rect, x, y)) continue;
 		if (w->clip.w < 0.0f) continue;
@@ -282,7 +294,8 @@ UiId Ui_HitTest(const UiContext *ctx, float x, float y)
 	if (!ctx) return UI_ID_NONE;
 	if (ctx->modal) return ctx->modal;
 	i = widget_at(ctx, x, y);
-	return i >= 0 ? ctx->widgets[i].id : UI_ID_NONE;
+	if (i >= 0) return ctx->widgets[i].id;
+	return ctx->inputOwner && !ctx->popupOpen ? ctx->inputOwner : UI_ID_NONE;
 }
 
 void Ui_SetCursor(UiContext *ctx, UiId id, int kind)
@@ -316,7 +329,7 @@ HCURSOR Ui_CursorHandle(int kind)
 UiWidgetState Ui_State(UiContext *ctx, UiId id, UiRect rc, int enabled)
 {
 	UiWidgetState st;
-	int focused;
+	int focused, inputAllowed;
 	st.hovered = st.pressed = st.active = st.focused = 0;
 	st.hover = st.press = st.focus = st.glow = 0.0f;
 
@@ -330,10 +343,11 @@ UiWidgetState Ui_State(UiContext *ctx, UiId id, UiRect rc, int enabled)
 	}
 	Ui_RegisterWidget(ctx, id, rc);
 	Ui_AnimSetRect(ctx, id, rc);
-	st.hovered = ctx->inputBlock == 0 && (ctx->hover == id);
-	st.pressed = ctx->inputBlock == 0 && ctx->mouseDown && ctx->pressed == id;
-	st.active = ctx->inputBlock == 0 && ctx->drag.active && ctx->drag.id == id;
-	focused = (ctx->focusId != UI_ID_NONE && ctx->focusId == id);
+	inputAllowed = Ui_InputAllowed(ctx);
+	st.hovered = inputAllowed && (ctx->hover == id);
+	st.pressed = inputAllowed && ctx->mouseDown && ctx->pressed == id;
+	st.active = inputAllowed && ctx->drag.active && ctx->drag.id == id;
+	focused = inputAllowed && (ctx->focusId != UI_ID_NONE && ctx->focusId == id);
 	st.focused = focused;
 
 	/* 采集目标; 数值推进由 Ui_AnimAdvance 统一做 */
@@ -352,15 +366,16 @@ UiWidgetState Ui_State(UiContext *ctx, UiId id, UiRect rc, int enabled)
 UiWidgetState Ui_StateInstant(UiContext *ctx, UiId id, UiRect rc, int enabled)
 {
 	UiWidgetState st;
-	int focused;
+	int focused, inputAllowed;
 	st.hovered = st.pressed = st.active = st.focused = 0;
 	st.hover = st.press = st.focus = st.glow = 0.0f;
 	if (!enabled) return st;
 	Ui_RegisterWidget(ctx, id, rc);
-	st.hovered = ctx->inputBlock == 0 && (ctx->hover == id);
-	st.pressed = ctx->inputBlock == 0 && ctx->mouseDown && ctx->pressed == id;
-	st.active = ctx->inputBlock == 0 && ctx->drag.active && ctx->drag.id == id;
-	focused = (ctx->focusId != UI_ID_NONE && ctx->focusId == id);
+	inputAllowed = Ui_InputAllowed(ctx);
+	st.hovered = inputAllowed && (ctx->hover == id);
+	st.pressed = inputAllowed && ctx->mouseDown && ctx->pressed == id;
+	st.active = inputAllowed && ctx->drag.active && ctx->drag.id == id;
+	focused = inputAllowed && (ctx->focusId != UI_ID_NONE && ctx->focusId == id);
 	st.focused = focused;
 	st.hover = st.hovered ? 1.0f : 0.0f;
 	st.press = st.pressed ? 1.0f : 0.0f;

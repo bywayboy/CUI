@@ -49,7 +49,8 @@ enum {
 	GFX_TEXT_CENTER   = 1u << 0,
 	GFX_TEXT_RIGHT    = 1u << 1,
 	GFX_TEXT_VCENTER  = 1u << 2,
-	GFX_TEXT_ELLIPSIS = 1u << 3
+	GFX_TEXT_ELLIPSIS = 1u << 3,
+	GFX_TEXT_WRAP     = 1u << 4
 };
 
 #ifdef __cplusplus

@@ -141,6 +141,9 @@
 >    绘制时声明形状，`UiApp` 在 `WM_SETCURSOR` 与帧末应用；`UiEdit` 与可编辑
 >    `UiTextArea` 显示 I 形光标，禁用 TextArea/按钮/空白区保持箭头，
 >    TextArea 滚动条上仍为箭头。
+> 41. 新增 `UiDialog` / `Ui_ConfirmDialog`（8.18）：窗内模态、开合动画、焦点循环、
+>    嵌套 Popup 与背景输入隔离。body 仅供布局，不裁剪按钮描边、光晕或下拉列表。
+>    `samples/overlays.c` 增加通用 Dialog、危险操作确认框及 TextArea 备注。
 
 ---
 
@@ -164,6 +167,7 @@
    - [8.15 表单控件 / Popup / Tooltip](#815-表单控件--popup--tooltip)
    - [8.16 弹层管理器 / Select / Menu](#816-弹层管理器--select--menu)
    - [8.17 TextArea 多行编辑器](#817-textarea-多行编辑器)
+   - [8.18 Dialog / ConfirmDialog](#818-dialog--confirmdialog)
 9. [UiAnim 动画内核](#9-uianim-动画内核)
 10. [UiFrame 帧时钟](#10-uiframe-帧时钟)
 11. [UiEdit 编辑框](#11-uiedit-编辑框)
@@ -246,6 +250,7 @@ CUI 的取舍是：**只做安装器/工具类窗口需要的那一层**。体�
 | 布局系统 | ✅ | `UiStack` 固定+Fill；`UiFlex` basis+grow；无 grid/wrap |
 | 滚动容器 | ❌ | 应用自己维护偏移与裁剪 |
 | 撤销/重做 | ❌ | 编辑框无撤销栈 |
+| 窗内 Dialog / ConfirmDialog | 已实现，待完成视觉/长文本验证 | 开合动画、Tab 焦点循环、嵌套 Popup、输入 scope 隔离；body 仅布局（8.18） |
 | 原生文件对话框 | 由应用调用 | 注意动作延后，避免渲染重入 |
 | 多主题/换肤 | 自行扩展 | `UiTheme` 是一组令牌 |
 | 托盘/通知 | ❌ | 不属于 UI 层 |
@@ -386,6 +391,7 @@ Direct2D / DirectWrite / D3D11 / DirectComposition
 | `src/gfx/gfx_d2d.cpp` | D2D/DWrite/D3D/DComp 实现 | 唯一的 C++ 单元，无 STL/异常/RTTI |
 | `src/ui/ui_types.h` | 矩形/颜色/稳定 ID | `UiId` 必须跨帧稳定 |
 | `src/ui/ui_context.*` | 注册、命中、拖动、单帧事件 | 每帧 Begin/End |
+| `src/ui/ui_dialog.*` | 窗内 Dialog / ConfirmDialog、动画、焦点循环 | body 仅布局；inputOwner/inputScope 隔离；每窗口一个 |
 | `src/ui/ui_layout.*` | UiStack / UiFlex 布局 | 只算矩形；padding/gap；固定+Fill / basis+grow |
 | `src/ui/ui_button_group.*` | 融合按钮组管理器 | NORMAL/SINGLE/MULTI、selected/mask/focus、键盘 |
 | `src/ui/ui_theme.*` | 字体/颜色令牌 | 亮暗预设 + 5 语义色自定义；`themeRev` 通知重建 |
@@ -971,10 +977,10 @@ Gfx_Text(gfx, f, "你好", Ui_Rect(10, 10, 200, 30), 0xFF1F2637,
     GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 ```
 
-- `Gfx_Text` 的矩形同时是布局宽度与裁剪范围；文本不会自动换行
-  （`WORD_WRAPPING_NO_WRAP`）。
+- `Gfx_Text` 的矩形同时是布局宽度与裁剪范围；默认不换行，
+  `GFX_TEXT_WRAP` 可启用 DirectWrite 自动换行，不改变其他控件默认行为。
 - 对齐标志：`GFX_TEXT_CENTER`、`GFX_TEXT_RIGHT`、`GFX_TEXT_VCENTER`、
-  `GFX_TEXT_ELLIPSIS`。
+  `GFX_TEXT_ELLIPSIS`；长文本 UTF-16 转换按需分配，不再受 1024 字符栈缓冲限制。
 - **文本布局有缓存**：同一字体 + 文本 + 尺寸 + 标志会复用 `IDWriteTextLayout`。
   缓存上限 128 条，单条文本 < 160 字节；超长文本走临时布局，绘制后释放。
 - `Gfx_TextHeight` 用“国”字测量，作为行高参考。
@@ -2503,6 +2509,100 @@ UiTextArea_Shutdown(&ta);
 
 ---
 
+### 8.18 Dialog / ConfirmDialog
+
+#### 8.18.1 设计与边界
+
+Dialog 是应用持有的窗内模态状态，不建立控件树、不启动嵌套消息循环、
+不创建 HWND。`UiDialog_Begin/End` 提供居中卡片、标题、矢量关闭键和内容矩形，
+内容仍由应用调用已有组件绘制；`Ui_ConfirmDialog` 是同一管理器上的确认框配方。
+
+输入采用独立 scope：`UiContext.inputOwner` 标记当前模态拥有者，注册的控件和
+滚轮目标携带 `inputScope`。打开时立即过滤旧背景命中，后续背景控件不再注册；
+Dialog 内部临时进入自己的 scope，Select/Menu 仍可在其中使用原 overlay 层。
+这与 `Ui_SetModal` 的 Toast 全窗 blocker 分开，不改变后者的行为。
+
+焦点顺序由应用通过 `UiDialog_SetFocusOrder` 提供借用的 ID 数组，数量不设
+额外固定上限；只遍历当前已注册、未禁用的目标，关闭键自动加入循环。
+Tab/Shift+Tab 在这些目标间循环，不离开 Dialog；保留鼠标设置的编辑焦点，
+不每帧用 `navId` 覆盖 `focusId`。关闭后恢复原 nav/focus 与可见性。
+可选 `UiDialog_AttachIme` 在打开时取消并暂停背景组合，关闭完成后恢复原编辑器。
+
+打开 180ms、关闭 140ms，遮罩淡变、卡片轻微上移；Tick/Busy 显式驱动，
+不依赖可能耗尽的控件动画池。仅转场期间失效整窗，静止不请求动画帧；
+系统 reduced-motion 时直接到终态。淡出期间继续阻断输入，结果只在淡出完成后
+发布一次，避免按钮松开或重复 Enter 穿透到背景。
+
+本批只支持每窗口一个 Dialog，不做堆叠、拖动、缩放、跨窗口弹层或自动内容测高。
+内容过长应在 body 中用 ScrollView/TextArea 的视口裁剪；确认正文在自身文本矩形内
+换行并裁剪，不是由 Dialog body 裁剪，也不自动增高。
+Dialog 属于主窗绘制，不能盖住独立 DComp visual，应用需暂停/隐藏该类 overlay。
+打开前关闭外层 Select/Menu；Dialog 内的弹层需在 End 前绘制，并先处理其键盘。
+键盘、字符、右键与业务快捷键仍由应用回调路由：模态可见期间只派发给 Dialog
+及其子控件，不能继续调用背景回调。窗口系统关闭（Alt+F4）仍由 UiApp 处理。
+
+#### 8.18.2 API 与接线
+
+| API | 语义 |
+| --- | --- |
+| `UiDialog_Init(d,id)` | 初始化应用持有状态，无堆分配、无需 Shutdown |
+| `UiDialog_AttachIme(d,ime)` | 可选：在关闭状态绑定窗口 IME，原编辑器须存活到 Dialog 关闭 |
+| `UiDialog_SetFocusOrder(d,ids,count)` | 持久借用内容焦点顺序，绘制的禁用项不进入循环 |
+| `UiDialog_Open(d,ui,owner)` | 打开并记住触发器；已有 Dialog、Toast blocker 或 Popup 时返回 0 |
+| `UiDialog_Close(d,ui,result)` | 启动淡出；有子 Popup 时先关闭 Popup，再调用；重复调用不覆盖结果 |
+| `UiDialog_IsOpen(d)` | 包含打开、停留、关闭动画，作为输入路由总开关 |
+| `UiDialog_Busy(d)` / `Tick(d,ui,dtMs)` | 接到 UiApp 的 animating/tick，Tick 自动失效需要重画的帧 |
+| `UiDialog_Begin/End` | 帧末绘制自定义 Dialog，body 仅布局、不推入绘制/输入裁剪；Begin 返回 1 必须配对 End |
+| `UiDialog_Key(d,ui,vk)` | Esc 取消，Tab/Shift+Tab 焦点循环，关闭键可用 Enter/Space 激活 |
+| `UiDialog_TakeResult(d)` | 淡出后一次性取 `UI_DIALOG_ACCEPT/CANCEL`，未完成或已消费为 `NONE` |
+| `Ui_ConfirmDialog` | 默认 460×260 DIP，标题/换行正文/取消/确认；危险操作红色按钮 |
+
+`closeOnBackdrop` 默认 0；设为 1 后单击遮罩等价取消，卡片空白不关闭。
+确认框默认聚焦取消，不因 Enter 误执行危险操作；Tab 切到确认后 Enter/Space 才接受。
+确认框的文字参数仅借用当前绘制调用，不复制到固定缓冲。
+
+```c
+UiDialog_Init(&vm.confirm, Ui_Id("project.confirm", 0, 0));
+UiDialog_AttachIme(&vm.confirm, &app->ime);
+
+/* frame: 先画背景触发器，最后画 Dialog。 */
+if (Ui_Button(ui, deleteId, deleteRc, "删除…", UI_BTN_DANGER, 1))
+    UiDialog_Open(&vm.confirm, ui, deleteId);
+Ui_ConfirmDialog(&vm.confirm, ui, "删除项目？", "此操作无法撤销。",
+    "确认删除", "取消", 1);
+
+/* animating / tick */
+return UiDialog_Busy(&vm.confirm);
+UiDialog_Tick(&vm.confirm, ui, dtMs);
+
+/* key: 必须位于背景快捷键之前。 */
+if (UiDialog_IsOpen(&vm.confirm)) {
+    UiDialog_Key(&vm.confirm, ui, vk);
+    return 1;
+}
+
+/* frame 或 tick 消费；有副作用的业务动作仍放 after_frame。 */
+if (UiDialog_TakeResult(&vm.confirm) == UI_DIALOG_ACCEPT)
+    vm.pendingDelete = 1;
+```
+
+自定义内容使用 `UiDialog_Begin(&d,ui,title,width,height,&body)`；body 已扣除标题区，
+留有 24 DIP 水平内边距，**仅供布局**。Begin 不推入 Gfx body clip 或 Ui body clip，
+避免底部/右侧按钮描边、光晕和嵌套 Popup 列表行被 body 边界截断。各控件仍按自身
+矩形命中，背景输入由 `inputOwner/inputScope` 阻断，不靠 body 裁剪实现模态。
+正文控件与嵌套 Popup 均在 Begin/End 内绘制，先正文后弹层；Popup 自行提升到
+overlay 层。仅真实视口需要显式配对 Gfx/Ui clip 或 ScrollView（TextArea 自带文本视口）；绘制 Popup 前应结束局部
+视口裁剪，Dialog 外也不要遗留父级裁剪。
+关闭动画期间不应继续向子控件派发键盘/字符/IME。文本输入控件的 `focused`、
+UiInput 与 IME 焦点切换仍由应用根据当前焦点 ID 接线，不每帧强制重置编辑焦点。
+
+样例 [samples/overlays.c](../samples/overlays.c) 同时演示确认框和自定义 Dialog
+（Checkbox、Select、TextArea、禁用按钮、完成按钮）；新增 TextArea 用于编辑焦点
+与长文本测试。背景主题按钮、Select、右键菜单在模态可见期间不可操作。
+**验证状态**：Dialog 的视觉（含描边/光晕、嵌套 Popup）与长文本验证尚未完成。
+
+---
+
 ## 9. UiAnim 动画内核
 
 ### 9.1 两种运动模型
@@ -3747,6 +3847,16 @@ Ui_TextArea / UiTextArea_Key / UiTextArea_Char
 UiTextArea_OnIme / UiTextArea_Blink
 ```
 
+**UiDialog / ConfirmDialog（8.18）**
+
+```c
+UiDialog_Init / UiDialog_AttachIme / UiDialog_SetFocusOrder
+UiDialog_Open / UiDialog_Close / UiDialog_IsOpen
+UiDialog_Begin / UiDialog_End / UiDialog_Key
+UiDialog_Tick / UiDialog_Busy / UiDialog_TakeResult
+Ui_ConfirmDialog
+```
+
 **UiWidgets / UiToast / UiInput / UiProgress**
 
 ```c
@@ -3870,7 +3980,8 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 | 弹层管理器 | [src/ui/ui_popup.c](../src/ui/ui_popup.c) |
 | Select 下拉 | [src/ui/ui_select.c](../src/ui/ui_select.c) |
 | Menu/右键菜单 | [src/ui/ui_menu.c](../src/ui/ui_menu.c) |
-| 弹层设计与样例 | [docs/CUI-弹层与选择控件-设计方案.md](CUI-弹层与选择控件-设计方案.md) / [samples/overlays.c](../samples/overlays.c) |
+| 弹层设计与样例（含 Dialog/ConfirmDialog、TextArea 测试） | [docs/CUI-弹层与选择控件-设计方案.md](CUI-弹层与选择控件-设计方案.md) / [samples/overlays.c](../samples/overlays.c) |
+| Dialog / ConfirmDialog | [src/ui/ui_dialog.h](../src/ui/ui_dialog.h) / [src/ui/ui_dialog.c](../src/ui/ui_dialog.c)；设计/API 见 [8.18](#818-dialog--confirmdialog) |
 | TextArea 编辑器 | [src/ui/ui_textarea.c](../src/ui/ui_textarea.c) |
 | TextArea 设计/样例 | [docs/CUI-TextArea-设计方案.md](CUI-TextArea-设计方案.md) / [samples/textarea.c](../samples/textarea.c) |
 | 右键回调 | [src/ui/ui_app.c:259](../src/ui/ui_app.c#L259) |
