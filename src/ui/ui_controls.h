@@ -67,6 +67,8 @@ int  UiSwitch_Key(UiSwitch *s, UiContext *ui, UINT vk);
 typedef struct UiSlider {
 	UiId id;
 	float value;       /* 0..1 */
+	float dragOfs;     /* 拖动抓取偏移 (DIP): 保持 1:1 跟手, 拇指不跳到指针下 */
+	int   dragging;
 	int changed;
 	int committed;
 } UiSlider;

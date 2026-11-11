@@ -510,6 +510,10 @@ int UiSwitch_Key(UiSwitch *s, UiContext *ui, UINT vk)
 
 /* ── Slider ────────────────────────────────────────────────────────── */
 
+/* 视觉拇指半径与映射内缩. 映射用固定值, 视觉半径可随 hover/press 变大. */
+#define SLIDER_THUMB_R 7.0f
+#define SLIDER_MAP_R   8.0f
+
 void UiSlider_Init(UiSlider *s, UiId id, float value)
 {
 	if (!s) return;
@@ -537,12 +541,13 @@ int Ui_Slider(UiSlider *s, UiContext *ui, UiRect rc,
 {
 	UiTheme *t;
 	UiWidgetState st;
-	UiRect track, lr, vr;
+	UiRect track, hit, lr, vr;
 	float labelW = label && label[0] ? 96.0f : 0.0f;
 	float valW = 46.0f;
-	float x0, x1, vx;
+	float x0, x1, cy, hov, prs, r, th, ux0, uw, vx;
 	char text[16];
-	int focus;
+	int focus, held, wasDrag, onTrack;
+	UiColor trackBg, fillBg, thumbBg, thumbBd, valFg;
 	if (!s || !ui || !ui->theme || !ui->gfx) return 0;
 	t = ui->theme;
 	s->changed = 0;
@@ -553,33 +558,95 @@ int Ui_Slider(UiSlider *s, UiContext *ui, UiRect rc,
 	x0 = rc.x + labelW;
 	x1 = rc.x + rc.w - valW;
 	if (x1 - x0 < 40.0f) x1 = x0 + 40.0f;
-	track = Ui_Rect(x0, rc.y + (rc.h - 4.0f) * 0.5f, x1 - x0, 4.0f);
-	st = Ui_State(ui, s->id, rc, enabled);
-	if (enabled && (st.pressed || (ui->mouseDown && ui->pressed == s->id))) {
-		float t0 = (ui->mouseX - track.x) / track.w;
-		slider_set(s, t0);
+	cy = rc.y + rc.h * 0.5f;
+	track = Ui_Rect(x0, cy - 2.0f, x1 - x0, 4.0f);
+	/* 整行注册: hover/focus 动画的脏区要覆盖百分比文字与整行焦点底色;
+	 * 真正的拖动入口另行限制在轨道上. */
+	hit = rc;
+	onTrack = ui->mouseX >= track.x - 12.0f &&
+		ui->mouseX <= track.x + track.w + 12.0f;
+
+	st = Ui_State(ui, s->id, hit, enabled);
+	hov = enabled ? st.hover : 0.0f;
+	prs = enabled ? st.press : 0.0f;
+	/* 点标签/百分比时不显示"按下" (不改变值); 拖动中即使 hover 被输入层
+	 * 清掉, 也保持至少悬停强度, 避免控件变暗. */
+	if (!onTrack && !s->dragging) prs = 0.0f;
+	if (prs > hov) hov = prs;
+
+	/* 值 -> 拇指中心映射固定按 SLIDER_MAP_R 内缩, 保证 0/1 时拇指完整落在
+	 * 轨道内; 视觉半径随 hover/press 变化, 但不参与映射, 否则悬停会让拇指漂移. */
+	ux0 = track.x + SLIDER_MAP_R;
+	uw = track.w - SLIDER_MAP_R * 2.0f;
+	wasDrag = s->dragging;
+	if (enabled && ui->down == s->id && onTrack) {
+		vx = ux0 + uw * s->value;
+		/* 抓在拇指上: 保持抓取偏移 1:1 拖动; 抓在轨道上: 直接定位.
+		 * 按下这一帧就落值: 快速单击可能 down/up 都发生在两次绘制之间. */
+		s->dragOfs = (ui->mouseX >= vx - 13.0f && ui->mouseX <= vx + 13.0f)
+			? ui->mouseX - vx : 0.0f;
+		slider_set(s, (ui->mouseX - s->dragOfs - ux0) / uw);
+		s->dragging = 1;
+		wasDrag = 1;
 		ui->navId = s->id;
 	}
-	if (enabled && ui->released == s->id) s->committed = 1;
+	held = enabled && s->dragging && ui->mouseDown && ui->pressed == s->id;
+	if (held) {
+		slider_set(s, (ui->mouseX - s->dragOfs - ux0) / uw);
+		ui->navId = s->id;
+	} else if (s->dragging) {
+		s->dragging = 0;
+		s->dragOfs = 0.0f;
+	}
+	if (enabled && ui->released == s->id && wasDrag) s->committed = 1;
+
 	focus = ui->navFocusVisible && ui->navId == s->id;
 	ctrl_focus_bg(ui, rc, focus);
 
-	Gfx_FillRoundRect(ui->gfx, track, 2.0f,
-		enabled ? t->neutral.border : t->neutral.soft);
-	Gfx_FillRoundRect(ui->gfx, Ui_Rect(track.x, track.y,
-		track.w * s->value, track.h), 2.0f,
-		enabled ? t->primary.base : t->btnDisabledText);
-	vx = track.x + track.w * s->value;
-	Gfx_FillEllipse(ui->gfx, vx, track.y + 2.0f, 7.0f, 7.0f,
-		enabled ? t->neutral.base : t->neutral.soft);
-	Gfx_StrokeEllipse(ui->gfx, vx, track.y + 2.0f, 7.0f,
-		enabled ? t->primary.base : t->neutral.border, 1.5f);
+	r = SLIDER_THUMB_R + hov * 1.1f + prs * 1.5f;
+	th = 4.0f + hov * 1.6f + prs * 1.2f;
+	track.y = cy - th * 0.5f;
+	track.h = th;
+	vx = ux0 + uw * s->value;
+
+	if (!enabled) {
+		trackBg = t->neutral.soft;
+		fillBg = t->btnDisabledText;
+		thumbBg = t->neutral.soft;
+		thumbBd = t->neutral.border;
+		valFg = t->btnDisabledText;
+	} else {
+		trackBg = Ui_ColorMix(t->neutral.border, t->primary.base,
+			hov * 0.30f + prs * 0.15f);
+		fillBg = Ui_ColorMix(t->primary.base, t->primary.hover, hov * 0.55f);
+		fillBg = Ui_ColorMix(fillBg, t->primary.press, prs * 0.65f);
+		thumbBg = Ui_ColorMix(t->neutral.base, t->primary.base,
+			hov * 0.05f + prs * 0.14f);
+		thumbBd = prs > 0.0f
+			? Ui_ColorMix(t->primary.base, t->primary.press, prs)
+			: Ui_ColorMix(t->primary.base, t->primary.hover, hov);
+		valFg = Ui_ColorMix(t->text3, t->primary.base, hov * 0.45f + prs * 0.35f);
+	}
+
+	/* 悬停/按下光晕: 先画在最底层, 只外扩不遮挡轨道与拇指. */
+	if (enabled && (hov > 0.01f || prs > 0.01f)) {
+		int ga = (int)(hov * 26.0f + prs * 26.0f + 0.5f);
+		Gfx_FillEllipse(ui->gfx, vx, cy, r + 3.5f, r + 3.5f,
+			Ui_ColorAlpha(t->primary.base, ga));
+	}
+	Gfx_FillRoundRect(ui->gfx, track, th * 0.5f, trackBg);
+	if (vx > track.x + 0.01f)
+		Gfx_FillRoundRect(ui->gfx, Ui_Rect(track.x, track.y,
+			vx - track.x, th), th * 0.5f, fillBg);
+	Gfx_FillEllipse(ui->gfx, vx, cy, r, r, thumbBg);
+	Gfx_StrokeEllipse(ui->gfx, vx, cy, r, thumbBd,
+		1.5f + prs * 0.5f);
+
 	if (label && label[0])
 		Gfx_Text(ui->gfx, t->fBody, label, lr,
 			enabled ? t->text2 : t->btnDisabledText, GFX_TEXT_VCENTER);
 	wsprintfA(text, "%d%%", (int)(s->value * 100.0f + 0.5f));
-	Gfx_Text(ui->gfx, t->fSmall, text, vr,
-		enabled ? t->text3 : t->btnDisabledText,
+	Gfx_Text(ui->gfx, t->fSmall, text, vr, valFg,
 		GFX_TEXT_VCENTER | GFX_TEXT_RIGHT);
 	return s->changed;
 }

@@ -156,7 +156,7 @@ static void on_frame(UiApp *app, void *user)
 		set_status(d, d->sw.on ? "Wi-Fi 已开启" : "Wi-Fi 已关闭");
 	Ui_StackSkip(&col, 8);
 	Ui_Slider(&d->slider, ui, Ui_StackTake(&col, 30), "音量", 1);
-	if (d->slider.committed)
+	if (d->slider.changed)
 		wsprintfA(d->status, "音量：%d%%",
 			(int)(d->slider.value * 100.0f + 0.5f));
 

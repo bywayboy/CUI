@@ -251,7 +251,7 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | `UiTabPager` | `Init/GoTo/Tick/Busy/Draw` | 横/纵/淡入转场、reverse、页面输入锁 |
 | | `UiTabStyle_Line/Pill/Card` | header 样式 token（提示：CARD 需 DrawActive 两阶段） |
 | `UiIcon` | `UiIcon_Glyph/UiIcon_Draw` `Gfx_CreateFontFamily` | 图标字体 glyph（Segoe MDL2 Assets），主题 tint/禁用/DPI |
-| `UiControls` | `Checkbox/CheckboxGroup/RadioGroup/Switch/Slider` | 表单控件；应用持有状态、键盘/禁用、Slider 拖动/committed |
+| `UiControls` | `Checkbox/CheckboxGroup/RadioGroup/Switch/Slider` | 表单控件；应用持有状态、键盘/禁用、Slider hover/press 反馈 + 抓取偏移跟手拖动 |
 | `UiPopup` | `UiPopup_Place` | below/above/right/left 翻转 + 视口夹取 |
 | `UiPopupManager` | `Init/BeginFrame/IsOpen/AnyOpen/Open/Close/Key` | 单弹层、点击外部/Esc 关闭、焦点回归、弹层打开时底层不参与命中 |
 | `UiSelect` | `Init/Shutdown/SetItems/SetSelected/SetDisabledMask` | 单选/多选下拉；列表复用 `UiScrollView`（滚轮/thumb 拖动/轨道翻页）、禁用项、键盘 |
@@ -419,7 +419,9 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   对不存在的字体族返回 NULL。
 - 控件回归：`cui_controls.exe` 的 Checkbox（含 indeterminate/disabled）、
   CheckboxGroup mask、RadioGroup、Switch、Slider 点击/拖动、IconButton +
-  Tooltip 延迟提示均正常；Group 内复选项与上方单项 Checkbox 左边缘像素对齐
+  Tooltip 延迟提示均正常；Slider hover 时轨道 8→12 px、按下 14 px（200% DPI），
+  抓住拇指边缘按下不跳位、拖动 1:1 跟手，拖出控件仍跟随、快速单击立即落值，
+  点标签/百分比不改值；Group 内复选项与上方单项 Checkbox 左边缘像素对齐
   （组绘制裁剪放宽 1 DIP，修复此前少 1px）；勾选/取消、RadioGroup 换项有
   约 140ms 淡入淡出，indeterminate→checked 横线退/对勾进，初始“部分应用”
   只显示横线（不叠对勾）；键盘焦点为 `primary.soft` 行底色 +
