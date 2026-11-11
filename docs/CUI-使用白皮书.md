@@ -144,6 +144,11 @@
 > 41. 新增 `UiDialog` / `Ui_ConfirmDialog`（8.18）：窗内模态、开合动画、焦点循环、
 >    嵌套 Popup 与背景输入隔离。body 仅供布局，不裁剪按钮描边、光晕或下拉列表。
 >    `samples/overlays.c` 增加通用 Dialog、危险操作确认框及 TextArea 备注。
+> 42. 修复含不可滚动 ScrollView（TextArea / 短 Select）的 Dialog 首次打开卡顿：
+>    滚动条初始透明度为 1，内容不滚动时仍逐帧淡出并在 `WM_PAINT` 内
+>    `InvalidateRect`，排队出下一次 `WM_PAINT` 占住消息泵，开合 Tick 被饿死
+>    约 800ms；现在不可滚动时直接归零，不再请求重绘。真实鼠标首开由 814ms
+>    降到 76ms（第二次 95ms），静态 Dialog 仍为 0ms CPU/1.5s。
 
 ---
 
@@ -1989,6 +1994,9 @@ UiScrollConfig t = UiScrollConfig_Touch();  /* bounce=1 */
 
 - overlay，不占内容宽度；默认宽 6 DIP、thumb 最小 24 DIP、右侧内缩 2 DIP。
 - 悬停/滚动时淡入，停止后 `barHideDelayMs` 开始淡出，`barFadeMs` 完成。
+- 内容不可滚动时 `Tick` 直接把 `barOpacity` 归零，不做淡出：滚动条本就不会
+  绘制，若仍逐帧 `InvalidateRect` 会在 `WM_PAINT` 内排队下一次 `WM_PAINT`，
+  饿死应用动画循环（Dialog/Select 首开曾被拖慢约 800ms）。
 - thumb 可拖拽；点击轨道翻页；完全隐藏时不注册命中，不挡内容点击。
 - 颜色从 `UiTheme` 解析，换肤自动生效。可覆盖：
 
@@ -2599,7 +2607,9 @@ UiInput 与 IME 焦点切换仍由应用根据当前焦点 ID 接线，不每帧
 样例 [samples/overlays.c](../samples/overlays.c) 同时演示确认框和自定义 Dialog
 （Checkbox、Select、TextArea、禁用按钮、完成按钮）；新增 TextArea 用于编辑焦点
 与长文本测试。背景主题按钮、Select、右键菜单在模态可见期间不可操作。
-**验证状态**：Dialog 的视觉（含描边/光晕、嵌套 Popup）与长文本验证尚未完成。
+**验证状态**：200% DPI 原生窗口已验证按钮描边/光晕不被 body 裁切、嵌套 Popup
+长列表可滚到末项并用鼠标选中、鼠标编辑焦点跨帧保持、Tab 跳过禁用项；真实鼠标
+首次打开约 76ms（修复滚动条自失效导致的动画饿死后），静态 Dialog 为 0ms CPU。
 
 ---
 

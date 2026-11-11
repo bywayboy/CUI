@@ -453,6 +453,18 @@ void UiScrollView_Tick(UiScrollView *sv, UiContext *ui, float dtMs)
 	oldOffset = sv->offset;
 	oldOpacity = sv->barOpacity;
 
+	/* 内容不滚动时不画滚动条, 直接清掉初始的 1.0 透明度. 若按淡出处理,
+	 * 这里会在 WM_PAINT 内每帧 InvalidateRect, 排队出下一次 WM_PAINT,
+	 * 消息泵回不到动画循环; 首次打开含 TextArea/短 Select 的 Dialog 时,
+	 * 开合 Tick 会被饿死数百毫秒. */
+	if (!scrollable(sv)) {
+		sv->barOpacity = 0.0f;
+		sv->barTarget = 0.0f;
+		sv->idleMs = 0.0f;
+		sv->busy = 0;
+		return;
+	}
+
 	sv->barHold = sv->mouseInside || sv->draggingThumb;
 	if (sv->barHold) sv->idleMs = 0.0f;
 	else sv->idleMs += dtMs;
