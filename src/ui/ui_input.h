@@ -33,6 +33,7 @@ typedef struct UiInput {
 } UiInput;
 
 void UiInput_Init(UiInput *in, UiContext *ui, UiIme *ime);
+void UiInput_Shutdown(UiInput *in);
 int  UiInput_Add(UiInput *in, UiId id, int maxLen, int password,
 	const char *allow, const wchar_t *hint);
 UiInputField *UiInput_Field(UiInput *in, int index);

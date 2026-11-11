@@ -253,6 +253,7 @@ static void on_tick(UiApp *app, double dtMs, void *user)
 static void on_shutdown(UiApp *app, void *user)
 {
 	(void)app; (void)user;
+	UiInput_Shutdown(&g.form);
 	UiToast_Shutdown(&g.toast);
 	UiProgress_Shutdown(&g.progress);
 }

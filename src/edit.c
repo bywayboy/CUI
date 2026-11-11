@@ -6,37 +6,123 @@ static int sel_start(const UiEdit *e) { return e->anchor < e->caret ? e->anchor 
 static int sel_end(const UiEdit *e)   { return e->anchor < e->caret ? e->caret : e->anchor; }
 static int has_sel(const UiEdit *e)   { return e->anchor != e->caret; }
 
-static float measure_utf16(Gfx *g, GfxFont *f, const wchar_t *s, int n)
+static int edit_reserve_text(UiEdit *e, int need)
 {
-	char buf[EDIT_MAX * 3 + 8];
-	int m;
-	if (n <= 0) return 0.0f;
-	m = WideCharToMultiByte(CP_UTF8, 0, s, n, buf, (int)sizeof(buf) - 1, NULL, NULL);
-	if (m <= 0) return 0.0f;
-	buf[m] = 0;
-	return Gfx_TextWidth(g, f, buf);
+	wchar_t *p;
+	int cap;
+	if (!e || need <= 0) return 0;
+	if (need <= e->cap) return 1;
+	cap = e->cap > 0 ? e->cap : EDIT_MAX;
+	while (cap < need) {
+		int next = cap < 4096 ? cap * 2 : cap + cap / 2;
+		if (next <= cap) { cap = need; break; }
+		cap = next;
+	}
+	if (e->maxLen > 0 && cap > e->maxLen + 1) cap = e->maxLen + 1;
+	if (cap < need) return 0;
+	p = e->text
+		? (wchar_t *)HeapReAlloc(GetProcessHeap(), 0, e->text,
+			(SIZE_T)cap * sizeof(wchar_t))
+		: (wchar_t *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+			(SIZE_T)cap * sizeof(wchar_t));
+	if (!p) return 0;
+	e->text = p;
+	e->cap = cap;
+	return 1;
 }
 
-static float measure_disp(const UiEdit *e, Gfx *g, GfxFont *f, int n)
+static int edit_reserve_u8(UiEdit *e, int need)
 {
-	wchar_t stars[EDIT_MAX];
+	char *p;
+	int cap;
+	if (!e || need <= 0) return 0;
+	if (need <= e->u8cap) return 1;
+	cap = e->u8cap > 0 ? e->u8cap : (EDIT_MAX * 3 + 8);
+	while (cap < need) {
+		int next = cap < 8192 ? cap * 2 : cap + cap / 2;
+		if (next <= cap) { cap = need; break; }
+		cap = next;
+	}
+	p = e->u8
+		? (char *)HeapReAlloc(GetProcessHeap(), 0, e->u8, (SIZE_T)cap)
+		: (char *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)cap);
+	if (!p) return 0;
+	e->u8 = p;
+	e->u8cap = cap;
+	return 1;
+}
+
+static int edit_reserve_disp(UiEdit *e, int need)
+{
+	wchar_t *p;
+	int cap;
+	if (!e || need <= 0) return 0;
+	if (need <= e->dispcap) return 1;
+	cap = e->dispcap > 0 ? e->dispcap : EDIT_MAX;
+	while (cap < need) {
+		int next = cap < 4096 ? cap * 2 : cap + cap / 2;
+		if (next <= cap) { cap = need; break; }
+		cap = next;
+	}
+	p = e->disp
+		? (wchar_t *)HeapReAlloc(GetProcessHeap(), 0, e->disp,
+			(SIZE_T)cap * sizeof(wchar_t))
+		: (wchar_t *)HeapAlloc(GetProcessHeap(), 0,
+			(SIZE_T)cap * sizeof(wchar_t));
+	if (!p) return 0;
+	e->disp = p;
+	e->dispcap = cap;
+	return 1;
+}
+
+/* s/n -> 内部 UTF-8 缓冲; 返回可用的 C 字符串 (失败返回空串). */
+static char *edit_to_u8(UiEdit *e, const wchar_t *s, int n)
+{
+	int need, m;
+	static char empty[1] = { 0 };
+	if (!e) return empty;
+	if (n <= 0) {
+		if (edit_reserve_u8(e, 1)) e->u8[0] = 0;
+		return e->u8 ? e->u8 : empty;
+	}
+	need = n > (0x7FFFFFFF - 8) / 3 ? 0x7FFFFFFF : n * 3 + 8;
+	if (!edit_reserve_u8(e, need)) {
+		if (e->u8cap > 0) e->u8[0] = 0;
+		return e->u8 ? e->u8 : empty;
+	}
+	m = WideCharToMultiByte(CP_UTF8, 0, s, n, e->u8, e->u8cap - 1, NULL, NULL);
+	if (m < 0) m = 0;
+	e->u8[m] = 0;
+	return e->u8;
+}
+
+static float measure_utf16(UiEdit *e, Gfx *g, GfxFont *f, const wchar_t *s, int n)
+{
+	if (n <= 0) return 0.0f;
+	return Gfx_TextWidth(g, f, edit_to_u8(e, s, n));
+}
+
+static float measure_disp(UiEdit *e, Gfx *g, GfxFont *f, int n)
+{
 	int i;
 	if (n <= 0) return 0.0f;
-	if (!e->password) return measure_utf16(g, f, e->text, n);
-	if (n > EDIT_MAX) n = EDIT_MAX;
-	for (i = 0; i < n; i++) stars[i] = L'*';
-	return measure_utf16(g, f, stars, n);
+	if (!e->password) return measure_utf16(e, g, f, e->text, n);
+	if (!edit_reserve_disp(e, n + 1)) return 0.0f;
+	for (i = 0; i < n; i++) e->disp[i] = L'*';
+	e->disp[n] = 0;
+	return measure_utf16(e, g, f, e->disp, n);
 }
 
 /* 组合串宽度: 密码框按掩码算, 与上屏后的显示保持一致 */
-static float measure_comp(const UiEdit *e, Gfx *g, GfxFont *f)
+static float measure_comp(UiEdit *e, Gfx *g, GfxFont *f)
 {
-	wchar_t buf[EDIT_COMP_MAX];
 	int i, n = e->compLen;
 	if (n <= 0) return 0.0f;
-	if (!e->password) return measure_utf16(g, f, e->comp, n);
-	for (i = 0; i < n; i++) buf[i] = L'*';
-	return measure_utf16(g, f, buf, n);
+	if (!e->password) return measure_utf16(e, g, f, e->comp, n);
+	if (!edit_reserve_disp(e, n + 1)) return 0.0f;
+	for (i = 0; i < n; i++) e->disp[i] = L'*';
+	e->disp[n] = 0;
+	return measure_utf16(e, g, f, e->disp, n);
 }
 
 static void text_to_utf8(const wchar_t *s, int n, char *out, int cap)
@@ -49,15 +135,17 @@ static void text_to_utf8(const wchar_t *s, int n, char *out, int cap)
 	out[m] = 0;
 }
 
-static void make_display(const UiEdit *e, wchar_t *out)
+static int make_display(UiEdit *e)
 {
 	int i;
+	if (!edit_reserve_disp(e, e->len + 1)) return 0;
 	if (!e->password) {
-		memcpy(out, e->text, (size_t)(e->len + 1) * sizeof(wchar_t));
-		return;
+		memcpy(e->disp, e->text, (size_t)(e->len + 1) * sizeof(wchar_t));
+		return 1;
 	}
-	for (i = 0; i < e->len; i++) out[i] = L'*';
-	out[e->len] = 0;
+	for (i = 0; i < e->len; i++) e->disp[i] = L'*';
+	e->disp[e->len] = 0;
+	return 1;
 }
 
 static void ensure_caret_visible(UiEdit *e, Gfx *g, GfxFont *f, float innerW)
@@ -107,12 +195,18 @@ static void insert_text(UiEdit *e, const wchar_t *s, int n)
 		e->caret = a;
 	}
 	if (n <= 0) { e->anchor = e->caret; return; }
-	room = e->maxLen - e->len;
+	room = e->maxLen > 0 ? e->maxLen - e->len : 0x7FFFFFFF;
 	if (room <= 0) { e->anchor = e->caret; return; }
 	if (n > room) n = room;
+	if (!edit_reserve_text(e, e->len + n + 1)) {
+		if (e->cap <= 0) { e->anchor = e->caret; return; }
+		if (n > e->cap - e->len - 1) n = e->cap - e->len - 1;
+		if (n < 0) n = 0;
+	}
 	for (i = 0; i < n; i++) {
 		if (!allow_char(e, s[i])) continue;
-		if (e->len >= e->maxLen) break;
+		if (e->maxLen > 0 && e->len >= e->maxLen) break;
+		if (e->len + 1 >= e->cap && !edit_reserve_text(e, e->len + 2)) break;
 		memmove(e->text + e->caret + 1, e->text + e->caret,
 			(size_t)(e->len - e->caret + 1) * sizeof(wchar_t));
 		e->text[e->caret++] = s[i];
@@ -170,42 +264,77 @@ static void clip_paste(UiEdit *e, HWND hwnd)
 {
 	HANDLE h;
 	const wchar_t *p;
-	wchar_t buf[EDIT_MAX * 2];
-	int n = 0;
-	if (!OpenClipboard(hwnd)) return;
+	wchar_t *buf;
+	SIZE_T bytes;
+	int cap, n = 0;
+	if (!e || !OpenClipboard(hwnd)) return;
 	h = GetClipboardData(CF_UNICODETEXT);
-	if (h) {
-		p = (const wchar_t *)GlobalLock(h);
-		if (p) {
-			while (*p && n < (int)(sizeof(buf) / sizeof(buf[0])) - 1) {
-				wchar_t c = *p++;
-				if (c == L'\r' || c == L'\n' || c == L'\t') continue;
-				if (c < 32) continue;
-				buf[n++] = c;
-			}
+	if (!h) { CloseClipboard(); return; }
+	p = (const wchar_t *)GlobalLock(h);
+	if (!p) { CloseClipboard(); return; }
+	bytes = GlobalSize(h);
+	cap = bytes / sizeof(wchar_t);
+	if (cap < 1) cap = 1;
+	buf = (wchar_t *)HeapAlloc(GetProcessHeap(), 0,
+		(SIZE_T)cap * sizeof(wchar_t));
+	if (buf) {
+		while (*p && n < cap - 1) {
+			wchar_t c = *p++;
+			if (c == L'\r' || c == L'\n' || c == L'\t') continue;
+			if (c < 32) continue;
+			buf[n++] = c;
 		}
-		GlobalUnlock(h);
+		buf[n] = 0;
+		insert_text(e, buf, n);
+		HeapFree(GetProcessHeap(), 0, buf);
 	}
+	GlobalUnlock(h);
 	CloseClipboard();
-	buf[n] = 0;
-	insert_text(e, buf, n);
 }
 
 void Edit_Init(UiEdit *e, int maxLen, int password, const char *allow)
 {
 	memset(e, 0, sizeof(*e));
-	if (maxLen <= 0 || maxLen >= EDIT_MAX) maxLen = EDIT_MAX - 1;
-	e->maxLen = maxLen;
+	e->maxLen = maxLen > 0 ? maxLen : 0;   /* 0 = 不限长 */
 	e->password = password;
 	e->allow = allow;
+	{
+		int initNeed = (e->maxLen > 0 && e->maxLen + 1 < EDIT_MAX)
+			? e->maxLen + 1 : EDIT_MAX;
+		if (!edit_reserve_text(e, initNeed)) {
+			e->text = NULL;
+			e->cap = 0;
+		}
+	}
+	if (e->text) e->text[0] = 0;
+}
+
+void Edit_Shutdown(UiEdit *e)
+{
+	if (!e) return;
+	if (e->text) HeapFree(GetProcessHeap(), 0, e->text);
+	if (e->u8) HeapFree(GetProcessHeap(), 0, e->u8);
+	if (e->disp) HeapFree(GetProcessHeap(), 0, e->disp);
+	e->text = NULL;
+	e->u8 = NULL;
+	e->disp = NULL;
+	e->cap = e->u8cap = e->dispcap = 0;
+	e->len = e->caret = e->anchor = 0;
 }
 
 void Edit_SetText(UiEdit *e, const wchar_t *s)
 {
 	int n;
+	if (!e) return;
 	if (!s) s = L"";
 	n = lstrlenW(s);
-	if (n > e->maxLen) n = e->maxLen;
+	if (e->maxLen > 0 && n > e->maxLen) n = e->maxLen;
+	if (!edit_reserve_text(e, n + 1)) {
+		if (e->text && e->cap > 0) e->text[0] = 0;
+		e->len = 0;
+		e->caret = e->anchor = 0;
+		return;
+	}
 	memcpy(e->text, s, (size_t)n * sizeof(wchar_t));
 	e->text[n] = 0;
 	e->len = n;
@@ -215,12 +344,19 @@ void Edit_SetText(UiEdit *e, const wchar_t *s)
 
 void Edit_SetTextUtf8(UiEdit *e, const char *s)
 {
-	wchar_t buf[EDIT_MAX];
-	int n = 0;
-	if (s && *s)
-		n = MultiByteToWideChar(CP_UTF8, 0, s, -1, buf, EDIT_MAX);
-	if (n > 0) buf[EDIT_MAX - 1] = 0;
-	Edit_SetText(e, n > 0 ? buf : L"");
+	int need, n;
+	if (!e) return;
+	if (!s || !*s) { Edit_SetText(e, L""); return; }
+	need = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+	if (need <= 0) { Edit_SetText(e, L""); return; }
+	if (e->maxLen > 0 && need - 1 > e->maxLen) need = e->maxLen + 1;
+	if (!edit_reserve_text(e, need)) { Edit_SetText(e, L""); return; }
+	n = MultiByteToWideChar(CP_UTF8, 0, s, -1, e->text, need);
+	if (n <= 0) { Edit_SetText(e, L""); return; }
+	e->text[need - 1] = 0;
+	e->len = n - 1;
+	e->caret = e->anchor = e->len;
+	e->scrollX = 0.0f;
 }
 
 void Edit_TextUtf8(const UiEdit *e, char *out, int cap)
@@ -254,8 +390,6 @@ void Edit_Draw(UiContext *ui, UiId id, UiRect rc, UiEdit *e, const wchar_t *hint
 	UiSurfaceStyle ss;
 	UiRect inner;
 	float innerW, th, textH, tx, ty, cy;
-	wchar_t disp[EDIT_MAX];
-	char u8[EDIT_MAX * 3 + 8];
 	float selA, selB, total, compW;
 	int a, b;
 
@@ -281,7 +415,7 @@ void Edit_Draw(UiContext *ui, UiId id, UiRect rc, UiEdit *e, const wchar_t *hint
 	 * 文本/光标/组合串变化时应用会失效字段矩形, 不会被跳过。 */
 	if (!Gfx_IsVisible(g, rc)) return;
 
-	make_display(e, disp);
+	if (!make_display(e)) return;
 	compW = measure_comp(e, g, f);
 	ensure_caret_visible(e, g, f, innerW);
 
@@ -308,26 +442,28 @@ void Edit_Draw(UiContext *ui, UiId id, UiRect rc, UiEdit *e, const wchar_t *hint
 			wchar_t cbuf[EDIT_COMP_MAX];
 			int i;
 			if (e->caret > 0) {
-				text_to_utf8(disp, e->caret, u8, (int)sizeof(u8));
-				Gfx_Text(g, f, u8, Ui_Rect(tx, ty, wPre + 4.0f, th), t->text, 0);
+				Gfx_Text(g, f, edit_to_u8(e, e->disp, e->caret),
+					Ui_Rect(tx, ty, wPre + 4.0f, th), t->text, 0);
 			}
 			for (i = 0; i < e->compLen; i++) cbuf[i] = e->password ? L'*' : e->comp[i];
-			text_to_utf8(cbuf, e->compLen, u8, (int)sizeof(u8));
-			Gfx_Text(g, f, u8, Ui_Rect(tx + wPre, ty, compW + 4.0f, th), t->text, 0);
+			Gfx_Text(g, f, edit_to_u8(e, cbuf, e->compLen),
+				Ui_Rect(tx + wPre, ty, compW + 4.0f, th), t->text, 0);
 			Gfx_Line(g, tx + wPre, ty + th - 1.0f, tx + wPre + compW, ty + th - 1.0f, t->text, 1.0f);
 			if (e->caret < e->len) {
-				text_to_utf8(disp + e->caret, e->len - e->caret, u8, (int)sizeof(u8));
-				Gfx_Text(g, f, u8, Ui_Rect(tx + wPre + compW, ty,
-					measure_disp(e, g, f, e->len) - wPre + 4.0f, th), t->text, 0);
+				Gfx_Text(g, f,
+					edit_to_u8(e, e->disp + e->caret, e->len - e->caret),
+					Ui_Rect(tx + wPre + compW, ty,
+						measure_disp(e, g, f, e->len) - wPre + 4.0f, th),
+					t->text, 0);
 			}
 		} else {
 			total = measure_disp(e, g, f, e->len);
-			text_to_utf8(disp, e->len, u8, (int)sizeof(u8));
-			Gfx_Text(g, f, u8, Ui_Rect(tx, ty, total + 4.0f, th), t->text, 0);
+			Gfx_Text(g, f, edit_to_u8(e, e->disp, e->len),
+				Ui_Rect(tx, ty, total + 4.0f, th), t->text, 0);
 		}
 	} else if (hint && hint[0]) {
-		text_to_utf8(hint, lstrlenW(hint), u8, (int)sizeof(u8));
-		Gfx_Text(g, f, u8, Ui_Rect(inner.x, ty, innerW, th), t->hint, 0);
+		Gfx_Text(g, f, edit_to_u8(e, hint, lstrlenW(hint)),
+			Ui_Rect(inner.x, ty, innerW, th), t->hint, 0);
 	}
 
 	cy = inner.x + measure_disp(e, g, f, e->caret) - e->scrollX;
@@ -429,7 +565,7 @@ int Edit_Char(UiEdit *e, wchar_t ch)
 {
 	wchar_t one[2];
 	if (!allow_char(e, ch)) return 1;
-	if (e->len >= e->maxLen && !has_sel(e)) return 1;
+	if (e->maxLen > 0 && e->len >= e->maxLen && !has_sel(e)) return 1;
 	one[0] = ch; one[1] = 0;
 	insert_text(e, one, 1);
 	return 1;

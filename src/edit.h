@@ -16,7 +16,14 @@
 #define EDIT_COMP_MAX 64   /* IME 组合串上限 (拼音/五笔的一整段远小于此) */
 
 typedef struct UiEdit {
-	wchar_t text[EDIT_MAX];
+	/* 动态增长; cap 是分配到的 wchar_t 数 (含结尾 0), 不再是固定上限. */
+	wchar_t *text;
+	int cap;
+	/* 内部复用缓冲, 避免长文本每次绘制/测量开大栈数组. */
+	char *u8;
+	int u8cap;
+	wchar_t *disp;
+	int dispcap;
 	int len;
 	int caret;
 	int anchor;          /* 选择锚点; anchor != caret 即有选区 */
@@ -39,7 +46,9 @@ typedef struct UiEdit {
 	float textHDip;
 } UiEdit;
 
+/* maxLen <= 0 = 不限长 (按需倍增); >0 = 最大字符数. */
 void Edit_Init(UiEdit *e, int maxLen, int password, const char *allow);
+void Edit_Shutdown(UiEdit *e);
 void Edit_SetText(UiEdit *e, const wchar_t *s);
 void Edit_SetTextUtf8(UiEdit *e, const char *s);
 void Edit_TextUtf8(const UiEdit *e, char *out, int cap);

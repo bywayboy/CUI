@@ -53,6 +53,17 @@ void UiInput_Init(UiInput *in, UiContext *ui, UiIme *ime)
 	in->blinkOn = 1;
 }
 
+void UiInput_Shutdown(UiInput *in)
+{
+	int i;
+	if (!in) return;
+	for (i = 0; i < in->count; i++)
+		Edit_Shutdown(&in->fields[i].edit);
+	in->count = 0;
+	in->focus = -1;
+	in->drag = -1;
+}
+
 int UiInput_Add(UiInput *in, UiId id, int maxLen, int password,
 	const char *allow, const wchar_t *hint)
 {

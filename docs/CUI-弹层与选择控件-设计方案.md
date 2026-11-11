@@ -152,6 +152,8 @@ typedef struct UiSelect {
   宽度取 `max(触发器宽度, 最长项文本 + 内边距)`，封顶视口；
 - 行：hover 用 `primary.soft` 圆角条；选中项文字 `primary.base`，
   右侧显示 check glyph（`E73E`）或 "✓"；禁用项 `btnDisabledText` 且不注册命中；
+- 列表项状态用 `Ui_StateInstant`：hover 直接 0/1，不做平滑淡变，避免快速
+  移动时的滞后感；也不为临时行创建动画条目；
 - 列表滚动区**复用 `UiScrollView`**，不另写一套滚动物理：
   - 帧末在 overlay 层 `UiScrollView_Begin(view=panel, contentH=count*rowH)`
     → Select 按 `sv.offset` 只画可见行 → `UiScrollView_End` 画滚动条；
@@ -235,7 +237,8 @@ typedef struct UiMenu {
 - 宽度 = max(标签 + 快捷键 + 左右内边距 + 勾选槽)，最小 160 DIP，封顶视口；
 - 高度 = 项数 × rowH + 分隔线高度（9 DIP）+ 上下 4 DIP；
 - 分隔线：1 px `neutral.border`，不注册命中、不参与键盘；
-- hover：`primary.soft` 圆角条；危险项文字 `error.base`；禁用项变灰；
+- hover：`primary.soft` 圆角条，使用 `Ui_StateInstant`（瞬时，无淡变滞后）；
+  危险项文字 `error.base`；禁用项变灰；
 - 右键上下文菜单：App 在 `UI_APP_MOUSE_RDOWN` 里记录点并打开菜单，
   菜单打开后该次右键不再触发底层控件。
 

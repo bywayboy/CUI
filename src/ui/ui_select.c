@@ -329,6 +329,14 @@ void UiSelect_Init(UiSelect *s, UiId id)
 	s->sv.barTarget = 1.0f;
 }
 
+void UiSelect_Shutdown(UiSelect *s)
+{
+	if (!s) return;
+	if (s->ime && s->ime->edit == &s->edit)
+		UiIme_SetFocus(s->ime, NULL);
+	Edit_Shutdown(&s->edit);   /* 释放动态搜索缓冲 */
+}
+
 void UiSelect_SetItems(UiSelect *s, const char *const *items, int count)
 {
 	if (!s) return;
@@ -685,7 +693,7 @@ void UiSelect_DrawPopup(UiSelect *s, UiPopupManager *pm, UiContext *ui)
 			row = Ui_Rect(inner.x,
 				inner.y + (float)k * rowH - s->sv.offset,
 				inner.w, rowH);
-			st = Ui_State(ui, id, row, en);
+			st = Ui_StateInstant(ui, id, row, en);
 			if (en && ui->clicked == id) {
 				if (s->multiple) sel_toggle(s, ui, orig);
 				else sel_commit(s, pm, ui, orig, 0);

@@ -114,6 +114,13 @@ static void on_timer(UiApp *app, void *user)
 	UiInput_Blink(&a->form);
 }
 
+static void on_shutdown(UiApp *app, void *user)
+{
+	App *a = (App *)user;
+	(void)app;
+	UiInput_Shutdown(&a->form);
+}
+
 static int on_nchittest(UiApp *app, int x, int y, LRESULT *hit, void *user)
 {
 	(void)x; (void)user;
@@ -137,6 +144,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 	cb.chr = on_char;
 	cb.ime = on_ime;
 	cb.timer = on_timer;
+	cb.shutdown = on_shutdown;
 	cb.nchittest = on_nchittest;
 	return UiApp_Run(L"CUI Minimal", 520, 320, UI_THEME_LIGHT, &cb, &a);
 }

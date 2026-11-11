@@ -167,7 +167,7 @@ void UiMenu_Draw(UiMenu *m, UiPopupManager *pm, UiContext *ui)
 		}
 		id = menu_child(m->id, "ui.menu.item", i);
 		row = Ui_Rect(inner.x + 1.0f, y, inner.w - 2.0f, h);
-		st = Ui_State(ui, id, row, en);
+		st = Ui_StateInstant(ui, id, row, en);
 		if (en && ui->clicked == id) {
 			menu_activate(m, pm, ui, i, 0);
 			hot = 0;

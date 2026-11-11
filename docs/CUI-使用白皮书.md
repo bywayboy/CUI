@@ -120,6 +120,20 @@
 >    indeterminate→checked 时横线淡出、对勾淡入；每项用独立动画通道。
 > 33. 修复 indeterminate 与 checked 同时为真时对勾与横线重叠：横线优先，
 >    对勾动画目标改为 `checked && !indeterminate`，初始“部分应用”只显示横线。
+> 34. 下拉列表项/菜单项改用 `Ui_StateInstant`：hover 直接取 0/1，不走 90ms
+>    平滑淡变，消除指针移动时的滞后/卡顿感；触发器与表单控件仍用 `Ui_State`。
+> 35. 新增 `UiTextArea` 多行编辑器：软换行、垂直滚动、选区、剪贴板、
+>    readonly/disabled、IME 代理；新增 `samples/textarea.c` 与
+>    `cui_textarea.exe`（11 个 exe）。
+> 36. `UiEdit` / `UiTextArea` 容量改为动态倍增，`maxLen<=0` 表示不限长；
+>    TextArea 行索引动态增长，末尾追加 O(新增字符)、段落内编辑只重排当前段，
+>    换行编辑/宽度变化才全文重排；新增 `Edit_Shutdown` / `UiInput_Shutdown` /
+>    `UiSelect_Shutdown` / `UiTextArea_Shutdown`。
+> 37. 修复 TextArea 选择跳动/行末选不全：`Gfx_TextWidth` 改用
+>    `widthIncludingTrailingWhitespace`（行尾空格不再被裁掉）；鼠标列命中补上
+>    “跨过目标的字符之后”候选列；拖选不再触发 `ensureCaret` 自动滚动。
+> 38. 恢复 TextArea 拖选边缘自动滚动：鼠标靠近/越出文本视口时按住期间每帧
+>    滚动 6–40 DIP，选择随滚动继续扩展；只在拖动时触发，不影响行内选择。
 
 ---
 
@@ -142,6 +156,7 @@
    - [8.14 图标 (GLYPH 后端)](#814-图标-glyph-后端)
    - [8.15 表单控件 / Popup / Tooltip](#815-表单控件--popup--tooltip)
    - [8.16 弹层管理器 / Select / Menu](#816-弹层管理器--select--menu)
+   - [8.17 TextArea 多行编辑器](#817-textarea-多行编辑器)
 9. [UiAnim 动画内核](#9-uianim-动画内核)
 10. [UiFrame 帧时钟](#10-uiframe-帧时钟)
 11. [UiEdit 编辑框](#11-uiedit-编辑框)
@@ -182,7 +197,7 @@ CUI 是一套 **纯 C/C++、零 CRT、即时模式（Immediate Mode）** 的 Win
 | 交互 | 即时模式，稳定 `UiId`，单帧事件 |
 | 动画 | 固定池：64 条目 × 16 通道，零分配 |
 | 输入法 | IMM32，组合串就地绘制，候选窗跟随插入点 |
-| 产物 | `cui_demo` / `cui_minimal` / `cui_advanced` / `cui_multi` / `cui_mvvm` / `cui_scroll` / `cui_tabs` / `cui_icons` / `cui_controls` / `cui_overlays` |
+| 产物 | `cui_demo` / `cui_minimal` / `cui_advanced` / `cui_multi` / `cui_mvvm` / `cui_scroll` / `cui_tabs` / `cui_icons` / `cui_controls` / `cui_overlays` / `cui_textarea` |
 
 ---
 
@@ -274,6 +289,7 @@ bin\cui_tabs.exe
 bin\cui_icons.exe
 bin\cui_controls.exe
 bin\cui_overlays.exe
+bin\cui_textarea.exe
 ```
 
 成功输出示例：
@@ -1053,6 +1069,11 @@ Ui_PopLayer(&ui);
 
 `Ui_State` 会自动对 `UI_AN_HOVER/PRESS/FOCUS/GLOW` 调用 `Ui_AnimSmooth`。
 `Ui_DrawSurface` 还会根据 `glowMask` 重新计算 glow 目标。
+
+**瞬时状态**：下拉/菜单的列表项这类“指针离开就应立即还原”的临时行用
+`Ui_StateInstant(&ui, id, rc, enabled)`。它同样登记命中，但不写动画通道，
+`hover/press/focus` 直接返回 0/1，因此 hover 没有淡入淡出滞后，也不会创建
+一次性动画条目。
 
 禁用态（`enabled = 0`）：
 
@@ -2308,6 +2329,8 @@ void on_timer(UiApp *app, void *user) { UiSelect_Blink(&tags, &app->ui); }
   滚动条 hover 高亮、右侧预留槽全部走 ScrollView；track 透明，只显示 6 DIP thumb；
   弹层没有 UiApp tick，帧末 `End` 后补一次 `UiScrollView_Tick(16ms)` 让轨道翻页生效；
 - 打开时自动把选中项滚入可视区（`UiScrollView_ScrollTo(..., 0)`）；
+- 列表项用 `Ui_StateInstant`：hover 立即出现/消失，不做淡入淡出，避免快速
+  移动时的滞后/卡顿感；触发器本身仍用 `Ui_State` 的平滑状态；
 - `disabledMask` 位标记禁用项，禁用项不注册命中、不可键盘选中；
 - 多选：`mask` 最多 32 位；触发器显示前两个标签 + `+N`；鼠标点击/Enter 切换
   选中并**保持展开**，Esc/点击外部关闭；关闭时 `committed=1`；
@@ -2351,6 +2374,8 @@ if (UiMenu_Key(&menu, &pm, ui, vk)) { /* changed/item 可提交 */ }
 - 锚点可以是按钮矩形（下拉菜单）或鼠标点 `{x, y, 0, 0}`（右键菜单）；
 - `UI_MENU_DISABLED` 不响应 hover/点击/键盘；`UI_MENU_DIVIDER` 画 1px 分隔线；
   `UI_MENU_DANGER` 使用 `error.base` 文字；`shortcut` 右对齐；
+- 菜单项用 `Ui_StateInstant`，hover 瞬时切换（无 90ms 淡入淡出），键盘焦点行
+  由 `keyFocus` 单独高亮；
 - 方向键/Home/End 跳过禁用与分隔，Enter 激活，Esc 关闭；
 - 激活后 `item` 为下标、`changed=1`，焦点回到 owner。
 
@@ -2379,6 +2404,54 @@ static void on_mouse(UiApp *app, int msg, float x, float y, void *user)
 
 完整样例：[samples/overlays.c](../samples/overlays.c)（单选/多选 Select、
 可搜索多选标签、长列表滚动、禁用项、下拉菜单、右键上下文菜单、键盘与主题切换）。
+
+### 8.17 TextArea 多行编辑器
+
+```c
+#include "ui/ui_textarea.h"
+
+UiTextArea ta;
+UiTextArea_Init(&ta, Ui_Id("form.note", 0, 0), 0);   /* 0 = 不限长 */
+UiTextArea_SetPlaceholder(&ta, L"输入备注…");
+UiTextArea_AttachIme(&ta, &app->ime);
+
+/* frame */
+if (Ui_TextArea(&ta, &ui, rc, 1)) { /* 文本已修改 */ }
+
+/* 键盘 / 字符 / IME / 光标闪烁 */
+UiTextArea_Key(&ta, &ui, vk);
+UiTextArea_Char(&ta, &ui, ch);
+UiTextArea_OnIme(&ta, &ui);
+UiTextArea_Blink(&ta, &ui);       /* 530ms timer */
+
+/* 窗口销毁 */
+UiTextArea_Shutdown(&ta);
+```
+
+- **动态容量**：文本、行索引、UTF-8 缓冲按需倍增；`maxLen<=0` 不限长，
+  正数仍限制表单长度。容量不会溢出，退出用 `Shutdown` 释放。
+- **软换行 + 垂直滚动**：滚动区复用 `UiScrollView`（滚轮/thumb/轨道翻页/
+  预留槽）；行高 = 输入字体高 + 4 DIP。
+- **增量布局**：末尾追加只从最后一行续排（O(新增字符)）；段落内普通编辑
+  只重排编辑行到段落末尾，后续段落平移；插入/删除换行或宽度变化才全文重排。
+- **宽度测量**：`Gfx_TextWidth` 使用 `widthIncludingTrailingWhitespace`，
+  行尾空格计入行宽；鼠标列命中在“字符前/字符后”两个候选列中取最近者，
+  不会跳到行末。
+- **拖选自动滚动**：按住鼠标拖到文本视口上下边缘/外部时，每帧滚动
+  6–40 DIP（越远越快），选区随滚动继续扩展；只在按住拖动时触发，
+  行内移动不会滚动，也不会因为 `ensureCaret` 反馈而抖动。
+- **编辑**：选区/拖选/Shift 扩展、Backspace/Delete（代理对整体）、
+  Home/End、Ctrl+Home/End、方向键、Ctrl+左右按词；Ctrl+A/C/X/V
+  （换行写 CRLF、粘贴归一化为 LF）；Tab 交给应用做焦点切换。
+- **IME**：内部 `UiEdit` 代理接收上屏文本与组合串；组合串画在光标处并加
+  下划线，候选窗跟随光标；代理文本在 Draw/Key/Char/OnIme 前排入正文。
+- **readonly**：可聚焦、选择、复制，不可修改；**disabled**：不注册命中、
+  不滚动、不显示光标。
+- 焦点用 `Ui_SetFocusId`；点击字段内部自动聚焦，`clickedOutside` 清焦点。
+- 单次超长段落中间编辑的成本仍与该段剩余长度线性相关；换行编辑会全文重排。
+
+完整样例：[samples/textarea.c](../samples/textarea.c)（可编辑/只读/禁用、
+7000+ 字符追加、中段编辑、滚动条、IME 接线）。
 
 
 ---
@@ -2738,27 +2811,33 @@ UiFrame_Shutdown(&clock);
 ### 11.1 数据与约束
 
 ```c
-#define EDIT_MAX 512
+#define EDIT_MAX 512        /* 初始容量/组合串临时缓冲, 不是上限 */
 #define EDIT_COMP_MAX 64
 ```
 
-- 文本用 `wchar_t text[512]` 存储，UTF-16；`len` 是字符数（不是字节）。
-- 单行；没有换行、自动折行、垂直滚动。
-- 最大长度由 `Edit_Init(e, maxLen, ...)` 决定；`maxLen <= 0` 或 `>= EDIT_MAX`
-  会被改成 `EDIT_MAX - 1`。
+- 文本存 `wchar_t *text`，动态 `HeapAlloc/HeapReAlloc` 倍增；`cap` 是分配容量，
+  `len` 是字符数（不是字节）。
+- 单行；没有换行、自动折行、垂直滚动（长文本请用 TextArea）。
+- 最大长度由 `Edit_Init(e, maxLen, ...)` 决定；**`maxLen <= 0` 表示不限长**，
+  正数才限制字符数。
+- UTF-8 转换与密码掩码显示用内部可增长缓冲，不再有 512 字符的隐藏截断。
 - 组合串单独存 `comp[64]`，不进入正文，直到输入法上屏。
+- `Edit_Init` 会分配初始缓冲，窗口销毁/字段移除时调用 `Edit_Shutdown`
+  （`UiInput_Shutdown` 会遍历释放内部字段）。
 
 ### 11.2 初始化与读写
 
 ```c
 UiEdit ed;
 Edit_Init(&ed, 63, 0, NULL);            /* 最多 63 字，普通文本 */
+Edit_Init(&edLong, 0, 0, NULL);         /* 0 = 不限长, 动态增长 */
 Edit_Init(&edPass, 63, 1, NULL);        /* 密码模式 */
 Edit_SetText(&ed, L"默认值");
 Edit_SetTextUtf8(&ed, "默认值");
 Edit_TextUtf8(&ed, buf, sizeof(buf));
 Edit_TextW(&ed, wbuf, 64);
 int empty = Edit_Empty(&ed);
+Edit_Shutdown(&ed);                     /* 释放文本/转换缓冲 */
 ```
 
 - `allow` 参数：非 NULL 时只接受这些 ASCII 字符；**非 ASCII 字符（>127）始终允许**，
@@ -3510,6 +3589,7 @@ Gfx_SetFrameEffects
 ```c
 Ui_ContextInit / Ui_SetViewport
 Ui_BeginFrame / Ui_EndFrame
+Ui_State / Ui_StateInstant
 Ui_RegisterWidget / Ui_HitTest / Ui_State / Ui_SetFocusId / Ui_SetNavId
 /* Ui_SetNavId 同时置 navFocusVisible=1；Ui_OnMouseDown 清 0 */
 Ui_SetModal
@@ -3601,12 +3681,22 @@ UiTooltip_Init / SetDelay / Update / Pending / Draw
 
 ```c
 UiPopupManager_Init / BeginFrame / IsOpen / AnyOpen / Open / Close / Key
-UiSelect_Init / SetItems / SetSelected / SetDisabledMask
+UiSelect_Init / Shutdown / SetItems / SetSelected / SetDisabledMask
 UiSelect_SetMultiple / SetMask / GetMask / SetFilterable / AttachIme
 UiSelect_SetPlaceholder / SetSearchHint
 UiSelect_SearchActive / Char / OnIme / Blink
 Ui_Select / UiSelect_DrawPopup / UiSelect_Key
 UiMenu_Init / SetItems / OpenAt / UiMenu_Draw / UiMenu_Key
+```
+
+**UiTextArea**
+
+```c
+UiTextArea_Init / Shutdown
+UiTextArea_SetText / SetTextUtf8 / SetCaret / TextUtf8 / TextW
+UiTextArea_SetPlaceholder / SetReadonly / AttachIme
+Ui_TextArea / UiTextArea_Key / UiTextArea_Char
+UiTextArea_OnIme / UiTextArea_Blink
 ```
 
 **UiWidgets / UiToast / UiInput / UiProgress**
@@ -3618,7 +3708,7 @@ UiToast_Init / UiToast_Attach / UiToast_Show / UiToast_Hide
 UiToast_IsVisible / UiToast_Tick / UiToast_Draw / UiToast_EndFrame
 UiToast_UsingLayer / UiToast_Shutdown
 UiToast_BackdropId / UiToast_CardId
-UiInput_Init / UiInput_Add / UiInput_BeginFrame / UiInput_SetRect
+UiInput_Init / UiInput_Shutdown / UiInput_Add / UiInput_BeginFrame / UiInput_SetRect
 UiInput_Draw / UiInput_MouseDown / UiInput_MouseMove / UiInput_MouseUp
 UiInput_Key / UiInput_Char / UiInput_OnIme / UiInput_Blink
 UiProgress_Init / UiProgress_Tick / UiProgress_Draw / UiProgress_EndFrame
@@ -3652,7 +3742,8 @@ UiApp_Run / UiApp_Invalidate / UiApp_InvalidateRect / UiApp_Close
 **UiEdit**
 
 ```c
-Edit_Init / Edit_SetText / Edit_SetTextUtf8 / Edit_TextUtf8 / Edit_TextW / Edit_Empty
+Edit_Init / Edit_Shutdown / Edit_SetText / Edit_SetTextUtf8
+Edit_TextUtf8 / Edit_TextW / Edit_Empty
 Edit_Draw / Edit_PlaceCaret / Edit_DragTo / Edit_StopDrag
 Edit_Key / Edit_Char / Edit_InsertString
 Edit_SetImeEnabled / Edit_ImeEnabled
@@ -3732,6 +3823,8 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 | Select 下拉 | [src/ui/ui_select.c](../src/ui/ui_select.c) |
 | Menu/右键菜单 | [src/ui/ui_menu.c](../src/ui/ui_menu.c) |
 | 弹层设计与样例 | [docs/CUI-弹层与选择控件-设计方案.md](CUI-弹层与选择控件-设计方案.md) / [samples/overlays.c](../samples/overlays.c) |
+| TextArea 编辑器 | [src/ui/ui_textarea.c](../src/ui/ui_textarea.c) |
+| TextArea 设计/样例 | [docs/CUI-TextArea-设计方案.md](CUI-TextArea-设计方案.md) / [samples/textarea.c](../samples/textarea.c) |
 | 右键回调 | [src/ui/ui_app.c:259](../src/ui/ui_app.c#L259) |
 | 窗口拖边缩放 | [src/ui/ui_app.c:102](../src/ui/ui_app.c#L102) |
 | z-index / 命中 | [src/ui/ui_context.c:116](../src/ui/ui_context.c#L116) |
@@ -3780,7 +3873,7 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
   进度 overlay 按新令牌重建；浅色/深色截图均正常。
 - 壳/输入/进度回归：`cui_minimal.exe` 输入、回车提交、退出正常；`cui_demo.exe`
   由 `UiApp + UiInput + UiProgress` 重写为 **340 行**（原 893 行），前台 60Hz
-  无 Toast 时应用进程 CPU 约 **0.00%**；十份 exe 均为 0CRT。
+  无 Toast 时应用进程 CPU 约 **0.00%**；十一份 exe 均为 0CRT。
 - 0CRT 增强回归：独立自测程序覆盖 `%d/%u/%x/%s/%c/%lld/%zu/%08x/%.2f/%-5d`
   与边界截断、内存 0/7/15/16/31/32/63/64/65/511/512/513/4095/4096/4097/
   8192/10000 字节、字符串、malloc/calloc/realloc/qsort/bsearch，退出码 0；
@@ -3807,7 +3900,7 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
   点击展开/收起后只重测该项，contentH/可见区间/thumb 长度同步更新；
   返回顶部按钮把 offset 平滑归零；“回弹”按钮使触摸配置的 var 视图出现
   offset=-17 的越界，随后弹簧回到 0；鼠标离开视口 1.6 秒后两个滚动条
-  均淡出，静止 2 秒 CPU **0ms**；10 个 exe 全部 0CRT，原有 demo/minimal/mvvm
+  均淡出，静止 2 秒 CPU **0ms**；11 个 exe 全部 0CRT，原有 demo/minimal/mvvm
   启动/关闭回归通过。
 - **ScrollView padding/滚动条槽回归**：样例设置 `{4,4,6,6}` 四向 padding 与
   `reserveSpace=1`；100%/200% DPI 下首行与左右边缘保持内边距，行尾
@@ -3826,7 +3919,7 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 - **光晕/disabled 回归**：Solid/Plain hover 光晕为预烘焙柔光纹理，一次
   `DrawBitmap`，无 3 圈描边带；同尺寸/颜色连续 hover 缓存命中，主题切换
   后按新角色色重建；`Ui_ButtonEx(..., enabled=0)` 不注册命中、不发光、
-  返回 false；10 个 exe 0CRT。
+  返回 false；11 个 exe 0CRT。
 - **TabBar/TabPager 回归**：`cui_tabs.exe` LINE/PILL/CARD 三种 header 正常；
   CARD 活动项上圆角、底边留空并与内容面板连通，`ActiveRect` 分段顶边 +
   `DrawActive` 覆盖后无 2px 双线；点击页签横向滑动 260ms，PILL 下选中胶囊
@@ -3856,8 +3949,15 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
   分隔线/禁用项/危险项正确；Esc 与点击弹层外部均关闭并把焦点还给触发器；
   弹层打开时点击底层按钮不触发；初始主题 Select 显示 placeholder“选择主题”，
   展开时右侧矢量 chevron 在 ~60° 中间帧可见、180ms 后指向上方并转 primary 色，
-  关闭后回落到向下/灰字；搜索框提示“搜索标签…”；深色主题下搜索框/列表/摘要正常；
-  静止 CPU 0；`cui_overlays` 为 0CRT。
+  关闭后回落到向下/灰字；搜索框提示“搜索标签…”；下拉/菜单项 hover 在 30ms
+  与 330ms 截图颜色一致（`Ui_StateInstant`，无淡变滞后）；深色主题下
+  搜索框/列表/摘要正常；静止 CPU 0；`cui_overlays` 为 0CRT。
+- **TextArea/动态容量回归**：`cui_textarea.exe` 的软换行、滚动条、拖选、
+  只读/禁用外观正常；末尾追加 7000+ 字符（超过旧 4096 上限）无截断，
+  只续排新字符；长段落中间插入 `QQ` 后 Ctrl+A/C 回读，长度 +2 且移除 `QQ`
+  后与原文逐字一致；Backspace 回退后文本/行数一致；单独拖选含行尾空格的
+  英文行可完整选中到 “dog.”，鼠标在行内移动时高亮不再跳行末；`UiEdit` 在
+  maxLen=0 时接受 2550 字符不截断；静止 CPU 0；11 个 exe 0CRT。
 - **多窗口/全局主题/模态回归**：`cui_multi.exe` 两个 HWND 各自持有
   Gfx/UiTheme/UiContext/UiProgress/UiToast；在主窗切主题，二级窗同步换肤并
   自动重绘（像素从浅色 245,248,254 变为深色 15,20,29）；二级窗独立 Toast

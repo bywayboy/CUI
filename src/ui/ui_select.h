@@ -54,6 +54,7 @@ typedef struct UiSelect {
 } UiSelect;
 
 void UiSelect_Init(UiSelect *s, UiId id);
+void UiSelect_Shutdown(UiSelect *s);
 void UiSelect_SetItems(UiSelect *s, const char *const *items, int count);
 void UiSelect_SetSelected(UiSelect *s, int index);
 void UiSelect_SetDisabledMask(UiSelect *s, unsigned mask);

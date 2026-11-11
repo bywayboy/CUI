@@ -2,9 +2,10 @@
 
 CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的独立工程：
 纯 C/C++、零 CRT、Direct2D + DirectComposition 渲染，自带一套"hover/press/focus
-平滑 + 转场补间"的轻动画内核和一个支持中文输入法（IMM32）的单行编辑框。
+平滑 + 转场补间"的轻动画内核，以及支持中文输入法（IMM32）的单行编辑框
+`UiEdit` 与多行 `UiTextArea`（动态容量）。
 
-工程包含十个样例，公共代码在 `src/ui`：
+工程包含十一个样例，公共代码在 `src/ui`：
 
 - `src/demo.c`：**标准样例（约 340 行）**。基于 `UiApp` 壳 + `UiInput` 表单 +
   `UiButton/Panel/ProgressBar` + `UITheme` + 合成器 `UiToast`（`GfxLayer`），
@@ -31,6 +32,8 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
 - `samples/overlays.c`：弹层样例。`UiPopupManager` + 单选/多选 Select、
   可搜索多选标签（内嵌 `UiEdit` + IME）+ 下拉菜单 + 右键上下文菜单；
   长列表滚动、点击外部/Esc 关闭、焦点回归。
+- `samples/textarea.c`：多行编辑器样例。软换行、垂直滚动、选区、剪贴板、
+  IME、readonly/disabled；7000+ 字符动态追加与中段编辑。
 
 > 来源：RMControl `installer/src`（提交 `1bc6929` 时的实现）。
 > 安装器目前仍保留自己的副本；CUI 是**独立可复用**版本，后续可让安装器切到它。
@@ -49,7 +52,8 @@ CUI/
 │  ├─ CUI-使用白皮书.md   详尽的使用/接入/排错文档
 │  ├─ CUI-ScrollView-设计方案.md  ScrollView 架构/缓存/物理/取舍
 │  ├─ CUI-Tab-设计方案.md  TabBar/TabPager 结构与转场设计（含 CARD 计划）
-│  └─ CUI-弹层与选择控件-设计方案.md  弹层管理器 + Select/Menu 状态与命中路由
+│  ├─ CUI-弹层与选择控件-设计方案.md  弹层管理器 + Select/Menu 状态与命中路由
+│  └─ CUI-TextArea-设计方案.md  动态文本/增量布局/IME 代理/滚动设计
 ├─ samples/
 │  ├─ minimal.c           最小接入样例
 │  ├─ advanced.c          高级样例（overlay/Toast/IME 全细节）
@@ -59,7 +63,8 @@ CUI/
 │  ├─ tabs.c              TabBar/TabPager：LINE/PILL/CARD + 四向转场 + 输入锁
 │  ├─ icons.c             按钮/Toast/TabBar 图标样例（MDL2 glyph）
 │  ├─ controls.c          Checkbox/Radio/Switch/Slider + Tooltip
-│  └─ overlays.c          Select 下拉 / 菜单 / 右键上下文菜单
+│  ├─ overlays.c          Select 下拉 / 菜单 / 右键上下文菜单
+│  └─ textarea.c          多行文本：软换行/滚动/选择/IME/readonly
 └─ src/
    ├─ demo.c              标准样例（UiApp 壳 + 组件，约 340 行）
    ├─ edit.c / edit.h     自绘单行编辑框 UiEdit（选区/剪贴板/滚动/IME 组合）
@@ -80,6 +85,7 @@ CUI/
       ├─ ui_controls.*     Checkbox/RadioGroup/Switch/Slider
       ├─ ui_popup.*        弹层定位 + UiPopupManager（外部点击/Esc/焦点回归）
       ├─ ui_select.*       Select 下拉（长列表滚动/禁用项/键盘）
+      ├─ ui_textarea.*     多行文本：动态缓冲/增量布局/IME/选择
       ├─ ui_menu.*         Menu / 右键上下文菜单（分隔/禁用/危险项）
       ├─ ui_tooltip.*      悬停延迟提示
       ├─ ui_theme.*       颜色/字体令牌（亮/暗 + 自定义 5 语义色）
@@ -114,6 +120,7 @@ bin\cui_tabs.exe        REM TabBar + TabPager（LINE/PILL/CARD / 四向转场）
 bin\cui_icons.exe       REM 按钮 / Toast / TabBar 图标（MDL2 glyph）
 bin\cui_controls.exe    REM Checkbox / Radio / Switch / Slider / Tooltip
 bin\cui_overlays.exe    REM Select 下拉 / 菜单 / 右键上下文菜单
+bin\cui_textarea.exe    REM 多行文本：软换行 / 滚动 / 选择 / IME
 ```
 
 构建是 **0CRT**：`/NODEFAULTLIB` + `/ENTRY:startup`，由 `crtstub.c` 提供
@@ -228,7 +235,7 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | `UiLayout` | `Ui_StackBegin/Take/TakeFill/TakeRight/TakeAligned` | 游标布局：padding/gap、固定+Fill |
 | | `Ui_FlexRow/Ui_FlexCol` | basis+grow 权重、min/max；零分配 |
 | `UiContext` | `Ui_BeginFrame/EndFrame` | 一帧的注册周期；EndFrame 清单帧事件 |
-| | `Ui_State` `Ui_DrawSurface` | 交互状态与统一表面 |
+| | `Ui_State` `Ui_StateInstant` `Ui_DrawSurface` | 平滑交互状态 / 列表项瞬时状态 / 统一表面 |
 | | `Ui_PushLayer/Ui_PopLayer` | z-index 注册层；命中取最高 z |
 | | `Ui_PushClipRect/Ui_PopClipRect` | 输入命中裁剪（与 Gfx clip 配套） |
 | | `Ui_RegisterWheelTarget/Ui_OnMouseWheel` | 滚轮目标路由；`UiApp` 已接 `WM_MOUSEWHEEL` |
@@ -247,24 +254,27 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | `UiControls` | `Checkbox/CheckboxGroup/RadioGroup/Switch/Slider` | 表单控件；应用持有状态、键盘/禁用、Slider 拖动/committed |
 | `UiPopup` | `UiPopup_Place` | below/above/right/left 翻转 + 视口夹取 |
 | `UiPopupManager` | `Init/BeginFrame/IsOpen/AnyOpen/Open/Close/Key` | 单弹层、点击外部/Esc 关闭、焦点回归、弹层打开时底层不参与命中 |
-| `UiSelect` | `Init/SetItems/SetSelected/SetDisabledMask` | 单选/多选下拉；列表复用 `UiScrollView`（滚轮/thumb 拖动/轨道翻页）、禁用项、键盘 |
+| `UiSelect` | `Init/Shutdown/SetItems/SetSelected/SetDisabledMask` | 单选/多选下拉；列表复用 `UiScrollView`（滚轮/thumb 拖动/轨道翻页）、禁用项、键盘 |
 | | `SetMultiple/SetMask/GetMask` | 多选（32 位 mask）；触发器摘要 `A, B +N` |
 | | `SetFilterable/AttachIme/SearchActive/Char/OnIme/Blink` | 顶部搜索框（UiEdit + IME），ASCII 大小写不敏感过滤 |
 | | `SetPlaceholder/SetSearchHint` | 持久 placeholder（`Ui_Select` 参数优先）与搜索框提示 |
 | | `Ui_Select/UiSelect_DrawPopup/UiSelect_Key` | 触发器与帧末列表分离绘制；右侧矢量 chevron 180ms 旋转 |
 | `UiMenu` | `Init/SetItems/OpenAt/UiMenu_Draw/UiMenu_Key` | 下拉/右键菜单；分隔/禁用/危险/快捷键提示 |
+| `UiTextArea` | `Init/Shutdown/SetText/SetTextUtf8/SetCaret/TextUtf8` | 多行动态缓冲、软换行、增量行布局、滚动/选择/IME |
+| | `SetPlaceholder/SetReadonly/AttachIme` | placeholder / 只读 / 输入法接线 |
+| | `Ui_TextArea/Key/Char/OnIme/Blink` | 绘制、键盘、字符、IME、光标闪烁 |
 | `UiTooltip` | `Init/SetDelay/Update/Pending/Draw` | 悬停延迟提示，不注册命中 |
 | `UiIconButton` | `Ui_IconButton` | 纯图标按钮（tooltip 由应用绑定同 id） |
 | `UiTheme` | `UiTheme_SetTheme/SetColors/Touch` | 进程级全局换肤：所有窗口同步并自动重绘；5 语义色自定义 |
 | `UiWidgets` | `Ui_Button/Ui_ButtonEx/Ui_ButtonExIcon/Ui_Panel/Ui_ProgressBar` | 主题化组件；按钮支持 Element-Plus 风格与图标 + 文本 / disabled |
 | `UiToast` | `UiToast_Init/Attach/Show/Hide/Tick/Draw/EndFrame` | 渐变 Toast；按 kind 自动 MDL2 图标；layer 模式主窗零重绘 |
 | | `UiToast_UsingLayer/Shutdown` | 判断当前是否合成器路径 / 释放 layer |
-| `UiInput` | `UiInput_Init/Add/Draw/BeginFrame/Key/Char/Mouse*` | 表单焦点/光标/拖选/IME 封装 |
+| `UiInput` | `UiInput_Init/Shutdown/Add/Draw/BeginFrame/Key/Char/Mouse*` | 表单焦点/光标/拖选/IME 封装 |
 | `UiProgress` | `UiProgress_Init/Tick/Draw/EndFrame/SetPaused` | 循环进度 + GfxOverlay + 回退 |
 | `UiApp` | `UiApp_Run/Invalidate/InvalidateRect/Close` | 可选窗口壳：消息/DPI/IME/帧循环；默认 6 DIP 拖边缩放 + `minW/minH` |
 | `UiAnim` | `Ui_AnimSmooth/To/Set/Get/Advance/Busy` | 通道式动画（`UI_AN_*`） |
 | `UiFrame` | `UiFrame_Init/Tick/Delay/ResetTick` | 合成器时钟优先，失败退高精度定时器 |
-| `UiEdit` | `Edit_Init/SetText/TextUtf8/Draw/Key/Char` | 单行编辑框（UTF-16 存储） |
+| `UiEdit` | `Edit_Init/Shutdown/SetText/TextUtf8/Draw/Key/Char` | 单行编辑框（UTF-16 存储）；maxLen=0 不限长、动态倍增 |
 | | `Edit_PlaceCaret/DragTo/StopDrag` | 鼠标定位与拖选 |
 | `UiIme` | `UiIme_Init/SetFocus/Apply/Cancel/Start/Comp/End/Char/Pos` | 输入法接线 |
 
@@ -334,8 +344,10 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
 
 - 布局只有矩形层：`UiStack/UiFlex` 不提供网格、百分比、自动换行；滚动由
   `UiScrollView` 承担。
-- 编辑框是单行；无撤销栈/多行 TextArea。菜单无子菜单；Select 已支持搜索/多选
-  （≤32 项，无拼音匹配/自由输入值）。
+- `UiEdit` 是单行；`UiTextArea` 是纯文本多行（无撤销栈/富文本）。
+  菜单无子菜单；Select 已支持搜索/多选（≤32 项，无拼音匹配/自由输入值）。
+- TextArea 末尾追加 O(新增字符)，段落内编辑只重排当前段；插入/删除换行或
+  宽度变化会全文重排，单一超长段落中段编辑仍与该段剩余长度线性相关。
 - 主题是进程级全局的：同一进程的多个窗口共享一套主题，不能各自独立换肤。
 - 动画通道固定 64 项、16 通道；超出按最近最少使用回收（见 `ui_anim.c`）。
 - `UiFrame` 的合成器时钟需要 Win10 1809+，旧系统自动退回定时器（帧率仍可用）。
@@ -371,7 +383,7 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   Toast 渐变遮罩 + 底部卡片、点击遮罩/Esc 关闭均通过。
 - 采样/壳回归：`cui_minimal.exe` 输入/回车提交/退出正常；`cui_demo.exe` 已改为
   `UiApp` 壳 + `UiInput` + `UiProgress`，**340 行**（原 893 行），前台 60Hz
-  无 Toast 时应用进程 CPU 约 **0.00%**；十份 exe 均为 0CRT。
+  无 Toast 时应用进程 CPU 约 **0.00%**；十一份 exe 均为 0CRT。
 - 合成器 Toast（`GfxLayer`）回归：渐变/卡片只画一次，淡入淡出由 DWM 补间；
   Toast 显示/停留/淡出期间应用进程 CPU **0.00%**、主窗 0 次 `WM_PAINT`；
   下方进度 overlay 持续移动；点击/Esc 关闭、重复显示、Toast 中 resize 均正常。
@@ -418,11 +430,19 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   Rendering/Input，Backspace 回退为 `i` 恢复 7 项，点击/Enter 切换，`zz`
   显示“无匹配项”；初始主题 Select 显示 placeholder“选择主题”；展开时右侧
   chevron 中间帧约 60°、180ms 后向上并转 primary 色，关闭回落到向下灰色；
-  搜索框提示“搜索标签…”；长列表滚轮 3 格偏移 288px（9 行）、thumb 同步；
+  搜索框提示“搜索标签…”；下拉/菜单项 hover 在 30ms 与 330ms 截图颜色一致
+  （`Ui_StateInstant`，无淡变滞后）；长列表滚轮 3 格偏移 288px（9 行）、thumb 同步；
   thumb 可拖动、点击轨道按 0.9 页翻页；打开时自动滚入选中项；
   下拉菜单 Down×2+Enter 提交“保存”；右键点打开上下文菜单（分隔/禁用/危险）；
   Esc 与点击外部均关闭并把焦点还给触发器；弹层打开时底层按钮不响应；
   静止 CPU 0；`cui_overlays` 为 0CRT。
+- TextArea/动态容量回归：`cui_textarea.exe` 软换行、滚动条、拖选、只读/禁用
+  外观正常；末尾追加 7000+ 字符（超过旧 4096 上限）无截断，只续排新字符；
+  长段落中间插入 `QQ` 后 Ctrl+A/C 回读，长度 +2 且移除 `QQ` 后与原文逐字
+  一致；Backspace 回退后文本/行数一致；单独拖选含行尾空格的英文行可完整
+  选中到 “dog.”，鼠标行内移动不再跳行末；拖选靠近/越出文本框上下边缘时
+  自动滚动并继续扩展选区（上/下两向均验证）；`UiEdit` 在 maxLen=0 时接受
+  2550 字符不截断；静止 CPU 0；`cui_textarea` 为 0CRT。
 - 按钮样式/每角圆角回归：样式条同时显示 SOLID(primary)、PLAIN(success)、
   TEXT(warning)、PLAIN+DASHED(error)、ROUND(default)；ButtonGroup 首/中/尾段
   为左圆-全直-右圆，选中色铺满到外轮廓、外边框不被覆盖；每角几何按 0.25 DIP
@@ -447,6 +467,6 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   overlay/Toast layer 是独立 DComp visual，不受整帧矩阵影响（已记录限制）。
   DComp `IDCompositionDevice2/3`、`Visual3` 本机 `E_NOINTERFACE`，未依赖。
 - 0CRT 自测：printf 格式/边界、SIMD 内存分档（0…10000B）、字符串、分配器、
-  qsort/bsearch 全部通过；十份 exe 在新 crtstub 下正常启动/输入/关闭。
+  qsort/bsearch 全部通过；十一份 exe 在新 crtstub 下正常启动/输入/关闭。
 - 无桌面环境（SSH/Session 0）不能目视验证，但编译与链接判据（0CRT/无未解析符号）
   可在 CI 里跑。

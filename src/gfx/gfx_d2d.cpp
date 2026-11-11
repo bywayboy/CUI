@@ -2750,7 +2750,10 @@ float Gfx_TextWidth(Gfx *g, GfxFont *f, const char *utf8)
 	DWRITE_TEXT_METRICS m;
 	ZeroMemory(&m, sizeof(m));
 	float w = 0.0f;
-	if (SUCCEEDED(layout->GetMetrics(&m))) w = m.width;
+	/* 编辑控件按逐字符累加宽度, 行尾空格必须计入; m.width 会裁掉
+	 * trailing whitespace, 导致行宽/光标 x 比实际渲染短. */
+	if (SUCCEEDED(layout->GetMetrics(&m)))
+		w = m.widthIncludingTrailingWhitespace;
 	if (transient) SAFE_RELEASE(layout);
 	return w;
 }

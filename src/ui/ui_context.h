@@ -117,6 +117,11 @@ UiId Ui_HitTest(const UiContext *ctx, float x, float y);
 void Ui_PushLayer(UiContext *ctx, int z);
 void Ui_PopLayer(UiContext *ctx);
 UiWidgetState Ui_State(UiContext *ctx, UiId id, UiRect rc, int enabled);
+
+/* 瞬时状态: 正常登记命中, 但不写动画通道, hover/press/focus 直接 0/1.
+ * 用于菜单/下拉列表项等临时行: 指针离开应立即还原, 不能有淡出滞后. */
+UiWidgetState Ui_StateInstant(UiContext *ctx, UiId id, UiRect rc, int enabled);
+
 void Ui_SetFocusId(UiContext *ctx, UiId id);
 
 /* 非文本控件的键盘导航焦点 (ButtonGroup). 与编辑框 focusId 分开, 避免 IME 冲突. */

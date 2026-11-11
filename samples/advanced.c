@@ -266,6 +266,8 @@ static void demo_init(HWND hwnd)
 
 static void demo_shutdown(void)
 {
+	Edit_Shutdown(&g.edName);
+	Edit_Shutdown(&g.edPass);
 	bar_overlay_shutdown();
 	if (g.gfx) {
 		UiTheme_Shutdown(&g.theme, g.gfx);

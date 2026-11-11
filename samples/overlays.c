@@ -294,6 +294,15 @@ static void on_timer(UiApp *app, void *user)
 	UiSelect_Blink(&d->tagSel, &app->ui);
 }
 
+static void on_shutdown(UiApp *app, void *user)
+{
+	OverlaysDemo *d = (OverlaysDemo *)user;
+	(void)app;
+	UiSelect_Shutdown(&d->themeSel);
+	UiSelect_Shutdown(&d->citySel);
+	UiSelect_Shutdown(&d->tagSel);
+}
+
 static int on_key(UiApp *app, UINT vk, void *user)
 {
 	OverlaysDemo *d = (OverlaysDemo *)user;
@@ -365,6 +374,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 	cb.chr = on_chr;
 	cb.ime = on_ime;
 	cb.timer = on_timer;
+	cb.shutdown = on_shutdown;
 	return UiApp_Run(L"CUI Select & Menu", 780, 620, UI_THEME_LIGHT, &cb, &g_demo);
 }
 

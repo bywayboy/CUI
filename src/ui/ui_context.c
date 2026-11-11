@@ -312,6 +312,26 @@ UiWidgetState Ui_State(UiContext *ctx, UiId id, UiRect rc, int enabled)
 	return st;
 }
 
+UiWidgetState Ui_StateInstant(UiContext *ctx, UiId id, UiRect rc, int enabled)
+{
+	UiWidgetState st;
+	int focused;
+	st.hovered = st.pressed = st.active = st.focused = 0;
+	st.hover = st.press = st.focus = st.glow = 0.0f;
+	if (!enabled) return st;
+	Ui_RegisterWidget(ctx, id, rc);
+	st.hovered = ctx->inputBlock == 0 && (ctx->hover == id);
+	st.pressed = ctx->inputBlock == 0 && ctx->mouseDown && ctx->pressed == id;
+	st.active = ctx->inputBlock == 0 && ctx->drag.active && ctx->drag.id == id;
+	focused = (ctx->focusId != UI_ID_NONE && ctx->focusId == id);
+	st.focused = focused;
+	st.hover = st.hovered ? 1.0f : 0.0f;
+	st.press = st.pressed ? 1.0f : 0.0f;
+	st.focus = focused ? 1.0f : 0.0f;
+	st.glow = (st.hovered || focused) ? 1.0f : 0.0f;
+	return st;
+}
+
 void Ui_OnMouseMove(UiContext *ctx, float x, float y)
 {
 	ctx->mouseX = x;
