@@ -8,6 +8,7 @@
 #define CUI_UI_WIDGETS_H
 
 #include "ui/ui_context.h"
+#include "ui/ui_icon.h"
 
 enum {
 	UI_BTN_SECONDARY = 0,   /* 旧 variant: 兼容包装 */
@@ -62,6 +63,10 @@ static __inline UiButtonStyle UiButtonStyle_Make(int type, int appearance,
 
 int  Ui_ButtonEx(UiContext *ui, UiId id, UiRect rc, const char *label,
 	const UiButtonStyle *style, int enabled);
+
+/* 图标 + 文本按钮; icon=NULL 等价 Ui_ButtonEx. label 可为 NULL/空 (纯图标). */
+int  Ui_ButtonExIcon(UiContext *ui, UiId id, UiRect rc, const UiIcon *icon,
+	const char *label, const UiButtonStyle *style, int enabled);
 
 /* 返回 1 = 本帧被点击 (ui->clicked == id)。 */
 int  Ui_Button(UiContext *ui, UiId id, UiRect rc, const char *label,

@@ -23,8 +23,9 @@ static const UiColorRole *btn_role(const UiTheme *t, int type)
 	return &t->neutral;
 }
 
-int Ui_ButtonEx(UiContext *ui, UiId id, UiRect rc, const char *label,
-	const UiButtonStyle *style, int enabled)
+static int button_draw(UiContext *ui, UiId id, UiRect rc,
+	const UiIcon *icon, const char *label, const UiButtonStyle *style,
+	int enabled)
 {
 	UiTheme *t;
 	UiSurfaceStyle ss;
@@ -146,9 +147,35 @@ int Ui_ButtonEx(UiContext *ui, UiId id, UiRect rc, const char *label,
 		float k = st.hover > st.press ? st.hover : st.press;
 		text = Ui_ColorMix(role_text, btn_on(role->base), k);
 	}
-	Gfx_Text(ui->gfx, t->fBtn, label, rc, text,
-		GFX_TEXT_CENTER | GFX_TEXT_VCENTER);
+	if (icon && icon->kind == UI_ICON_GLYPH && icon->font) {
+		float iw = 16.0f;
+		float tw = (label && label[0]) ? Gfx_TextWidth(ui->gfx, t->fBtn, label) : 0.0f;
+		float gap = tw > 0.0f ? 6.0f : 0.0f;
+		float total = iw + gap + tw;
+		float x = rc.x + (rc.w - total) * 0.5f;
+		UiRect ir = Ui_Rect(x, rc.y + (rc.h - iw) * 0.5f, iw, iw);
+		UiIcon_Draw(ui, icon, ir, text, enabled);
+		if (tw > 0.0f)
+			Gfx_Text(ui->gfx, t->fBtn, label,
+				Ui_Rect(x + iw + gap, rc.y, tw + 2.0f, rc.h), text,
+				GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+	} else if (label && label[0]) {
+		Gfx_Text(ui->gfx, t->fBtn, label, rc, text,
+			GFX_TEXT_CENTER | GFX_TEXT_VCENTER);
+	}
 	return enabled && ui->clicked == id;
+}
+
+int Ui_ButtonEx(UiContext *ui, UiId id, UiRect rc, const char *label,
+	const UiButtonStyle *style, int enabled)
+{
+	return button_draw(ui, id, rc, NULL, label, style, enabled);
+}
+
+int Ui_ButtonExIcon(UiContext *ui, UiId id, UiRect rc, const UiIcon *icon,
+	const char *label, const UiButtonStyle *style, int enabled)
+{
+	return button_draw(ui, id, rc, icon, label, style, enabled);
 }
 
 int Ui_Button(UiContext *ui, UiId id, UiRect rc, const char *label,

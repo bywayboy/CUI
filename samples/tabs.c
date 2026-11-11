@@ -6,6 +6,7 @@
  */
 #include <windows.h>
 #include "ui/ui_app.h"
+#include "ui/ui_icon.h"
 #include "ui/ui_layout.h"
 #include "ui/ui_paint.h"
 #include "ui/ui_tab.h"
@@ -60,11 +61,20 @@ static void draw_page_overview(TabsDemo *d, UiContext *ui, Gfx *g, UiRect rc)
 	UiTheme *t = &d->app->theme;
 	UiRect title = Ui_Rect(rc.x, rc.y, rc.w, 30.0f);
 	UiRect metrics = Ui_Rect(rc.x, rc.y + 42.0f, rc.w, 92.0f);
-	UiRect note = Ui_Rect(rc.x, rc.y + 148.0f, rc.w, rc.h - 148.0f);
+	UiRect icons = Ui_Rect(rc.x, rc.y + 146.0f, rc.w, 50.0f);
+	UiRect note = Ui_Rect(rc.x, rc.y + 208.0f, rc.w, rc.h - 208.0f);
 	UiRect m[3];
 	UiFlexItem items[3] = { { 0, 1, 0, 0 }, { 0, 1, 0, 0 }, { 0, 1, 0, 0 } };
 	UiButtonStyle pri = UiButtonStyle_Make(UI_BTYPE_PRIMARY,
 		UI_BAPPEAR_SOLID, UI_BSHAPE_RECT, 0);
+	static const uint32_t iconCodes[5] = {
+		0xE713u, 0xE774u, 0xE946u, 0xE72Cu, 0xE713u
+	};
+	static const char *const iconNames[5] = {
+		"设置", "网络", "信息", "刷新", "禁用"
+	};
+	UiColor iconColors[5];
+	int k;
 
 	Gfx_Text(g, t->fBig, "ScrollView · TabBar · Pager", title,
 		t->text, GFX_TEXT_VCENTER);
@@ -76,6 +86,20 @@ static void draw_page_overview(TabsDemo *d, UiContext *ui, Gfx *g, UiRect rc)
 	draw_metric(ui, g, m[0], "页面", "4", t->primary.base);
 	draw_metric(ui, g, m[1], "转场", "260 ms", t->success.base);
 	draw_metric(ui, g, m[2], "输入", "转场锁定", t->warning.base);
+
+	iconColors[0] = t->primary.base;
+	iconColors[1] = t->success.base;
+	iconColors[2] = t->text2;
+	iconColors[3] = t->warning.base;
+	iconColors[4] = t->text4;
+	for (k = 0; k < 5; k++) {
+		UiRect ir = Ui_Rect(icons.x + (float)k * 66.0f, icons.y, 30.0f, 30.0f);
+		UiRect lr = Ui_Rect(ir.x - 10.0f, ir.y + 30.0f, 50.0f, 16.0f);
+		UiIcon ic = UiIcon_Glyph(t->fIcon, iconCodes[k]);
+		UiIcon_Draw(ui, &ic, ir, iconColors[k], k != 4);
+		Gfx_Text(g, t->fMini, iconNames[k], lr,
+			k == 4 ? t->text4 : t->text3, GFX_TEXT_CENTER | GFX_TEXT_VCENTER);
+	}
 
 	Ui_Panel(ui, note);
 	Gfx_Text(g, t->fBody,

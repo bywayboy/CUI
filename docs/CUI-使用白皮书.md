@@ -86,6 +86,11 @@
 > 22. 完成 CARD 样式：`Gfx_StrokeRoundRectOpen` 缺边描边、
 >    `UiTabBar_ActiveRect` + `UiTabBar_DrawActive` 两阶段接缝、
 >    `cardBg/contentBg/mergeContent` 样式字段。
+> 23. 图标 GLYPH 后端：`Gfx_CreateFontFamily`、`UiTheme.fIcon`（Segoe MDL2
+>    Assets）、`UiIcon_Glyph/UiIcon_Draw`；tabs 概览页加入 MDL2 图标示例。
+> 24. 图标组件接入：`Ui_ButtonExIcon`、`UiTabBar_DrawEx/DrawActiveEx`，
+>    Toast 按 kind 自动绘制 MDL2 图标；新增 `samples/icons.c`，构建产出
+>    `cui_icons.exe`。
 
 ---
 
@@ -105,6 +110,7 @@
    - [8.11 按钮样式与每角圆角](#811-按钮样式与每角圆角)
    - [8.12 ScrollView 滚动容器](#812-scrollview-滚动容器)
    - [8.13 TabBar 与 TabPager](#813-tabbar-与-tabpager)
+   - [8.14 图标 (GLYPH 后端)](#814-图标-glyph-后端)
 9. [UiAnim 动画内核](#9-uianim-动画内核)
 10. [UiFrame 帧时钟](#10-uiframe-帧时钟)
 11. [UiEdit 编辑框](#11-uiedit-编辑框)
@@ -145,7 +151,7 @@ CUI 是一套 **纯 C/C++、零 CRT、即时模式（Immediate Mode）** 的 Win
 | 交互 | 即时模式，稳定 `UiId`，单帧事件 |
 | 动画 | 固定池：64 条目 × 16 通道，零分配 |
 | 输入法 | IMM32，组合串就地绘制，候选窗跟随插入点 |
-| 产物 | `cui_demo` / `cui_minimal` / `cui_advanced` / `cui_multi` / `cui_mvvm` / `cui_scroll` / `cui_tabs` |
+| 产物 | `cui_demo` / `cui_minimal` / `cui_advanced` / `cui_multi` / `cui_mvvm` / `cui_scroll` / `cui_tabs` / `cui_icons` |
 
 ---
 
@@ -234,6 +240,7 @@ bin\cui_multi.exe
 bin\cui_mvvm.exe
 bin\cui_scroll.exe
 bin\cui_tabs.exe
+bin\cui_icons.exe
 ```
 
 成功输出示例：
@@ -2060,6 +2067,37 @@ UiTabPager_Init(&pager, Ui_Id("tabs.pager", 0, 0), &cfg);
 完整样例：[samples/tabs.c](../samples/tabs.c)（LINE/PILL/CARD、横/纵/淡入、
 reverse、键盘导航、转场输入锁）。
 
+### 8.14 图标 (GLYPH 后端)
+
+v1 先支持**图标字体**；`UiTheme` 在初始化时尝试创建
+`Segoe MDL2 Assets` 16 DIP 的 `fIcon`，失败为 NULL（不静默用普通字体冒充）。
+
+```c
+#include "ui/ui_icon.h"
+
+UiIcon gear = UiIcon_Glyph(app->theme.fIcon, 0xE713u);  /* Settings */
+UiIcon_Draw(&ui, &gear, Ui_Rect(x, y, 24, 24), app->theme.primary.base, 1);
+```
+
+- 码点是 Unicode PUA（MDL2 通常 `E000..F8FF`），内部编码成 UTF-8 后走
+  `Gfx_Text`；主题换色就是文字色，天然支持 light/dark、禁用、DPI。
+- `tint=0` 用 `theme.text`；`enabled=0` 用 `btnDisabledText`。
+- `Gfx_CreateFontFamily(g, L"Segoe MDL2 Assets", size, weight)` 可创建其他
+  尺寸的图标字体；族不存在返回 NULL。
+- 图标字体是单色、固定字号的；需要多色/任意 SVG 时，后续在同一 `UiIcon`
+  上扩展 VECTOR/RUNTIME_SVG 后端（见设计讨论，不在 v1）。
+- 图标绘制仍走文本布局缓存；同一码点/字号/矩形反复绘制不会重复排版。
+- 组件接入：
+  - `Ui_ButtonExIcon(ui, id, rc, &icon, label, style, enabled)`：图标 + 文本按钮；
+    `label` 可为 NULL/空，纯图标按钮。
+  - `UiTabBar_DrawEx(..., labels, icons, style, enabled)`：Tab 图标；
+    CARD 需对应调用 `UiTabBar_DrawActiveEx`。
+  - Toast 按 `kind` 自动带图标：Info `0xE946`、Success `0xE73E`、
+    Error `0xE783`，无需额外 API。
+
+示例：`samples/tabs.c` 概览页放了设置/网络/信息/刷新/禁用五个 MDL2 图标；
+`samples/icons.c` 展示按钮 + 图标、Toast + 图标、TabBar + 图标和页面大图标。
+
 
 ---
 
@@ -3172,7 +3210,8 @@ Gfx_FillRoundRectMultiGrad / Gfx_FillEllipse / Gfx_FillEllipseGradV
 Gfx_StrokeRoundRect / Gfx_StrokeEllipse / Gfx_Line / Gfx_StrokeArc / Gfx_FillTriangle
 Gfx_PushClip / Gfx_PopClip
 Gfx_IsVisible
-Gfx_CreateFont / Gfx_DestroyFont / Gfx_TextWidth / Gfx_TextHeight / Gfx_Text
+Gfx_CreateFont / Gfx_CreateFontFamily / Gfx_DestroyFont
+Gfx_TextWidth / Gfx_TextHeight / Gfx_Text
 Gfx_CreateBitmap / Gfx_DestroyBitmap / Gfx_DrawBitmap
 Gfx_CreateOverlay / Gfx_OverlaySetReveal / Gfx_OverlaySetRect
 Gfx_OverlaySetOpacity / Gfx_OverlayAlive / Gfx_OverlayDestroy
@@ -3250,14 +3289,22 @@ UiScrollLayout_ContentHeight / ItemY / VisibleRange / ItemRect
 ```c
 UiTabStyle_Line / UiTabStyle_Pill / UiTabStyle_Card
 UiTabBar_Init / SetCount / SetSelected / SetDisabledMask / SetFocusVisible
-UiTabBar_Draw / DrawActive / ActiveRect / Key
+UiTabBar_Draw / DrawEx / DrawActive / DrawActiveEx / ActiveRect / Key
 UiTabPager_Init / GoTo / Active / Busy / Tick / Draw
+```
+
+**UiIcon**
+
+```c
+UiIcon_Glyph / UiIcon_Draw
+Gfx_CreateFontFamily / UiTheme.fIcon
 ```
 
 **UiWidgets / UiToast / UiInput / UiProgress**
 
 ```c
-Ui_Button / Ui_ButtonEx / UiButtonStyle_Make / Ui_Panel / Ui_ProgressBar
+Ui_Button / Ui_ButtonEx / Ui_ButtonExIcon / UiButtonStyle_Make
+Ui_Panel / Ui_ProgressBar
 UiToast_Init / UiToast_Attach / UiToast_Show / UiToast_Hide
 UiToast_IsVisible / UiToast_Tick / UiToast_Draw / UiToast_EndFrame
 UiToast_UsingLayer / UiToast_Shutdown
@@ -3367,6 +3414,8 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 | Tab 容器 | [src/ui/ui_tab.c](../src/ui/ui_tab.c) |
 | Tab 设计 | [docs/CUI-Tab-设计方案.md](CUI-Tab-设计方案.md) |
 | Tab 样例 | [samples/tabs.c](../samples/tabs.c) |
+| 图标 GLYPH | [src/ui/ui_icon.c](../src/ui/ui_icon.c) |
+| 图标样例 | [samples/icons.c](../samples/icons.c) |
 | 窗口拖边缩放 | [src/ui/ui_app.c:102](../src/ui/ui_app.c#L102) |
 | z-index / 命中 | [src/ui/ui_context.c:116](../src/ui/ui_context.c#L116) |
 | 模态 blocker | [src/ui/ui_context.c:41](../src/ui/ui_context.c#L41) |
@@ -3414,7 +3463,7 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
   进度 overlay 按新令牌重建；浅色/深色截图均正常。
 - 壳/输入/进度回归：`cui_minimal.exe` 输入、回车提交、退出正常；`cui_demo.exe`
   由 `UiApp + UiInput + UiProgress` 重写为 **340 行**（原 893 行），前台 60Hz
-  无 Toast 时应用进程 CPU 约 **0.00%**；七份 exe 均为 0CRT。
+  无 Toast 时应用进程 CPU 约 **0.00%**；八份 exe 均为 0CRT。
 - 0CRT 增强回归：独立自测程序覆盖 `%d/%u/%x/%s/%c/%lld/%zu/%08x/%.2f/%-5d`
   与边界截断、内存 0/7/15/16/31/32/63/64/65/511/512/513/4095/4096/4097/
   8192/10000 字节、字符串、malloc/calloc/realloc/qsort/bsearch，退出码 0；
@@ -3441,7 +3490,7 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
   点击展开/收起后只重测该项，contentH/可见区间/thumb 长度同步更新；
   返回顶部按钮把 offset 平滑归零；“回弹”按钮使触摸配置的 var 视图出现
   offset=-17 的越界，随后弹簧回到 0；鼠标离开视口 1.6 秒后两个滚动条
-  均淡出，静止 2 秒 CPU **0ms**；7 个 exe 全部 0CRT，原有 demo/minimal/mvvm
+  均淡出，静止 2 秒 CPU **0ms**；8 个 exe 全部 0CRT，原有 demo/minimal/mvvm
   启动/关闭回归通过。
 - **ScrollView padding/滚动条槽回归**：样例设置 `{4,4,6,6}` 四向 padding 与
   `reserveSpace=1`；100%/200% DPI 下首行与左右边缘保持内边距，行尾
@@ -3460,13 +3509,18 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 - **光晕/disabled 回归**：Solid/Plain hover 光晕为预烘焙柔光纹理，一次
   `DrawBitmap`，无 3 圈描边带；同尺寸/颜色连续 hover 缓存命中，主题切换
   后按新角色色重建；`Ui_ButtonEx(..., enabled=0)` 不注册命中、不发光、
-  返回 false；7 个 exe 0CRT。
+  返回 false；8 个 exe 0CRT。
 - **TabBar/TabPager 回归**：`cui_tabs.exe` LINE/PILL/CARD 三种 header 正常；
   CARD 活动项上圆角、底边留空并与内容面板连通，`ActiveRect` 分段顶边 +
   `DrawActive` 覆盖后无 2px 双线；点击页签横向滑动 260ms，PILL 下选中胶囊
   切换；反向翻页方向翻转；纵向模式上下滑动；仅淡入模式旧页/新页交叉淡出；
   转场期间页面按钮不响应、header 仍可点击；Tab + 方向键 + Space 切换页并
   显示焦点环；转场结束 progress=100%、静止 CPU 0；`cui_tabs.exe` 为 0CRT。
+- **图标组件回归**：`cui_icons.exe` 的按钮图标、Toast 图标、TabBar 图标
+  与 40 DIP 页面大图标均正常；保存/刷新/删除按钮触发成功/信息/错误 Toast，
+  Toast 按 kind 显示勾/信息/感叹号图标；TabBar 的 LINE/PILL/CARD 图标
+  与文本一起居中；禁用按钮图标为 disabled 色；静止 CPU 0；`cui_icons`
+  为 0CRT。
 - **多窗口/全局主题/模态回归**：`cui_multi.exe` 两个 HWND 各自持有
   Gfx/UiTheme/UiContext/UiProgress/UiToast；在主窗切主题，二级窗同步换肤并
   自动重绘（像素从浅色 245,248,254 变为深色 15,20,29）；二级窗独立 Toast

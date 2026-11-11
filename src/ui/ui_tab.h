@@ -12,6 +12,7 @@
 #define CUI_UI_TAB_H
 
 #include "ui/ui_context.h"
+#include "ui/ui_icon.h"
 
 typedef enum {
 	UI_TAB_LINE = 0,
@@ -77,11 +78,18 @@ void UiTabBar_SetFocusVisible(UiTabBar *tb, int visible);
  * labels 长度 >= count; style=NULL 用 LINE. */
 int UiTabBar_Draw(UiTabBar *tb, UiContext *ui, UiRect rc,
 	const char *const *labels, const UiTabStyle *style, int enabled);
+/* 可选图标 (icons 长度 >= count; icons=NULL 等价于普通 Draw). */
+int UiTabBar_DrawEx(UiTabBar *tb, UiContext *ui, UiRect rc,
+	const char *const *labels, const UiIcon *icons,
+	const UiTabStyle *style, int enabled);
 
 /* CARD: 在内容面板/页面之后调用, 画活动 tab 填充/三边/文字/焦点环.
  * LINE/PILL 为空操作. 只画不注册, 不改变选中/命中状态. */
 void UiTabBar_DrawActive(UiTabBar *tb, UiContext *ui,
 	const char *const *labels, const UiTabStyle *style);
+void UiTabBar_DrawActiveEx(UiTabBar *tb, UiContext *ui,
+	const char *const *labels, const UiIcon *icons,
+	const UiTabStyle *style);
 
 /* 最近一次 Draw 的活动 tab 矩形; 应用可用它在内容面板顶边让出接缝. */
 UiRect UiTabBar_ActiveRect(const UiTabBar *tb);

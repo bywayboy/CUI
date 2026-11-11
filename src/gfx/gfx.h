@@ -120,6 +120,9 @@ void Gfx_PopClip(Gfx *g);
 
 /* 文本 */
 GfxFont *Gfx_CreateFont(Gfx *g, float sizeDip, int weight);
+/* 指定字体族 (如 L"Segoe MDL2 Assets"); 族不存在返回 NULL, 不静默 fallback. */
+GfxFont *Gfx_CreateFontFamily(Gfx *g, const wchar_t *family,
+	float sizeDip, int weight);
 void Gfx_DestroyFont(Gfx *g, GfxFont *f);
 float Gfx_TextWidth(Gfx *g, GfxFont *f, const char *utf8);
 float Gfx_TextHeight(Gfx *g, GfxFont *f);

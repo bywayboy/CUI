@@ -2554,13 +2554,17 @@ void Gfx_PopClip(Gfx *g)
 	g->clipDepth--;
 }
 
-GfxFont *Gfx_CreateFont(Gfx *g, float sizeDip, int weight)
+static GfxFont *font_create(Gfx *g, const wchar_t *family,
+	float sizeDip, int weight)
 {
-	if (!g || !g->dw || sizeDip <= 0.0f) return NULL;
-	GfxFont *f = (GfxFont *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(GfxFont));
+	GfxFont *f;
+	DWRITE_FONT_WEIGHT w;
+	HRESULT hr;
+	if (!g || !g->dw || !family || !family[0] || sizeDip <= 0.0f) return NULL;
+	f = (GfxFont *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(GfxFont));
 	if (!f) return NULL;
-	DWRITE_FONT_WEIGHT w = weight >= 600 ? DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT_NORMAL;
-	HRESULT hr = g->dw->CreateTextFormat(L"Microsoft YaHei", NULL, w,
+	w = weight >= 600 ? DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT_NORMAL;
+	hr = g->dw->CreateTextFormat(family, NULL, w,
 		DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, sizeDip, L"zh-CN", &f->fmt);
 	if (FAILED(hr) || !f->fmt) { HeapFree(GetProcessHeap(), 0, f); return NULL; }
 	f->fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
@@ -2569,6 +2573,27 @@ GfxFont *Gfx_CreateFont(Gfx *g, float sizeDip, int weight)
 	f->size = sizeDip;
 	f->weight = weight;
 	return f;
+}
+
+GfxFont *Gfx_CreateFontFamily(Gfx *g, const wchar_t *family,
+	float sizeDip, int weight)
+{
+	IDWriteFontCollection *coll = NULL;
+	UINT32 index = 0;
+	BOOL exists = FALSE;
+	HRESULT hr;
+	if (!g || !g->dw || !family || !family[0] || sizeDip <= 0.0f) return NULL;
+	if (FAILED(g->dw->GetSystemFontCollection(&coll, FALSE)) || !coll)
+		return NULL;
+	hr = coll->FindFamilyName(family, &index, &exists);
+	coll->Release();
+	if (FAILED(hr) || !exists) return NULL;
+	return font_create(g, family, sizeDip, weight);
+}
+
+GfxFont *Gfx_CreateFont(Gfx *g, float sizeDip, int weight)
+{
+	return font_create(g, L"Microsoft YaHei", sizeDip, weight);
 }
 
 void Gfx_DestroyFont(Gfx *g, GfxFont *f)

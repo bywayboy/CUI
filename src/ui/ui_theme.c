@@ -407,6 +407,7 @@ void UiTheme_Init(UiTheme *t, Gfx *gfx)
 	t->fInput = Gfx_CreateFont(gfx, 14.0f, 400);
 	t->fLabel = Gfx_CreateFont(gfx, 12.0f, 700);
 	t->fBig = Gfx_CreateFont(gfx, 22.0f, 700);
+	t->fIcon = Gfx_CreateFontFamily(gfx, L"Segoe MDL2 Assets", 16.0f, 400);
 
 	theme_apply_global(t);
 	t->themeRev++;
@@ -467,7 +468,8 @@ void UiTheme_Shutdown(UiTheme *t, Gfx *gfx)
 	Gfx_DestroyFont(gfx, t->fInput);
 	Gfx_DestroyFont(gfx, t->fLabel);
 	Gfx_DestroyFont(gfx, t->fBig);
+	Gfx_DestroyFont(gfx, t->fIcon);
 	t->fTitle = t->fHead = t->fBody = t->fSmall = NULL;
 	t->fTemp = t->fBtn = t->fMini = t->fTempBig = NULL;
-	t->fInput = t->fLabel = t->fBig = NULL;
+	t->fInput = t->fLabel = t->fBig = t->fIcon = NULL;
 }

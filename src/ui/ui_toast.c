@@ -1,5 +1,13 @@
 #include <windows.h>
 #include "ui/ui_toast.h"
+#include "ui/ui_icon.h"
+
+static UiColor toast_accent(const UiTheme *th, int kind)
+{
+	if (kind == UI_TOAST_SUCCESS) return th->green;
+	if (kind == UI_TOAST_ERROR) return th->danger;
+	return th->blue2;
+}
 
 static void toast_drop_effects(UiToast *t)
 {
@@ -74,9 +82,7 @@ static void toast_draw_card_bg(Gfx *g, void *user)
 	UiToast *t = (UiToast *)user;
 	UiTheme *th = t->ui->theme;
 	UiRect card = toast_card_rect(t);
-	UiColor accent = th->blue2;
-	if (t->kind == UI_TOAST_SUCCESS) accent = th->green;
-	else if (t->kind == UI_TOAST_ERROR) accent = th->danger;
+	UiColor accent = toast_accent(th, t->kind);
 	Gfx_FillRoundRect(g, card, th->toastRadius, th->toastBg);
 	Gfx_StrokeRoundRect(g, card, th->toastRadius, th->toastBorder, 1.0f);
 	Gfx_FillRoundRect(g, Ui_Rect(card.x + 12.0f, card.y + 14.0f,
@@ -88,8 +94,18 @@ static void toast_draw_card_text(Gfx *g, void *user)
 	UiToast *t = (UiToast *)user;
 	UiTheme *th = t->ui->theme;
 	UiRect card = toast_card_rect(t);
+	float tx = card.x + 28.0f;
+	if (th->fIcon) {
+		uint32_t cp = t->kind == UI_TOAST_SUCCESS ? 0xE73Eu
+			: (t->kind == UI_TOAST_ERROR ? 0xE783u : 0xE946u);
+		UiIcon icon = UiIcon_Glyph(th->fIcon, cp);
+		UiIcon_Draw(t->ui, &icon,
+			Ui_Rect(card.x + 26.0f, card.y + (card.h - 18.0f) * 0.5f,
+				18.0f, 18.0f), toast_accent(th, t->kind), 1);
+		tx = card.x + 52.0f;
+	}
 	Gfx_Text(g, th->fBody, t->text,
-		Ui_Rect(card.x + 28.0f, card.y, card.w - 44.0f, card.h),
+		Ui_Rect(tx, card.y, card.x + card.w - tx - 16.0f, card.h),
 		th->toastText, GFX_TEXT_VCENTER);
 }
 

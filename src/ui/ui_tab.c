@@ -144,6 +144,34 @@ static int tab_find_last(const UiTabBar *tb, int enabled)
 	return -1;
 }
 
+static float tab_icon_size(const UiIcon *icon)
+{
+	return (icon && icon->kind == UI_ICON_GLYPH && icon->font) ? 16.0f : 0.0f;
+}
+
+static void tab_draw_content(UiContext *ui, const char *label,
+	const UiIcon *icon, UiRect item, UiColor color, int enabled)
+{
+	UiTheme *t = ui->theme;
+	Gfx *g = ui->gfx;
+	float iconW = tab_icon_size(icon);
+	float textW = label ? Gfx_TextWidth(g, t->fLabel, label) : 0.0f;
+	float gap = (iconW > 0.0f && textW > 0.0f) ? 6.0f : 0.0f;
+	float contentW = iconW + gap + textW;
+	float x = item.x + (item.w - contentW) * 0.5f;
+	if (iconW > 0.0f) {
+		UiRect ir = Ui_Rect(x, item.y + (item.h - iconW) * 0.5f,
+			iconW, iconW);
+		UiIcon_Draw(ui, icon, ir, color, enabled);
+	}
+	if (label && label[0]) {
+		UiRect tr = Ui_Rect(x + iconW + gap, item.y,
+			textW + 2.0f, item.h);
+		Gfx_Text(g, t->fLabel, label, tr, color,
+			GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+	}
+}
+
 static void tab_activate(UiTabBar *tb, int index)
 {
 	if (!tb || index < 0 || index >= tb->count) return;
@@ -197,8 +225,9 @@ int UiTabBar_Key(UiTabBar *tb, UiContext *ui, UINT vk)
 	return 0;
 }
 
-int UiTabBar_Draw(UiTabBar *tb, UiContext *ui, UiRect rc,
-	const char *const *labels, const UiTabStyle *style, int enabled)
+int UiTabBar_DrawEx(UiTabBar *tb, UiContext *ui, UiRect rc,
+	const char *const *labels, const UiIcon *icons,
+	const UiTabStyle *style, int enabled)
 {
 	UiTabStyle stl;
 	UiTheme *t;
@@ -278,7 +307,9 @@ int UiTabBar_Draw(UiTabBar *tb, UiContext *ui, UiRect rc,
 			UiColor col;
 			if (!stretch) {
 				float tw = Gfx_TextWidth(g, t->fLabel, labels[i]);
-				w = tw + padX * 2.0f;
+				float iw = icons ? tab_icon_size(&icons[i]) : 0.0f;
+				w = iw + (iw > 0.0f && tw > 0.0f ? 6.0f : 0.0f)
+					+ tw + padX * 2.0f;
 				if (w < 44.0f) w = 44.0f;
 			}
 			item = Ui_Rect(x, inner.y, w, inner.h);
@@ -328,8 +359,8 @@ int UiTabBar_Draw(UiTabBar *tb, UiContext *ui, UiRect rc,
 					if (en && st.hover > 0.004f)
 						col = Ui_ColorMix(col, cHover, st.hover);
 					if (!en) col = cDis;
-					Gfx_Text(g, t->fLabel, labels[i], item, col,
-						GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+					tab_draw_content(ui, labels[i],
+						icons ? &icons[i] : NULL, item, col, en);
 				}
 			} else if (variant == UI_TAB_PILL) {
 				UiRect ir = Ui_RectInset(item, 2.0f);
@@ -359,8 +390,8 @@ int UiTabBar_Draw(UiTabBar *tb, UiContext *ui, UiRect rc,
 				if (en && tb->selected != i && st.hover > 0.004f)
 					col = Ui_ColorMix(col, cHover, st.hover);
 				if (!en) col = cDis;
-				Gfx_Text(g, t->fLabel, labels[i], item, col,
-					GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+				tab_draw_content(ui, labels[i],
+					icons ? &icons[i] : NULL, item, col, en);
 			} else {
 				if (en && tb->selected != i && st.hover > 0.004f) {
 					UiRect ir = Ui_RectInset(item, 2.0f);
@@ -376,8 +407,8 @@ int UiTabBar_Draw(UiTabBar *tb, UiContext *ui, UiRect rc,
 				if (en && tb->selected != i && st.hover > 0.004f)
 					col = Ui_ColorMix(col, cHover, st.hover);
 				if (!en) col = cDis;
-				Gfx_Text(g, t->fLabel, labels[i], item, col,
-					GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+				tab_draw_content(ui, labels[i],
+					icons ? &icons[i] : NULL, item, col, en);
 			}
 		}
 	}
@@ -388,7 +419,9 @@ int UiTabBar_Draw(UiTabBar *tb, UiContext *ui, UiRect rc,
 	}
 	if (variant == UI_TAB_LINE && selectedIndex >= 0) {
 		float tw = Gfx_TextWidth(g, t->fLabel, labels[selectedIndex]);
-		float iw = tw + 12.0f;
+		float iconW = icons ? tab_icon_size(&icons[selectedIndex]) : 0.0f;
+		float iw = tw + 12.0f + iconW +
+			(iconW > 0.0f && tw > 0.0f ? 6.0f : 0.0f);
 		float maxW = selectedRc.w - 8.0f;
 		float tx, ty, ax, aw;
 		if (iw > maxW) iw = maxW;
@@ -420,8 +453,14 @@ UiRect UiTabBar_ActiveRect(const UiTabBar *tb)
 	return tb ? tb->activeRc : Ui_Rect(0, 0, 0, 0);
 }
 
-void UiTabBar_DrawActive(UiTabBar *tb, UiContext *ui,
-	const char *const *labels, const UiTabStyle *style)
+int UiTabBar_Draw(UiTabBar *tb, UiContext *ui, UiRect rc,
+	const char *const *labels, const UiTabStyle *style, int enabled)
+{
+	return UiTabBar_DrawEx(tb, ui, rc, labels, NULL, style, enabled);
+}
+
+void UiTabBar_DrawActiveEx(UiTabBar *tb, UiContext *ui,
+	const char *const *labels, const UiIcon *icons, const UiTabStyle *style)
 {
 	UiTabStyle stl;
 	UiTheme *t;
@@ -429,7 +468,7 @@ void UiTabBar_DrawActive(UiTabBar *tb, UiContext *ui,
 	UiRect ar, ring;
 	float radius;
 	UiColor cBg, cBorder, cText, cDis;
-	int merge;
+	int merge, en;
 
 	if (!tb || !ui || !ui->theme || !ui->gfx || !labels) return;
 	stl = style ? *style : UiTabStyle_Card();
@@ -444,6 +483,7 @@ void UiTabBar_DrawActive(UiTabBar *tb, UiContext *ui,
 	cBorder = stl.activeBorder ? stl.activeBorder : t->neutral.border;
 	cText = stl.textActive ? stl.textActive : t->primary.base;
 	cDis = stl.textDisabled ? stl.textDisabled : t->btnDisabledText;
+	en = tab_item_enabled(tb, tb->selected, 1);
 
 	ar = tb->activeRc;
 	if (merge) ar.h += 1.0f;
@@ -457,9 +497,15 @@ void UiTabBar_DrawActive(UiTabBar *tb, UiContext *ui,
 		Gfx_StrokeRoundRect(g, ring, radius > 2.0f ? radius - 2.0f : 2.0f,
 			Ui_ColorAlpha(t->primary.base, 200), 1.5f);
 	}
-	Gfx_Text(g, t->fLabel, labels[tb->selected], tb->activeRc,
-		tab_item_enabled(tb, tb->selected, 1) ? cText : cDis,
-		GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+	tab_draw_content(ui, labels[tb->selected],
+		icons ? &icons[tb->selected] : NULL, tb->activeRc,
+		en ? cText : cDis, en);
+}
+
+void UiTabBar_DrawActive(UiTabBar *tb, UiContext *ui,
+	const char *const *labels, const UiTabStyle *style)
+{
+	UiTabBar_DrawActiveEx(tb, ui, labels, NULL, style);
 }
 
 /* ── TabPager ───────────────────────────────────────────────────────── */

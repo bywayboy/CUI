@@ -4,7 +4,7 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
 纯 C/C++、零 CRT、Direct2D + DirectComposition 渲染，自带一套"hover/press/focus
 平滑 + 转场补间"的轻动画内核和一个支持中文输入法（IMM32）的单行编辑框。
 
-工程包含七个样例，公共代码在 `src/ui`：
+工程包含八个样例，公共代码在 `src/ui`：
 
 - `src/demo.c`：**标准样例（约 340 行）**。基于 `UiApp` 壳 + `UiInput` 表单 +
   `UiButton/Panel/ProgressBar` + `UITheme` + 合成器 `UiToast`（`GfxLayer`），
@@ -22,7 +22,10 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
   40 个变高卡片（measure 缓存/展开收起）；滚轮平滑、甩动惯性、触摸回弹、
   el-scrollbar 风格自动隐藏滚动条。
 - `samples/tabs.c`：TabBar + TabPager。LINE/PILL/CARD header、指示条滑动、
-  横向/纵向/仅淡入转场、reverse、转场输入锁和键盘导航。
+  横向/纵向/仅淡入转场、reverse、转场输入锁和键盘导航；概览页带
+  Segoe MDL2 Assets glyph 图标示例。
+- `samples/icons.c`：图标组件样例。按钮 + 图标、Toast 按 kind 自动图标、
+  TabBar 图标 + 页面大图标；触发信息/成功/错误 Toast。
 
 > 来源：RMControl `installer/src`（提交 `1bc6929` 时的实现）。
 > 安装器目前仍保留自己的副本；CUI 是**独立可复用**版本，后续可让安装器切到它。
@@ -47,7 +50,8 @@ CUI/
 │  ├─ multiwindow.c       多窗口样例（全局主题/独立进度/模态对话框）
 │  ├─ mvvm.c              ButtonGroup + MVVM-lite 表单
 │  ├─ scrollview.c        ScrollView：10k 行 + 变高卡片 + 惯性/回弹/滚动条
-│  └─ tabs.c              TabBar/TabPager：LINE/PILL/CARD + 四向转场 + 输入锁
+│  ├─ tabs.c              TabBar/TabPager：LINE/PILL/CARD + 四向转场 + 输入锁
+│  └─ icons.c             按钮/Toast/TabBar 图标样例（MDL2 glyph）
 └─ src/
    ├─ demo.c              标准样例（UiApp 壳 + 组件，约 340 行）
    ├─ edit.c / edit.h     自绘单行编辑框 UiEdit（选区/剪贴板/滚动/IME 组合）
@@ -64,6 +68,7 @@ CUI/
       ├─ ui_button_group.* 融合按钮组管理器（NORMAL/SINGLE/MULTI + 键盘）
       ├─ ui_scroll.*       滚动容器 + 高度 measure 缓存/可见区间/滚动条
       ├─ ui_tab.*          TabBar（LINE/PILL/CARD）+ TabPager 转场
+      ├─ ui_icon.*         图标 GLYPH 后端（Segoe MDL2 Assets）
       ├─ ui_theme.*       颜色/字体令牌（亮/暗 + 自定义 5 语义色）
       ├─ ui_paint.*       Ui_DrawSurface：填充/描边/光晕的统一外观
       ├─ ui_anim.*        动画内核（指数平滑 + 显式补间，固定池零分配）
@@ -93,6 +98,7 @@ bin\cui_multi.exe       REM 多窗口样例
 bin\cui_mvvm.exe        REM ButtonGroup + MVVM-lite
 bin\cui_scroll.exe      REM ScrollView（10k 行 / 变高卡片 / 惯性/回弹）
 bin\cui_tabs.exe        REM TabBar + TabPager（LINE/PILL/CARD / 四向转场）
+bin\cui_icons.exe       REM 按钮 / Toast / TabBar 图标（MDL2 glyph）
 ```
 
 构建是 **0CRT**：`/NODEFAULTLIB` + `/ENTRY:startup`，由 `crtstub.c` 提供
@@ -198,6 +204,7 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | | `Gfx_Corners/CornersAll` `Gfx_FillRoundRectCorners[GradV]` `Gfx_StrokeRoundRectCorners[Dashed]` | 每角独立圆角（0.25 DIP 几何缓存）+ 虚线描边 |
 | | `Gfx_DrawGlowRect` | 预烘焙柔光纹理 + 一次 DrawBitmap；按尺寸/圆角/颜色/DPI 缓存 |
 | | `Gfx_Text/TextWidth/TextHeight` | UTF-8 文本，DirectWrite 排版 |
+| | `Gfx_CreateFont/Gfx_CreateFontFamily` | 字体创建；后者校验字体族，用于 MDL2 icon font |
 | | `Gfx_PushClip/PopClip` `Gfx_SetDirtyRect` `Gfx_IsVisible` `Gfx_PushAlpha/PopAlpha` | 裁剪/脏区/可见性/整帧透明度 |
 | | `Gfx_CreateOverlay/OverlaySetReveal/OverlaySetRect/OverlaySetOpacity/OverlayAlive/OverlayDestroy` | 合成器动画 overlay（仅 DComp；ULW 返回 NULL） |
 | | `Gfx_CreateLayer/LayerDraw/LayerSetOpacity/LayerResize/LayerAlive/LayerDestroy` | 通用合成器图层：独立 swapchain + 绘制回调 + DWM opacity 补间 |
@@ -218,12 +225,13 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | | `ScrollTo/EnsureVisible/Fling/Wheel` | 平滑定位/滚入视口/惯性/手动滚轮 |
 | `UiScrollLayout` | `Init/SetFixed/SetCount/SetWidth/ItemNeedsMeasure` | 高度缓存 + 前缀 y + contentH；固定/变高 |
 | | `SetItemHeight/Commit/VisibleRange/ItemRect` | 失效项重测、布局提交、可见区间和项矩形 |
-| `UiTabBar` | `Init/SetSelected/SetDisabledMask/SetFocusVisible/Draw/DrawActive/ActiveRect/Key` | LINE/PILL/CARD header、指示条滑动、禁用/键盘 |
+| `UiTabBar` | `Init/SetSelected/SetDisabledMask/SetFocusVisible/Draw/DrawEx/DrawActive/DrawActiveEx/ActiveRect/Key` | LINE/PILL/CARD header、图标 tab、指示条滑动、禁用/键盘 |
 | `UiTabPager` | `Init/GoTo/Tick/Busy/Draw` | 横/纵/淡入转场、reverse、页面输入锁 |
 | | `UiTabStyle_Line/Pill/Card` | header 样式 token（提示：CARD 需 DrawActive 两阶段） |
+| `UiIcon` | `UiIcon_Glyph/UiIcon_Draw` `Gfx_CreateFontFamily` | 图标字体 glyph（Segoe MDL2 Assets），主题 tint/禁用/DPI |
 | `UiTheme` | `UiTheme_SetTheme/SetColors/Touch` | 进程级全局换肤：所有窗口同步并自动重绘；5 语义色自定义 |
-| `UiWidgets` | `Ui_Button/Ui_ButtonEx/Ui_Panel/Ui_ProgressBar` | 主题化组件；`Ui_ButtonEx` 支持 type×appearance×shape×dashed（Element-Plus 风格）与 disabled |
-| `UiToast` | `UiToast_Init/Attach/Show/Hide/Tick/Draw/EndFrame` | 渐变 Toast；layer 模式主窗零重绘，ULW 回退主窗 |
+| `UiWidgets` | `Ui_Button/Ui_ButtonEx/Ui_ButtonExIcon/Ui_Panel/Ui_ProgressBar` | 主题化组件；按钮支持 Element-Plus 风格与图标 + 文本 / disabled |
+| `UiToast` | `UiToast_Init/Attach/Show/Hide/Tick/Draw/EndFrame` | 渐变 Toast；按 kind 自动 MDL2 图标；layer 模式主窗零重绘 |
 | | `UiToast_UsingLayer/Shutdown` | 判断当前是否合成器路径 / 释放 layer |
 | `UiInput` | `UiInput_Init/Add/Draw/BeginFrame/Key/Char/Mouse*` | 表单焦点/光标/拖选/IME 封装 |
 | `UiProgress` | `UiProgress_Init/Tick/Draw/EndFrame/SetPaused` | 循环进度 + GfxOverlay + 回退 |
@@ -335,7 +343,7 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   Toast 渐变遮罩 + 底部卡片、点击遮罩/Esc 关闭均通过。
 - 采样/壳回归：`cui_minimal.exe` 输入/回车提交/退出正常；`cui_demo.exe` 已改为
   `UiApp` 壳 + `UiInput` + `UiProgress`，**340 行**（原 893 行），前台 60Hz
-  无 Toast 时应用进程 CPU 约 **0.00%**；七份 exe 均为 0CRT。
+  无 Toast 时应用进程 CPU 约 **0.00%**；八份 exe 均为 0CRT。
 - 合成器 Toast（`GfxLayer`）回归：渐变/卡片只画一次，淡入淡出由 DWM 补间；
   Toast 显示/停留/淡出期间应用进程 CPU **0.00%**、主窗 0 次 `WM_PAINT`；
   下方进度 overlay 持续移动；点击/Esc 关闭、重复显示、Toast 中 resize 均正常。
@@ -352,7 +360,7 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
 - 光晕/disabled 回归：Solid/Plain hover 光晕为预烘焙柔光纹理，一次
   `DrawBitmap`，无 3 圈描边带；尺寸/颜色/DPI 相同则缓存命中，主题切换后
   按新角色色重建；`Ui_ButtonEx(..., enabled=0)` 不注册命中、不发光、
-  返回 false；7 个 exe 0CRT。
+  返回 false；8 个 exe 0CRT。
 - ScrollView 回归：`cui_scroll.exe` 10,000 行列表只绘制 16~17 行；滚轮/甩动/
   滚动条拖拽（offset≈172482）与“返回顶部”正常；40 个变高卡片展开/收起只重测
   该项，contentH/可见区间/thumb 同步；触摸回弹出现 offset=-17 后弹回 0；
@@ -365,6 +373,10 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   明显浅底 + primary 混合描边，TabBar LINE/PILL/CARD 悬停为 primary.soft
   底 + primary alpha 描边；转场结束 progress=100%，静止 CPU 0；`cui_tabs`
   为 0CRT。
+- 图标回归：`UiTheme.fIcon` 成功加载 Segoe MDL2 Assets；`cui_icons.exe`
+  的按钮图标 / Toast kind 图标 / TabBar 图标 / 40 DIP 页面大图标正常，
+  禁用图标使用 disabled 色；浅深主题与 200% DPI 清晰；`Gfx_CreateFontFamily`
+  对不存在的字体族返回 NULL。
 - 按钮样式/每角圆角回归：样式条同时显示 SOLID(primary)、PLAIN(success)、
   TEXT(warning)、PLAIN+DASHED(error)、ROUND(default)；ButtonGroup 首/中/尾段
   为左圆-全直-右圆，选中色铺满到外轮廓、外边框不被覆盖；每角几何按 0.25 DIP
@@ -389,6 +401,6 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   overlay/Toast layer 是独立 DComp visual，不受整帧矩阵影响（已记录限制）。
   DComp `IDCompositionDevice2/3`、`Visual3` 本机 `E_NOINTERFACE`，未依赖。
 - 0CRT 自测：printf 格式/边界、SIMD 内存分档（0…10000B）、字符串、分配器、
-  qsort/bsearch 全部通过；七份 exe 在新 crtstub 下正常启动/输入/关闭。
+  qsort/bsearch 全部通过；八份 exe 在新 crtstub 下正常启动/输入/关闭。
 - 无桌面环境（SSH/Session 0）不能目视验证，但编译与链接判据（0CRT/无未解析符号）
   可在 CI 里跑。
