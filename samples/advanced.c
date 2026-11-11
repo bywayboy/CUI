@@ -325,6 +325,16 @@ static void demo_advance(double dtMs)
 
 /* ── 绘制 ─────────────────────────────────────────────────────────── */
 
+/* 光标由 UI 每帧声明 (Ui_SetCursor), 这里在 WM_SETCURSOR 之外补一帧末应用,
+ * 保证弹层/禁用状态变化后不用等指针移动就能换形状. */
+static void demo_apply_cursor(void)
+{
+	HCURSOR cur;
+	if (!g.ui.mouseOver || g.scale <= 0.0f) return;
+	cur = Ui_CursorHandle(Ui_CursorAt(&g.ui, g.ui.mouseX, g.ui.mouseY));
+	if (cur && GetCursor() != cur) SetCursor(cur);
+}
+
 static void demo_render(HWND hwnd, const RECT *dirtyPx)
 {
 	RECT rc;
@@ -466,6 +476,7 @@ static void demo_render(HWND hwnd, const RECT *dirtyPx)
 	 * 避免绘制中途弹模态/重绘导致渲染重入 (安装器的 SHBrowseForFolder 踩过)。 */
 	UiId clicked = g.ui.clicked;
 	Ui_EndFrame(&g.ui);
+	demo_apply_cursor();
 
 	if (clicked == Ui_Id("demo.btn.submit", 0, 0)) g.pending = 1;
 	if (clicked == Ui_Id("demo.btn.reset", 0, 0)) g.pending = 2;
@@ -684,6 +695,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 			return HTCAPTION;
 		return hit;
 	}
+	case WM_SETCURSOR:
+		if (LOWORD(lp) == HTCLIENT && g.scale > 0.0f) {
+			POINT pt;
+			GetCursorPos(&pt);
+			ScreenToClient(hwnd, &pt);
+			SetCursor(Ui_CursorHandle(Ui_CursorAt(&g.ui,
+				pt.x / g.scale, pt.y / g.scale)));
+			return TRUE;
+		}
+		break;
 	case WM_MOUSEMOVE: {
 		POINT pt = { (short)LOWORD(lp), (short)HIWORD(lp) };
 		if (!g.tracking) {

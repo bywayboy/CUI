@@ -252,15 +252,15 @@ void Ui_RegisterWidget(UiContext *ctx, UiId id, UiRect rc)
 		? ctx->hitClip : Ui_Rect(0, 0, 0, 0);
 	w->layer = ctx->layer;
 	w->z = ctx->z;
+	w->cursor = UI_CURSOR_ARROW;
 }
 
-UiId Ui_HitTest(const UiContext *ctx, float x, float y)
+/* 命中控件下标; -1 = 无. 从后往前: 同 z 时后注册(后画)的优先. */
+static int widget_at(const UiContext *ctx, float x, float y)
 {
-	UiId best = UI_ID_NONE;
+	int best = -1;
 	int bestZ = -2147483647;
-	if (!ctx) return UI_ID_NONE;
-	if (ctx->modal) return ctx->modal;
-	/* 从后往前: 同 z 时后注册(后画)的优先; 跨层取最高 z。 */
+	if (!ctx) return -1;
 	for (int i = ctx->widgetCount - 1; i >= 0; i--) {
 		const UiWidget *w = &ctx->widgets[i];
 		if (ctx->popupOpen && w->layer != UI_LAYER_OVERLAY) continue;
@@ -270,10 +270,47 @@ UiId Ui_HitTest(const UiContext *ctx, float x, float y)
 			!Ui_RectContains(w->clip, x, y)) continue;
 		if (w->z > bestZ) {
 			bestZ = w->z;
-			best = w->id;
+			best = i;
 		}
 	}
 	return best;
+}
+
+UiId Ui_HitTest(const UiContext *ctx, float x, float y)
+{
+	int i;
+	if (!ctx) return UI_ID_NONE;
+	if (ctx->modal) return ctx->modal;
+	i = widget_at(ctx, x, y);
+	return i >= 0 ? ctx->widgets[i].id : UI_ID_NONE;
+}
+
+void Ui_SetCursor(UiContext *ctx, UiId id, int kind)
+{
+	if (!ctx || !id) return;
+	for (int i = 0; i < ctx->widgetCount; i++)
+		if (ctx->widgets[i].id == id) ctx->widgets[i].cursor = (uint8_t)kind;
+}
+
+int Ui_CursorAt(const UiContext *ctx, float x, float y)
+{
+	int i;
+	if (!ctx || ctx->modal) return UI_CURSOR_ARROW;
+	i = widget_at(ctx, x, y);
+	return i >= 0 ? (int)ctx->widgets[i].cursor : UI_CURSOR_ARROW;
+}
+
+HCURSOR Ui_CursorHandle(int kind)
+{
+	LPCWSTR name = IDC_ARROW;
+	switch (kind) {
+	case UI_CURSOR_IBEAM:   name = IDC_IBEAM; break;
+	case UI_CURSOR_HAND:    name = IDC_HAND; break;
+	case UI_CURSOR_SIZE_NS: name = IDC_SIZENS; break;
+	case UI_CURSOR_SIZE_WE: name = IDC_SIZEWE; break;
+	default: break;
+	}
+	return LoadCursorW(NULL, name);
 }
 
 UiWidgetState Ui_State(UiContext *ctx, UiId id, UiRect rc, int enabled)

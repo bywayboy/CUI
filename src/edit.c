@@ -410,6 +410,7 @@ void Edit_Draw(UiContext *ui, UiId id, UiRect rc, UiEdit *e, const wchar_t *hint
 	ss.glowW = 4.0f;
 	ss.glowMask = UI_GLOW_HOVER | UI_GLOW_FOCUS;
 	Ui_DrawSurface(ui, id, rc, &ss, 1);
+	Ui_SetCursor(ui, id, UI_CURSOR_IBEAM);
 
 	/* 脏区外只做注册/状态更新, 跳过昂贵的逐字测量与排版。
 	 * 文本/光标/组合串变化时应用会失效字段矩形, 不会被跳过。 */

@@ -1296,6 +1296,9 @@ int Ui_TextArea(UiTextArea *ta, UiContext *ui, UiRect rc, int enabled)
 	if (contentH < lineH) contentH = lineH;
 	UiScrollView_Begin(&ta->sv, ui, rc, wrapW, contentH);
 	ta->textRc = ta->sv.inner;
+	/* 文本视口内显示 I 形光标; 滚动条 track/thumb 是后注册的独立控件,
+	 * 在滚动条上仍然保持箭头. */
+	Ui_SetCursor(ui, ta->id, UI_CURSOR_IBEAM);
 
 	if (ta->ensureCaret) {
 		int cl = ta_line_of_arr(ta, ta->caret);

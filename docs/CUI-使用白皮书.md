@@ -137,6 +137,10 @@
 > 39. Slider 增加 hover/press 视觉（轨道加粗染色、拇指放大、百分比染色），
 >    拖动改为抓取偏移 1:1 跟手（抓拇指不跳位、抓轨道直接定位）；快速单击在
 >    按下帧即落值；命中区收窄到轨道，映射内缩使 0/100% 拇指不越界。
+> 40. 新增鼠标光标声明：`Ui_SetCursor/Ui_CursorAt/Ui_CursorHandle`，控件在
+>    绘制时声明形状，`UiApp` 在 `WM_SETCURSOR` 与帧末应用；`UiEdit` 与可编辑
+>    `UiTextArea` 显示 I 形光标，禁用 TextArea/按钮/空白区保持箭头，
+>    TextArea 滚动条上仍为箭头。
 
 ---
 
@@ -1173,6 +1177,35 @@ if (ui.released == id) { /* 提交 */ ui.drag.active = 0; }
 ```
 
 `Ui_EndFrame` 会在 `released` 非零时自动把 `drag.active` 置 0。
+
+### 7.9 鼠标光标
+
+光标形状由控件在绘制时声明，应用在 `WM_SETCURSOR` 与帧末应用：
+
+```c
+/* 控件绘制内, 必须在 Ui_State/Ui_DrawSurface 注册之后 */
+Ui_SetCursor(ui, id, UI_CURSOR_IBEAM);   /* ARROW/IBEAM/HAND/SIZE_NS/SIZE_WE */
+
+/* 窗口过程 */
+case WM_SETCURSOR:
+    if (LOWORD(lp) == HTCLIENT) {
+        POINT pt; GetCursorPos(&pt); ScreenToClient(hwnd, &pt);
+        SetCursor(Ui_CursorHandle(Ui_CursorAt(&ui,
+            pt.x / scale, pt.y / scale)));
+        return TRUE;
+    }
+    break;
+```
+
+- `Ui_SetCursor` 作用于本帧所有同 ID 注册（TextArea 的 surface 与 ScrollView
+  viewport 同 ID，一起生效）；
+- 命中按 z / 注册顺序取最高：滚动条 track/thumb 后注册，盖住文本区的 I 形光标；
+- 弹层打开时只认 overlay 层；模态遮罩下返回箭头；
+- `UiApp` 已内置上述接线，并在帧末再应用一次——弹层关闭、控件禁用、布局移动后
+  不用等指针移动就能换形状；自建窗口过程（如 `samples/advanced.c`）按上面两处
+  手动接线；
+- `UiEdit`（`Edit_Draw`）与可编辑 `UiTextArea` 声明 I 形光标；禁用 TextArea
+  保持箭头。
 
 ---
 
@@ -2444,6 +2477,8 @@ UiTextArea_Shutdown(&ta);
   正数仍限制表单长度。容量不会溢出，退出用 `Shutdown` 释放。
 - **软换行 + 垂直滚动**：滚动区复用 `UiScrollView`（滚轮/thumb/轨道翻页/
   预留槽）；行高 = 输入字体高 + 4 DIP。
+- **鼠标光标**：文本视口声明 I 形光标，禁用状态保持箭头；滚动条 track/thumb
+  是后注册的 overlay 控件，在滚动条上仍显示箭头。
 - **增量布局**：末尾追加只从最后一行续排（O(新增字符)）；段落内普通编辑
   只重排编辑行到段落末尾，后续段落平移；插入/删除换行或宽度变化才全文重排。
 - **宽度测量**：`Gfx_TextWidth` 使用 `widthIncludingTrailingWhitespace`，
@@ -2875,6 +2910,7 @@ Edit_Draw(&ui, id, rc, &ed, L"请输入名称");
 5. 画文本；有组合串时把组合串画在插入点，原文向右让位，下方画下划线。
 6. 画光标（1.4 DIP 竖线），并更新 `caretDipX/textTopDip/textHDip` 供 IME 定位。
 7. 自动调整 `scrollX`，保证光标与组合串在可视区内。
+8. 声明 I 形鼠标光标（`Ui_SetCursor(id, UI_CURSOR_IBEAM)`）。
 
 ### 11.4 鼠标定位与拖选
 

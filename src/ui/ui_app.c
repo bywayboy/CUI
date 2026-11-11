@@ -63,6 +63,16 @@ void UiApp_Close(UiApp *app)
 	if (app && app->hwnd) PostMessageW(app->hwnd, WM_CLOSE, 0, 0);
 }
 
+/* 光标由 UI 每帧声明: WM_SETCURSOR 负责指针移动时, 这里负责 UI 状态
+ * 变化 (弹层关闭/控件禁用/布局移动) 后不用等下一次移动就能换形状. */
+static void app_apply_cursor(UiApp *app)
+{
+	HCURSOR cur;
+	if (!app || !app->hwnd || !app->ui.mouseOver) return;
+	cur = Ui_CursorHandle(Ui_CursorAt(&app->ui, app->ui.mouseX, app->ui.mouseY));
+	if (cur && GetCursor() != cur) SetCursor(cur);
+}
+
 static void app_render(UiApp *app, const RECT *dirty)
 {
 	RECT rc;
@@ -80,6 +90,7 @@ static void app_render(UiApp *app, const RECT *dirty)
 	Ui_BeginFrame(&app->ui);
 	if (app->cb && app->cb->frame) app->cb->frame(app, app->user);
 	Ui_EndFrame(&app->ui);
+	app_apply_cursor(app);
 
 	Gfx_End(app->gfx);
 	app->fullRedraw = 0;
@@ -206,6 +217,17 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 				d, app->user);
 		return 0;
 	}
+
+	case WM_SETCURSOR:
+		if (LOWORD(lp) == HTCLIENT && app && app->ui.scale > 0.0f) {
+			POINT pt;
+			GetCursorPos(&pt);
+			ScreenToClient(hwnd, &pt);
+			SetCursor(Ui_CursorHandle(Ui_CursorAt(&app->ui,
+				(float)pt.x / app->ui.scale, (float)pt.y / app->ui.scale)));
+			return TRUE;
+		}
+		break;
 
 	case WM_MOUSEMOVE: {
 		POINT pt = { (short)LOWORD(lp), (short)HIWORD(lp) };

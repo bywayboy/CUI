@@ -25,12 +25,23 @@
 #define UI_Z_OVERLAY 1000
 #define UI_Z_TOAST   2000
 
+/* 光标形状: 控件绘制时用 Ui_SetCursor 声明, 由 app 在 WM_SETCURSOR /
+ * 帧末应用. 不在列表里 = 箭头. */
+enum {
+	UI_CURSOR_ARROW = 0,
+	UI_CURSOR_IBEAM,
+	UI_CURSOR_HAND,
+	UI_CURSOR_SIZE_NS,
+	UI_CURSOR_SIZE_WE
+};
+
 typedef struct {
 	UiId id;
 	UiRect rect;
 	UiRect clip;      /* 注册时的输入裁剪; w<=0 = 无裁剪 */
 	int layer;
 	int z;
+	uint8_t cursor;   /* UI_CURSOR_*: 命中此控件时的鼠标形状 */
 } UiWidget;
 
 typedef struct {
@@ -111,6 +122,16 @@ void Ui_EndFrame(UiContext *ctx);
 
 void Ui_RegisterWidget(UiContext *ctx, UiId id, UiRect rc);
 UiId Ui_HitTest(const UiContext *ctx, float x, float y);
+
+/* 给本帧已注册的控件声明光标形状 (同一 ID 的多次注册一起生效, 例如
+ * TextArea 的 surface + ScrollView viewport). 松开/不声明时回到箭头. */
+void Ui_SetCursor(UiContext *ctx, UiId id, int kind);
+
+/* 命中处应显示的 UI_CURSOR_*; 无控件/模态遮罩时返回箭头. */
+int  Ui_CursorAt(const UiContext *ctx, float x, float y);
+
+/* UI_CURSOR_* -> 系统光标句柄 (不缓存, 交给 user32 复用). */
+HCURSOR Ui_CursorHandle(int kind);
 
 /* 切换注册层: 命中优先取最高 z; 同 z 时后注册(后画)的优先。
  * 必须成对; 绘制顺序仍需调用方按 z 从低到高排。 */

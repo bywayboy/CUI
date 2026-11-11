@@ -241,6 +241,7 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | | `Ui_RegisterWheelTarget/Ui_OnMouseWheel` | 滚轮目标路由；`UiApp` 已接 `WM_MOUSEWHEEL` |
 | | `Ui_SetModal` `Ui_SetNavId` | 模态 blocker / 非文本控件键盘导航焦点 |
 | | `Ui_OnMouse*` `Ui_SetFocusId` | 输入与键盘焦点 |
+| | `Ui_SetCursor` `Ui_CursorAt` `Ui_CursorHandle` | 控件声明光标形状（IBEAM/HAND/SIZE_NS/SIZE_WE）；`UiApp` 已接 `WM_SETCURSOR` + 帧末应用 |
 | `UiButtonGroup` | `Init/SetSelected/SetMask/SetFocusVisible/Draw/Key` | 融合按钮组：NORMAL/SINGLE/MULTI、selected/mask/focus |
 | `UiScrollView` | `Init/Begin/End/Tick/Busy/Cull/ContentRect` | 视口/offset/裁剪/滚动条；内容尺寸由应用 measure |
 | | `SetPadding/ContentWidth` `UiScrollPadding` | 四向内边距 + 滚动条预留槽，thumb 不遮挡内容 |
@@ -287,6 +288,7 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 
 ```c
 WM_PAINT          -> BeginPaint/EndPaint; render(&ps.rcPaint)
+WM_SETCURSOR      -> HTCLIENT 时 SetCursor(Ui_CursorHandle(Ui_CursorAt(&ui, x/scale, y/scale))); return TRUE
 WM_MOUSEMOVE      -> Ui_OnMouseMove(x/scale, y/scale)   /* 记得 TrackMouseEvent(TME_LEAVE) */
 WM_MOUSELEAVE     -> Ui_OnMouseLeave
 WM_LBUTTONDOWN/UP -> Ui_OnMouseDown/Up（按下时 SetCapture+SetFocus）
@@ -444,7 +446,9 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   一致；Backspace 回退后文本/行数一致；单独拖选含行尾空格的英文行可完整
   选中到 “dog.”，鼠标行内移动不再跳行末；拖选靠近/越出文本框上下边缘时
   自动滚动并继续扩展选区（上/下两向均验证）；`UiEdit` 在 maxLen=0 时接受
-  2550 字符不截断；静止 CPU 0；`cui_textarea` 为 0CRT。
+  2550 字符不截断；`UiEdit`/可编辑 TextArea（含 readonly）悬停显示 I 形光标，
+  禁用 TextArea、按钮与空白区保持箭头（`WM_SETCURSOR` 实测）；
+  静止 CPU 0；`cui_textarea` 为 0CRT。
 - 按钮样式/每角圆角回归：样式条同时显示 SOLID(primary)、PLAIN(success)、
   TEXT(warning)、PLAIN+DASHED(error)、ROUND(default)；ButtonGroup 首/中/尾段
   为左圆-全直-右圆，选中色铺满到外轮廓、外边框不被覆盖；每角几何按 0.25 DIP
