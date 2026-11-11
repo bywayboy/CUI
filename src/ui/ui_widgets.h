@@ -68,6 +68,10 @@ int  Ui_ButtonEx(UiContext *ui, UiId id, UiRect rc, const char *label,
 int  Ui_ButtonExIcon(UiContext *ui, UiId id, UiRect rc, const UiIcon *icon,
 	const char *label, const UiButtonStyle *style, int enabled);
 
+/* 纯图标按钮 (label=NULL); tooltip 由应用通过 UiTooltip 绑定同一 id. */
+int  Ui_IconButton(UiContext *ui, UiId id, UiRect rc, const UiIcon *icon,
+	const UiButtonStyle *style, int enabled);
+
 /* 返回 1 = 本帧被点击 (ui->clicked == id)。 */
 int  Ui_Button(UiContext *ui, UiId id, UiRect rc, const char *label,
 	int variant, int enabled);

@@ -256,6 +256,24 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		ReleaseCapture();
 		return 0;
 	}
+	case WM_RBUTTONDOWN: {
+		POINT pt = { (short)LOWORD(lp), (short)HIWORD(lp) };
+		if (!app) return 0;
+		SetFocus(hwnd);
+		if (app->cb && app->cb->mouse)
+			app->cb->mouse(app, UI_APP_MOUSE_RDOWN,
+				pt.x / app->scale, pt.y / app->scale, app->user);
+		return 0;
+	}
+	case WM_RBUTTONUP: {
+		POINT pt = { (short)LOWORD(lp), (short)HIWORD(lp) };
+		if (!app) return 0;
+		if (app->cb && app->cb->mouse)
+			app->cb->mouse(app, UI_APP_MOUSE_RUP,
+				pt.x / app->scale, pt.y / app->scale, app->user);
+		return 0;
+	}
+
 	case WM_CAPTURECHANGED:
 		if (app) Ui_OnCaptureChanged(&app->ui);
 		return 0;

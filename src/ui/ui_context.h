@@ -37,6 +37,7 @@ typedef struct {
 	UiId id;
 	UiRect rect;
 	UiRect clip;
+	int layer;        /* 弹层打开时只接受 overlay 滚轮目标 */
 } UiWheelTarget;
 
 struct UiContext {
@@ -75,6 +76,7 @@ struct UiContext {
 	UiId active;
 	UiId focusId;             /* 由 App 每帧设置: 键盘焦点所在控件 (编辑框) */
 	UiId navId;               /* 键盘导航焦点: ButtonGroup 等非文本控件 */
+	int navFocusVisible;      /* 键盘焦点是否显示焦点样式; 鼠标按下清 0 */
 	UiId clicked;             /* 单帧: 同一控件内按下并抬起 */
 	UiId down;                /* 单帧: 本次按下的控件 (编辑框立即定位光标用) */
 	UiId released;            /* 单帧: 按下过的控件被抬起（滑块提交用） */

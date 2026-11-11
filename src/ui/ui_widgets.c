@@ -178,6 +178,12 @@ int Ui_ButtonExIcon(UiContext *ui, UiId id, UiRect rc, const UiIcon *icon,
 	return button_draw(ui, id, rc, icon, label, style, enabled);
 }
 
+int Ui_IconButton(UiContext *ui, UiId id, UiRect rc, const UiIcon *icon,
+	const UiButtonStyle *style, int enabled)
+{
+	return button_draw(ui, id, rc, icon, NULL, style, enabled);
+}
+
 int Ui_Button(UiContext *ui, UiId id, UiRect rc, const char *label,
 	int variant, int enabled)
 {

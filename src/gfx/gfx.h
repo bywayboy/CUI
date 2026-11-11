@@ -118,6 +118,11 @@ void Gfx_FillTriangle(Gfx *g, float x1, float y1, float x2, float y2, float x3, 
 void Gfx_PushClip(Gfx *g, GfxRect r);
 void Gfx_PopClip(Gfx *g);
 
+/* 旋转变换（必须成对; 最多 8 层）。deg 为角度, 正方向在屏幕坐标系顺时针;
+ * (cx,cy) 是 DIP 旋转中心. 仅影响之后的绘制, 不影响已压入的裁剪/脏区. */
+void Gfx_PushRotate(Gfx *g, float cx, float cy, float deg);
+void Gfx_PopTransform(Gfx *g);
+
 /* 文本 */
 GfxFont *Gfx_CreateFont(Gfx *g, float sizeDip, int weight);
 /* 指定字体族 (如 L"Segoe MDL2 Assets"); 族不存在返回 NULL, 不静默 fallback. */

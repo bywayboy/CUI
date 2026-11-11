@@ -43,7 +43,9 @@ void Ui_SetFocusId(UiContext *ctx, UiId id)
 
 void Ui_SetNavId(UiContext *ctx, UiId id)
 {
-	if (ctx) ctx->navId = id;
+	if (!ctx) return;
+	ctx->navId = id;
+	ctx->navFocusVisible = id ? 1 : 0;
 }
 
 void Ui_SetModal(UiContext *ctx, UiId id)
@@ -115,6 +117,7 @@ void Ui_RegisterWheelTarget(UiContext *ctx, UiId id, UiRect rc)
 	ctx->wheelTargets[ctx->wheelTargetCount].clip =
 		(ctx->hitClipDepth > 0 && ctx->hitClip.w > 0.0f)
 		? ctx->hitClip : Ui_Rect(0, 0, 0, 0);
+	ctx->wheelTargets[ctx->wheelTargetCount].layer = ctx->layer;
 	ctx->wheelTargetCount++;
 }
 
@@ -131,6 +134,7 @@ void Ui_OnMouseWheel(UiContext *ctx, float x, float y, float delta)
 	if (ctx->modal) return;
 	for (int i = ctx->wheelTargetCount - 1; i >= 0; i--) {
 		UiWheelTarget *wt = &ctx->wheelTargets[i];
+		if (ctx->popupOpen && wt->layer != UI_LAYER_OVERLAY) continue;
 		if (!Ui_RectContains(wt->rect, x, y)) continue;
 		if (wt->clip.w > 0.0f && wt->clip.h > 0.0f &&
 			!Ui_RectContains(wt->clip, x, y)) continue;
@@ -341,6 +345,7 @@ void Ui_OnMouseDown(UiContext *ctx, float x, float y)
 	ctx->mouseX = x;
 	ctx->mouseY = y;
 	ctx->mouseOver = 1;
+	ctx->navFocusVisible = 0;
 	if (ctx->modal) {
 		ctx->pressed = ctx->modal;
 		ctx->down = ctx->modal;
@@ -352,7 +357,8 @@ void Ui_OnMouseDown(UiContext *ctx, float x, float y)
 		return;
 	}
 	UiId hit = Ui_HitTest(ctx, x, y);
-	if (!hit) return;
+	/* 未命中也要锁存 mouseDown: 抬起时才能得到 clickedOutside
+	 * (弹层外部点击 / 空区域点击). hit 为 0 时 pressed 也是 0. */
 	ctx->pressed = hit;
 	ctx->down = hit;
 	ctx->active = hit;
@@ -360,7 +366,12 @@ void Ui_OnMouseDown(UiContext *ctx, float x, float y)
 	ctx->clicked = UI_ID_NONE;
 	ctx->released = UI_ID_NONE;
 	ctx->clickedOutside = 0;
-	InvalidateWidget(ctx, hit);
+	if (hit) {
+		InvalidateWidget(ctx, hit);
+	} else if (ctx->popupOpen && ctx->hwnd) {
+		/* 点在弹层外: 弹层管理器在下一帧关闭, 这里先安排一次重绘. */
+		InvalidateRect(ctx->hwnd, NULL, FALSE);
+	}
 }
 
 void Ui_OnMouseUp(UiContext *ctx, float x, float y)
@@ -409,6 +420,9 @@ void Ui_OnMouseLeave(UiContext *ctx)
 	InvalidateWidget(ctx, ctx->pressed);
 	if (ctx->drag.active) InvalidateWidget(ctx, ctx->drag.id);
 	ctx->hover = UI_ID_NONE;
+	/* 按住/拖动期间窗口已 SetCapture, 指针划出客户区仍会收到移动消息.
+	 * 此时如果把坐标清成 -10000, 滑块/滚动条 thumb 会瞬间跳回 0. */
+	if (ctx->mouseDown || ctx->drag.active) return;
 	ctx->mouseX = -10000.0f;
 	ctx->mouseY = -10000.0f;
 	ctx->mouseOver = 0;

@@ -4,7 +4,7 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
 纯 C/C++、零 CRT、Direct2D + DirectComposition 渲染，自带一套"hover/press/focus
 平滑 + 转场补间"的轻动画内核和一个支持中文输入法（IMM32）的单行编辑框。
 
-工程包含八个样例，公共代码在 `src/ui`：
+工程包含十个样例，公共代码在 `src/ui`：
 
 - `src/demo.c`：**标准样例（约 340 行）**。基于 `UiApp` 壳 + `UiInput` 表单 +
   `UiButton/Panel/ProgressBar` + `UITheme` + 合成器 `UiToast`（`GfxLayer`），
@@ -26,6 +26,11 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
   Segoe MDL2 Assets glyph 图标示例。
 - `samples/icons.c`：图标组件样例。按钮 + 图标、Toast 按 kind 自动图标、
   TabBar 图标 + 页面大图标；触发信息/成功/错误 Toast。
+- `samples/controls.c`：表单控件样例。Checkbox/Group、RadioGroup、Switch、
+  Slider、IconButton + Tooltip；键盘导航和 disabled 状态。
+- `samples/overlays.c`：弹层样例。`UiPopupManager` + 单选/多选 Select、
+  可搜索多选标签（内嵌 `UiEdit` + IME）+ 下拉菜单 + 右键上下文菜单；
+  长列表滚动、点击外部/Esc 关闭、焦点回归。
 
 > 来源：RMControl `installer/src`（提交 `1bc6929` 时的实现）。
 > 安装器目前仍保留自己的副本；CUI 是**独立可复用**版本，后续可让安装器切到它。
@@ -43,7 +48,8 @@ CUI/
 ├─ docs/
 │  ├─ CUI-使用白皮书.md   详尽的使用/接入/排错文档
 │  ├─ CUI-ScrollView-设计方案.md  ScrollView 架构/缓存/物理/取舍
-│  └─ CUI-Tab-设计方案.md  TabBar/TabPager 结构与转场设计（含 CARD 计划）
+│  ├─ CUI-Tab-设计方案.md  TabBar/TabPager 结构与转场设计（含 CARD 计划）
+│  └─ CUI-弹层与选择控件-设计方案.md  弹层管理器 + Select/Menu 状态与命中路由
 ├─ samples/
 │  ├─ minimal.c           最小接入样例
 │  ├─ advanced.c          高级样例（overlay/Toast/IME 全细节）
@@ -51,7 +57,9 @@ CUI/
 │  ├─ mvvm.c              ButtonGroup + MVVM-lite 表单
 │  ├─ scrollview.c        ScrollView：10k 行 + 变高卡片 + 惯性/回弹/滚动条
 │  ├─ tabs.c              TabBar/TabPager：LINE/PILL/CARD + 四向转场 + 输入锁
-│  └─ icons.c             按钮/Toast/TabBar 图标样例（MDL2 glyph）
+│  ├─ icons.c             按钮/Toast/TabBar 图标样例（MDL2 glyph）
+│  ├─ controls.c          Checkbox/Radio/Switch/Slider + Tooltip
+│  └─ overlays.c          Select 下拉 / 菜单 / 右键上下文菜单
 └─ src/
    ├─ demo.c              标准样例（UiApp 壳 + 组件，约 340 行）
    ├─ edit.c / edit.h     自绘单行编辑框 UiEdit（选区/剪贴板/滚动/IME 组合）
@@ -69,6 +77,11 @@ CUI/
       ├─ ui_scroll.*       滚动容器 + 高度 measure 缓存/可见区间/滚动条
       ├─ ui_tab.*          TabBar（LINE/PILL/CARD）+ TabPager 转场
       ├─ ui_icon.*         图标 GLYPH 后端（Segoe MDL2 Assets）
+      ├─ ui_controls.*     Checkbox/RadioGroup/Switch/Slider
+      ├─ ui_popup.*        弹层定位 + UiPopupManager（外部点击/Esc/焦点回归）
+      ├─ ui_select.*       Select 下拉（长列表滚动/禁用项/键盘）
+      ├─ ui_menu.*         Menu / 右键上下文菜单（分隔/禁用/危险项）
+      ├─ ui_tooltip.*      悬停延迟提示
       ├─ ui_theme.*       颜色/字体令牌（亮/暗 + 自定义 5 语义色）
       ├─ ui_paint.*       Ui_DrawSurface：填充/描边/光晕的统一外观
       ├─ ui_anim.*        动画内核（指数平滑 + 显式补间，固定池零分配）
@@ -99,6 +112,8 @@ bin\cui_mvvm.exe        REM ButtonGroup + MVVM-lite
 bin\cui_scroll.exe      REM ScrollView（10k 行 / 变高卡片 / 惯性/回弹）
 bin\cui_tabs.exe        REM TabBar + TabPager（LINE/PILL/CARD / 四向转场）
 bin\cui_icons.exe       REM 按钮 / Toast / TabBar 图标（MDL2 glyph）
+bin\cui_controls.exe    REM Checkbox / Radio / Switch / Slider / Tooltip
+bin\cui_overlays.exe    REM Select 下拉 / 菜单 / 右键上下文菜单
 ```
 
 构建是 **0CRT**：`/NODEFAULTLIB` + `/ENTRY:startup`，由 `crtstub.c` 提供
@@ -205,7 +220,7 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | | `Gfx_DrawGlowRect` | 预烘焙柔光纹理 + 一次 DrawBitmap；按尺寸/圆角/颜色/DPI 缓存 |
 | | `Gfx_Text/TextWidth/TextHeight` | UTF-8 文本，DirectWrite 排版 |
 | | `Gfx_CreateFont/Gfx_CreateFontFamily` | 字体创建；后者校验字体族，用于 MDL2 icon font |
-| | `Gfx_PushClip/PopClip` `Gfx_SetDirtyRect` `Gfx_IsVisible` `Gfx_PushAlpha/PopAlpha` | 裁剪/脏区/可见性/整帧透明度 |
+| | `Gfx_PushClip/PopClip` `Gfx_PushRotate/PopTransform` `Gfx_SetDirtyRect` `Gfx_IsVisible` `Gfx_PushAlpha/PopAlpha` | 裁剪/绕点旋转/脏区/可见性/整帧透明度 |
 | | `Gfx_CreateOverlay/OverlaySetReveal/OverlaySetRect/OverlaySetOpacity/OverlayAlive/OverlayDestroy` | 合成器动画 overlay（仅 DComp；ULW 返回 NULL） |
 | | `Gfx_CreateLayer/LayerDraw/LayerSetOpacity/LayerResize/LayerAlive/LayerDestroy` | 通用合成器图层：独立 swapchain + 绘制回调 + DWM opacity 补间 |
 | | `Gfx_CreateBlur/Shadow/ColorMatrix/Grain` `Gfx_DrawWithEffects` | D2D 内置效果 + 自定义 HLSL（离线 fxc）；离屏内容→效果链→合成 |
@@ -229,6 +244,17 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | `UiTabPager` | `Init/GoTo/Tick/Busy/Draw` | 横/纵/淡入转场、reverse、页面输入锁 |
 | | `UiTabStyle_Line/Pill/Card` | header 样式 token（提示：CARD 需 DrawActive 两阶段） |
 | `UiIcon` | `UiIcon_Glyph/UiIcon_Draw` `Gfx_CreateFontFamily` | 图标字体 glyph（Segoe MDL2 Assets），主题 tint/禁用/DPI |
+| `UiControls` | `Checkbox/CheckboxGroup/RadioGroup/Switch/Slider` | 表单控件；应用持有状态、键盘/禁用、Slider 拖动/committed |
+| `UiPopup` | `UiPopup_Place` | below/above/right/left 翻转 + 视口夹取 |
+| `UiPopupManager` | `Init/BeginFrame/IsOpen/AnyOpen/Open/Close/Key` | 单弹层、点击外部/Esc 关闭、焦点回归、弹层打开时底层不参与命中 |
+| `UiSelect` | `Init/SetItems/SetSelected/SetDisabledMask` | 单选/多选下拉；列表复用 `UiScrollView`（滚轮/thumb 拖动/轨道翻页）、禁用项、键盘 |
+| | `SetMultiple/SetMask/GetMask` | 多选（32 位 mask）；触发器摘要 `A, B +N` |
+| | `SetFilterable/AttachIme/SearchActive/Char/OnIme/Blink` | 顶部搜索框（UiEdit + IME），ASCII 大小写不敏感过滤 |
+| | `SetPlaceholder/SetSearchHint` | 持久 placeholder（`Ui_Select` 参数优先）与搜索框提示 |
+| | `Ui_Select/UiSelect_DrawPopup/UiSelect_Key` | 触发器与帧末列表分离绘制；右侧矢量 chevron 180ms 旋转 |
+| `UiMenu` | `Init/SetItems/OpenAt/UiMenu_Draw/UiMenu_Key` | 下拉/右键菜单；分隔/禁用/危险/快捷键提示 |
+| `UiTooltip` | `Init/SetDelay/Update/Pending/Draw` | 悬停延迟提示，不注册命中 |
+| `UiIconButton` | `Ui_IconButton` | 纯图标按钮（tooltip 由应用绑定同 id） |
 | `UiTheme` | `UiTheme_SetTheme/SetColors/Touch` | 进程级全局换肤：所有窗口同步并自动重绘；5 语义色自定义 |
 | `UiWidgets` | `Ui_Button/Ui_ButtonEx/Ui_ButtonExIcon/Ui_Panel/Ui_ProgressBar` | 主题化组件；按钮支持 Element-Plus 风格与图标 + 文本 / disabled |
 | `UiToast` | `UiToast_Init/Attach/Show/Hide/Tick/Draw/EndFrame` | 渐变 Toast；按 kind 自动 MDL2 图标；layer 模式主窗零重绘 |
@@ -306,9 +332,11 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
 
 ## 9. 已知限制
 
-- 没有布局引擎（行列/滚动容器/自动换行），demo 用绝对坐标布局。
-- 编辑框是单行；无上下文菜单、无撤销栈。
-- 主题只有一套浅色令牌（`ui_theme.h`），换肤需自行扩展 `UiTheme`。
+- 布局只有矩形层：`UiStack/UiFlex` 不提供网格、百分比、自动换行；滚动由
+  `UiScrollView` 承担。
+- 编辑框是单行；无撤销栈/多行 TextArea。菜单无子菜单；Select 已支持搜索/多选
+  （≤32 项，无拼音匹配/自由输入值）。
+- 主题是进程级全局的：同一进程的多个窗口共享一套主题，不能各自独立换肤。
 - 动画通道固定 64 项、16 通道；超出按最近最少使用回收（见 `ui_anim.c`）。
 - `UiFrame` 的合成器时钟需要 Win10 1809+，旧系统自动退回定时器（帧率仍可用）。
 
@@ -343,7 +371,7 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   Toast 渐变遮罩 + 底部卡片、点击遮罩/Esc 关闭均通过。
 - 采样/壳回归：`cui_minimal.exe` 输入/回车提交/退出正常；`cui_demo.exe` 已改为
   `UiApp` 壳 + `UiInput` + `UiProgress`，**340 行**（原 893 行），前台 60Hz
-  无 Toast 时应用进程 CPU 约 **0.00%**；八份 exe 均为 0CRT。
+  无 Toast 时应用进程 CPU 约 **0.00%**；十份 exe 均为 0CRT。
 - 合成器 Toast（`GfxLayer`）回归：渐变/卡片只画一次，淡入淡出由 DWM 补间；
   Toast 显示/停留/淡出期间应用进程 CPU **0.00%**、主窗 0 次 `WM_PAINT`；
   下方进度 overlay 持续移动；点击/Esc 关闭、重复显示、Toast 中 resize 均正常。
@@ -360,7 +388,7 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
 - 光晕/disabled 回归：Solid/Plain hover 光晕为预烘焙柔光纹理，一次
   `DrawBitmap`，无 3 圈描边带；尺寸/颜色/DPI 相同则缓存命中，主题切换后
   按新角色色重建；`Ui_ButtonEx(..., enabled=0)` 不注册命中、不发光、
-  返回 false；8 个 exe 0CRT。
+  返回 false；9 个 exe 0CRT。
 - ScrollView 回归：`cui_scroll.exe` 10,000 行列表只绘制 16~17 行；滚轮/甩动/
   滚动条拖拽（offset≈172482）与“返回顶部”正常；40 个变高卡片展开/收起只重测
   该项，contentH/可见区间/thumb 同步；触摸回弹出现 offset=-17 后弹回 0；
@@ -377,6 +405,24 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   的按钮图标 / Toast kind 图标 / TabBar 图标 / 40 DIP 页面大图标正常，
   禁用图标使用 disabled 色；浅深主题与 200% DPI 清晰；`Gfx_CreateFontFamily`
   对不存在的字体族返回 NULL。
+- 控件回归：`cui_controls.exe` 的 Checkbox（含 indeterminate/disabled）、
+  CheckboxGroup mask、RadioGroup、Switch、Slider 点击/拖动、IconButton +
+  Tooltip 延迟提示均正常；Group 内复选项与上方单项 Checkbox 左边缘像素对齐
+  （组绘制裁剪放宽 1 DIP，修复此前少 1px）；勾选/取消、RadioGroup 换项有
+  约 140ms 淡入淡出，indeterminate→checked 横线退/对勾进，初始“部分应用”
+  只显示横线（不叠对勾）；键盘焦点为 `primary.soft` 行底色 +
+  控件描边，鼠标点击不再留下蓝色圆角外框；Tab/方向键/空格导航和深色主题通过；
+  静止 CPU 0。
+- 弹层回归：`cui_overlays.exe` 三个 Select 向下展开、选中勾/禁用项正常；
+  多选点击保持展开，摘要变为“杭州, 南京 +1”；可搜索多选输入 `in` 过滤出
+  Rendering/Input，Backspace 回退为 `i` 恢复 7 项，点击/Enter 切换，`zz`
+  显示“无匹配项”；初始主题 Select 显示 placeholder“选择主题”；展开时右侧
+  chevron 中间帧约 60°、180ms 后向上并转 primary 色，关闭回落到向下灰色；
+  搜索框提示“搜索标签…”；长列表滚轮 3 格偏移 288px（9 行）、thumb 同步；
+  thumb 可拖动、点击轨道按 0.9 页翻页；打开时自动滚入选中项；
+  下拉菜单 Down×2+Enter 提交“保存”；右键点打开上下文菜单（分隔/禁用/危险）；
+  Esc 与点击外部均关闭并把焦点还给触发器；弹层打开时底层按钮不响应；
+  静止 CPU 0；`cui_overlays` 为 0CRT。
 - 按钮样式/每角圆角回归：样式条同时显示 SOLID(primary)、PLAIN(success)、
   TEXT(warning)、PLAIN+DASHED(error)、ROUND(default)；ButtonGroup 首/中/尾段
   为左圆-全直-右圆，选中色铺满到外轮廓、外边框不被覆盖；每角几何按 0.25 DIP
@@ -401,6 +447,6 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   overlay/Toast layer 是独立 DComp visual，不受整帧矩阵影响（已记录限制）。
   DComp `IDCompositionDevice2/3`、`Visual3` 本机 `E_NOINTERFACE`，未依赖。
 - 0CRT 自测：printf 格式/边界、SIMD 内存分档（0…10000B）、字符串、分配器、
-  qsort/bsearch 全部通过；八份 exe 在新 crtstub 下正常启动/输入/关闭。
+  qsort/bsearch 全部通过；十份 exe 在新 crtstub 下正常启动/输入/关闭。
 - 无桌面环境（SSH/Session 0）不能目视验证，但编译与链接判据（0CRT/无未解析符号）
   可在 CI 里跑。

@@ -123,6 +123,8 @@ struct Gfx {
 	int generation;
 	int inFrame;
 	int clipDepth;
+	int xformDepth;
+	D2D1_MATRIX_3X2_F xformStack[8];
 	int dirtyFull;
 	int dirtyClip;
 	int forceFull;
@@ -1156,6 +1158,7 @@ int Gfx_LayerDraw(GfxLayer *l, GfxLayerDrawFn fn, void *user)
 	g->rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 	g->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 	g->clipDepth = 0;
+	g->xformDepth = 0;
 	g->alphaDepth = 0;
 	g->dirtyClip = 0;
 	g->dirtyFull = 1;          /* 回调内所有绘制都可见 */
@@ -1709,6 +1712,7 @@ int Gfx_DrawWithEffects(Gfx *g, GfxEffect *const *effects, int count,
 	g->rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 	g->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 	g->clipDepth = 0;
+	g->xformDepth = 0;
 	g->alphaDepth = 0;
 	g->dirtyClip = 0;
 	g->dirtyFull = 1;
@@ -1730,6 +1734,7 @@ int Gfx_DrawWithEffects(Gfx *g, GfxEffect *const *effects, int count,
 	g->rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 	g->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 	g->clipDepth = 0;
+	g->xformDepth = 0;
 	g->alphaDepth = 0;
 	g->dirtyClip = 0;
 	g->dirty = savedDirty;
@@ -1874,6 +1879,7 @@ void Gfx_Begin(Gfx *g)
 	g->rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 	g->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 	g->clipDepth = 0;
+	g->xformDepth = 0;
 	g->alphaDepth = 0;
 	g->dirtyClip = 0;
 	if (!g->dirtyFull) {
@@ -2552,6 +2558,26 @@ void Gfx_PopClip(Gfx *g)
 	if (!g || !g->rt || g->clipDepth <= 0) return;
 	g->rt->PopAxisAlignedClip();
 	g->clipDepth--;
+}
+
+void Gfx_PushRotate(Gfx *g, float cx, float cy, float deg)
+{
+	D2D1_MATRIX_3X2_F cur, rot, m;
+	if (!g || !g->rt) return;
+	if (g->xformDepth >= (int)(sizeof(g->xformStack) / sizeof(g->xformStack[0])))
+		return;
+	g->rt->GetTransform(&cur);
+	g->xformStack[g->xformDepth++] = cur;
+	/* 行向量: 先旋转(DIP) 再乘当前变换(含 DPI 缩放). */
+	rot = D2D1::Matrix3x2F::Rotation(deg, D2D1::Point2F(cx, cy));
+	m = rot * cur;
+	g->rt->SetTransform(&m);
+}
+
+void Gfx_PopTransform(Gfx *g)
+{
+	if (!g || !g->rt || g->xformDepth <= 0) return;
+	g->rt->SetTransform(&g->xformStack[--g->xformDepth]);
 }
 
 static GfxFont *font_create(Gfx *g, const wchar_t *family,

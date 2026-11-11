@@ -30,7 +30,10 @@ enum {
 	UI_APP_MOUSE_MOVE = 0,
 	UI_APP_MOUSE_DOWN,
 	UI_APP_MOUSE_UP,
-	UI_APP_MOUSE_LEAVE
+	UI_APP_MOUSE_LEAVE,
+	/* 右键只转给 App (上下文菜单), 不进入 UiContext 命中/点击. */
+	UI_APP_MOUSE_RDOWN,
+	UI_APP_MOUSE_RUP
 };
 
 typedef struct UiAppCallbacks {

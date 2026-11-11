@@ -91,6 +91,35 @@
 > 24. 图标组件接入：`Ui_ButtonExIcon`、`UiTabBar_DrawEx/DrawActiveEx`，
 >    Toast 按 kind 自动绘制 MDL2 图标；新增 `samples/icons.c`，构建产出
 >    `cui_icons.exe`。
+> 25. 新增 Checkbox/CheckboxGroup、RadioGroup、Switch、Slider；Popup 定位
+>    基础与 Tooltip、IconButton；新增 `samples/controls.c`，构建产出
+>    `cui_controls.exe`。
+> 26. 键盘焦点改为 hover 风格的 `primary.soft` 行底色 + 控件 primary 描边，
+>    移除覆盖复选框的蓝色圆角外框；`Ui_SetNavId` 置 `navFocusVisible`，
+>    鼠标按下清 0。
+> 27. 新增弹层交互管理器 `UiPopupManager`（点击外部/Esc 关闭、单弹层、
+>    焦点回归、弹层打开时底层不参与命中、滚轮只走 overlay 层）与
+>    `UiSelect`（下拉单选、长列表滚动、禁用项）、`UiMenu`（下拉/右键菜单、
+>    禁用/分隔/危险项/快捷键提示）；`UiApp` 增加右键回调；
+>    新增 `samples/overlays.c`，构建产出 `cui_overlays.exe`。
+> 28. Select 列表滚动区改为复用 `UiScrollView`：滚轮、thumb 拖动、轨道点击翻页、
+>    滚动条预留槽全部复用；修复按住拖动时 `WM_MOUSELEAVE` 把鼠标坐标清成
+>    -10000 导致滚动条 thumb / 滑块瞬间跳回顶部的问题。
+> 29. Select 增加多选（32 位 mask、触发器摘要 `A, B +N`）与可搜索过滤
+>    （内嵌 `UiEdit` + IME；ASCII 大小写不敏感 / 中文精确匹配）；多选点击/
+>    Enter 切换并保持展开，关闭时提交；样例增加可搜索多选标签。
+> 30. Select 增加持久 placeholder（`SetPlaceholder`，`Ui_Select` 参数优先）
+>    与可配置搜索提示；右侧箭头改为矢量 chevron，展开/收起做 180ms 旋转补间，
+>    新增 `Gfx_PushRotate/PopTransform`；动画期间自行失效触发器，不依赖应用
+>    持续 `animating` 回调。
+> 31. 修复 CheckboxGroup/RadioGroup 左侧少 1px：组内复选框描边中心落在组
+>    矩形边界上，按 rc 绘制裁剪会切掉左半边抗锯齿；绘制裁剪左右各放宽 1 DIP，
+>    命中裁剪不变。
+> 32. Checkbox / CheckboxGroup / RadioGroup 状态切换加入淡入淡出：
+>    选中底色、边框、对勾、横线、单选圆点按 0..1 平滑值过渡；
+>    indeterminate→checked 时横线淡出、对勾淡入；每项用独立动画通道。
+> 33. 修复 indeterminate 与 checked 同时为真时对勾与横线重叠：横线优先，
+>    对勾动画目标改为 `checked && !indeterminate`，初始“部分应用”只显示横线。
 
 ---
 
@@ -111,6 +140,8 @@
    - [8.12 ScrollView 滚动容器](#812-scrollview-滚动容器)
    - [8.13 TabBar 与 TabPager](#813-tabbar-与-tabpager)
    - [8.14 图标 (GLYPH 后端)](#814-图标-glyph-后端)
+   - [8.15 表单控件 / Popup / Tooltip](#815-表单控件--popup--tooltip)
+   - [8.16 弹层管理器 / Select / Menu](#816-弹层管理器--select--menu)
 9. [UiAnim 动画内核](#9-uianim-动画内核)
 10. [UiFrame 帧时钟](#10-uiframe-帧时钟)
 11. [UiEdit 编辑框](#11-uiedit-编辑框)
@@ -151,7 +182,7 @@ CUI 是一套 **纯 C/C++、零 CRT、即时模式（Immediate Mode）** 的 Win
 | 交互 | 即时模式，稳定 `UiId`，单帧事件 |
 | 动画 | 固定池：64 条目 × 16 通道，零分配 |
 | 输入法 | IMM32，组合串就地绘制，候选窗跟随插入点 |
-| 产物 | `cui_demo` / `cui_minimal` / `cui_advanced` / `cui_multi` / `cui_mvvm` / `cui_scroll` / `cui_tabs` / `cui_icons` |
+| 产物 | `cui_demo` / `cui_minimal` / `cui_advanced` / `cui_multi` / `cui_mvvm` / `cui_scroll` / `cui_tabs` / `cui_icons` / `cui_controls` / `cui_overlays` |
 
 ---
 
@@ -241,6 +272,8 @@ bin\cui_mvvm.exe
 bin\cui_scroll.exe
 bin\cui_tabs.exe
 bin\cui_icons.exe
+bin\cui_controls.exe
+bin\cui_overlays.exe
 ```
 
 成功输出示例：
@@ -900,6 +933,7 @@ UpdateLayeredWindow(hwnd, ..., ULW_ALPHA)
 | `Gfx_StrokeArc` | 圆弧（角度，屏幕坐标系顺时针） |
 | `Gfx_FillTriangle` | 三角形 |
 | `Gfx_PushClip` / `Gfx_PopClip` | 轴对齐裁剪，必须成对 |
+| `Gfx_PushRotate` / `Gfx_PopTransform` | DIP 空间绕点旋转（最多 8 层），用于箭头/指示器补间 |
 | `Gfx_PushAlpha` / `Gfx_PopAlpha` | 全帧透明度图层，必须成对 |
 | `Gfx_IsVisible` | 当前帧脏区是否与矩形相交；用于跳过脏区外的排版/转换 |
 | `Gfx_DrawBitmap` | 预乘 alpha 的 BGRA 位图 |
@@ -2098,6 +2132,254 @@ UiIcon_Draw(&ui, &gear, Ui_Rect(x, y, 24, 24), app->theme.primary.base, 1);
 示例：`samples/tabs.c` 概览页放了设置/网络/信息/刷新/禁用五个 MDL2 图标；
 `samples/icons.c` 展示按钮 + 图标、Toast + 图标、TabBar + 图标和页面大图标。
 
+### 8.15 表单控件 / Popup / Tooltip
+
+#### 8.15.1 Checkbox / CheckboxGroup
+
+```c
+#include "ui/ui_controls.h"
+
+UiCheckbox cb;
+UiCheckbox_Init(&cb, Ui_Id("form.notify", 0, 0), 1);
+if (Ui_Checkbox(&cb, &ui, rc, "启用通知", 1)) { /* cb.checked 已更新 */ }
+
+UiCheckboxGroup feats;
+UiCheckboxGroup_Init(&feats, Ui_Id("form.features", 0, 0), 3);
+UiCheckboxGroup_SetMask(&feats, 0x1);
+UiCheckboxGroup_Draw(&feats, &ui, rc, labels, 28.0f, 1);
+```
+
+- 单项支持 checked / indeterminate / disabled；点击 indeterminate 会先变 checked。
+- checked/indeterminate 切换有淡入淡出：选中底色、边框、对勾/横线按
+  `UI_AN_USER`（对勾）与 `UI_AN_USER+1`（横线）两个通道平滑过渡；
+  indeterminate→checked 时横线淡出、对勾淡入，底色保持。
+- **indeterminate 优先于 checked**：两者同时为 1 时只画横线（对勾目标值按
+  `checked && !indeterminate`），避免初始“部分应用”状态出现对勾与横线重叠。
+- Group 用 mask（最多 32 项），行高由 `rowH` 指定；键盘方向键/Home/End 移焦点，
+  Space/Enter 切换。
+- Group 的绘制和命中裁剪到 rc；超出 rc 的行不画、不命中。绘制裁剪左右各
+  放宽 1 DIP：复选框描边中心正好在 `rc.x` 上，严格按 rc 裁剪会切掉左半像素
+  抗锯齿，导致同列的单项 Checkbox 比 Group 内项多 1px；命中仍按 rc。
+- 键盘焦点不画外框圆角：`Ui_SetNavId` 置 `navFocusVisible=1`，
+  `Ui_OnMouseDown` 清 0；控件用 `primary.soft` 行底色 + 复选框/单选/轨道
+  的 primary 描边表示焦点，鼠标点击不会留下焦点高亮。
+
+#### 8.15.2 RadioGroup
+
+```c
+UiRadioGroup mode;
+UiRadioGroup_Init(&mode, Ui_Id("form.mode", 0, 0), 3);
+UiRadioGroup_Draw(&mode, &ui, rc, labels, 28.0f, 1);
+```
+
+- selected/focus/disabledMask 由应用持有的 manager 管理；点击或 Space 选择；
+- 圆形选中点、hover 边框与 Checkbox 使用同一套主题色；换项时旧圆点淡出、
+  新圆点淡入（每行独立 `UI_AN_USER` 通道）。
+
+#### 8.15.3 Switch / Slider
+
+```c
+UiSwitch sw;
+UiSwitch_Init(&sw, Ui_Id("form.wifi", 0, 0), 1);
+Ui_Switch(&sw, &ui, rc, "Wi-Fi", 1);
+
+UiSlider vol;
+UiSlider_Init(&vol, Ui_Id("form.vol", 0, 0), 0.65f);
+Ui_Slider(&vol, &ui, rc, "音量", 1);
+/* vol.changed 拖动中；vol.committed 鼠标抬起后 */
+```
+
+- Switch 使用 `UI_AN_USER` 平滑 track/thumb 位置；
+- Slider 支持点击定位、按住拖动、左右/上下方向键、Home/End；`committed` 用于提交。
+
+#### 8.15.4 Popup + Tooltip + IconButton
+
+```c
+UiRect tipRc = UiPopup_Place(&ui, anchor, w, h,
+	UI_POPUP_BELOW, UI_POPUP_ALIGN_CENTER, 6.0f);
+
+UiTooltip tip;
+UiTooltip_Init(&tip, Ui_Id("tip", 0, 0));
+UiTooltip_Update(&tip, &ui, targetId, anchor, "设置", UiFrame_Now());
+UiTooltip_Draw(&tip, &ui);   /* 最后画 */
+
+Ui_IconButton(ui, targetId, rc, &icon, &style, 1);
+```
+
+- `UiPopup_Place` 做 below/above/right/left 翻转 + 视口夹取；
+  - 默认优先下方，下方空间不足改上方；
+  - 宽高先夹到视口内（四周 8 DIP），水平/垂直最终夹取，绝不画出窗口；
+  - 只要任一侧空间足够，候选矩形与 anchor 之间保留 `gap`，不会覆盖触发控件；
+  - 两侧都不够时才选空间较大的一侧并夹取，此时覆盖 anchor 是不可避免的
+    最后手段（例如窗口本身比 tooltip 还小）。
+- Tooltip 由目标的 `ui->hover` 驱动，默认 400ms 延迟；不注册命中；
+- `UiTooltip_Pending` 用于在 delay 到期前保持帧循环；
+- IconButton 是 `<icon, label=NULL>` 的 Ui_ButtonExIcon 包装，tooltip 由应用
+  绑定同一个目标 id。
+
+#### 8.15.5 边界
+
+- CheckboxGroup/RadioGroup 是固定行高，不做内部滚动；需要长列表时外层用
+  ScrollView 或后续提供虚拟 provider。
+- 弹层交互（点击外部/Esc 关闭、焦点回归、单弹层）已在 8.16 的
+  `UiPopupManager` 中实现；Select/Menu 见下一节。菜单暂不支持子菜单。
+- Tooltip 无淡入淡出；Checkbox/Radio 已有勾选/选中淡入淡出，但无缩放/描边宽度过渡。
+- 控件状态都在应用/VM 里；键盘通过 `Ui_SetNavId` 接入。
+
+完整样例：[samples/controls.c](../samples/controls.c)（图标按钮 + Tooltip、
+Checkbox/Group、RadioGroup、Switch、Slider、键盘导航、禁用项与深色主题）。
+
+### 8.16 弹层管理器 / Select / Menu
+
+弹层（下拉、菜单、上下文菜单）需要跨帧保存“谁打开、点外部关闭、焦点回哪”，
+不能塞进控件结构。`UiPopupManager` 由窗口/应用持有，同一时刻只允许一个弹层；
+弹层内容仍由具体控件绘制。
+
+#### 8.16.1 每帧顺序
+
+```c
+UiPopupManager pm;
+UiPopupManager_Init(&pm);
+
+/* frame 回调 */
+UiPopupManager_BeginFrame(&pm, &ui);   /* 必须在最前 */
+... 普通控件 ...
+UiSelect_DrawPopup(&sel, &pm, &ui);    /* 帧末, overlay 层 */
+UiMenu_Draw(&menu, &pm, &ui);
+
+/* key 回调 */
+if (UiPopupManager_Key(&pm, &ui, vk)) return 1;  /* Esc */
+if (UiSelect_Key(&sel, &pm, &ui, vk)) return 1;
+if (UiMenu_Key(&menu, &pm, &ui, vk)) return 1;
+```
+
+- `BeginFrame` 同步 `ui->popupOpen`；打开期间点击弹层外（含触发器）会关闭；
+- 打开/关闭会自动整窗失效（弹层在触发器脏区之外，必须重画）；
+- 弹层打开时 `Ui_HitTest` 只返回 overlay 层控件，底层控件不 hover/press；
+- 滚轮目标新增 `layer`，弹层打开时只接受 overlay 层目标，底层 ScrollView 不跟着滚；
+- 关闭后 `ui->navId` 回到 owner；键盘打开/Esc 关闭会显示焦点样式。
+
+#### 8.16.2 Select
+
+```c
+static const char *const kItems[] = { "浅色", "深色", "跟随系统" };
+UiSelect sel;
+UiSelect_Init(&sel, Ui_Id("form.theme", 0, 0));
+UiSelect_SetItems(&sel, kItems, 3);
+UiSelect_SetPlaceholder(&sel, "选择主题");   /* 持久 placeholder */
+UiSelect_SetSelected(&sel, 0);
+
+/* 多选 + 可搜索 */
+UiSelect tags;
+UiSelect_Init(&tags, Ui_Id("form.tags", 0, 0));
+UiSelect_SetItems(&tags, kTags, tagCount);
+UiSelect_SetMultiple(&tags, 1);            /* 32 位 mask */
+UiSelect_SetMask(&tags, (1u << 0) | (1u << 4));
+UiSelect_SetFilterable(&tags, 1);
+UiSelect_SetPlaceholder(&tags, "选择技术标签");
+UiSelect_SetSearchHint(&tags, L"搜索标签…");  /* NULL = L"搜索…" */
+UiSelect_AttachIme(&tags, &app->ime);      /* 搜索框接管 IME */
+
+/* 每帧: 触发器必须在普通控件区域绘制 */
+if (Ui_Select(&sel, &pm, &ui, Ui_Rect(24, 80, 220, 38), "选择主题", 1)) {
+    /* 选中项已变化; 可在此提交 */
+}
+/* 帧末: 列表 */
+UiSelect_DrawPopup(&sel, &pm, &ui);
+
+/* 可搜索 Select 的三个应用回调 */
+int  on_chr(UiApp *app, wchar_t ch, void *user) {
+    return UiSelect_Char(&tags, &app->ui, ch);
+}
+void on_ime(UiApp *app, void *user) { UiSelect_OnIme(&tags, &app->ui); }
+void on_timer(UiApp *app, void *user) { UiSelect_Blink(&tags, &app->ui); }
+```
+
+行为：
+
+- 点击触发器打开/关闭；列表优先向下，空间不足自动翻转，宽度取
+  `max(触发器宽度, 最长项)`，封顶视口；`listW/maxListH/rowH` 可调；
+- placeholder：`Ui_Select` 的每帧参数非空时优先；否则用
+  `UiSelect_SetPlaceholder` 的持久文本；两者都空则显示空白（`text4` 灰字）；
+- 右侧箭头是矢量 chevron（两段圆头线），展开/收起做 180ms ease-out 旋转，
+  颜色从 `text3` 渐到 `primary.base`；动画期间控件自行失效触发器矩形，
+  不依赖应用持续 `animating` 回调；`animReduced` 时直接跳到终态；
+- 列表滚动区**复用 `UiScrollView`**：滚轮 3 行/格、thumb 拖动、轨道点击翻页、
+  滚动条 hover 高亮、右侧预留槽全部走 ScrollView；track 透明，只显示 6 DIP thumb；
+  弹层没有 UiApp tick，帧末 `End` 后补一次 `UiScrollView_Tick(16ms)` 让轨道翻页生效；
+- 打开时自动把选中项滚入可视区（`UiScrollView_ScrollTo(..., 0)`）；
+- `disabledMask` 位标记禁用项，禁用项不注册命中、不可键盘选中；
+- 多选：`mask` 最多 32 位；触发器显示前两个标签 + `+N`；鼠标点击/Enter 切换
+  选中并**保持展开**，Esc/点击外部关闭；关闭时 `committed=1`；
+- 可搜索：弹层顶部是内嵌 `UiEdit` 搜索框，打开接管 `focusId`/IME，关闭时
+  取消组合并归还焦点；ASCII 大小写不敏感子串匹配，中文按字符精确匹配
+  （不做拼音）；无结果显示“无匹配项”；
+- 键盘（可搜索）：Down/Up/PageUp/PageDown 在结果中导航；Home/End、左右、
+  Backspace/Delete、Ctrl+A/C/X/V 编辑搜索词；Enter 单选提交 / 多选切换；
+  Space 在搜索框里输入空格（多选切换用 Enter 或鼠标）；Esc 关闭；
+- 键盘（不可搜索）：Down/Up/Home/End/PageUp/PageDown 移动，Enter/Space
+  单选提交或多选切换，Esc 关闭；
+- `changed` 在每次选择/切换时为 1；`committed` 表示单选提交或多选关闭；
+- 鼠标提交在 `Ui_Select`/`UiSelect_DrawPopup` 之后读取；键盘提交在
+  `UiSelect_Key` 返回后立即读取（与 Slider 的 `changed/committed` 约定一致）。
+- 与 `UiInput` 同窗口使用时：关闭可搜索 Select 会把 IME 焦点置空，应用若仍有
+  聚焦表单字段，应在关闭后重新 `UiIme_SetFocus` 到该字段。
+
+#### 8.16.3 Menu / 右键菜单
+
+```c
+static const UiMenuItem kMenu[] = {
+    { "新建", "Ctrl+N", 0 },
+    { "打开...", "Ctrl+O", 0 },
+    { "", "", UI_MENU_DIVIDER },
+    { "导出为 SVG", "", UI_MENU_DISABLED },
+    { "删除项目", "Del", UI_MENU_DANGER }
+};
+UiMenu menu;
+UiMenu_Init(&menu, Ui_Id("menu.file", 0, 0));
+UiMenu_SetItems(&menu, kMenu, 5);
+
+/* 按钮点击或键盘 Enter */
+if (Ui_ButtonEx(ui, menuBtn, btnRc, "打开菜单", &style, 1))
+    UiMenu_OpenAt(&menu, &pm, ui, menuBtn, btnRc, 0);
+
+/* 帧末 + 按键 */
+UiMenu_Draw(&menu, &pm, ui);
+if (UiMenu_Key(&menu, &pm, ui, vk)) { /* changed/item 可提交 */ }
+```
+
+- 锚点可以是按钮矩形（下拉菜单）或鼠标点 `{x, y, 0, 0}`（右键菜单）；
+- `UI_MENU_DISABLED` 不响应 hover/点击/键盘；`UI_MENU_DIVIDER` 画 1px 分隔线；
+  `UI_MENU_DANGER` 使用 `error.base` 文字；`shortcut` 右对齐；
+- 方向键/Home/End 跳过禁用与分隔，Enter 激活，Esc 关闭；
+- 激活后 `item` 为下标、`changed=1`，焦点回到 owner。
+
+#### 8.16.4 右键入口
+
+`UiAppCallbacks.mouse` 新增 `UI_APP_MOUSE_RDOWN/RUP`；右键只给应用，
+不进入 `UiContext` 命中，因此不会误触底层按钮：
+
+```c
+static void on_mouse(UiApp *app, int msg, float x, float y, void *user)
+{
+    if (msg != UI_APP_MOUSE_RDOWN) return;
+    UiMenu_OpenAt(&ctxMenu, &pm, &app->ui, UI_ID_NONE,
+        Ui_Rect(x, y, 0, 0), 0);
+}
+```
+
+#### 8.16.5 边界
+
+- 弹层绘制在主窗口客户区内：不会超出窗口，也不能跨屏；需要跨屏时另做原生弹层窗口；
+- 不做碰撞避让：只要一侧空间足够就不覆盖触发器，但会覆盖邻近控件（正常浮层语义）；
+- 菜单不支持子菜单/图标列/勾选态，也不做内部滚动；超过视口高度会被裁剪，
+  长菜单请分组或改用 Select；
+- Select 已支持搜索与多选（≤32 项）；仍不支持用户自由输入值、拼音首字母匹配
+  和虚拟 provider；超大列表（>1000）当前是固定行高逐项绘制。
+
+完整样例：[samples/overlays.c](../samples/overlays.c)（单选/多选 Select、
+可搜索多选标签、长列表滚动、禁用项、下拉菜单、右键上下文菜单、键盘与主题切换）。
+
 
 ---
 
@@ -3209,6 +3491,7 @@ Gfx_FillRect / Gfx_FillRoundRect / Gfx_FillRoundRectGradV / Gfx_FillRoundRectGra
 Gfx_FillRoundRectMultiGrad / Gfx_FillEllipse / Gfx_FillEllipseGradV
 Gfx_StrokeRoundRect / Gfx_StrokeEllipse / Gfx_Line / Gfx_StrokeArc / Gfx_FillTriangle
 Gfx_PushClip / Gfx_PopClip
+Gfx_PushRotate / Gfx_PopTransform
 Gfx_IsVisible
 Gfx_CreateFont / Gfx_CreateFontFamily / Gfx_DestroyFont
 Gfx_TextWidth / Gfx_TextHeight / Gfx_Text
@@ -3228,6 +3511,7 @@ Gfx_SetFrameEffects
 Ui_ContextInit / Ui_SetViewport
 Ui_BeginFrame / Ui_EndFrame
 Ui_RegisterWidget / Ui_HitTest / Ui_State / Ui_SetFocusId / Ui_SetNavId
+/* Ui_SetNavId 同时置 navFocusVisible=1；Ui_OnMouseDown 清 0 */
 Ui_SetModal
 Ui_PushLayer / Ui_PopLayer
 Ui_OnMouseMove / Ui_OnMouseDown / Ui_OnMouseUp
@@ -3298,13 +3582,38 @@ UiTabPager_Init / GoTo / Active / Busy / Tick / Draw
 ```c
 UiIcon_Glyph / UiIcon_Draw
 Gfx_CreateFontFamily / UiTheme.fIcon
+Ui_IconButton
+```
+
+**UiControls / Popup / Tooltip**
+
+```c
+UiCheckbox_Init / Ui_Checkbox / UiCheckbox_Key
+UiCheckboxGroup_Init / SetMask / SetDisabledMask / Draw / Key
+UiRadioGroup_Init / SetSelected / SetDisabledMask / Draw / Key
+UiSwitch_Init / Ui_Switch / UiSwitch_Key
+UiSlider_Init / SetValue / Ui_Slider / UiSlider_Key
+UiPopup_Place
+UiTooltip_Init / SetDelay / Update / Pending / Draw
+```
+
+**UiPopupManager / UiSelect / UiMenu**
+
+```c
+UiPopupManager_Init / BeginFrame / IsOpen / AnyOpen / Open / Close / Key
+UiSelect_Init / SetItems / SetSelected / SetDisabledMask
+UiSelect_SetMultiple / SetMask / GetMask / SetFilterable / AttachIme
+UiSelect_SetPlaceholder / SetSearchHint
+UiSelect_SearchActive / Char / OnIme / Blink
+Ui_Select / UiSelect_DrawPopup / UiSelect_Key
+UiMenu_Init / SetItems / OpenAt / UiMenu_Draw / UiMenu_Key
 ```
 
 **UiWidgets / UiToast / UiInput / UiProgress**
 
 ```c
-Ui_Button / Ui_ButtonEx / Ui_ButtonExIcon / UiButtonStyle_Make
-Ui_Panel / Ui_ProgressBar
+Ui_Button / Ui_ButtonEx / Ui_ButtonExIcon / Ui_IconButton
+UiButtonStyle_Make / Ui_Panel / Ui_ProgressBar
 UiToast_Init / UiToast_Attach / UiToast_Show / UiToast_Hide
 UiToast_IsVisible / UiToast_Tick / UiToast_Draw / UiToast_EndFrame
 UiToast_UsingLayer / UiToast_Shutdown
@@ -3416,6 +3725,14 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 | Tab 样例 | [samples/tabs.c](../samples/tabs.c) |
 | 图标 GLYPH | [src/ui/ui_icon.c](../src/ui/ui_icon.c) |
 | 图标样例 | [samples/icons.c](../samples/icons.c) |
+| 表单控件 | [src/ui/ui_controls.c](../src/ui/ui_controls.c) |
+| Popup/Tooltip | [src/ui/ui_popup.c](../src/ui/ui_popup.c) / [src/ui/ui_tooltip.c](../src/ui/ui_tooltip.c) |
+| 控件样例 | [samples/controls.c](../samples/controls.c) |
+| 弹层管理器 | [src/ui/ui_popup.c](../src/ui/ui_popup.c) |
+| Select 下拉 | [src/ui/ui_select.c](../src/ui/ui_select.c) |
+| Menu/右键菜单 | [src/ui/ui_menu.c](../src/ui/ui_menu.c) |
+| 弹层设计与样例 | [docs/CUI-弹层与选择控件-设计方案.md](CUI-弹层与选择控件-设计方案.md) / [samples/overlays.c](../samples/overlays.c) |
+| 右键回调 | [src/ui/ui_app.c:259](../src/ui/ui_app.c#L259) |
 | 窗口拖边缩放 | [src/ui/ui_app.c:102](../src/ui/ui_app.c#L102) |
 | z-index / 命中 | [src/ui/ui_context.c:116](../src/ui/ui_context.c#L116) |
 | 模态 blocker | [src/ui/ui_context.c:41](../src/ui/ui_context.c#L41) |
@@ -3463,7 +3780,7 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
   进度 overlay 按新令牌重建；浅色/深色截图均正常。
 - 壳/输入/进度回归：`cui_minimal.exe` 输入、回车提交、退出正常；`cui_demo.exe`
   由 `UiApp + UiInput + UiProgress` 重写为 **340 行**（原 893 行），前台 60Hz
-  无 Toast 时应用进程 CPU 约 **0.00%**；八份 exe 均为 0CRT。
+  无 Toast 时应用进程 CPU 约 **0.00%**；十份 exe 均为 0CRT。
 - 0CRT 增强回归：独立自测程序覆盖 `%d/%u/%x/%s/%c/%lld/%zu/%08x/%.2f/%-5d`
   与边界截断、内存 0/7/15/16/31/32/63/64/65/511/512/513/4095/4096/4097/
   8192/10000 字节、字符串、malloc/calloc/realloc/qsort/bsearch，退出码 0；
@@ -3490,7 +3807,7 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
   点击展开/收起后只重测该项，contentH/可见区间/thumb 长度同步更新；
   返回顶部按钮把 offset 平滑归零；“回弹”按钮使触摸配置的 var 视图出现
   offset=-17 的越界，随后弹簧回到 0；鼠标离开视口 1.6 秒后两个滚动条
-  均淡出，静止 2 秒 CPU **0ms**；8 个 exe 全部 0CRT，原有 demo/minimal/mvvm
+  均淡出，静止 2 秒 CPU **0ms**；10 个 exe 全部 0CRT，原有 demo/minimal/mvvm
   启动/关闭回归通过。
 - **ScrollView padding/滚动条槽回归**：样例设置 `{4,4,6,6}` 四向 padding 与
   `reserveSpace=1`；100%/200% DPI 下首行与左右边缘保持内边距，行尾
@@ -3509,7 +3826,7 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 - **光晕/disabled 回归**：Solid/Plain hover 光晕为预烘焙柔光纹理，一次
   `DrawBitmap`，无 3 圈描边带；同尺寸/颜色连续 hover 缓存命中，主题切换
   后按新角色色重建；`Ui_ButtonEx(..., enabled=0)` 不注册命中、不发光、
-  返回 false；8 个 exe 0CRT。
+  返回 false；10 个 exe 0CRT。
 - **TabBar/TabPager 回归**：`cui_tabs.exe` LINE/PILL/CARD 三种 header 正常；
   CARD 活动项上圆角、底边留空并与内容面板连通，`ActiveRect` 分段顶边 +
   `DrawActive` 覆盖后无 2px 双线；点击页签横向滑动 260ms，PILL 下选中胶囊
@@ -3521,6 +3838,26 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
   Toast 按 kind 显示勾/信息/感叹号图标；TabBar 的 LINE/PILL/CARD 图标
   与文本一起居中；禁用按钮图标为 disabled 色；静止 CPU 0；`cui_icons`
   为 0CRT。
+- **控件/Tooltip 回归**：`cui_controls.exe` 的 Checkbox（checked/
+  indeterminate/disabled）、CheckboxGroup mask、RadioGroup、Switch、Slider
+  点击/拖动/committed 正常；Group 内“开机启动”等项与上方单项 Checkbox 左边缘
+  像素对齐（修复前少 1px）；勾选/取消约 140ms 淡入淡出，indeterminate→checked
+  横线退、对勾进，RadioGroup 换项旧点淡出新点淡入；IconButton 悬停 450ms 显示 Tooltip，右侧翻转/
+  夹取正确；Tab/方向键/空格导航、深色主题通过；静止 CPU 0；`cui_controls`
+  为 0CRT。
+- **弹层/Select/Menu 回归**：`cui_overlays.exe` 三个 Select 点击后在触发器
+  下方展开，单选/多选选中项右侧显示勾，禁用城市灰显且不可选；多选点击
+  南京后保持展开，触发器摘要变为“杭州, 南京 +1”，点击外部关闭；
+  可搜索多选输入 `in` 后列表只剩 Rendering/Input，Backspace 回退为 `i`
+  恢复 7 项，点击 Input 后摘要“UI, Input +1”，Enter 再切换当前高亮项，
+  输入 `zz` 显示“无匹配项”；长列表滚轮 3 格偏移 288px（9 行），
+  thumb 可拖动、轨道点击按 0.9 页翻页，选中项在打开时自动滚入可视区；
+  下拉菜单方向键 Down×2 + Enter 提交“保存”；右键在鼠标点打开上下文菜单，
+  分隔线/禁用项/危险项正确；Esc 与点击弹层外部均关闭并把焦点还给触发器；
+  弹层打开时点击底层按钮不触发；初始主题 Select 显示 placeholder“选择主题”，
+  展开时右侧矢量 chevron 在 ~60° 中间帧可见、180ms 后指向上方并转 primary 色，
+  关闭后回落到向下/灰字；搜索框提示“搜索标签…”；深色主题下搜索框/列表/摘要正常；
+  静止 CPU 0；`cui_overlays` 为 0CRT。
 - **多窗口/全局主题/模态回归**：`cui_multi.exe` 两个 HWND 各自持有
   Gfx/UiTheme/UiContext/UiProgress/UiToast；在主窗切主题，二级窗同步换肤并
   自动重绘（像素从浅色 245,248,254 变为深色 15,20,29）；二级窗独立 Toast
