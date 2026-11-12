@@ -149,6 +149,13 @@
 >    `InvalidateRect`，排队出下一次 `WM_PAINT` 占住消息泵，开合 Tick 被饿死
 >    约 800ms；现在不可滚动时直接归零，不再请求重绘。真实鼠标首开由 814ms
 >    降到 76ms（第二次 95ms），静态 Dialog 仍为 0ms CPU/1.5s。
+> 43. 修复任务栏点击不能最小化 / 还原、且无过渡动画：`UiApp` 创建样式补
+>    `WS_CAPTION | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU`。实测缺
+>    boxes 时 Explorer 不下发 `SC_MINIMIZE`（只收到 `WM_ACTIVATE`）；缺
+>    `WS_CAPTION` 时 DWM 不播放最小化 / 还原过渡。`WM_NCCALCSIZE` 仍返回 0，
+>    非客户区不占像素、标题栏继续自绘；动画由 DWM 原生接管，壳零动画代码、
+>    过渡期间应用 0 CPU。见
+>    [CUI-窗口最小化还原-设计方案.md](CUI-窗口最小化还原-设计方案.md)。
 
 ---
 
@@ -173,6 +180,7 @@
    - [8.16 弹层管理器 / Select / Menu](#816-弹层管理器--select--menu)
    - [8.17 TextArea 多行编辑器](#817-textarea-多行编辑器)
    - [8.18 Dialog / ConfirmDialog](#818-dialog--confirmdialog)
+   - [8.19 DatePicker 日期选择](#819-datepicker-日期选择)
 9. [UiAnim 动画内核](#9-uianim-动画内核)
 10. [UiFrame 帧时钟](#10-uiframe-帧时钟)
 11. [UiEdit 编辑框](#11-uiedit-编辑框)
@@ -213,7 +221,7 @@ CUI 是一套 **纯 C/C++、零 CRT、即时模式（Immediate Mode）** 的 Win
 | 交互 | 即时模式，稳定 `UiId`，单帧事件 |
 | 动画 | 固定池：64 条目 × 16 通道，零分配 |
 | 输入法 | IMM32，组合串就地绘制，候选窗跟随插入点 |
-| 产物 | `cui_demo` / `cui_minimal` / `cui_advanced` / `cui_multi` / `cui_mvvm` / `cui_scroll` / `cui_tabs` / `cui_icons` / `cui_controls` / `cui_overlays` / `cui_textarea` |
+| 产物 | `cui_demo` / `cui_minimal` / `cui_advanced` / `cui_multi` / `cui_mvvm` / `cui_scroll` / `cui_tabs` / `cui_icons` / `cui_controls` / `cui_overlays` / `cui_textarea` / `cui_datepicker` |
 
 ---
 
@@ -251,11 +259,13 @@ CUI 的取舍是：**只做安装器/工具类窗口需要的那一层**。体�
 | 单行编辑框 | ✅ | 选区、拖选、剪贴板、滚动 |
 | 中文输入法 | ✅ | 组合串、候选窗、上屏 |
 | 密码框禁用 IME | ✅ | `Edit_SetImeEnabled` + `ImmAssociateContext` |
-| 多行文本/富文本 | ❌ | 编辑框仅单行 |
+| 多行文本 | ✅ | `UiTextArea`：软换行/滚动/选择/IME（8.17）；无富文本/撤销栈 |
 | 布局系统 | ✅ | `UiStack` 固定+Fill；`UiFlex` basis+grow；无 grid/wrap |
-| 滚动容器 | ❌ | 应用自己维护偏移与裁剪 |
+| 滚动容器 | ✅ | `UiScrollView`：视口裁剪/高度缓存/惯性/回弹（8.12） |
 | 撤销/重做 | ❌ | 编辑框无撤销栈 |
-| 窗内 Dialog / ConfirmDialog | 已实现，待完成视觉/长文本验证 | 开合动画、Tab 焦点循环、嵌套 Popup、输入 scope 隔离；body 仅布局（8.18） |
+| 窗内 Dialog / ConfirmDialog | ✅ | 开合动画、Tab 焦点循环、嵌套 Popup、输入 scope 隔离；body 仅布局（8.18） |
+| Select / Menu | ✅ | 单选/多选/可搜索下拉、右键菜单；`UiPopupManager` 统一弹层（8.16） |
+| 日期选择 | ✅ | DatePicker 四模式：日期/日期+时间/范围/范围+时间；可编辑触发器 + 滚动时间列（8.19） |
 | 原生文件对话框 | 由应用调用 | 注意动作延后，避免渲染重入 |
 | 多主题/换肤 | 自行扩展 | `UiTheme` 是一组令牌 |
 | 托盘/通知 | ❌ | 不属于 UI 层 |
@@ -517,6 +527,9 @@ int WINAPI WinMain(HINSTANCE i, HINSTANCE p, LPSTR c, int s) {
   铺满窗口，`WM_NCHITTEST` 在 6 DIP 边缘返回 `HTLEFT/HTTOP/...`；应用的
   `nchittest` 只负责标题栏/客户区，不处理边缘。`app->minW/minH`（DIP）控制
   最小尺寸，默认 320×240，可在 `init` 里改；demo 设为 600×480。
+- **任务栏最小化 / 还原带原生动画**：创建样式保留
+  `WS_CAPTION | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU`，非客户区被
+  `WM_NCCALCSIZE` 压没，外观仍全自绘；DWM 负责状态切换过渡，壳不做动画。
 - 应用负责：布局、控件、状态、业务动作。
 - 动作请在 `after_frame`（`Gfx_End` 之后）执行，避免绘制中重入。
 - 低层 API 完全保留；非常规窗口（多窗口/自定义命中/特殊循环）仍可按 5.1–5.6 手写。
@@ -531,7 +544,8 @@ int WINAPI WinMain(HINSTANCE i, HINSTANCE p, LPSTR c, int s) {
 HWND hwnd = CreateWindowExW(
     WS_EX_APPWINDOW | WS_EX_NOREDIRECTIONBITMAP,
     L"MyCuiWnd", L"My App",
-    WS_POPUP,
+    WS_POPUP | WS_THICKFRAME | WS_CAPTION |
+        WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU,
     0, 0, 0, 0,
     NULL, NULL, inst, NULL);
 ```
@@ -539,6 +553,12 @@ HWND hwnd = CreateWindowExW(
 - `WS_EX_NOREDIRECTIONBITMAP` **必须在创建时指定**。运行时用
   `SetWindowLongPtr` 增删无效。它是 DComp 直出的前提。
 - `WS_POPUP` 表示无系统边框；标题栏、关闭键由你自绘。
+- **`WS_CAPTION` 决定 DWM 是否播放最小化 / 还原动画**：实测去掉它后即使
+  走 DComp 直出，最小化 / 还原也是瞬间消失 / 出现；保留它并在
+  `WM_NCCALCSIZE` 返回 0，系统 caption 不占像素也不绘制，动画仍由 DWM
+  原生接管。`WS_MINIMIZEBOX | WS_SYSMENU` 决定任务栏点击是否下发
+  `SC_MINIMIZE`（缺了只收到 `WM_ACTIVATE`，窗口不最小化）。
+  详见 [CUI-窗口最小化还原-设计方案.md](CUI-窗口最小化还原-设计方案.md)。
 - 手写窗口要可缩放时，加 `WS_THICKFRAME`，在 `WM_NCCALCSIZE` 返回 0 让客户区
   铺满，并在 `WM_NCHITTEST` 返回 `HTLEFT/HTRIGHT/HTTOP/HTBOTTOM` 及四角；
   `UiApp` 已内置这套逻辑（6 DIP 边缘）和 `WM_GETMINMAXINFO` 最小尺寸。
@@ -2611,6 +2631,106 @@ UiInput 与 IME 焦点切换仍由应用根据当前焦点 ID 接线，不每帧
 长列表可滚到末项并用鼠标选中、鼠标编辑焦点跨帧保持、Tab 跳过禁用项；真实鼠标
 首次打开约 76ms（修复滚动条自失效导致的动画饿死后），静态 Dialog 为 0ms CPU。
 
+### 8.19 DatePicker 日期选择
+
+四种模式一个控件：`UI_DP_DATE`（纯日期）、`UI_DP_DATETIME`（日期+时间）、
+`UI_DP_RANGE_DATE`（日期范围）、`UI_DP_RANGE_DATETIME`（日期+时间范围）。
+形态镜像 UiSelect：触发器每帧画、弹层帧末画、状态由应用持有；
+复用 `UiPopupManager`（单弹层/外部点击/Esc/焦点回归）、`UiPopup_Place`
+（below 优先翻转+夹取）、`UiScrollView`（时间滚动列）、`UiEdit`（键入段）、
+`UiAnim`（开合/月切换补间）、`UiIcon`（MDL2 日历/箭头）。
+日期数学独立在 `ui_datetime.h/.c`：0CRT 的 civil↔day-number 换算
+（Hinnant 算法，epoch 1970-01-01），唯一系统调用是 `GetLocalTime`；
+headless 断言 1164 项覆盖闰年/月末/跨年/解析/格式化。
+
+#### 8.19.1 每帧顺序与接线
+
+```c
+#include "ui/ui_datepicker.h"
+
+/* 应用持有: UiDatePicker dp; UiPopupManager pm; UiIme ime; */
+UiDatePicker_Init(&dp, Ui_Id("form.when", 0, 0), UI_DP_DATETIME);
+UiDatePicker_SetShowSeconds(&dp, 1);          /* 默认到分 HH:mm */
+UiDatePicker_SetBounds(&dp, &min, &max);      /* NULL = 该侧不限 */
+UiDatePicker_AttachIme(&dp, &ime);
+
+/* frame 内: */
+UiPopupManager_BeginFrame(&pm, ui);           /* 最前 */
+Ui_DatePicker(&dp, &pm, ui, rc, "选择日期时间", 1);
+/* ...其余控件... */
+UiDatePicker_DrawPopup(&dp, &pm, ui);         /* 帧末, overlay 层 */
+
+/* 消息路由 (与 Select 相同, 先问弹层管理器再问控件): */
+if (!UiPopupManager_Key(&pm, ui, vk)) UiDatePicker_Key(&dp, &pm, ui, vk);
+UiDatePicker_Char(&dp, ui, ch);               /* WM_CHAR */
+UiDatePicker_OnIme(&dp, ui);                  /* IME 消息后 */
+UiDatePicker_Blink(&dp, ui);                  /* 530ms 定时器 */
+```
+
+`Ui_DatePicker` 返回 1 = 本帧值变化；`dp.committed` 单帧标记“提交”
+（点日/Enter/确定/键入回车），`dp.changed` 含预览期变化。关闭弹层后焦点
+回归触发器键入段（`focusOnClose` 语义同 Select）。
+
+#### 8.19.2 触发器：可编辑键入
+
+触发器 = 外层容器描边 + 内嵌 `UiEdit` 键入段（`flat=1`，见 11.3）+ 日历 glyph。
+单值一段；范围两段（起/止）中间画 →。键入即解析：
+
+- 格式 token：`YYYY MM DD HH mm ss`；默认 `YYYY-MM-DD` / `YYYY-MM-DD HH:mm[:ss]`，
+  `UiDatePicker_SetFormat` 自定义后不再随 mode/秒自动改。解析时 `- / : 空格 .`
+  分隔符互通，但必须完整匹配 pattern 且日期合法。
+- Enter/失焦提交：空串 = 清除；解析失败或越界 = `invalid=1` 红色描边并回退原文；
+  成功 = 写值、月历同步跳到该月。
+- 中文输入法走 `UiIme` 组合串（与 UiEdit 同一套），密码语义不适用。
+- hover 描边按**命中归属**平滑（父触发器或任一键入段/glyph 被命中才亮），
+  被弹层盖住时不误亮；弹层 panel 登记了命中 blocker，禁用日格不注册命中。
+
+#### 8.19.3 弹层：月历 / 范围 / 时间列 / 页脚
+
+- 单月面板 276×340 DIP：头部 ‹ 年月 ›、星期行（`weekStart` 默认周一）、
+  6×7 日格、页脚。日格用 `Ui_StateInstant`（列表项瞬时态），月切换整格淡入。
+- 范围 = 双联动月历（左当月/右下一月，540 宽）：两阶段点选（phase 0 起 →
+  phase 1 止），第二阶段悬停画连续预览带，点止后自动排序（起>止则交换）；
+  端点实心、带内 soft 填充、today 细环。页脚预设：近7天/近30天/本月。
+- 时间列：时/分（`showSeconds` 加秒）各一条 `UiScrollView` 滚动列，选中行
+  高亮 + 自动滚到可视区；范围+时间**左右月历下各挂一套**（`timeSv[2][3]`，
+  组标题 开始/结束，活动组标题高亮），点某组行只写该端点、另一端不变；
+  单值模式单组居中、无标题。`activeEnd` 记录活动端点（键入段/端点日格/
+  时间组点击/键盘焦点）。
+- 页脚：今天/此刻（跳今天并写当前时间）、清除、确定。纯日期点日即提交并关闭；
+  含时间模式点日只写日期、保持打开，确定才提交关闭。
+- 定位：`UiPopup_Place` below 优先、放不下翻转 above；两侧都放不下时夹取进
+  视口（**可能盖住触发器**，小窗实测内容完整可操作，Esc/外部点击照常关闭）。
+- 键盘焦点环：方向键移动 `focusDay` 时画 2 DIP 粗环（统一 text 色；选中格上
+  反色白环会融进浅色背景），仅键盘可见（`navFocusVisible`），与 today 细环区分；
+  跨月自动翻月并淡入。
+
+#### 8.19.4 键盘 map
+
+| 键 | 行为 |
+|---|---|
+| Esc | 关闭弹层（焦点回归触发器）；编辑态先回退并退出编辑 |
+| Enter/Space/Down/Up（关闭时） | 打开弹层 |
+| ←→↑↓ | 焦点日 ±1/±7；跨月自动翻月 |
+| PgUp/PgDn | 焦点日 ±1 月 |
+| Home/End | 本周首日/末日（按 weekStart） |
+| Enter | 日历焦点日点选；时间列焦点时退出时间焦点；编辑态提交键入 |
+| Tab | 编辑态退出编辑；日历 → 活动端点时间组；时间组内 ←→ 循环两组全部列、↑↓ 改值并居中，Tab 下一组（末组后回日历），Enter 回日历 |
+
+#### 8.19.5 边界与取舍
+
+- 无农历/节假日/重复规则/时区换算；`disabled(dayNumber, user)` 回调做业务禁用
+  （越界日格灰显且不注册命中），`min/max` 做硬边界。
+- 范围预览带只在 phase 1 悬停时画；不持久化中间态，关闭即弃。
+- 时间列精度到分或秒，不做毫秒/12 小时制；format 只支持上述 token。
+- 设计与验证细节见 [docs/CUI-日期选择-设计方案.md](CUI-日期选择-设计方案.md)；
+  样例 [samples/datepicker.c](../samples/datepicker.c)（`bin\cui_datepicker.exe`，
+  四模式同窗 + ±30 天边界演示）。
+**验证状态**：200% DPI 真实鼠标/键盘已验证四模式点选/提交/重开选中、范围两阶段
+预览带与预设、范围双时间列端点隔离（点击/滚轮/键盘跨组）、键入非法红框回退/
+合法提交、键盘焦点环（含选中格）与翻月、越界禁用、小窗夹取、暗色主题；
+controls/textarea/scroll/overlays 回归干净。
+
 ---
 
 ## 9. UiAnim 动画内核
@@ -3021,6 +3141,10 @@ Edit_Draw(&ui, id, rc, &ed, L"请输入名称");
 6. 画光标（1.4 DIP 竖线），并更新 `caretDipX/textTopDip/textHDip` 供 IME 定位。
 7. 自动调整 `scrollX`，保证光标与组合串在可视区内。
 8. 声明 I 形鼠标光标（`Ui_SetCursor(id, UI_CURSOR_IBEAM)`）。
+
+`ed.flat = 1` 时第 1 步的表面只保留命中注册，不画自身背景/边框/光晕
+（文本/光标/组合串照画），用于嵌在外层容器里由容器统一画边框的场景
+（DatePicker 触发器的键入段即如此，见 8.19）。
 
 ### 11.4 鼠标定位与拖选
 
@@ -3867,6 +3991,21 @@ UiDialog_Tick / UiDialog_Busy / UiDialog_TakeResult
 Ui_ConfirmDialog
 ```
 
+**UiDatePicker / UiDateTime（8.19）**
+
+```c
+UiDatePicker_Init / Shutdown / SetMode
+UiDatePicker_SetValue / SetRange / SetBounds / SetDisabledFn
+UiDatePicker_SetFormat / SetWeekStart / SetShowSeconds / SetPlaceholder
+UiDatePicker_AttachIme
+Ui_DatePicker / UiDatePicker_DrawPopup / UiDatePicker_Key
+UiDatePicker_Char / UiDatePicker_OnIme / UiDatePicker_Blink
+UiDate_Now / UiDate_Valid / UiDate_DayNumber / UiDate_FromDayNumber
+UiDate_Weekday / UiDate_IsLeap / UiDate_DaysInMonth
+UiDate_AddMonths / UiDate_AddDays / UiDate_Compare / UiDate_CompareDay
+UiDate_Format / UiDate_Parse
+```
+
 **UiWidgets / UiToast / UiInput / UiProgress**
 
 ```c
@@ -3994,6 +4133,9 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 | Dialog / ConfirmDialog | [src/ui/ui_dialog.h](../src/ui/ui_dialog.h) / [src/ui/ui_dialog.c](../src/ui/ui_dialog.c)；设计/API 见 [8.18](#818-dialog--confirmdialog) |
 | TextArea 编辑器 | [src/ui/ui_textarea.c](../src/ui/ui_textarea.c) |
 | TextArea 设计/样例 | [docs/CUI-TextArea-设计方案.md](CUI-TextArea-设计方案.md) / [samples/textarea.c](../samples/textarea.c) |
+| DatePicker 四模式 | [src/ui/ui_datepicker.c](../src/ui/ui_datepicker.c) / [src/ui/ui_datepicker.h](../src/ui/ui_datepicker.h) |
+| 日期数学 (0CRT) | [src/ui/ui_datetime.c](../src/ui/ui_datetime.c) / [src/ui/ui_datetime.h](../src/ui/ui_datetime.h) |
+| DatePicker 设计/样例 | [docs/CUI-日期选择-设计方案.md](CUI-日期选择-设计方案.md) / [samples/datepicker.c](../samples/datepicker.c) |
 | 右键回调 | [src/ui/ui_app.c:259](../src/ui/ui_app.c#L259) |
 | 窗口拖边缩放 | [src/ui/ui_app.c:102](../src/ui/ui_app.c#L102) |
 | z-index / 命中 | [src/ui/ui_context.c:116](../src/ui/ui_context.c#L116) |
@@ -4156,6 +4298,16 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 - **ULW 回退回归**：`SCV2_ULW=1` 时 `Gfx_CreateLayer` 返回 NULL，Toast 自动
   改主窗渐变 + 进度让位 + 整窗重绘，点击/Esc/自动超时均正常（回退路径 CPU
   高于合成器路径，属预期）。`samples/advanced.c` 未 Attach，保持原主窗行为。
+- **DatePicker 四模式回归**：`cui_datepicker.exe` 200% DPI 真实鼠标/键盘验证：
+  纯日期点选提交关闭/重开选中/today/清除/Esc/外部点击；日期+时间三滚动列
+  （含秒）点日保持打开、确定提交；范围双联动月历两阶段 + 连续悬停预览带 +
+  自动排序 + 近7天/近30天/本月预设；范围+时间只改活动端点（起点时间不变）。
+  键入 `2026-13-45` 回车红框回退、`2026-11-20` 回车提交并跳月；键盘 Down 开、
+  方向键焦点环（2 DIP 粗环、仅键盘可见）跨月翻月、Enter 点选；±30 天越界日格
+  灰显且点击无效；小窗（客户区约 620 DIP）开 508 DIP 弹层走夹取盖住触发器但
+  内容完整可操作；暗色主题四模式配色正常。触发器 hover 改命中归属后不再被
+  弹层遮挡误亮。`ui_datetime` headless 1164 断言 0 失败；controls/textarea/
+  scroll/overlays 冒烟回归干净；12 个 exe 0CRT。
 - 无桌面环境（SSH/Session 0）不能目视验证，但编译、链接与 0CRT 判据可在 CI 跑。
 
 ---

@@ -409,6 +409,11 @@ void Edit_Draw(UiContext *ui, UiId id, UiRect rc, UiEdit *e, const wchar_t *hint
 	ss.borderW = 1.0f;
 	ss.glowW = 4.0f;
 	ss.glowMask = UI_GLOW_HOVER | UI_GLOW_FOCUS;
+	if (e->flat) {
+		/* 嵌在外层容器内: 只保留文本/光标/组合串, 容器自己画边框 */
+		ss.bg = 0; ss.border = 0; ss.hoverBorder = 0;
+		ss.focusBorder = 0; ss.glow = 0; ss.glowMask = 0;
+	}
 	Ui_DrawSurface(ui, id, rc, &ss, 1);
 	Ui_SetCursor(ui, id, UI_CURSOR_IBEAM);
 

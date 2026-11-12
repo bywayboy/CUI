@@ -34,6 +34,7 @@ typedef struct UiEdit {
 	int focused;
 	int dragging;
 	int caretOn;         /* 由 app 的光标闪烁定时器驱动 */
+	int flat;            /* 1 = 不画自身背景/边框/光晕 (嵌在外层容器内, 如 DatePicker 触发器) */
 	float scrollX;       /* DIP */
 	/* IME 组合串 (未上屏): 只用于就地绘制 + 下划线, 不参与 text/caret */
 	wchar_t comp[EDIT_COMP_MAX];

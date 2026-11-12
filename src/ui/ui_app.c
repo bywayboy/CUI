@@ -436,9 +436,15 @@ int UiApp_Run(const wchar_t *title, int widthDip, int heightDip,
 		g_classReady = 1;
 	}
 
+	/* 保留 DWM 状态切换动画所需的样式: 缺 WS_MINIMIZEBOX/WS_SYSMENU 时
+	 * Explorer 点任务栏不下发 SC_MINIMIZE (实测只收到 WM_ACTIVATE);
+	 * 缺 WS_CAPTION 时 DWM 不播放最小化/还原过渡 (实测瞬间消失/出现).
+	 * WM_NCCALCSIZE 返回 0 把非客户区压没, 标题栏/边框仍全自绘. */
 	hwnd = CreateWindowExW(WS_EX_APPWINDOW | WS_EX_NOREDIRECTIONBITMAP,
 		L"CuiAppWnd", title ? title : L"CUI",
-		WS_POPUP | WS_THICKFRAME, 0, 0, 0, 0, NULL, NULL, inst, app);
+		WS_POPUP | WS_THICKFRAME | WS_CAPTION |
+			WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU,
+		0, 0, 0, 0, NULL, NULL, inst, app);
 	app->hwnd = hwnd;
 	if (!hwnd) {
 		Log_Write("[app] CreateWindow failed");

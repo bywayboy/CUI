@@ -55,7 +55,8 @@ CUI/
 │  ├─ CUI-ScrollView-设计方案.md  ScrollView 架构/缓存/物理/取舍
 │  ├─ CUI-Tab-设计方案.md  TabBar/TabPager 结构与转场设计（含 CARD 计划）
 │  ├─ CUI-弹层与选择控件-设计方案.md  弹层管理器 + Select/Menu 状态与命中路由
-│  └─ CUI-TextArea-设计方案.md  动态文本/增量布局/IME 代理/滚动设计
+│  ├─ CUI-TextArea-设计方案.md  动态文本/增量布局/IME 代理/滚动设计
+│  └─ CUI-日期选择-设计方案.md  DatePicker 四模式/双联动范围/时间列/键入校验
 ├─ samples/
 │  ├─ minimal.c           最小接入样例
 │  ├─ advanced.c          高级样例（overlay/Toast/IME 全细节）
@@ -66,7 +67,8 @@ CUI/
 │  ├─ icons.c             按钮/Toast/TabBar 图标样例（MDL2 glyph）
 │  ├─ controls.c          Checkbox/Radio/Switch/Slider + Tooltip
 │  ├─ overlays.c          Select/Menu + Dialog/ConfirmDialog（含 TextArea 测试）
-│  └─ textarea.c          多行文本：软换行/滚动/选择/IME/readonly
+│  ├─ textarea.c          多行文本：软换行/滚动/选择/IME/readonly
+│  └─ datepicker.c        DatePicker 四模式 + ±30 天边界演示
 └─ src/
    ├─ demo.c              标准样例（UiApp 壳 + 组件，约 340 行）
    ├─ edit.c / edit.h     自绘单行编辑框 UiEdit（选区/剪贴板/滚动/IME 组合）
@@ -89,6 +91,8 @@ CUI/
       ├─ ui_dialog.*       窗内 Dialog / ConfirmDialog（动画/焦点循环/输入隔离）
       ├─ ui_select.*       Select 下拉（长列表滚动/禁用项/键盘）
       ├─ ui_textarea.*     多行文本：动态缓冲/增量布局/IME/选择
+      ├─ ui_datepicker.*   DatePicker：四模式触发器/月历/范围/时间列/键入
+      ├─ ui_datetime.*     0CRT 日期数学：civil↔day-number/格式化/解析
       ├─ ui_menu.*         Menu / 右键上下文菜单（分隔/禁用/危险项）
       ├─ ui_tooltip.*      悬停延迟提示
       ├─ ui_theme.*       颜色/字体令牌（亮/暗 + 自定义 5 语义色）
@@ -124,6 +128,7 @@ bin\cui_icons.exe       REM 按钮 / Toast / TabBar 图标（MDL2 glyph）
 bin\cui_controls.exe    REM Checkbox / Radio / Switch / Slider / Tooltip
 bin\cui_overlays.exe    REM Select/Menu + Dialog/ConfirmDialog（含 TextArea 测试）
 bin\cui_textarea.exe    REM 多行文本：软换行 / 滚动 / 选择 / IME
+bin\cui_datepicker.exe  REM DatePicker：日期 / 日期+时间 / 范围 / 范围+时间
 ```
 
 构建是 **0CRT**：`/NODEFAULTLIB` + `/ENTRY:startup`，由 `crtstub.c` 提供
@@ -270,6 +275,11 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | `UiTextArea` | `Init/Shutdown/SetText/SetTextUtf8/SetCaret/TextUtf8` | 多行动态缓冲、软换行、增量行布局、滚动/选择/IME |
 | | `SetPlaceholder/SetReadonly/AttachIme` | placeholder / 只读 / 输入法接线 |
 | | `Ui_TextArea/Key/Char/OnIme/Blink` | 绘制、键盘、字符、IME、光标闪烁 |
+| `UiDatePicker` | `Init/SetMode/SetValue/SetRange/SetBounds/SetDisabledFn` | 四模式：日期/日期+时间/范围/范围+时间；应用持有状态 |
+| | `SetFormat/SetWeekStart/SetShowSeconds/SetPlaceholder/AttachIme` | token `YYYY MM DD HH mm ss`；默认到分；键入段 IME |
+| | `Ui_DatePicker/DrawPopup/Key/Char/OnIme/Blink` | 触发器（可编辑键入+glyph）与帧末弹层分离；双联动范围+悬停预览；范围+时间每端点一套滚动列（复用 ScrollView） |
+| `UiDateTime` | `UiDate_Now/Valid/DayNumber/FromDayNumber/Weekday` | 0CRT 日期数学（Hinnant civil↔day-number）；headless 1164 断言 |
+| | `AddMonths/AddDays/Compare/CompareDay/Format/Parse` | 月加夹取日、全字段/只日期比较、token 格式化与宽容分隔符解析 |
 | `UiTooltip` | `Init/SetDelay/Update/Pending/Draw` | 悬停延迟提示，不注册命中 |
 | `UiIconButton` | `Ui_IconButton` | 纯图标按钮（tooltip 由应用绑定同 id） |
 | `UiTheme` | `UiTheme_SetTheme/SetColors/Touch` | 进程级全局换肤：所有窗口同步并自动重绘；5 语义色自定义 |
@@ -278,7 +288,7 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | | `UiToast_UsingLayer/Shutdown` | 判断当前是否合成器路径 / 释放 layer |
 | `UiInput` | `UiInput_Init/Shutdown/Add/Draw/BeginFrame/Key/Char/Mouse*` | 表单焦点/光标/拖选/IME 封装 |
 | `UiProgress` | `UiProgress_Init/Tick/Draw/EndFrame/SetPaused` | 循环进度 + GfxOverlay + 回退 |
-| `UiApp` | `UiApp_Run/Invalidate/InvalidateRect/Close` | 可选窗口壳：消息/DPI/IME/帧循环；默认 6 DIP 拖边缩放 + `minW/minH` |
+| `UiApp` | `UiApp_Run/Invalidate/InvalidateRect/Close` | 可选窗口壳：消息/DPI/IME/帧循环；默认 6 DIP 拖边缩放 + `minW/minH`；任务栏最小化/还原走 DWM 原生动画 |
 | `UiAnim` | `Ui_AnimSmooth/To/Set/Get/Advance/Busy` | 通道式动画（`UI_AN_*`） |
 | `UiFrame` | `UiFrame_Init/Tick/Delay/ResetTick` | 合成器时钟优先，失败退高精度定时器 |
 | `UiEdit` | `Edit_Init/Shutdown/SetText/TextUtf8/Draw/Key/Char` | 单行编辑框（UTF-16 存储）；maxLen=0 不限长、动态倍增 |
@@ -348,7 +358,10 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   `%ls/%S/%f` 等宽字符或浮点格式。
 - DPI：demo 用 `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)`（动态取符号，
   失败退 `SetProcessDPIAware`），每帧 `Gfx_Resize(wPx,hPx,scale)`；布局全部写成 DIP。
-- 窗口用 `WS_POPUP | WS_EX_NOREDIRECTIONBITMAP`（DComp 直出）；Gfx 失败会自动回退
+- 窗口用 `WS_POPUP | WS_THICKFRAME | WS_CAPTION | WS_MINIMIZEBOX | WS_MAXIMIZEBOX |
+  WS_SYSMENU` + `WS_EX_NOREDIRECTIONBITMAP`（DComp 直出）；`WM_NCCALCSIZE` 返回 0
+  压掉非客户区，标题栏自绘。保留 caption/boxes 是为了让任务栏下发 `SC_MINIMIZE`
+  且 DWM 播放原生最小化/还原动画；Gfx 失败会自动回退
   `UpdateLayeredWindow`，无需应用改代码。
 
 ---
@@ -359,6 +372,8 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   `UiScrollView` 承担。
 - `UiEdit` 是单行；`UiTextArea` 是纯文本多行（无撤销栈/富文本）。
   菜单无子菜单；Select 已支持搜索/多选（≤32 项，无拼音匹配/自由输入值）。
+- DatePicker 无农历/节假日/重复规则/时区；时间精度到分或秒；小窗上下都放不下
+  时弹层夹取进视口、可能盖住触发器（内容仍完整可操作）。
 - TextArea 末尾追加 O(新增字符)，段落内编辑只重排当前段；插入/删除换行或
   宽度变化会全文重排，单一超长段落中段编辑仍与该段剩余长度线性相关。
 - 主题是进程级全局的：同一进程的多个窗口共享一套主题，不能各自独立换肤。
@@ -474,6 +489,9 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
 - 窗口缩放回归：`UiApp` 默认 `WS_THICKFRAME` + `WM_NCCALCSIZE`；200% DPI 下
   左右/上/右下命中 `HTLEFT/HTTOP/HTBOTTOMRIGHT`，实际拖拽 1440×1120 →
   1600×1220；600×480/800×600/1000×700 三档布局截图正常，客户区=窗口。
+- 任务栏最小化/还原回归：真实点击任务栏按钮，最小化朝任务栏缩小淡出、
+  还原放大淡入（DWM 原生过渡，逐帧截图确认）；中途再点可反向；窗口顶部
+  无系统 caption 残留；过渡与静态期间应用 0 CPU。
 - 合成器 z 次序回归：修正 DComp `AddVisual(insertAbove, reference=NULL)` 的反直觉
   语义（FALSE=置顶，TRUE=置底）；最小 600×480 下 Toast 卡片与进度条重叠时卡片
   在上。Toast 遮罩使用 `theme.windowRadius`，底部左右圆角不再被方角遮罩覆盖。
@@ -485,5 +503,11 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   DComp `IDCompositionDevice2/3`、`Visual3` 本机 `E_NOINTERFACE`，未依赖。
 - 0CRT 自测：printf 格式/边界、SIMD 内存分档（0…10000B）、字符串、分配器、
   qsort/bsearch 全部通过；十一份 exe 在新 crtstub 下正常启动/输入/关闭。
+- DatePicker 回归：`cui_datepicker.exe` 200% DPI 真实输入验证四模式点选/提交/
+  重开选中、范围两阶段+悬停预览带+预设、范围双时间列端点隔离（点击/滚轮/
+  键盘跨组）、键入非法红框回退/合法提交、键盘焦点环（含选中格）与翻月、
+  ±30 天越界禁用、小窗夹取、暗色主题；
+  `ui_datetime` headless 1164 断言 0 失败；controls/textarea/scroll/overlays
+  冒烟回归干净；12 个 exe 0CRT。
 - 无桌面环境（SSH/Session 0）不能目视验证，但编译与链接判据（0CRT/无未解析符号）
   可在 CI 里跑。
