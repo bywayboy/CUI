@@ -98,9 +98,10 @@ void UiImage_Draw(UiImage *img, const UiTheme *theme);
 ## 5. 绘制
 
 - READY：按 fit 计算 dst；**留白**（CONTAIN/NONE）用 `SetBackground` 铺底，
-  **剪裁**（COVER）用 `Gfx_PushClip(rc)`；`SetAnchor` 选 3×3 取景位置
-  （留白时决定余量分布，剪裁时决定裁掉哪一边）；淡入用
-  `Gfx_PushAlpha(alpha)` + `Gfx_DrawBitmap`。
+  **剪裁**（COVER）用 `Gfx_PushClip(rc)`；NONE 把 1 图素映射为 1 物理像素
+  （有 `UiContext` 时按 DPI 折算，不会在 200% 下放大一倍）；任何模式下 dst
+  超出组件矩形都裁剪到 rc；`SetAnchor` 选 3×3 取景位置（留白时决定余量分布，
+  剪裁时决定裁掉哪一边）；淡入用 `Gfx_PushAlpha(alpha)` + `Gfx_DrawBitmap`。
 - LOADING：先铺一层面板底色（`theme->frame` / `card` 半透明），中心画
   **GPU loading 动画**：静态圆环（`Gfx_StrokeEllipse`，`theme->border`）+ 旋转
   100° 圆头弧（`Gfx_StrokeArc`，`theme->blue`），角度 = `UiFrame_Now()*0.18`。
@@ -154,7 +155,7 @@ void UiImage_Draw(UiImage *img, const UiTheme *theme);
 | URL | Bing 每日图：`HPImageArchive.aspx` JSON → 解析 `url` → HTTPS 加载 1920×1080 JPEG，spinner → 180ms 淡入（需联网）；离线可用 tests 的 `/img` |
 | 文件/内存 | `on_init` 首帧前加载走延迟解码，首帧后显示 320×200 BMP |
 | 重载 | 三源同时重载，URL 重新走 spinner → 淡入，不再停在旧帧 |
-| fit | CONTAIN 留白居中、COVER 剪裁填满、STRETCH 拉伸；NONE 原始尺寸（仅缩略窗口可见）；9 个锚点逐一切换，留白余量/裁剪方向随锚点移动 |
+| fit | CONTAIN 留白居中、COVER 剪裁填满、STRETCH 拉伸；NONE 原始像素（1 图素 = 1 物理像素，1920×1080 在 200% 下为 960×540 DIP，超出部分裁剪，320×200 则居中留白）；9 个锚点逐一切换，留白余量/裁剪方向随锚点移动；任何模式都不越出组件矩形 |
 | 底色 | `SetBackground(0xFFE9EFF7)` 留白区可见；alpha=0 保持透明 |
 | 清除 | 回到占位态（"图片"） |
 | 构建 | `cui_image.exe` 0CRT（`windowscodecs.lib`），14→15 个 exe |

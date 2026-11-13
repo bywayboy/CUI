@@ -2775,8 +2775,9 @@ UiImage_Destroy(img);                           /* 先于 Gfx_Shutdown */
 - **首帧前加载**：`on_init` 里调用 Load* 时 Gfx 尚未就绪，组件保持 `LOADING`，
   首帧绘制时补解码，不会误报失败。
 - **fit**：CONTAIN 留白（等比完整）、COVER 剪裁（等比填满）、STRETCH 拉伸、
-  NONE 原始尺寸；`SetAnchor` 9 个取景锚点决定留白余量/裁剪方向，
-  `SetBackground` 给留白区铺底色。
+  NONE 原始像素（1 图素 = 1 物理像素，按 DPI 折算）；`SetAnchor` 9 个取景
+  锚点决定留白余量/裁剪方向，`SetBackground` 给留白区铺底色。任何模式下
+  超出组件矩形的绘制都会被裁剪，不会画出边界。
 - **错误**：HTTP/TLS/超时复用 `UiNet_StrError`，本地/解码用
   `UiImage_StrError`；`ERROR` 画占位，可重试。
 - **边界**：不支持 GIF 动画/WebP/EXIF 旋转/圆角裁剪；解码在 GUI 线程回调里

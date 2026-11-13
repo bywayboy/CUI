@@ -438,14 +438,19 @@ int UiImage_Busy(const UiImage *img)
 
 /* ── 绘制 ───────────────────────────────────────────────────────────── */
 
-static GfxRect fit_rect_(GfxRect box, int iw, int ih, int fit, int anchor)
+static GfxRect fit_rect_(UiImage *img, GfxRect box)
 {
 	float s;
 	float w, h;
 	float ex, ey;
 	int ax, ay;
+	int iw, ih, fit, anchor;
 	GfxRect r;
 
+	iw = img->bw;
+	ih = img->bh;
+	fit = img->fit;
+	anchor = img->anchor;
 	if (iw <= 0 || ih <= 0) return box;
 	if (fit == UI_IMG_FIT_STRETCH) return box;
 	if (fit == UI_IMG_FIT_CONTAIN) {
@@ -457,7 +462,8 @@ static GfxRect fit_rect_(GfxRect box, int iw, int ih, int fit, int anchor)
 		float sy = box.h / (float)ih;
 		s = sx > sy ? sx : sy;
 	} else {
-		s = 1.0f;
+		/* NONE: 1 图素 = 1 物理像素 (有 Context 时按 DPI 折算成 DIP) */
+		s = (img->ui && img->ui->scale > 0.0f) ? 1.0f / img->ui->scale : 1.0f;
 	}
 	w = iw * s;
 	h = ih * s;
@@ -501,7 +507,8 @@ void UiImage_Draw(UiImage *img, const UiTheme *t)
 				img_set_error_(img, UI_IMG_E_DECODE);
 		}
 		if (img->state == UI_IMG_READY && img->bmp) {
-			GfxRect dst = fit_rect_(rc, img->bw, img->bh, img->fit, img->anchor);
+			GfxRect dst = fit_rect_(img, rc);
+			int clip;
 			now = UiFrame_Now();
 			alpha = (float)((now - (double)img->readyAt) / IMG_FADE_MS);
 			if (alpha < 0.0f) alpha = 0.0f;
@@ -510,9 +517,13 @@ void UiImage_Draw(UiImage *img, const UiTheme *t)
 			if ((img->bg >> 24) != 0)
 				Gfx_FillRect(img->gfx, rc, img->bg);
 			if (alpha < 0.999f) Gfx_PushAlpha(img->gfx, alpha);
-			if (img->fit == UI_IMG_FIT_COVER) Gfx_PushClip(img->gfx, rc);
+			/* 任何超出组件矩形的模式 (COVER/NONE) 都裁剪, 不允许画出边界 */
+			clip = dst.x < rc.x - 0.5f || dst.y < rc.y - 0.5f ||
+				dst.x + dst.w > rc.x + rc.w + 0.5f ||
+				dst.y + dst.h > rc.y + rc.h + 0.5f;
+			if (clip) Gfx_PushClip(img->gfx, rc);
 			Gfx_DrawBitmap(img->gfx, img->bmp, dst);
-			if (img->fit == UI_IMG_FIT_COVER) Gfx_PopClip(img->gfx);
+			if (clip) Gfx_PopClip(img->gfx);
 			if (alpha < 0.999f) {
 				Gfx_PopAlpha(img->gfx);
 				img_dirty_(img);        /* 淡入继续出帧 */

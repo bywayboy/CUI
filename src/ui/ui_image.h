@@ -26,7 +26,7 @@ enum {
 	UI_IMG_FIT_CONTAIN = 0,   /* 留白缩放: 等比完整显示 (默认) */
 	UI_IMG_FIT_COVER,         /* 剪裁缩放: 等比填满, 超出部分裁掉 */
 	UI_IMG_FIT_STRETCH,       /* 拉伸到矩形 (不保持比例) */
-	UI_IMG_FIT_NONE           /* 原始尺寸, 不缩放 */
+	UI_IMG_FIT_NONE           /* 原始像素: 1 图素 = 1 物理像素, 超出部分裁剪 */
 };
 
 /* 对齐锚点: 留白/裁剪的取景位置 (3x3) */

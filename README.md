@@ -323,7 +323,7 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | `UiWs` | `UiWs_Open/Send/Close/State` | ws/wss；分片/心跳/指数退避重连；事件回调在 GUI 线程 |
 | `UiTimer` | `UiTimer_Create/Destroy/After/Every/Cancel/WaitHandle/Dispatch` | GUI 定时器；`UiApp` 内嵌 `app->timer`，回调可安全失效 |
 | `UiNetConfig` | `connect/request/dns/timeout/idle/redirect/proxy/insecure/pinSha256/trace` | 0 字段用默认；`insecure` 仅调试 |
-| `UiImage` | `UiImage_Create/Destroy/SetContext/SetRect/SetFit/SetAnchor/SetBackground/SetProvider` | 应用持有；URL 走 `UiNet`，WIC 解码，留白/剪裁/拉伸/原始 + 3×3 锚点 + 留白底色 |
+| `UiImage` | `UiImage_Create/Destroy/SetContext/SetRect/SetFit/SetAnchor/SetBackground/SetProvider` | 应用持有；URL 走 `UiNet`，WIC 解码；留白/剪裁/拉伸/原始像素 + 3×3 锚点 + 留白底色；越界一律裁剪 |
 | | `UiImage_LoadUrl/LoadFile/SetBytes/Clear/State/Busy/Draw` | 三源 + 自定义 provider；GPU spinner/180ms 淡入/设备丢失重建 |
 | `UiContext` | `Ui_ContextInvalidate/Ui_AnimDirtyRect` | 组件异步完成/逐帧自绘的失效入口（避免 WM_PAINT 内 InvalidateRect） |
 
