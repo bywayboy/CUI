@@ -182,16 +182,17 @@
    - [8.18 Dialog / ConfirmDialog](#818-dialog--confirmdialog)
    - [8.19 DatePicker 日期选择](#819-datepicker-日期选择)
 9. [UiAnim 动画内核](#9-uianim-动画内核)
-10. [UiFrame 帧时钟](#10-uiframe-帧时钟)
-11. [UiEdit 编辑框](#11-uiedit-编辑框)
-12. [UiIme 输入法](#12-uiime-输入法)
-13. [DPI 与多显示器](#13-dpi-与多显示器)
-14. [0CRT 构建](#14-0crt-构建)
-15. [日志与性能诊断](#15-日志与性能诊断)
-16. [常用任务配方](#16-常用任务配方)
-17. [已知限制与设计取舍](#17-已知限制与设计取舍)
-18. [故障排查](#18-故障排查)
-19. [附录](#19-附录)
+10. [网络层与定时器](#10-网络层与定时器uinet--uihttp--uiws--uitimer)
+11. [UiFrame 帧时钟](#11-uiframe-帧时钟)
+12. [UiEdit 编辑框](#12-uiedit-编辑框)
+13. [UiIme 输入法](#13-uiime-输入法)
+14. [DPI 与多显示器](#14-dpi-与多显示器)
+15. [0CRT 构建](#15-0crt-构建)
+16. [日志与性能诊断](#16-日志与性能诊断)
+17. [常用任务配方](#17-常用任务配方)
+18. [已知限制与设计取舍](#18-已知限制与设计取舍)
+19. [故障排查](#19-故障排查)
+20. [附录](#20-附录)
 
 ---
 
@@ -3048,7 +3049,120 @@ D2D。Toast 卡片 = 软阴影 + 颗粒，只画一次，显示/停留期间应�
 
 ---
 
-## 10. UiFrame 帧时钟
+## 10. 网络层与定时器（UiNet / UiHttp / UiWs / UiTimer）
+
+> 设计细节：[CUI-网络层-设计方案.md](CUI-网络层-设计方案.md)；样例
+> [samples/net.c](../samples/net.c)；headless/实网断言 [tests/net_test.c](../tests/net_test.c)。
+
+### 10.1 线程模型
+
+- 一个 App 持有 `UiNet`；内部只有 **1 个 IO 线程 + 1 个 IOCP**，连接、TLS 上下文、
+  DNS 缓存、IO 定时器都只在该线程访问。
+- GUI → IO：无锁 SLIST 命令队列 + `PostQueuedCompletionStatus` 唤醒（IOCP 等待
+  不是 alertable，APC 唤不醒它）。
+- IO → GUI：`QueueUserAPC`，事件只携带数据，业务状态只在 GUI 线程改。
+- 因此 App **不需要任何锁**。代价是 GUI 线程必须处于 alertable 等待：
+  `UiApp_Run` 已在内置循环与帧间隔里加了 `MWMO_ALERTABLE`，自定义消息循环
+  必须自己加。
+
+### 10.2 生命周期
+
+```c
+UiNetConfig cfg = {0};             /* 0 字段用默认值 */
+cfg.trace = 1;
+UiNet *net = UiNet_Create(&cfg);   /* GUI 线程 */
+...
+UiNet_Destroy(net);                /* 返回后保证不再回调 */
+```
+
+回调里不得调用 `UiNet_Destroy`（自等死锁），可以调用 `UiHttp_Cancel` /
+`UiWs_Close`。Destroy 先停 IO 线程，再用哨兵 APC 排空已排队事件，避免回调
+访问已释放对象。
+
+### 10.3 HTTP
+
+```c
+typedef struct UiHttpRequest {
+    const char *method;       /* NULL=GET */
+    const char *url;          /* http:// 或 https:// */
+    const char *contentType;  /* 有 body 时默认 octet-stream */
+    const void *body; int bodyLen;
+    const char *extraHeaders; /* "K: V\r\n..." */
+    int timeoutMs;            /* 0=默认 15s */
+} UiHttpRequest;
+
+uint64_t UiHttp_Send(UiNet*, const UiHttpRequest*, UiHttpCallback, void *user);
+int  UiHttp_Cancel(UiNet*, uint64_t id);
+int  UiHttp_Header(const UiHttpResponse*, const char *name, char *out, int cap);
+```
+
+- 请求字符串/body 在 `Send` 返回后即可释放（内部深拷贝）；回调最多一次。
+- 响应 header/body 是**借用切片**，回调返回即失效；需要留存请自行拷贝。
+- `Cancel` 成功返回 1 后不再回调；超时/失败看 `UiHttpResponse.error`
+  （`UiNet_StrError` 可读）。
+- 内置 Content-Length / chunked / close-delimited、1xx 跳过、301/302/303/307/308
+  重定向（303 改 GET、跨 host 去 Authorization/Cookie）、keep-alive 池
+  （按 scheme+host+port 复用，空闲 60s 回收）、显式 HTTP 代理
+  （https 走 CONNECT 隧道）。
+- 传输层不解析 JSON，body 原样交付。
+
+### 10.4 HTTPS 与 DNS
+
+- TLS 用 SChannel（TLS 1.2/1.3），SNI 取 URL host。
+- 默认做证书链 + 主机名校验（`CertGetCertificateChain` +
+  `CERT_CHAIN_POLICY_SSL`）；失败报 `UI_NET_E_TLS`。
+- `cfg.insecure = 1` 跳过校验（仅调试）；`cfg.pinSha256` 固定叶子证书指纹。
+- DNS 是自研解析器：`GetAdaptersAddresses` 取系统 DNS 服务器，读 hosts 文件，
+  UDP 组包查 A/AAAA（CNAME、压缩指针、TTL 缓存、超时轮换），响应被截断（TC）
+  时自动转 TCP 重查。**全程不阻塞 IO 线程**，也不借用系统线程池；
+  `localhost` 与 hosts 命中不发起网络查询。
+
+### 10.5 WebSocket
+
+```c
+UiWsCallbacks cb = { on_open, on_message, on_close };
+UiWsOptions opt = {0};
+opt.autoReconnect = 1;
+opt.pingIntervalMs = 20000;
+void *ws = UiWs_Open(net, "wss://host/path", &opt, &cb, user);
+UiWs_Send(ws, data, len, 1);        /* 1=text 2=binary */
+UiWs_Close(ws, 1000, "bye");
+```
+
+- 握手复用 HTTP 引擎（101 + `Sec-WebSocket-Accept` 校验），101 之后多余的字节
+  直接进帧解析器。
+- 帧编解码是每连接状态：客户端掩码就地写入发送缓冲；支持 16/64 位长度、分片、
+  控制帧优先；单帧上限 16MB。
+- 心跳 ping 超时未收到 pong 判死；`autoReconnect` 时指数退避 + ±20% 抖动，
+  退避期间 `UiWs_Close` 立即停止。瞬断不投 `close`，只有最终关闭才回调一次。
+- `wss` 与 https 共用同一 TLS 路径；v1 不支持 WS 代理。
+
+### 10.6 UiTimer（GUI 定时器）
+
+```c
+uint64_t id = UiTimer_After(app->timer, 500, cb, user);
+UiTimer_Every(app->timer, 1000, tick_cb, user);
+UiTimer_Cancel(app->timer, id);
+```
+
+`UiApp` 内嵌 `app->timer` 并接入消息循环：空闲时等待它的 waitable timer，
+动画期按帧量化（≤8ms）。回调在 GUI 线程，可安全 `UiApp_Invalidate`，也可在
+回调里取消自己。最小堆与 IO 定时器共用 `src/lib/heap.*`。
+
+### 10.7 边界
+
+- 无 HTTP/2、无 gzip（不发 Accept-Encoding）、无 WPAD/PAC（只支持显式代理）、
+  无客户端证书；TLS renegotiation 不支持（遇到即断开）。
+- 连接/请求体/响应体全部动态增长，无固定上限；单帧 16MB、单响应头 64KB 是
+  防护性上限。
+- `UiNet` 必须与 `UiNet_Create` 同线程销毁；回调线程规则见 10.1。
+- **验证状态**：`cui_net_test.exe` headless 877 断言 + `CUI_NET_LIVE=1`
+  实网 52 断言（HTTP 200/chunked/redirect/POST、keep-alive 复用、400ms 超时、
+  取消不回调、hosts、DNS 自解析 + HTTPS 证书校验、自签证书被拒、ws 回显、
+  wss 回显）全部通过；`cui_net.exe` 200% DPI 真实鼠标/键盘验证 GET/POST/
+  WS 连接/发送/断开与 https 键入请求；14 个 exe 0CRT。
+
+## 11. UiFrame 帧时钟
 
 ### 10.1 为什么需要它
 
@@ -3083,7 +3197,7 @@ UiFrame_Shutdown(&clock);
 
 ---
 
-## 11. UiEdit 编辑框
+## 12. UiEdit 编辑框
 
 ### 11.1 数据与约束
 
@@ -3200,7 +3314,7 @@ Edit_SetImeEnabled(&edPass, 0);    /* 标记禁用输入法 */
 ```
 
 注意：`Edit_SetImeEnabled` **只打标记**，真正摘除/装回输入上下文由应用在聚焦切换时
-调用 `UiIme_Apply` 完成（见第 12 节）。同一时刻只有聚焦字段的 IME 状态生效。
+调用 `UiIme_Apply` 完成（见第 13 节）。同一时刻只有聚焦字段的 IME 状态生效。
 
 密码框仍然支持鼠标定位、选区、剪贴板；只是显示为 `*`，并且输入法被禁用。
 
@@ -3213,7 +3327,7 @@ demo 用 `SetTimer(hwnd, 2, 530, NULL)`，`WM_TIMER` 翻转 `blinkOn`，并在�
 
 ---
 
-## 12. UiIme 输入法
+## 13. UiIme 输入法
 
 ### 12.1 为什么需要单独一层
 
@@ -3329,7 +3443,7 @@ if (!want) {
 
 ---
 
-## 13. DPI 与多显示器
+## 14. DPI 与多显示器
 
 ### 13.1 原则
 
@@ -3389,7 +3503,7 @@ return DefWindowProcW(hwnd, msg, wp, lp);
 
 ---
 
-## 14. 0CRT 构建
+## 15. 0CRT 构建
 
 ### 14.1 入口
 
@@ -3495,7 +3609,7 @@ dumpbin /imports bin\cui_demo.exe | findstr /i "msvcrt ucrtbase api-ms-win-crt"
 
 ---
 
-## 15. 日志与性能诊断
+## 16. 日志与性能诊断
 
 ### 15.1 日志
 
@@ -3548,7 +3662,7 @@ demo 的启动日志会输出：
 
 ---
 
-## 16. 常用任务配方
+## 17. 常用任务配方
 
 ### 16.1 新增一个按钮
 
@@ -3591,7 +3705,7 @@ static int button(UiId id, UiRect rc, const wchar_t *text,
 4. 在 `WM_MOUSEMOVE` 里拖动 → `Edit_DragTo`。
 5. 在 `WM_LBUTTONUP` 里 `Edit_StopDrag`。
 6. 在 `WM_KEYDOWN/WM_CHAR` 里转 `Edit_Key/Edit_Char`。
-7. 如果有输入法，按第 12 节接线，并在聚焦变化时 `UiIme_SetFocus`。
+7. 如果有输入法，按第 13 节接线，并在聚焦变化时 `UiIme_SetFocus`。
 
 ### 16.3 新增一个自绘控件（开关/滑块）
 
@@ -3676,7 +3790,7 @@ README 第 10 节给出了路线。核心步骤：
 
 ---
 
-## 17. 已知限制与设计取舍
+## 18. 已知限制与设计取舍
 
 1. **布局是可选薄层**：`UiStack/UiFlex` 只算矩形；没有 grid、自动换行、滚动容器、
    内容测量或保留式布局树。复杂页面仍可由应用自己算坐标。
@@ -3752,7 +3866,7 @@ README 第 10 节给出了路线。核心步骤：
 
 ---
 
-## 18. 故障排查
+## 19. 故障排查
 
 ### 18.1 窗口能创建但全透明/什么都不显示
 
@@ -3820,7 +3934,7 @@ README 第 10 节给出了路线。核心步骤：
 
 ---
 
-## 19. 附录
+## 20. 附录
 
 ### 19.1 常量速查
 

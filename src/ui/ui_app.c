@@ -135,6 +135,14 @@ static int app_resize_edge(UiApp *app, HWND hwnd, LPARAM lp)
 	return 0;
 }
 
+static void app_timer_tick(void *user, uint64_t id)
+{
+	UiApp *app = (UiApp *)user;
+	(void)id;
+	if (app && app->cb && app->cb->timer)
+		app->cb->timer(app, app->user);
+}
+
 static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	UiApp *app = (UiApp *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
@@ -159,7 +167,7 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		UiIme_Init(&app->ime, hwnd);
 		UiFrame_Init(&app->clock, hwnd);
 		app_apply_dpi(app);
-		SetTimer(hwnd, 2, 530, NULL);
+		UiTimer_Every(app->timer, 530, app_timer_tick, app);
 		if (app->cb && app->cb->init) app->cb->init(app, app->user);
 		return 0;
 
@@ -347,8 +355,6 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		return 0;
 
 	case WM_TIMER:
-		if (wp == 2 && app && app->cb && app->cb->timer)
-			app->cb->timer(app, app->user);
 		return 0;
 
 	case WM_SIZE:
@@ -377,7 +383,6 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		DestroyWindow(hwnd);
 		return 0;
 	case WM_DESTROY:
-		KillTimer(hwnd, 2);
 		if (app) {
 			if (app->cb && app->cb->shutdown) app->cb->shutdown(app, app->user);
 			UiFrame_Shutdown(&app->clock);
@@ -436,6 +441,15 @@ int UiApp_Run(const wchar_t *title, int widthDip, int heightDip,
 		g_classReady = 1;
 	}
 
+	app->timer = UiTimer_Create();
+	if (!app->timer) {
+		Log_Write("[app] UiTimer_Create failed");
+		Log_Close();
+		CoUninitialize();
+		HeapFree(GetProcessHeap(), 0, app);
+		return 1;
+	}
+
 	/* 保留 DWM 状态切换动画所需的样式: 缺 WS_MINIMIZEBOX/WS_SYSMENU 时
 	 * Explorer 点任务栏不下发 SC_MINIMIZE (实测只收到 WM_ACTIVATE);
 	 * 缺 WS_CAPTION 时 DWM 不播放最小化/还原过渡 (实测瞬间消失/出现).
@@ -448,6 +462,7 @@ int UiApp_Run(const wchar_t *title, int widthDip, int heightDip,
 	app->hwnd = hwnd;
 	if (!hwnd) {
 		Log_Write("[app] CreateWindow failed");
+		UiTimer_Destroy(app->timer);
 		Log_Close();
 		CoUninitialize();
 		HeapFree(GetProcessHeap(), 0, app);
@@ -481,9 +496,14 @@ int UiApp_Run(const wchar_t *title, int widthDip, int heightDip,
 					app->clock.periodMs - (UiFrame_Now() - t0));
 			}
 		} else {
-			MsgWaitForMultipleObjectsEx(0, NULL, INFINITE, QS_ALLINPUT,
-				MWMO_INPUTAVAILABLE);
+			HANDLE th = UiTimer_WaitHandle(app->timer);
+			/* MWMO_ALERTABLE: 网络层的 APC 归位依赖 alertable 等待 */
+			MsgWaitForMultipleObjectsEx(th ? 1 : 0, th ? &th : NULL,
+				INFINITE, QS_ALLINPUT,
+				MWMO_INPUTAVAILABLE | MWMO_ALERTABLE);
 		}
+
+		UiTimer_Dispatch(app->timer);
 
 		while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
 			if (msg.message == WM_QUIT) { quit = 1; break; }
@@ -492,6 +512,8 @@ int UiApp_Run(const wchar_t *title, int widthDip, int heightDip,
 		}
 	}
 
+	UiTimer_Destroy(app->timer);
+	app->timer = NULL;
 	Log_Close();
 	CoUninitialize();
 	HeapFree(GetProcessHeap(), 0, app);

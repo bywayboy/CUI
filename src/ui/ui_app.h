@@ -23,6 +23,7 @@
 #include "ui/ui_theme.h"
 #include "ui/ui_ime.h"
 #include "ui/ui_frame.h"
+#include "ui/ui_timer.h"
 
 typedef struct UiApp UiApp;
 
@@ -61,6 +62,7 @@ struct UiApp {
 	UiContext ui;
 	UiIme ime;
 	UiFrameClock clock;
+	UiTimer *timer;          /* GUI 定时器 (已接入本壳消息循环) */
 	UiThemeId themeId;
 	float scale;
 	float w, h;              /* 客户区 DIP */

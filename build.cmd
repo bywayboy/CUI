@@ -29,7 +29,7 @@ IF ERRORLEVEL 1 (
 IF NOT EXIST bin MKDIR bin
 IF NOT EXIST build MKDIR build
 IF NOT EXIST build\obj MKDIR build\obj
-del /q build\obj\*.obj bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe 2>nul
+del /q build\obj\*.obj bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe bin\cui_net.exe bin\cui_net_test.exe 2>nul
 
 REM 自定义 D2D 效果的着色器: 离线编译成字节数组, 运行时不需要 d3dcompiler.dll
 SET "FXC=%WindowsSdkVerBinPath%x64\fxc.exe"
@@ -42,10 +42,10 @@ ECHO [cui] src\gfx\grain.hlsl
 
 SET "CFLAGS=/nologo /c /std:c11 /O1 /Oi- /GS- /Gy /Gs32768 /W3 /utf-8 /wd4244 /wd4996 /DNO_CRT_NO_DEFAULTLIB /D_WIN32_WINNT=0x0A00 /DUNICODE /D_UNICODE /I. /Isrc /Isrc\ui /Isrc\gfx /Isrc\lib"
 SET "CXXFLAGS=/nologo /c /std:c++17 /O1 /GS- /Gy /Gs32768 /W3 /utf-8 /wd4244 /wd4996 /EHs-c- /GR- /D_HAS_EXCEPTIONS=0 /DNO_CRT_NO_DEFAULTLIB /D_WIN32_WINNT=0x0A00 /DUNICODE /D_UNICODE /I. /Isrc /Isrc\ui /Isrc\gfx /Isrc\lib /Ibuild"
-SET "LIBS=kernel32.lib user32.lib gdi32.lib d2d1.lib dwrite.lib d3d11.lib dxgi.lib dcomp.lib ole32.lib advapi32.lib shell32.lib imm32.lib winmm.lib"
+SET "LIBS=kernel32.lib user32.lib gdi32.lib d2d1.lib dwrite.lib d3d11.lib dxgi.lib dcomp.lib ole32.lib advapi32.lib shell32.lib imm32.lib winmm.lib ws2_32.lib secur32.lib crypt32.lib bcrypt.lib iphlpapi.lib"
 
 SET "OBJS="
-FOR %%F IN (src\edit.c src\log.c src\lib\crtstub.c src\ui\ui_anim.c src\ui\ui_context.c src\ui\ui_layout.c src\ui\ui_frame.c src\ui\ui_ime.c src\ui\ui_paint.c src\ui\ui_theme.c src\ui\ui_widgets.c src\ui\ui_icon.c src\ui\ui_popup.c src\ui\ui_tooltip.c src\ui\ui_controls.c src\ui\ui_select.c src\ui\ui_menu.c src\ui\ui_dialog.c src\ui\ui_textarea.c src\ui\ui_button_group.c src\ui\ui_toast.c src\ui\ui_input.c src\ui\ui_app.c src\ui\ui_progress.c src\ui\ui_scroll.c src\ui\ui_tab.c src\ui\ui_datetime.c src\ui\ui_datepicker.c) DO (
+FOR %%F IN (src\edit.c src\log.c src\lib\crtstub.c src\lib\heap.c src\ui\ui_anim.c src\ui\ui_context.c src\ui\ui_layout.c src\ui\ui_frame.c src\ui\ui_timer.c src\ui\ui_ime.c src\ui\ui_paint.c src\ui\ui_theme.c src\ui\ui_widgets.c src\ui\ui_icon.c src\ui\ui_popup.c src\ui\ui_tooltip.c src\ui\ui_controls.c src\ui\ui_select.c src\ui\ui_menu.c src\ui\ui_dialog.c src\ui\ui_textarea.c src\ui\ui_button_group.c src\ui\ui_toast.c src\ui\ui_input.c src\ui\ui_app.c src\ui\ui_progress.c src\ui\ui_scroll.c src\ui\ui_tab.c src\ui\ui_datetime.c src\ui\ui_datepicker.c src\net\net_base.c src\net\net_tcp.c src\net\net_dns.c src\net\net_tls.c src\net\net_http.c src\net\net_ws.c src\net\ui_net.c) DO (
     ECHO [cui] %%F
     cl %CFLAGS% "%%F" /Fobuild\obj\%%~nF.obj || GOTO :err
     SET "OBJS=!OBJS! build\obj\%%~nF.obj"
@@ -83,6 +83,10 @@ ECHO [cui] samples\textarea.c
 cl %CFLAGS% samples\textarea.c /Fobuild\obj\textarea.obj || GOTO :err
 ECHO [cui] samples\datepicker.c
 cl %CFLAGS% samples\datepicker.c /Fobuild\obj\datepicker.obj || GOTO :err
+ECHO [cui] samples\net.c
+cl %CFLAGS% samples\net.c /Fobuild\obj\net.obj || GOTO :err
+ECHO [cui] tests\net_test.c
+cl %CFLAGS% tests\net_test.c /Fobuild\obj\net_test.obj || GOTO :err
 
 ECHO [cui] link demo
 link /nologo /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:startup /MANIFEST:NO ^
@@ -132,8 +136,16 @@ ECHO [cui] link datepicker
 link /nologo /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:startup /MANIFEST:NO ^
     /OUT:bin\cui_datepicker.exe !OBJS! build\obj\datepicker.obj %LIBS% || GOTO :err
 
+ECHO [cui] link net
+link /nologo /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:startup /MANIFEST:NO ^
+    /OUT:bin\cui_net.exe !OBJS! build\obj\net.obj %LIBS% || GOTO :err
+
+ECHO [cui] link net_test
+link /nologo /SUBSYSTEM:CONSOLE /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:startup /MANIFEST:NO ^
+    /OUT:bin\cui_net_test.exe !OBJS! build\obj\net_test.obj %LIBS% || GOTO :err
+
 ECHO.
-FOR %%E IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe) DO (
+FOR %%E IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe bin\cui_net.exe bin\cui_net_test.exe) DO (
     dumpbin /imports %%E | findstr /i "msvcrt ucrtbase api-ms-win-crt" >NUL
     IF ERRORLEVEL 1 (
         ECHO [OK] no CRT dependency: %%E
@@ -143,7 +155,7 @@ FOR %%E IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_mu
     )
 )
 ECHO === BUILD OK ===
-FOR %%I IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe) DO ECHO Output: %%~fI (%%~zI bytes)
+FOR %%I IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe bin\cui_net.exe bin\cui_net_test.exe) DO ECHO Output: %%~fI (%%~zI bytes)
 EXIT /B 0
 
 :err

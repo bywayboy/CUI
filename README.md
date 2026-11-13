@@ -56,7 +56,8 @@ CUI/
 │  ├─ CUI-Tab-设计方案.md  TabBar/TabPager 结构与转场设计（含 CARD 计划）
 │  ├─ CUI-弹层与选择控件-设计方案.md  弹层管理器 + Select/Menu 状态与命中路由
 │  ├─ CUI-TextArea-设计方案.md  动态文本/增量布局/IME 代理/滚动设计
-│  └─ CUI-日期选择-设计方案.md  DatePicker 四模式/双联动范围/时间列/键入校验
+│  ├─ CUI-日期选择-设计方案.md  DatePicker 四模式/双联动范围/时间列/键入校验
+│  └─ CUI-网络层-设计方案.md  IOCP+SChannel/自研 DNS/APC 归位/定时器/验证判据
 ├─ samples/
 │  ├─ minimal.c           最小接入样例
 │  ├─ advanced.c          高级样例（overlay/Toast/IME 全细节）
@@ -68,12 +69,28 @@ CUI/
 │  ├─ controls.c          Checkbox/Radio/Switch/Slider + Tooltip
 │  ├─ overlays.c          Select/Menu + Dialog/ConfirmDialog（含 TextArea 测试）
 │  ├─ textarea.c          多行文本：软换行/滚动/选择/IME/readonly
-│  └─ datepicker.c        DatePicker 四模式 + ±30 天边界演示
+│  ├─ datepicker.c        DatePicker 四模式 + ±30 天边界演示
+│  └─ net.c               网络层：HTTP(S) / WebSocket(wss) / UiTimer
+├─ tests/
+│  ├─ net_test.c          headless + 实网断言（CUI_NET_LIVE=1）
+│  ├─ net_server_http.ps1 本机 HTTP 测试服务器（18080，含 keep-alive）
+│  ├─ net_server_ws.ps1   本机 WS 回显（18081）
+│  └─ net_server_wss.ps1  本机 WSS 回显（18082，自签证书）
 └─ src/
    ├─ demo.c              标准样例（UiApp 壳 + 组件，约 340 行）
    ├─ edit.c / edit.h     自绘单行编辑框 UiEdit（选区/剪贴板/滚动/IME 组合）
    ├─ log.c / log.h       调试日志（OutputDebugString；可选 /DSC_LOG_FILE 落盘）
    ├─ lib/crtstub.c       0CRT 存根（mem*/str*/sprintf/malloc/浮点等）
+   ├─ lib/heap.*          通用侵入式最小堆（IO 定时器 + UiTimer 共用）
+   ├─ net/
+   │  ├─ ui_net.h         公开 API：UiNet / UiHttp / UiWs / 错误码 / 配置
+   │  ├─ ui_net.c         IO 线程 + IOCP + 命令队列 + APC 归位 + 关闭哨兵
+   │  ├─ net_tcp.c        ConnectEx / 重叠收发 / 引用计数释放
+   │  ├─ net_dns.c        自研 DNS：服务器发现 / hosts / A+AAAA / TC→TCP / 缓存
+   │  ├─ net_tls.c        SChannel 握手 / 就地加解密 / 证书链+主机名校验 / pinning
+   │  ├─ net_http.c       HTTP/1.1 / chunked / keep-alive 池 / 重定向 / 代理隧道
+   │  ├─ net_ws.c         WS 握手 / 帧编解码 / 心跳 / 退避重连
+   │  └─ net_internal.h   内部结构（NetIo/NetConn/命令/事件）
    ├─ gfx/
    │  ├─ gfx.h            后端无关 2D 接口（DIP 坐标 / 0xAARRGGBB）
    │  ├─ gfx_d2d.cpp      Direct2D + DWrite + D3D11/DComp 实现（ULW 回退）
@@ -99,6 +116,7 @@ CUI/
       ├─ ui_paint.*       Ui_DrawSurface：填充/描边/光晕的统一外观
       ├─ ui_anim.*        动画内核（指数平滑 + 显式补间，固定池零分配）
       ├─ ui_frame.*       vsync 对齐的帧时钟（合成器时钟 / 高精度定时器）
+      ├─ ui_timer.*       GUI 定时器（最小堆 + waitable timer，After/Every/Cancel）
       ├─ ui_ime.c/h       输入法适配（组合串/候选窗/密码框禁用）
       ├─ ui_widgets.*     Button / Panel / ProgressBar 组件
       ├─ ui_toast.*       渐变 Toast（GfxLayer 画一次 + DWM 补间；ULW 回退）
@@ -129,6 +147,8 @@ bin\cui_controls.exe    REM Checkbox / Radio / Switch / Slider / Tooltip
 bin\cui_overlays.exe    REM Select/Menu + Dialog/ConfirmDialog（含 TextArea 测试）
 bin\cui_textarea.exe    REM 多行文本：软换行 / 滚动 / 选择 / IME
 bin\cui_datepicker.exe  REM DatePicker：日期 / 日期+时间 / 范围 / 范围+时间
+bin\cui_net.exe         REM 网络层：HTTP(S) / WS / WSS / UiTimer
+bin\cui_net_test.exe    REM 网络层断言（CUI_NET_LIVE=1 跑实网，需先起 tests\net_server_*.ps1）
 ```
 
 构建是 **0CRT**：`/NODEFAULTLIB` + `/ENTRY:startup`，由 `crtstub.c` 提供
@@ -294,6 +314,11 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | `UiEdit` | `Edit_Init/Shutdown/SetText/TextUtf8/Draw/Key/Char` | 单行编辑框（UTF-16 存储）；maxLen=0 不限长、动态倍增 |
 | | `Edit_PlaceCaret/DragTo/StopDrag` | 鼠标定位与拖选 |
 | `UiIme` | `UiIme_Init/SetFocus/Apply/Cancel/Start/Comp/End/Char/Pos` | 输入法接线 |
+| `UiNet` | `UiNet_Create/Destroy` | App 持有；1 IO 线程 + IOCP + SChannel；GUI↔IO 用队列/APC，零锁 |
+| `UiHttp` | `UiHttp_Send/Cancel/Header` | HTTP/1.1 + HTTPS；chunked/重定向/keep-alive 池/代理；回调在 GUI 线程 |
+| `UiWs` | `UiWs_Open/Send/Close/State` | ws/wss；分片/心跳/指数退避重连；事件回调在 GUI 线程 |
+| `UiTimer` | `UiTimer_Create/Destroy/After/Every/Cancel/WaitHandle/Dispatch` | GUI 定时器；`UiApp` 内嵌 `app->timer`，回调可安全失效 |
+| `UiNetConfig` | `connect/request/dns/timeout/idle/redirect/proxy/insecure/pinSha256/trace` | 0 字段用默认；`insecure` 仅调试 |
 
 `UiId` 是"作用域字符串 + 两个整数"的稳定哈希；**同一帧内必须唯一**，且跨帧保持
 不变（不要用地址/序号做 ID，否则动画与命中都会错位）。
@@ -509,5 +534,13 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   ±30 天越界禁用、小窗夹取、暗色主题；
   `ui_datetime` headless 1164 断言 0 失败；controls/textarea/scroll/overlays
   冒烟回归干净；12 个 exe 0CRT。
+- 网络层回归：`cui_net_test.exe` headless 877 断言 + `CUI_NET_LIVE=1` 实网 52
+  断言全部通过：HTTP 200/chunked/302 重定向/POST、keep-alive 同连接复用
+  （`X-Conn-Req` 第 2 次）、400ms 超时、取消后不回调、hosts、自研 DNS（A/AAAA、
+  缓存、TC 未触发）+ HTTPS `www.example.com` 577B、自签证书被拒
+  `UI_NET_E_TLS`、ws 回显、wss（自签 + `insecure`）回显；`cui_net.exe` 200% DPI
+  真实鼠标/键盘验证 GET/POST、WS 连接/发送/断开、键入
+  `https://www.example.com/` 返回 200/577B、`UiTimer` 每秒递增；14 个 exe 0CRT。
+  测试服务器见 `tests/net_server_{http,ws,wss}.ps1`。
 - 无桌面环境（SSH/Session 0）不能目视验证，但编译与链接判据（0CRT/无未解析符号）
   可在 CI 里跑。

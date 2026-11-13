@@ -114,11 +114,12 @@ void UiFrame_Delay(UiFrameClock *c, double ms)
 		due.QuadPart = -(LONGLONG)(ms * 10000.0);
 		if (SetWaitableTimer(c->timer, &due, 0, NULL, NULL, FALSE)) {
 			MsgWaitForMultipleObjectsEx(1, &c->timer, (DWORD)(ms + 4.0),
-				QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+				QS_ALLINPUT, MWMO_INPUTAVAILABLE | MWMO_ALERTABLE);
 			return;
 		}
 	}
-	Sleep((DWORD)ms);
+	/* alertable: 让网络层 APC 在动画期间也能归位 */
+	SleepEx((DWORD)ms, TRUE);
 }
 
 double UiFrame_Tick(UiFrameClock *c)
