@@ -249,6 +249,7 @@ struct NetWsConn {
 	int reconnectDelay;
 	int openedOnce;
 	int pingAt;
+	ULONGLONG connectedAt;      /* 本次连接建立时刻 (退火判定) */
 
 	NetBuf frag;
 	int fragOpcode;

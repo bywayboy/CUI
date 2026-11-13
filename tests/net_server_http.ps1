@@ -8,6 +8,26 @@ $listener.Start()
 Log 'HTTP listen 18080'
 $connId = 0
 
+# /img 测试图 (PNG, 由 System.Drawing 生成; 900ms 延迟用于观察 loading 动画)
+Add-Type -AssemblyName System.Drawing
+$pngPath = Join-Path $env:TEMP 'cui_img_test.png'
+try {
+    $bmp = New-Object System.Drawing.Bitmap 480, 300
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $c1 = [System.Drawing.Color]::FromArgb(255, 60, 120, 255)
+    $c2 = [System.Drawing.Color]::FromArgb(255, 180, 80, 220)
+    $brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
+        (New-Object System.Drawing.Point 0, 0),
+        (New-Object System.Drawing.Point 480, 300), $c1, $c2)
+    $g.FillRectangle($brush, 0, 0, 480, 300)
+    $font = New-Object System.Drawing.Font 'Segoe UI', 26
+    $g.DrawString('CUI Image', $font, [System.Drawing.Brushes]::White, 60, 120)
+    $g.Dispose(); $bmp.Save($pngPath, [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
+    Log ('generated ' + $pngPath)
+} catch {
+    Log ('img gen failed: ' + $_.Exception.Message)
+}
+
 while ($true) {
     $client = $listener.AcceptTcpClient()
     $connId++
@@ -59,7 +79,15 @@ while ($true) {
                 $body = [Text.Encoding]::UTF8.GetString($all.ToArray())
             }
 
-            if ($path -eq '/chunked') {
+            if ($path -eq '/img') {
+                Start-Sleep -Milliseconds 900
+                $b = [System.IO.File]::ReadAllBytes($pngPath)
+                $hdr = "HTTP/1.1 200 OK`r`nContent-Type: image/png`r`nContent-Length: $($b.Length)`r`nConnection: close`r`n`r`n"
+                $hb = [Text.Encoding]::ASCII.GetBytes($hdr)
+                $st.Write($hb, 0, $hb.Length); $st.Write($b, 0, $b.Length)
+                $wantClose = $true
+            }
+            elseif ($path -eq '/chunked') {
                 $hdr = "HTTP/1.1 200 OK`r`nContent-Type: text/plain`r`nTransfer-Encoding: chunked`r`nConnection: close`r`n`r`n"
                 $hb = [Text.Encoding]::ASCII.GetBytes($hdr)
                 $st.Write($hb, 0, $hb.Length)

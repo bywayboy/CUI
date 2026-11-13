@@ -62,6 +62,7 @@ int  Gfx_Init(Gfx **out, HWND hwnd);
 void Gfx_Shutdown(Gfx *g);
 int  Gfx_Resize(Gfx *g, int pixelW, int pixelH, float scale);
 int  Gfx_Generation(Gfx *g);   /* 每次重建绘制表面 +1，供位图缓存失效 */
+int  Gfx_Ready(Gfx *g);        /* 绘制表面已就绪 (首帧前为 0) */
 int  Gfx_GradientCreates(Gfx *g);  /* 取走累计的渐变画刷新建次数 (诊断用) */
 
 /* 帧 */

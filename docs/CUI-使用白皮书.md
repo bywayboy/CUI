@@ -181,6 +181,7 @@
    - [8.17 TextArea 多行编辑器](#817-textarea-多行编辑器)
    - [8.18 Dialog / ConfirmDialog](#818-dialog--confirmdialog)
    - [8.19 DatePicker 日期选择](#819-datepicker-日期选择)
+   - [8.20 Image 图片](#820-image-图片)
 9. [UiAnim 动画内核](#9-uianim-动画内核)
 10. [网络层与定时器](#10-网络层与定时器uinet--uihttp--uiws--uitimer)
 11. [UiFrame 帧时钟](#11-uiframe-帧时钟)
@@ -2734,6 +2735,55 @@ controls/textarea/scroll/overlays 回归干净。
 
 ---
 
+### 8.20 Image 图片
+
+> 设计细节：[CUI-图片-设计方案.md](CUI-图片-设计方案.md)；样例
+> [samples/image.c](../samples/image.c)（`bin\cui_image.exe`）。
+
+`UiImage` 是应用持有的图片组件，三种来源 + 自定义 provider：
+
+```c
+UiImage *img = UiImage_Create(app->gfx, net);   /* net 可 NULL */
+UiImage_SetContext(img, &app->ui);              /* 自动失效自身矩形 */
+UiImage_SetRect(img, Ui_Rect(x, y, 280, 220));
+UiImage_SetFit(img, UI_IMG_FIT_COVER);          /* 留白/剪裁/拉伸/原始 */
+UiImage_SetAnchor(img, UI_IMG_ANCHOR_MC);       /* 3x3 取景锚点 */
+UiImage_SetBackground(img, 0xFFE9EFF7);         /* 留白底色 */
+
+UiImage_LoadUrl(img, "https://host/a.png");     /* 走 UiNet (IOCP+SChannel) */
+UiImage_LoadFile(img, L"C:\\pics\\a.jpg");      /* 同步读文件 + 解码 */
+UiImage_SetBytes(img, pngBytes, pngLen);        /* 内存图片 */
+
+/* 帧内 */
+UiImage_Draw(img, &app->theme);
+
+/* 自定义来源: 返回 1=同步字节, 0=异步后 SetBytes, -1=失败 */
+UiImage_SetProvider(img, my_fetch, my_user);
+
+UiImage_Destroy(img);                           /* 先于 Gfx_Shutdown */
+```
+
+语义：
+
+- **解码**：WIC（`windowscodecs.lib`），输出预乘 BGRA 直接建 D2D 位图；支持
+  PNG/JPEG/BMP/GIF 首帧等；单图编码上限 32MB、边长上限 8192。
+- **加载动画**：`LOADING` 时画 GPU 矢量 spinner（圆环 + 旋转弧，`UiFrame_Now`
+  驱动），播放器是组件自身登记的动画脏区；绑定 `UiContext` 后无需应用额外
+  失效。`UiImage_Busy` 供应用在 `animating` 回调里继续出帧（可选）。
+- **淡入**：解码完成 180ms 透明度过渡；设备丢失（`Gfx_Generation` 变化）时用
+  保留的编码字节就地重建位图。
+- **首帧前加载**：`on_init` 里调用 Load* 时 Gfx 尚未就绪，组件保持 `LOADING`，
+  首帧绘制时补解码，不会误报失败。
+- **fit**：CONTAIN 留白（等比完整）、COVER 剪裁（等比填满）、STRETCH 拉伸、
+  NONE 原始尺寸；`SetAnchor` 9 个取景锚点决定留白余量/裁剪方向，
+  `SetBackground` 给留白区铺底色。
+- **错误**：HTTP/TLS/超时复用 `UiNet_StrError`，本地/解码用
+  `UiImage_StrError`；`ERROR` 画占位，可重试。
+- **边界**：不支持 GIF 动画/WebP/EXIF 旋转/圆角裁剪；解码在 GUI 线程回调里
+  完成（大图会占一帧，后续可加后台解码队列）。
+- **样例**：URL 源为 Bing 每日图——先 `UiHttp_Send` 取 `HPImageArchive.aspx`
+  JSON，解析出 `images[0].url` 后再 `UiImage_LoadUrl`；状态行显示版权。
+
 ## 9. UiAnim 动画内核
 
 ### 9.1 两种运动模型
@@ -3123,6 +3173,11 @@ int  UiHttp_Header(const UiHttpResponse*, const char *name, char *out, int cap);
 UiWsCallbacks cb = { on_open, on_message, on_close };
 UiWsOptions opt = {0};
 opt.autoReconnect = 1;
+opt.reconnectMinMs = 500;      /* 退避下限 */
+opt.reconnectMaxMs = 10000;    /* 退避上限 */
+opt.reconnectBackoff = 2;      /* 退火倍率 1..10, 1=固定间隔 */
+opt.reconnectJitterPct = 20;   /* ±抖动百分比 0..50 */
+opt.reconnectStableMs = 30000; /* 稳定超过该时长后重置退避 */
 opt.pingIntervalMs = 20000;
 void *ws = UiWs_Open(net, "wss://host/path", &opt, &cb, user);
 UiWs_Send(ws, data, len, 1);        /* 1=text 2=binary */

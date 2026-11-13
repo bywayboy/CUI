@@ -24,9 +24,24 @@ static void InvalidateWidget(UiContext *ctx, UiId id)
 	InvalidateRect(ctx->hwnd, NULL, FALSE);
 }
 
-void Ui_ContextInit(UiContext *ctx, HWND hwnd, Gfx *gfx, UiTheme *theme)
+void Ui_ContextInvalidate(UiContext *ctx, UiRect rc)
 {
-	ZeroMemory(ctx, sizeof(*ctx));
+	float s;
+	int m;
+	RECT r;
+
+	if (!ctx || !ctx->hwnd || rc.w <= 0.0f || rc.h <= 0.0f) return;
+	s = ctx->scale > 0.0f ? ctx->scale : 1.0f;
+	m = (int)(10.0f * s + 0.5f);
+	r.left = (LONG)(rc.x * s) - m;
+	r.top = (LONG)(rc.y * s) - m;
+	r.right = (LONG)((rc.x + rc.w) * s) + m;
+	r.bottom = (LONG)((rc.y + rc.h) * s) + m;
+	InvalidateRect(ctx->hwnd, &r, FALSE);
+}
+
+void Ui_ContextInit(UiContext *ctx, HWND hwnd, Gfx *gfx, UiTheme *theme)
+{	ZeroMemory(ctx, sizeof(*ctx));
 	ctx->hwnd = hwnd;
 	ctx->gfx = gfx;
 	ctx->theme = theme;

@@ -139,6 +139,11 @@ int Ui_AnimTakeDirty(UiContext *ctx, UiRect *out)
 	return kind;
 }
 
+void Ui_AnimDirtyRect(UiContext *ctx, UiRect r)
+{
+	dirty_add(ctx, r);
+}
+
 void Ui_AnimSmooth(UiContext *ctx, UiId id, int ch, float target)
 {
 	UiAnimEntry *e;
@@ -209,8 +214,8 @@ void Ui_AnimAdvance(UiContext *ctx, float dtMs)
 	if (dtMs > 100.0f) dtMs = 100.0f;   /* 拖动窗口/断点后不要瞬移 */
 	ctx->animTimeMs += (double)dtMs;
 	ctx->animFrame++;
-	ctx->animDirtyHas = 0;
-	ctx->animDirtyFull = 0;
+	/* 不在 Advance 里清脏区: 组件可能在上一帧绘制 (WM_PAINT) 时登记,
+	 * 由 Ui_AnimTakeDirty 统一取走, 否则逐帧自绘的 loading 动画会丢帧。 */
 
 	for (i = 0; i < UI_AN_MAX_ENTRIES; i++) {
 		UiAnimEntry *e = &ctx->anim[i];

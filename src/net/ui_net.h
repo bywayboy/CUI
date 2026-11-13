@@ -100,6 +100,9 @@ typedef struct UiWsOptions {
 	int autoReconnect;       /* 默认 1 */
 	int reconnectMinMs;      /* 默认 500 */
 	int reconnectMaxMs;      /* 默认 10000 */
+	int reconnectBackoff;    /* 退火倍率 1..10, 默认 2; 1=固定间隔 */
+	int reconnectJitterPct;  /* 抖动百分比 0..50, 默认 20 */
+	int reconnectStableMs;   /* 连接稳定超过该值后重置退避, 默认 30000 */
 	int pingIntervalMs;      /* 默认 30000, 0=关闭心跳 */
 	int handshakeTimeoutMs;  /* 默认 8000 */
 	const char *extraHeaders;/* 握手附加 header, 可 NULL */

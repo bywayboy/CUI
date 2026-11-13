@@ -120,6 +120,8 @@ struct UiContext {
 
 void Ui_ContextInit(UiContext *ctx, HWND hwnd, Gfx *gfx, UiTheme *theme);
 void Ui_SetViewport(UiContext *ctx, float w, float h, float scale);
+/* 组件主动失效一个 DIP 矩形 (异步加载完成/逐帧动画时调用) */
+void Ui_ContextInvalidate(UiContext *ctx, UiRect rc);
 
 void Ui_BeginFrame(UiContext *ctx);
 void Ui_EndFrame(UiContext *ctx);

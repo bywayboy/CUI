@@ -178,6 +178,9 @@ typedef struct UiWsOptions {
     int autoReconnect;       /* 默认 1 */
     int reconnectMinMs;      /* 默认 500 */
     int reconnectMaxMs;      /* 默认 10000 */
+    int reconnectBackoff;    /* 退火倍率 1..10, 默认 2; 1=固定间隔 */
+    int reconnectJitterPct;  /* 抖动百分比 0..50, 默认 20 */
+    int reconnectStableMs;   /* 稳定超过该值后重置退避, 默认 30000 */
     int pingIntervalMs;      /* 默认 30000, 0=关 */
     int handshakeTimeoutMs;  /* 默认 8000 */
     const char *extraHeaders;
@@ -375,8 +378,10 @@ QueryContextAttributes(SECPKG_ATTR_REMOTE_CERT_CONTEXT, &cert)
   （默认 16MB，分片累积同限）。
 - 心跳：`pingIntervalMs` 到期发 ping；收到 pong 刷新活跃时间；ping 超时未
   pong 判死 → 断开重连（避免旧实现 60s 死等）。
-- 重连：断开后指数退避（`reconnectMinMs → reconnectMaxMs`，±20% 抖动，
-  连接成功重置）；退避期间 `UiWs_Close` 可立即停止。
+- 重连：断开后指数退避（`reconnectMinMs → reconnectMaxMs`，倍率
+  `reconnectBackoff`、抖动 `reconnectJitterPct`）；**退火**：上次连接稳定超过
+  `reconnectStableMs` 才把退避重置回下限，抖动型故障会继续翻倍；退避期间
+  `UiWs_Close` 可立即停止。
 - 关闭：发 close 帧，等对端 close 或 `ClosingTimeout`（2s）后 close socket；
   `close` 回调只来一次。
 - `wss` 与 https 共用同一 TLS 路径；v1 不支持 WS 代理（代理只作用于 HTTP 请求）。
@@ -421,7 +426,8 @@ QueryContextAttributes(SECPKG_ATTR_REMOTE_CERT_CONTEXT, &cert)
 旧文件是 WJTrayApp 的移植样例：硬编码 `127.0.0.1:19860`、全局单例 + 临界区、
 GUI 线程持锁阻塞 send、`static` 分片缓冲、无 TLS、传输层耦合 cJSON，且未接入
 构建。新实现**只复用它的协议知识**（握手头、帧格式、分片、控制帧），代码按本
-文档的 per-connection 状态机重写。旧文件保留作为对照，不参与构建。
+文档的 per-connection 状态机重写。旧文件（含 `websocket.h`）已删除，历史版本
+可在 git 中查阅。
 
 ## 15. 风险与取舍
 

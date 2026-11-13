@@ -57,7 +57,8 @@ CUI/
 │  ├─ CUI-弹层与选择控件-设计方案.md  弹层管理器 + Select/Menu 状态与命中路由
 │  ├─ CUI-TextArea-设计方案.md  动态文本/增量布局/IME 代理/滚动设计
 │  ├─ CUI-日期选择-设计方案.md  DatePicker 四模式/双联动范围/时间列/键入校验
-│  └─ CUI-网络层-设计方案.md  IOCP+SChannel/自研 DNS/APC 归位/定时器/验证判据
+│  ├─ CUI-网络层-设计方案.md  IOCP+SChannel/自研 DNS/APC 归位/定时器/验证判据
+│  └─ CUI-图片-设计方案.md   UiImage：WIC 解码/URL-文件-内存/GPU loading/失效
 ├─ samples/
 │  ├─ minimal.c           最小接入样例
 │  ├─ advanced.c          高级样例（overlay/Toast/IME 全细节）
@@ -70,7 +71,8 @@ CUI/
 │  ├─ overlays.c          Select/Menu + Dialog/ConfirmDialog（含 TextArea 测试）
 │  ├─ textarea.c          多行文本：软换行/滚动/选择/IME/readonly
 │  ├─ datepicker.c        DatePicker 四模式 + ±30 天边界演示
-│  └─ net.c               网络层：HTTP(S) / WebSocket(wss) / UiTimer
+│  ├─ net.c               网络层：HTTP(S) / WebSocket(wss) / UiTimer
+│  └─ image.c             图片：URL / 本地文件 / 内存 + GPU loading
 ├─ tests/
 │  ├─ net_test.c          headless + 实网断言（CUI_NET_LIVE=1）
 │  ├─ net_server_http.ps1 本机 HTTP 测试服务器（18080，含 keep-alive）
@@ -109,6 +111,7 @@ CUI/
       ├─ ui_select.*       Select 下拉（长列表滚动/禁用项/键盘）
       ├─ ui_textarea.*     多行文本：动态缓冲/增量布局/IME/选择
       ├─ ui_datepicker.*   DatePicker：四模式触发器/月历/范围/时间列/键入
+      ├─ ui_image.*        Image：WIC 解码/URL-文件-内存/GPU loading/fit/淡入
       ├─ ui_datetime.*     0CRT 日期数学：civil↔day-number/格式化/解析
       ├─ ui_menu.*         Menu / 右键上下文菜单（分隔/禁用/危险项）
       ├─ ui_tooltip.*      悬停延迟提示
@@ -149,6 +152,7 @@ bin\cui_textarea.exe    REM 多行文本：软换行 / 滚动 / 选择 / IME
 bin\cui_datepicker.exe  REM DatePicker：日期 / 日期+时间 / 范围 / 范围+时间
 bin\cui_net.exe         REM 网络层：HTTP(S) / WS / WSS / UiTimer
 bin\cui_net_test.exe    REM 网络层断言（CUI_NET_LIVE=1 跑实网，需先起 tests\net_server_*.ps1）
+bin\cui_image.exe       REM 图片：URL / 文件 / 内存 + GPU loading 动画
 ```
 
 构建是 **0CRT**：`/NODEFAULTLIB` + `/ENTRY:startup`，由 `crtstub.c` 提供
@@ -319,6 +323,9 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | `UiWs` | `UiWs_Open/Send/Close/State` | ws/wss；分片/心跳/指数退避重连；事件回调在 GUI 线程 |
 | `UiTimer` | `UiTimer_Create/Destroy/After/Every/Cancel/WaitHandle/Dispatch` | GUI 定时器；`UiApp` 内嵌 `app->timer`，回调可安全失效 |
 | `UiNetConfig` | `connect/request/dns/timeout/idle/redirect/proxy/insecure/pinSha256/trace` | 0 字段用默认；`insecure` 仅调试 |
+| `UiImage` | `UiImage_Create/Destroy/SetContext/SetRect/SetFit/SetAnchor/SetBackground/SetProvider` | 应用持有；URL 走 `UiNet`，WIC 解码，留白/剪裁/拉伸/原始 + 3×3 锚点 + 留白底色 |
+| | `UiImage_LoadUrl/LoadFile/SetBytes/Clear/State/Busy/Draw` | 三源 + 自定义 provider；GPU spinner/180ms 淡入/设备丢失重建 |
+| `UiContext` | `Ui_ContextInvalidate/Ui_AnimDirtyRect` | 组件异步完成/逐帧自绘的失效入口（避免 WM_PAINT 内 InvalidateRect） |
 
 `UiId` 是"作用域字符串 + 两个整数"的稳定哈希；**同一帧内必须唯一**，且跨帧保持
 不变（不要用地址/序号做 ID，否则动画与命中都会错位）。
@@ -542,5 +549,10 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   真实鼠标/键盘验证 GET/POST、WS 连接/发送/断开、键入
   `https://www.example.com/` 返回 200/577B、`UiTimer` 每秒递增；14 个 exe 0CRT。
   测试服务器见 `tests/net_server_{http,ws,wss}.ps1`。
+- Image 回归：`cui_image.exe` 200% DPI 真实鼠标验证 **Bing 每日图**（先取
+  `HPImageArchive` JSON、再加载当日 1920×1080 JPEG，spinner → 180ms 淡入，
+  状态行显示版权）、`%TEMP%` BMP 文件、内存字节三源；留白/剪裁/拉伸/原始
+  四模式与 9 个取景锚点逐项截图（留白余量与裁剪方向随锚点变化），重载/清除正常；
+  `on_init` 首帧前加载走延迟解码不误报失败；`cui_image.exe` 与 15 个 exe 0CRT。
 - 无桌面环境（SSH/Session 0）不能目视验证，但编译与链接判据（0CRT/无未解析符号）
   可在 CI 里跑。

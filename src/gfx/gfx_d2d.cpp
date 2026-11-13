@@ -1819,6 +1819,7 @@ int Gfx_Resize(Gfx *g, int pixelW, int pixelH, float scale)
 }
 
 int Gfx_Generation(Gfx *g) { return g ? g->generation : 0; }
+int Gfx_Ready(Gfx *g) { return g && g->rt != NULL; }
 
 int Gfx_GradientCreates(Gfx *g)
 {

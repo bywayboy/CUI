@@ -108,7 +108,12 @@ void UiFrame_AddPaint(UiFrameClock *c, double px, int full)
 
 void UiFrame_Delay(UiFrameClock *c, double ms)
 {
-	if (!c || ms <= 0.5) return;
+	if (!c) return;
+	if (ms <= 0.5) {
+		/* 帧已超时: 仍要做一次零等待的 alertable 排空, 否则网络 APC 会被饿死 */
+		SleepEx(0, TRUE);
+		return;
+	}
 	if (c->timer) {
 		LARGE_INTEGER due;
 		due.QuadPart = -(LONGLONG)(ms * 10000.0);

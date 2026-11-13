@@ -75,6 +75,9 @@ void  Ui_AnimSetRect(UiContext *ctx, UiId id, UiRect rc);
 
 /* 取走"本帧动画改动的区域": 0=无变化, 1=out 有矩形, 2=需整窗 (如窗口淡入) */
 int   Ui_AnimTakeDirty(UiContext *ctx, UiRect *out);
+/* 组件逐帧自绘 (如 loading 动画) 时登记脏区; 由动画循环统一失效, 避免在
+ * WM_PAINT 内 InvalidateRect 造成消息循环无法排空。 */
+void  Ui_AnimDirtyRect(UiContext *ctx, UiRect r);
 
 /* 还有通道在动? (驱动帧时钟) */
 int   Ui_AnimBusy(UiContext *ctx);

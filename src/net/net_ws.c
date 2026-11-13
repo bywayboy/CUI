@@ -227,19 +227,34 @@ static void ws_schedule_reconnect_(NetConn *conn)
 	UiWsOptions *o = &w->opt;
 	int maxDelay = o->reconnectMaxMs > 0 ? o->reconnectMaxMs : 10000;
 	int minDelay = o->reconnectMinMs > 0 ? o->reconnectMinMs : 500;
-	int base = w->reconnectDelay > 0 ? w->reconnectDelay * 2 : minDelay;
+	int mult = o->reconnectBackoff >= 1 ? o->reconnectBackoff : 2;
+	int pct = o->reconnectJitterPct;
+	uint64_t stable = o->reconnectStableMs > 0 ? (uint64_t)o->reconnectStableMs : 30000;
+	uint64_t now = Net_NowMs();
+	int base;
 	BYTE r;
 	int spread;
 
+	if (mult > 10) mult = 10;
+	if (pct < 0) pct = 20;
+	if (pct > 50) pct = 50;
+
+	/* 退火: 上次连接稳定超过阈值, 下次从最小间隔重新开始 */
+	if (w->connectedAt && now - w->connectedAt >= stable)
+		w->reconnectDelay = 0;
+
+	base = w->reconnectDelay > 0 ? w->reconnectDelay * mult : minDelay;
 	if (base > maxDelay) base = maxDelay;
 	w->reconnectDelay = base;
-	spread = base / 5;
-	{
+
+	spread = base * pct / 100;
+	if (spread > 0) {
 		unsigned range = (unsigned)(spread * 2 + 1);
 		Net_Random(&r, 1);
 		base = base - spread + (int)(r % range);
 	}
 	if (base < 1) base = 1;
+	Log_Write("[ws] reconnect in %dms", base);
 
 	net_timer_cancel(conn, NET_T_PING);
 	net_timer_cancel(conn, NET_T_HANDSHAKE);
@@ -505,7 +520,7 @@ void net_ws_on_plain(NetConn *conn, const char *data, int len)
 			NetBuf_Consume(src, hlen + 2);
 		}
 		w->upgraded = 1;
-		w->reconnectDelay = 0;
+		w->connectedAt = Net_NowMs();
 		net_timer_cancel(conn, NET_T_HANDSHAKE);
 		if (!w->openedOnce) {
 			w->openedOnce = 1;
