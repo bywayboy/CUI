@@ -73,6 +73,11 @@ typedef struct MdRow {
 	float *rowH;
 	int tblCols, tblRows;
 	float tblH;
+
+	/* 行内图片 */
+	UiImage **inlImgs;
+	int *inlStates;
+	int inlN;
 } MdRow;
 
 typedef struct MdOldRow {
@@ -117,6 +122,7 @@ struct UiMarkdown {
 	UiColor cCodeText, cCodeBg, cCodeBorder;
 	UiColor cQuoteBar, cQuoteBg, cRule, cMarker;
 	UiColor cTableBorder, cTableHeader;
+	UiColor cTokKeyword, cTokString, cTokComment, cTokNumber;
 
 	float contentW;
 	int needEstimate;
@@ -131,6 +137,10 @@ struct UiMarkdown {
 
 	int measureCalls;
 	int imgBusy;
+	const char *clickedUrl;
+	int hoverRow, hoverLink;
+	int downRow, downLink;
+	int pressActive;
 
 	UiMarkdownLinkFn linkFn;
 	void *linkUser;
@@ -333,6 +343,14 @@ static void md_resolve_style(UiMarkdown *md, const UiTheme *t)
 		: (t ? t->border : 0xFFDDE1E6);
 	md->cTableHeader = md->st.tableHeaderBg ? md->st.tableHeaderBg
 		: (t ? t->card : 0xFFF6F7F9);
+	md->cTokKeyword = md->st.tokKeyword ? md->st.tokKeyword
+		: (t ? t->red : 0xFFCF222E);
+	md->cTokString = md->st.tokString ? md->st.tokString
+		: (t ? t->blue : 0xFF0A3069);
+	md->cTokComment = md->st.tokComment ? md->st.tokComment
+		: (t ? t->text3 : 0xFF6E7781);
+	md->cTokNumber = md->st.tokNumber ? md->st.tokNumber
+		: (t ? t->blue2 : 0xFF0550AE);
 }
 
 /* ── 行构建 ────────────────────────────────────────────────────────── */
@@ -358,6 +376,15 @@ static void md_row_release(UiMarkdown *md, MdRow *r)
 		UiImage_Destroy(r->img);
 		r->img = NULL;
 	}
+	if (r->inlImgs) {
+		for (i = 0; i < r->inlN; i++)
+			if (r->inlImgs[i]) UiImage_Destroy(r->inlImgs[i]);
+		md_free_(r->inlImgs);
+		r->inlImgs = NULL;
+	}
+	md_free_(r->inlStates);
+	r->inlStates = NULL;
+	r->inlN = 0;
 	r->cellN = 0;
 	r->tblCols = r->tblRows = 0;
 	r->tblH = 0.0f;
@@ -596,11 +623,267 @@ static void md_estimate_all(UiMarkdown *md)
 	md->needEstimate = 0;
 }
 
+/* ── 行内样式 / 图片 / 高亮 / 链接 ─────────────────────────────────── */
+
+static void md_image_load(UiMarkdown *md, UiImage *img, const char *url);
+
+static void md_apply_runs(UiMarkdown *md, GfxRichText *rt, const MdRun *runs,
+	int runCount)
+{
+	int i;
+	if (!rt || !runs) return;
+	for (i = 0; i < runCount; i++) {
+		const MdRun *r = &runs[i];
+		if (r->len <= 0) continue;
+		if (r->style & MD_R_BOLD) Gfx_RichBold(rt, r->start, r->len, 1);
+		if (r->style & MD_R_ITALIC) Gfx_RichItalic(rt, r->start, r->len, 1);
+		if (r->style & MD_R_STRIKE) Gfx_RichStrike(rt, r->start, r->len, 1);
+		if (r->style & MD_R_LINK) {
+			Gfx_RichColor(rt, r->start, r->len, md->cLink);
+			Gfx_RichUnderline(rt, r->start, r->len, 1);
+		} else if (r->style & MD_R_CODE) {
+			Gfx_RichColor(rt, r->start, r->len, md->cCodeText);
+		}
+	}
+}
+
+static int md_keyword(const wchar_t *w, int n)
+{
+	static const char *kws[] = {
+		"int", "char", "float", "double", "void", "bool", "long", "short",
+		"unsigned", "signed", "struct", "union", "enum", "typedef", "const",
+		"static", "extern", "return", "if", "else", "for", "while", "do",
+		"switch", "case", "break", "continue", "goto", "sizeof", "class",
+		"public", "private", "protected", "virtual", "override", "namespace",
+		"using", "template", "typename", "new", "delete", "this", "nullptr",
+		"true", "false", "def", "import", "from", "as", "pass", "elif",
+		"try", "except", "finally", "with", "lambda", "yield", "None", "True",
+		"False", "async", "await", "func", "var", "let", "package", "type",
+		"interface", "map", "chan", "go", "defer", "select", "fn", "impl",
+		"mut", "pub", "use", "match", "loop", "in", "not", "and", "or"
+	};
+	int i, k;
+	for (i = 0; i < (int)(sizeof(kws) / sizeof(kws[0])); i++) {
+		const char *s = kws[i];
+		for (k = 0; k < n && s[k]; k++)
+			if (w[k] != (wchar_t)(unsigned char)s[k]) break;
+		if (k == n && s[k] == 0) return 1;
+	}
+	return 0;
+}
+
+static int md_wordch(wchar_t c)
+{
+	return (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') ||
+		(c >= L'0' && c <= L'9') || c == L'_';
+}
+
+static void md_highlight_builtin(UiMarkdown *md, GfxRichText *rt, const MdBlock *b)
+{
+	const wchar_t *t = b->text16;
+	int n = b->len16, i = 0;
+	while (i < n) {
+		wchar_t c = t[i];
+		if (c == L'/' && i + 1 < n && t[i + 1] == L'/') {
+			int s = i;
+			while (i < n && t[i] != L'\n') i++;
+			Gfx_RichColor(rt, s, i - s, md->cTokComment);
+			continue;
+		}
+		if (c == L'/' && i + 1 < n && t[i + 1] == L'*') {
+			int s = i;
+			i += 2;
+			while (i + 1 < n && !(t[i] == L'*' && t[i + 1] == L'/')) i++;
+			if (i + 1 < n) i += 2;
+			Gfx_RichColor(rt, s, i - s, md->cTokComment);
+			continue;
+		}
+		if (c == L'#') {
+			int s = i;
+			while (i < n && t[i] != L'\n') i++;
+			Gfx_RichColor(rt, s, i - s, md->cTokComment);
+			continue;
+		}
+		if (c == L'"' || c == L'\'' || c == L'`') {
+			wchar_t q = c;
+			int s = i;
+			i++;
+			while (i < n) {
+				if (t[i] == L'\\' && i + 1 < n) { i += 2; continue; }
+				if (t[i] == q) { i++; break; }
+				if (t[i] == L'\n') break;
+				i++;
+			}
+			Gfx_RichColor(rt, s, i - s, md->cTokString);
+			continue;
+		}
+		if (c >= L'0' && c <= L'9') {
+			int s = i;
+			i++;
+			while (i < n && (md_wordch(t[i]) || t[i] == L'.')) i++;
+			Gfx_RichColor(rt, s, i - s, md->cTokNumber);
+			continue;
+		}
+		if ((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') || c == L'_') {
+			int s = i;
+			while (i < n && md_wordch(t[i])) i++;
+			if (md_keyword(t + s, i - s))
+				Gfx_RichColor(rt, s, i - s, md->cTokKeyword);
+			continue;
+		}
+		i++;
+	}
+}
+
+static void md_highlight(UiMarkdown *md, GfxRichText *rt, const MdBlock *b)
+{
+	if (!rt || !b) return;
+	if (md->tokFn) {
+		int cap = 512, n, i;
+		UiMdSpan *sp = (UiMdSpan *)md_alloc_(cap * (int)sizeof(UiMdSpan));
+		if (!sp) return;
+		n = md->tokFn(md->tokUser, MdDoc_Url(&md->doc, b->langOff),
+			b->text16, b->len16, sp, cap);
+		if (n > cap) n = cap;
+		for (i = 0; i < n; i++) {
+			UiColor c = 0;
+			if (sp[i].style == MD_TOK_KEYWORD) c = md->cTokKeyword;
+			else if (sp[i].style == MD_TOK_STRING) c = md->cTokString;
+			else if (sp[i].style == MD_TOK_COMMENT) c = md->cTokComment;
+			else if (sp[i].style == MD_TOK_NUMBER) c = md->cTokNumber;
+			if (c) Gfx_RichColor(rt, sp[i].start, sp[i].len, c);
+		}
+		md_free_(sp);
+		return;
+	}
+	md_highlight_builtin(md, rt, b);
+}
+
+static void md_inl_ensure(UiMarkdown *md, int index)
+{
+	MdRow *r = &md->rows[index];
+	MdBlock *b = r->blk;
+	int i;
+	if (!b || b->imgCount <= 0 || !md->gfx) return;
+	if (r->inlImgs) return;
+	r->inlImgs = (UiImage **)md_alloc_(b->imgCount * (int)sizeof(UiImage *));
+	r->inlStates = (int *)md_alloc_(b->imgCount * (int)sizeof(int));
+	if (!r->inlImgs || !r->inlStates) return;
+	r->inlN = b->imgCount;
+	for (i = 0; i < b->imgCount; i++) {
+		UiImage *im = UiImage_Create(md->gfx, md->net);
+		if (!im) continue;
+		if (md->ui) UiImage_SetContext(im, md->ui);
+		UiImage_SetFit(im, UI_IMG_FIT_CONTAIN);
+		md_image_load(md, im, MdDoc_Url(&md->doc, b->imgs[i].urlOff));
+		r->inlImgs[i] = im;
+		r->inlStates[i] = UiImage_State(im);
+	}
+	md_live_push(md, index);
+}
+
+static int md_inl_changed(UiMarkdown *md, int index)
+{
+	MdRow *r = &md->rows[index];
+	int i;
+	for (i = 0; i < r->inlN; i++) {
+		if (!r->inlImgs[i]) continue;
+		if (UiImage_State(r->inlImgs[i]) != r->inlStates[i]) return 1;
+	}
+	return 0;
+}
+
+static void md_apply_inline_images(UiMarkdown *md, int index, GfxRichText *rt,
+	float wrapW)
+{
+	MdRow *r = &md->rows[index];
+	MdBlock *b = r->blk;
+	float scale = (md->ui && md->ui->scale > 0.0f) ? md->ui->scale : 1.0f;
+	int i;
+	md_inl_ensure(md, index);
+	for (i = 0; i < r->inlN; i++) {
+		UiImage *im = r->inlImgs[i];
+		GfxBitmap *bmp;
+		int pw, ph;
+		float w, h;
+		if (!im || UiImage_State(im) != UI_IMG_READY) continue;
+		bmp = UiImage_Bitmap(im);
+		pw = UiImage_PixelWidth(im);
+		ph = UiImage_PixelHeight(im);
+		if (!bmp || pw <= 0 || ph <= 0) continue;
+		w = (float)pw / scale;
+		h = (float)ph / scale;
+		if (w > wrapW) { w = wrapW; h = w * (float)ph / (float)pw; }
+		if (h > md->imageMaxH) {
+			h = md->imageMaxH;
+			w = h * (float)pw / (float)ph;
+		}
+		Gfx_RichInlineImage(rt, b->imgs[i].start, b->imgs[i].len, bmp, w, h);
+		r->inlStates[i] = UI_IMG_READY;
+	}
+}
+
+static void md_link_chars(const MdBlock *b, int li, int *start, int *len)
+{
+	*start = 0;
+	*len = 0;
+	if (!b || li < 0 || li >= b->linkCount) return;
+	{
+		const MdLink *l = &b->links[li];
+		if (l->start < 0 || l->end <= l->start || l->end > b->runCount) return;
+		*start = b->runs[l->start].start;
+		*len = b->runs[l->end - 1].start + b->runs[l->end - 1].len - *start;
+	}
+}
+
+static int md_hit_links_at(UiMarkdown *md, UiRect content, int first, int last,
+	float mx, float my, int *rowOut, int *linkOut)
+{
+	int i, li;
+	*rowOut = -1;
+	*linkOut = -1;
+	for (i = first; i <= last; i++) {
+		MdRow *r;
+		float tx, ty, top, bottom;
+		float lx, ly;
+		int pos;
+		if (i < 0 || i >= md->rowCount) continue;
+		r = &md->rows[i];
+		if (!r->rt || r->blk->linkCount <= 0) continue;
+		md_row_pads(md, r, &top, &bottom);
+		tx = content.x + (float)r->indent + r->markerW;
+		ty = content.y + UiScrollLayout_ItemY(&md->layout, i) + top;
+		lx = mx - tx;
+		ly = my - ty;
+		if (lx < 0.0f || ly < 0.0f) continue;
+		if (!Gfx_RichHitTest(r->rt, lx, ly, &pos)) continue;
+		for (li = 0; li < r->blk->linkCount; li++) {
+			int start, len;
+			md_link_chars(r->blk, li, &start, &len);
+			if (len > 0 && pos >= start && pos < start + len) {
+				*rowOut = i;
+				*linkOut = li;
+				return 1;
+			}
+		}
+	}
+	return 0;
+}
+
+static int md_hit_links(UiMarkdown *md, UiContext *ui, UiRect content,
+	int first, int last, int *rowOut, int *linkOut)
+{
+	if (!ui || !ui->mouseOver || !Ui_InputAllowed(ui)) return 0;
+	return md_hit_links_at(md, content, first, last, ui->mouseX, ui->mouseY,
+		rowOut, linkOut);
+}
+
 static GfxRichText *md_row_make_rt(UiMarkdown *md, int index)
 {
 	MdRow *r = &md->rows[index];
 	float wrapW;
 	GfxFont *font;
+	float ls;
 	if (r->rt) return r->rt;
 	if (r->blk->type == MD_BLOCK_HR ||
 		r->blk->type == MD_BLOCK_IMAGE ||
@@ -610,9 +893,18 @@ static GfxRichText *md_row_make_rt(UiMarkdown *md, int index)
 	if (wrapW < 1.0f) wrapW = 1.0f;
 	font = md_row_font(md, r);
 	if (!font || !r->blk->text16) return NULL;
+	/* 含行内图片时用自然行距: UNIFORM 固定行高会压扁/裁掉行内对象 */
+	ls = r->blk->imgCount > 0 ? 0.0f : md->lineSpacing;
 	r->rt = Gfx_RichCreate(md->gfx, r->blk->text16, r->blk->len16,
-		font, wrapW, md->lineSpacing, GFX_RICH_WRAP);
-	if (r->rt) md_live_push(md, index);
+		font, wrapW, ls, GFX_RICH_WRAP);
+	if (r->rt) {
+		md_apply_runs(md, r->rt, r->blk->runs, r->blk->runCount);
+		if (r->blk->type == MD_BLOCK_CODE)
+			md_highlight(md, r->rt, r->blk);
+		else
+			md_apply_inline_images(md, index, r->rt, wrapW);
+		md_live_push(md, index);
+	}
 	return r->rt;
 }
 
@@ -801,7 +1093,10 @@ static int md_table_build(UiMarkdown *md, int index)
 					cell->len16, md->fBody, wrapW, md->lineSpacing,
 					GFX_RICH_WRAP);
 				r->cellRt[rr * cols + c] = rt;
-				if (rt) h = Gfx_RichHeight(rt);
+				if (rt) {
+					md_apply_runs(md, rt, cell->runs, cell->runCount);
+					h = Gfx_RichHeight(rt);
+				}
 			}
 			h += padY * 2.0f;
 			if (h > r->rowH[rr]) r->rowH[rr] = h;
@@ -867,6 +1162,10 @@ static void md_measure_visible(UiMarkdown *md, int first, int last)
 				md_measure_row(md, i);
 		} else if (r->blk->type == MD_BLOCK_TABLE) {
 			if (!r->cellRt) md_measure_row(md, i);
+		} else if (r->blk->imgCount > 0 && md_inl_changed(md, i)) {
+			if (r->rt) { Gfx_RichDestroy(r->rt); r->rt = NULL; }
+			r->measured = 0;
+			md_measure_row(md, i);
 		} else if (r->blk->type != MD_BLOCK_HR && !r->rt) {
 			md_row_make_rt(md, i);
 		}
@@ -1120,9 +1419,34 @@ static void md_draw_row(UiMarkdown *md, UiContext *ui, int index,
 		if (r->rt) Gfx_RichDraw(r->rt, md->gfx, x + md->codePadX,
 			y + top, md->cCodeText);
 		break;
-	default:
-		if (r->rt) Gfx_RichDraw(r->rt, md->gfx, x, y + top, md->cText);
+	default: {
+		int i, k;
+		if (r->rt) {
+			for (i = 0; i < r->blk->runCount; i++) {
+				const MdRun *run = &r->blk->runs[i];
+				GfxRect cr[16];
+				int cn;
+				if (!(run->style & MD_R_CODE) || run->len <= 0) continue;
+				cn = Gfx_RichRangeRects(r->rt, run->start, run->len, cr, 16);
+				for (k = 0; k < cn; k++)
+					Gfx_FillRoundRect(md->gfx, Ui_Rect(x + cr[k].x - 1.0f,
+						y + top + cr[k].y, cr[k].w + 2.0f, cr[k].h),
+						3.0f, md->cCodeBg);
+			}
+			Gfx_RichDraw(r->rt, md->gfx, x, y + top, md->cText);
+			if (md->hoverRow == index && md->hoverLink >= 0) {
+				GfxRect lr[8];
+				int s, l, ln;
+				md_link_chars(r->blk, md->hoverLink, &s, &l);
+				ln = Gfx_RichRangeRects(r->rt, s, l, lr, 8);
+				for (k = 0; k < ln; k++)
+					Gfx_FillRect(md->gfx, Ui_Rect(x + lr[k].x,
+						y + top + lr[k].y + lr[k].h - 2.0f,
+						lr[k].w, 2.0f), md->cLinkHover);
+			}
+		}
 		break;
+	}
 	}
 }
 
@@ -1138,6 +1462,8 @@ UiMarkdown *UiMarkdown_Create(Gfx *gfx, UiId id, UiNet *net)
 	md->net = net;
 	md->st = UiMarkdownStyle_Light();
 	md->followTheme = 1;
+	md->downRow = -1;
+	md->downLink = -1;
 	md->lineSpacing = 1.25f;
 	md->blockGap = 10.0f;
 	MdDoc_Init(&md->doc);
@@ -1289,8 +1615,7 @@ void UiMarkdown_SetTokenizeFn(UiMarkdown *md, UiMarkdownTokenizeFn fn, void *use
 
 const char *UiMarkdown_ClickedUrl(const UiMarkdown *md)
 {
-	(void)md;
-	return NULL;
+	return md ? md->clickedUrl : NULL;
 }
 
 int UiMarkdown_Busy(const UiMarkdown *md)
@@ -1312,11 +1637,6 @@ void UiMarkdown_SetFollowTail(UiMarkdown *md, int on)
 float UiMarkdown_ContentHeight(const UiMarkdown *md)
 {
 	return md ? md->layout.contentH : 0.0f;
-}
-
-float UiMarkdown_ScrollOffset(const UiMarkdown *md)
-{
-	return md ? md->sv.offset : 0.0f;
 }
 
 int UiMarkdown_DebugRows(const UiMarkdown *md)
@@ -1352,6 +1672,9 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 	md->ui = ui;
 	md->frame++;
 	md->imgBusy = 0;
+	md->clickedUrl = NULL;
+	md->hoverRow = -1;
+	md->hoverLink = -1;
 
 	md_resolve_style(md, ui->theme);
 	if (!md->fontsReady) md_build_fonts(md);
@@ -1413,16 +1736,44 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 		&first, &last);
 	{
 		UiRect content = UiScrollView_ContentRect(&md->sv);
-		int i;
+		int i, event = 0, hr = -1, hl = -1;
 		if (first < 0) first = 0;
 		if (last >= md->rowCount) last = md->rowCount - 1;
-		for (i = first; i <= last; i++) {
-			md_draw_row(md, ui, i, content);
-			if (md->rows[i].img && UiImage_Busy(md->rows[i].img))
-				md->imgBusy = 1;
+		if (Ui_RectContains(rc, ui->mouseX, ui->mouseY) &&
+			md_hit_links(md, ui, content, first, last, &hr, &hl)) {
+			md->hoverRow = hr;
+			md->hoverLink = hl;
+			Ui_SetCursor(ui, md->id, UI_CURSOR_HAND);
 		}
+		if (ui->mouseDown && ui->pressed == md->id) {
+			if (!md->pressActive) {
+				md->pressActive = 1;
+				md->downRow = hr;
+				md->downLink = hl;
+			}
+		} else {
+			if (ui->clicked == md->id && md->pressActive && hr >= 0 &&
+				hr == md->downRow && hl == md->downLink) {
+				MdRow *lr = &md->rows[hr];
+				MdLink *ll = &lr->blk->links[hl];
+				md->clickedUrl = MdDoc_Url(&md->doc, ll->urlOff);
+				if (md->linkFn) md->linkFn(md->linkUser, md->clickedUrl);
+				event = 1;
+			}
+			if (!ui->mouseDown) md->pressActive = 0;
+		}
+		for (i = first; i <= last; i++) {
+			MdRow *r2 = &md->rows[i];
+			int k;
+			md_draw_row(md, ui, i, content);
+			if (r2->img && UiImage_Busy(r2->img)) md->imgBusy = 1;
+			for (k = 0; k < r2->inlN; k++) {
+				if (r2->inlImgs[k] && UiImage_Busy(r2->inlImgs[k]))
+					md->imgBusy = 1;
+			}
+		}
+		UiScrollView_End(&md->sv, ui);
+		md_evict(md, first, last);
+		return event;
 	}
-	UiScrollView_End(&md->sv, ui);
-	md_evict(md, first, last);
-	return 0;
 }

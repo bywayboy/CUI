@@ -1,7 +1,8 @@
 # CUI Markdown 渲染组件 UiMarkdown 设计方案
 
-> 状态：阶段 1–3 已实现（2026-11-13），并已补齐**真实图片（含对齐）与真实表格**；
-> 阶段 5（链接/复制）与阶段 7（流式优化/压测/文档收尾）待实施
+> 状态：阶段 1–3 已实现（2026-11-13），并已补齐真实图片（块级 + 行内）、
+> 真实表格、链接点击与内置语法高亮；剩余：全文选区/复制、代码复制按钮、
+> 流式解析优化与文档收尾
 > 关联：`src/ui/ui_md_parse.*`（新增，纯解析器）、`src/ui/ui_md.*`（新增，组件）、
 > `src/gfx/gfx_rich.h` + `src/gfx/gfx_rich.cpp` + `src/gfx/gfx_internal.h`
 > （新增，可选富文本模块；`gfx.h` 核心不变）、
@@ -48,8 +49,6 @@
 
 - 全文选区 / Ctrl+C 复制（v2；DWrite `HitTestTextRange` 已为它铺路）；
 - 链接的键盘激活（v1 只有鼠标，无链接焦点模型）；
-- 行内图片（需要 `IDWriteInlineObject` 基线对齐，v2）；
-- 内置语法高亮（只留 tokenizer 回调，颜色由应用给）；
 - 可编辑（富文本编辑器是另一个量级的工程）；
 - HTML 块 / 行内 HTML 渲染（一律按转义纯文本显示，不做 HTML 引擎）；
 - 脚注、定义列表、数学公式、mermaid 等扩展；
@@ -273,6 +272,9 @@ int Gfx_RichHitTest(const GfxRichText *rt, float x, float y, int *pos16);
 /* 范围 → 矩形数组 (换行时可能多个); 返回写入个数, 不足 cap 时截断 */
 int Gfx_RichRangeRects(const GfxRichText *rt, int start, int len,
                        GfxRect *out, int cap);
+/* 行内对象: 用位图替换 [start,len), 参与断行/行高; 绘制时贴图 */
+int Gfx_RichInlineImage(GfxRichText *rt, int start, int len,
+                        GfxBitmap *bmp, float w, float h);
 ```
 
 ### 4.2 实现要点（`gfx_rich.cpp` + `gfx_internal.h`）
@@ -825,3 +827,46 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md);
 | --- | --- |
 | 主题 | 深色截图中正文/代码底/引用/边框/表格同步变色，状态栏显示主题 |
 | 打开文件 | 通过文件对话框载入 `cui_md_open_test.md`，标题/列表/表格正确渲染 |
+
+### 补充：行内图片 / 链接点击 / 语法高亮（2026-11-13，已完成）
+
+行内图片：
+
+- `Gfx_RichInlineImage` 用自实现 `IDWriteInlineObject` 替换 alt 文本范围，
+  参与断行与行高；布局绘制完成后按 `HitTestTextRange` 实测矩形贴位图。
+- Markdown 渲染层为每个行内图片维护一个 `UiImage`；解码完成后重建该行
+  `GfxRichText` 并回填行高，加载中显示 alt 文本。
+- **行距陷阱**：`DWRITE_LINE_SPACING_METHOD_UNIFORM` 固定行高会压扁行内对象，
+  含行内图片的段落改用自然行距。
+
+链接：
+
+- 链接 run 在布局创建时应用链接色 + 下划线；命中用 `Gfx_RichHitTest`
+  （点 → UTF-16 位置）+ 链接字符区间，不再做矩形换算。
+- 单 widget（整篇一个控件 ID）：`pressed == mdId` 时记录按下点；
+  `clicked == mdId` 且抬起位置仍在同一链接才触发；回调 + `clickedUrl`
+  本帧有效。悬停时手型光标并加粗下划线。
+
+语法高亮：
+
+- 内置通用词法器：`//`、`/* */`、`#` 注释；`" ' \`` 字符串；数字；常见
+  C/C++/JS/TS/Java/C#/Go/Rust/Python 关键字 → 主题 token 颜色。
+- `UiMarkdown_SetTokenizeFn` 优先于内置词法器；span 使用
+  `MD_TOK_KEYWORD/STRING/COMMENT/NUMBER`。
+
+实现中修正：
+
+1. `gfx_rich.cpp` 行内图片记录数组首次分配又踩 `HeapReAlloc(NULL)`，
+   空指针改 `HeapAlloc`。
+2. 链接点击最初依赖单帧 `ctx->down`，按下与抬起之间没有绘制帧时丢失；
+   改为基于 `pressed` 状态的 pressActive 跟踪。
+3. 行内图片高度被 UNIFORM 行距压住（见上）。
+
+验证：
+
+| 项 | 结果 |
+| --- | --- |
+| 行内图片 | UI 断言：段落行高 27.5 → 42；4K 截图行内小图与文字基线一致 |
+| 链接 | UI 级命中已通；原生点击状态栏显示 `https://example.com/markdown`，hover 手型 |
+| 高亮 | 注释灰、关键字红、字符串/数字蓝，深色主题同步 |
+| 回归 | `md_test` 305/0、`md_ui_test` 44/0、`gfx_rich_test` 26/0、`net_test` 877/0 |

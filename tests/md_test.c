@@ -510,6 +510,14 @@ static void test_links_refs(void)
 	CHECK(parse_(&d, "a [b](c) d"));
 	CHECK(wstr_eq(d.blocks[0].text16, L"a b d"));
 	CHECK(d.blocks[0].linkCount == 1);
+	if (d.blocks[0].linkCount == 1) {
+		const MdLink *l = &d.blocks[0].links[0];
+		CHECK(l->start >= 0 && l->end > l->start);
+		if (l->start >= 0 && l->end > l->start) {
+			const MdRun *r0 = &d.blocks[0].runs[l->start];
+			CHECK(r0->start == 2 && r0->len == 1);
+		}
+	}
 	MdDoc_Shutdown(&d);
 }
 
@@ -536,6 +544,10 @@ static void test_images(void)
 	CHECK(parse_(&d, "before ![alt](u) after"));
 	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_PARAGRAPH);
 	CHECK(wstr_eq(d.blocks[0].text16, L"before alt after"));
+	CHECK(d.blocks[0].imgCount == 1);
+	CHECK(d.blocks[0].imgs && d.blocks[0].imgs[0].start == 7 &&
+		d.blocks[0].imgs[0].len == 3);
+	CHECK(strcmp(MdDoc_Url(&d, d.blocks[0].imgs[0].urlOff), "u") == 0);
 	MdDoc_Shutdown(&d);
 
 	CHECK(parse_(&d, "![a](u \"left\")"));

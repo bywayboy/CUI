@@ -28,6 +28,9 @@ ID2D1SolidColorBrush *Gfx_IntBrush(Gfx *g, GfxColor c);
 /* 脏区可见性判断 (与 Gfx_IsVisible 一致, 避免跨模块重复实现) */
 int Gfx_IntVisible(Gfx *g, GfxRect r);
 
+/* 画位图 (和 Gfx_DrawBitmap 一致, 供富文本行内图片使用) */
+void Gfx_IntDrawBitmap(Gfx *g, GfxBitmap *b, GfxRect dst);
+
 /* GfxFont 的最小只读属性 (借用; 字体必须比调用方活得久) */
 IDWriteTextFormat *Gfx_IntFontFormat(GfxFont *f);
 float Gfx_IntFontSize(GfxFont *f);

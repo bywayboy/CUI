@@ -22,6 +22,14 @@ extern "C" {
 typedef struct UiMarkdown UiMarkdown;
 typedef struct UiMdSpan { int start, len; uint8_t style; } UiMdSpan;
 
+/* UiMdSpan.style (tokenizer 回调) */
+enum {
+	MD_TOK_KEYWORD = 1,
+	MD_TOK_STRING = 2,
+	MD_TOK_COMMENT = 3,
+	MD_TOK_NUMBER = 4
+};
+
 typedef void (*UiMarkdownLinkFn)(void *user, const char *url);
 typedef void (*UiMarkdownCopyFn)(void *user, const wchar_t *text16, int len16);
 /* 返回写入 out 的 span 数; start/len 为 UTF-16 码元 */

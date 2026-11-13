@@ -55,6 +55,12 @@ int Gfx_RichHitTest(const GfxRichText *rt, float x, float y, int *pos16);
 int Gfx_RichRangeRects(const GfxRichText *rt, int start, int len,
 	GfxRect *out, int cap);
 
+/* 用行内对象替换 [start, len) 的文本: 参与断行/行高, 绘制时画 bmp
+ * 到该范围矩形 (w/h 为 DIP)。bmp 必须比布局活得久; 同一范围重复设置
+ * 以最后一次为准。返回 1 成功。 */
+int Gfx_RichInlineImage(GfxRichText *rt, int start, int len,
+	GfxBitmap *bmp, float w, float h);
+
 #ifdef __cplusplus
 }
 #endif

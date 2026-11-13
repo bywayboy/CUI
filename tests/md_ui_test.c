@@ -341,7 +341,25 @@ void __stdcall startup(void)
 		CHECK(UiMarkdown_DebugMeasured(md) == 1);
 		CHECK(UiMarkdown_ContentHeight(md) > 35.0f);
 		CHECK(UiMarkdown_ContentHeight(md) < 80.0f);
+
+		/* 行内图片: 段落行高应被图片撑高 */
+		{
+			char doc2[700];
+			wsprintfA(doc2, "前 ![x](%s) 后\n", path);
+			UiMarkdown_SetText(md, doc2);
+			Ui_BeginFrame(&g_ctx);
+			Ui_EndFrame(&g_ctx);
+			Gfx_Begin(g);
+			Ui_BeginFrame(&g_ctx);
+			Ui_Markdown(md, &g_ctx, area);
+			Ui_EndFrame(&g_ctx);
+			CHECK(Gfx_End(g) == 1);
+			CHECK(UiMarkdown_DebugRows(md) == 1);
+			CHECK(UiMarkdown_DebugMeasured(md) == 1);
+			CHECK(UiMarkdown_ContentHeight(md) > 30.0f);
+		}
 	}
+
 
 done:
 	if (md) UiMarkdown_Destroy(md);

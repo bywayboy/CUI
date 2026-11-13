@@ -88,6 +88,12 @@ typedef struct MdCell {
 	int rawLen;
 } MdCell;
 
+/* 行内图片: 占据 text16 的 [start,len) (alt 文本), URL 在 urls 池 */
+typedef struct MdImgRef {
+	int start, len;
+	int urlOff, urlLen;
+} MdImgRef;
+
 typedef struct MdBlock {
 	uint8_t type;
 	uint8_t flags;       /* MD_BF_* */
@@ -110,6 +116,9 @@ typedef struct MdBlock {
 	int runCount, runCap;
 	MdLink *links;
 	int linkCount, linkCap;
+
+	MdImgRef *imgs;      /* 行内图片 (段落/标题) */
+	int imgCount, imgCap;
 
 	struct MdBlock *children;  /* QUOTE/LIST/ITEM */
 	int childCount, childCap;

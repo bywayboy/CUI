@@ -112,6 +112,37 @@ void __stdcall startup(void)
 		CHECK(pos >= 0 && pos <= len);
 		CHECK(Gfx_RichHitTest(wide, -1.0f, 0.0f, &pos) == 0);
 
+		/* 行内图片: 应参与行高 */
+		{
+			unsigned char px[8 * 8 * 4];
+			int i;
+			GfxBitmap *bmp;
+			GfxRichText *ir;
+			float h0;
+			for (i = 0; i < (int)sizeof(px); i++) px[i] = (unsigned char)(i * 7);
+			bmp = Gfx_CreateBitmap(g, 8, 8, px);
+			CHECK(bmp != NULL);
+			ir = Gfx_RichCreate(g, L"ab", 2, body, 400.0f, 0.0f,
+				GFX_RICH_WRAP);
+			CHECK(ir != NULL);
+			if (ir) {
+				int irc;
+				h0 = Gfx_RichHeight(ir);
+				irc = Gfx_RichInlineImage(ir, 0, 2, bmp, 48.0f, 32.0f);
+				{
+					char dbg[96];
+					sprintf(dbg, "inline rc=%d h=%.1f h0=%.1f\n", irc,
+						Gfx_RichHeight(ir), h0);
+					out_(dbg);
+				}
+				CHECK(irc == 1);
+				CHECK(Gfx_RichHeight(ir) >= 30.0f);
+				CHECK(Gfx_RichHeight(ir) > h0);
+				Gfx_RichDestroy(ir);
+			}
+			if (bmp) Gfx_DestroyBitmap(g, bmp);
+		}
+
 		Gfx_Begin(g);
 		Gfx_Clear(g, 0xFFF5F5F5);
 		Gfx_RichDraw(narrow, g, 20.0f, 20.0f, 0xFF202020);

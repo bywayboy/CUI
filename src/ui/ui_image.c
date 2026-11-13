@@ -436,6 +436,11 @@ int UiImage_PixelHeight(const UiImage *img)
 	return (img && img->state == UI_IMG_READY) ? img->bh : 0;
 }
 
+GfxBitmap *UiImage_Bitmap(const UiImage *img)
+{
+	return (img && img->state == UI_IMG_READY) ? img->bmp : NULL;
+}
+
 int UiImage_Busy(const UiImage *img)
 {
 	if (!img) return 0;

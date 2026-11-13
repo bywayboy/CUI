@@ -9,6 +9,7 @@
 #include <d2d1_1.h>
 #include <dwrite.h>
 #include <stdint.h>
+#include <new>
 
 #include "gfx/gfx.h"
 #include "gfx/gfx_rich.h"
@@ -16,11 +17,87 @@
 
 #define RICH_MAX_METRICS 64
 
+/* 行内对象只负责占位/行高; 位图由 Gfx_RichDraw 在布局绘制后贴上去。 */
+class RichInline : public IDWriteInlineObject {
+public:
+	LONG ref;
+	float w, h;
+
+	RichInline(float width, float height) : ref(1), w(width), h(height) {}
+
+	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **pp) override
+	{
+		if (!pp) return E_POINTER;
+		if (iid == __uuidof(IUnknown) || iid == __uuidof(IDWriteInlineObject)) {
+			*pp = static_cast<IDWriteInlineObject *>(this);
+			AddRef();
+			return S_OK;
+		}
+		*pp = NULL;
+		return E_NOINTERFACE;
+	}
+	ULONG STDMETHODCALLTYPE AddRef() override
+	{
+		return (ULONG)InterlockedIncrement(&ref);
+	}
+	ULONG STDMETHODCALLTYPE Release() override
+	{
+		LONG v = InterlockedDecrement(&ref);
+		if (v == 0) {
+			this->~RichInline();
+			HeapFree(GetProcessHeap(), 0, this);
+		}
+		return (ULONG)v;
+	}
+	HRESULT STDMETHODCALLTYPE GetMetrics(
+		DWRITE_INLINE_OBJECT_METRICS *metrics) override
+	{
+		if (!metrics) return E_POINTER;
+		metrics->width = w;
+		metrics->height = h;
+		metrics->baseline = h * 0.85f;
+		metrics->supportsSideways = FALSE;
+		return S_OK;
+	}
+	HRESULT STDMETHODCALLTYPE GetOverhangMetrics(
+		DWRITE_OVERHANG_METRICS *overhangs) override
+	{
+		if (!overhangs) return E_POINTER;
+		overhangs->left = overhangs->top = overhangs->right = overhangs->bottom = 0.0f;
+		return S_OK;
+	}
+	HRESULT STDMETHODCALLTYPE GetBreakConditions(
+		DWRITE_BREAK_CONDITION *before, DWRITE_BREAK_CONDITION *after) override
+	{
+		if (before) *before = DWRITE_BREAK_CONDITION_NEUTRAL;
+		if (after) *after = DWRITE_BREAK_CONDITION_NEUTRAL;
+		return S_OK;
+	}
+	HRESULT STDMETHODCALLTYPE Draw(void *clientDrawingContext,
+		IDWriteTextRenderer *renderer, FLOAT originX, FLOAT originY,
+		BOOL isSideways, BOOL isRightToLeft,
+		IUnknown *clientDrawingEffect) override
+	{
+		(void)clientDrawingContext; (void)renderer;
+		(void)originX; (void)originY; (void)isSideways;
+		(void)isRightToLeft; (void)clientDrawingEffect;
+		return S_OK;
+	}
+};
+
+typedef struct RichImgRec {
+	int start, len;
+	GfxBitmap *bmp;
+	float w, h;
+} RichImgRec;
+
 struct GfxRichText {
 	Gfx *g;
 	IDWriteTextLayout *layout;
 	int len16;
 	int baseWeight;   /* 400 / 700, 供粗体关闭时恢复 */
+	RichImgRec *imgs;
+	int imgCount, imgCap;
 };
 
 static void rich_clamp_range(const GfxRichText *rt, int *start, int *len)
@@ -90,6 +167,7 @@ void Gfx_RichDestroy(GfxRichText *rt)
 {
 	if (!rt) return;
 	if (rt->layout) rt->layout->Release();
+	if (rt->imgs) HeapFree(GetProcessHeap(), 0, rt->imgs);
 	HeapFree(GetProcessHeap(), 0, rt);
 }
 
@@ -175,6 +253,79 @@ void Gfx_RichDraw(GfxRichText *rt, Gfx *g, float x, float y, GfxColor color)
 	origin.x = x;
 	origin.y = y;
 	target->DrawTextLayout(origin, rt->layout, br, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+	/* 行内图片: 布局已完成断行, 按范围实测矩形贴位图 */
+	for (int i = 0; i < rt->imgCount; i++) {
+		DWRITE_HIT_TEST_METRICS m;
+		UINT32 actual = 0;
+		UINT32 n = 0;
+		ZeroMemory(&m, sizeof(m));
+		if (FAILED(rt->layout->HitTestTextRange((UINT32)rt->imgs[i].start,
+			(UINT32)rt->imgs[i].len, 0.0f, 0.0f, &m, 1, &actual)))
+			continue;
+		if (actual == 0) continue;
+		(void)n;
+		{
+			GfxRect dst;
+			dst.x = x + m.left;
+			dst.y = y + m.top;
+			dst.w = m.width;
+			dst.h = m.height;
+			Gfx_IntDrawBitmap(g, rt->imgs[i].bmp, dst);
+		}
+	}
+}
+
+int Gfx_RichInlineImage(GfxRichText *rt, int start, int len,
+	GfxBitmap *bmp, float w, float h)
+{
+	DWRITE_TEXT_RANGE range;
+	void *mem;
+	RichInline *obj;
+	int i;
+
+	if (!rt || !rt->layout || !bmp || len <= 0) return -1;
+	rich_clamp_range(rt, &start, &len);
+	if (len <= 0 || w < 1.0f || h < 1.0f) return -2;
+
+	if (rt->imgCount >= rt->imgCap) {
+		int nc = rt->imgCap ? rt->imgCap * 2 : 4;
+		RichImgRec *np = rt->imgs
+			? (RichImgRec *)HeapReAlloc(GetProcessHeap(), 0, rt->imgs,
+				(SIZE_T)nc * sizeof(RichImgRec))
+			: (RichImgRec *)HeapAlloc(GetProcessHeap(), 0,
+				(SIZE_T)nc * sizeof(RichImgRec));
+		if (!np) return -5;
+		rt->imgs = np;
+		rt->imgCap = nc;
+	}
+	mem = HeapAlloc(GetProcessHeap(), 0, sizeof(RichInline));
+	if (!mem) return -3;
+	obj = new (mem) RichInline(w, h);
+	range.startPosition = (UINT32)start;
+	range.length = (UINT32)len;
+	if (FAILED(rt->layout->SetInlineObject(obj, range))) {
+		obj->Release();
+		return -4;
+	}
+	obj->Release();   /* layout 持有引用 */
+
+	/* 同一范围只保留最新记录 */
+	for (i = 0; i < rt->imgCount; i++) {
+		if (rt->imgs[i].start == start && rt->imgs[i].len == len) {
+			rt->imgs[i].bmp = bmp;
+			rt->imgs[i].w = w;
+			rt->imgs[i].h = h;
+			return 1;
+		}
+	}
+	rt->imgs[rt->imgCount].start = start;
+	rt->imgs[rt->imgCount].len = len;
+	rt->imgs[rt->imgCount].bmp = bmp;
+	rt->imgs[rt->imgCount].w = w;
+	rt->imgs[rt->imgCount].h = h;
+	rt->imgCount++;
+	return 1;
 }
 
 int Gfx_RichHitTest(const GfxRichText *rt, float x, float y, int *pos16)

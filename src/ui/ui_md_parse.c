@@ -417,7 +417,8 @@ typedef struct MdInl {
 	int dn, dcap;
 	MdLink *links;
 	int ln, lcap;
-	int imgUrlOff, imgUrlLen, imgCount;
+	MdImgRef *imgs;
+	int imgCount, imgCap;
 } MdInl;
 
 static void inl_init(MdInl *b, MdDoc *d)
@@ -434,6 +435,7 @@ static void inl_free(MdInl *b)
 	md_free(b->rm);
 	md_free(b->dl);
 	md_free(b->links);
+	md_free(b->imgs);
 	ZeroMemory(b, sizeof(*b));
 }
 
@@ -810,6 +812,20 @@ static int inl_link(MdInl *b, const char *p, int len, int *consumed)
 	return 1;
 }
 
+static int inl_img_add(MdInl *b, int start, int len, int urlOff, int urlLen)
+{
+	MdImgRef *r;
+	if (!md_grow((void **)&b->imgs, &b->imgCap, b->imgCount + 1,
+		(int)sizeof(MdImgRef)))
+		return 0;
+	r = &b->imgs[b->imgCount++];
+	r->start = start;
+	r->len = len;
+	r->urlOff = urlOff;
+	r->urlLen = urlLen;
+	return 1;
+}
+
 static int inl_image(MdInl *b, const char *p, int len, int *consumed)
 {
 	int close, after, urlOff = -1, urlLen = 0, end;
@@ -842,10 +858,11 @@ static int inl_image(MdInl *b, const char *p, int len, int *consumed)
 	}
 	inl_init(&sub, b->d);
 	inl_parse(&sub, p + 2, close - 2, 0);
-	inl_merge(b, &sub, -1);
-	b->imgUrlOff = urlOff;
-	b->imgUrlLen = urlLen;
-	b->imgCount++;
+	{
+		int start = b->n;
+		inl_merge(b, &sub, -1);
+		inl_img_add(b, start, b->n - start, urlOff, urlLen);
+	}
 	*consumed = end;
 	return 1;
 }
@@ -1087,6 +1104,17 @@ static void inl_to_leaf(MdInl *b, wchar_t **outT, int *outLen,
 	b->links = NULL;
 	b->ln = 0;
 	b->lcap = 0;
+}
+
+/* 行内图片记录随叶子块转移 (段落/标题) */
+static void md_take_imgs(MdBlock *blk, MdInl *ib)
+{
+	blk->imgs = ib->imgs;
+	blk->imgCount = ib->imgCount;
+	blk->imgCap = ib->imgCap;
+	ib->imgs = NULL;
+	ib->imgCount = 0;
+	ib->imgCap = 0;
 }
 
 /* ── 块扫描 ───────────────────────────────────────────────────────── */
@@ -1794,6 +1822,7 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 				inl_parse(&ib, ln->p + cOff, cLen, 1);
 				inl_to_leaf(&ib, &b->text16, &b->len16, &b->runs,
 					&b->runCount, &b->links, &b->linkCount);
+				md_take_imgs(b, &ib);
 				inl_free(&ib);
 				md_free(b->raw);
 				b->raw = NULL;
@@ -1903,6 +1932,7 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 				inl_parse(&ib, b->raw, b->rawLen, 1);
 				inl_to_leaf(&ib, &b->text16, &b->len16, &b->runs,
 					&b->runCount, &b->links, &b->linkCount);
+				md_take_imgs(b, &ib);
 				inl_free(&ib);
 				md_free(b->raw);
 				b->raw = NULL;
@@ -2014,6 +2044,7 @@ static void md_inline_pass(MdDoc *d, MdBlock *b)
 			inl_parse(&ib, b->raw, b->rawLen, 1);
 			inl_to_leaf(&ib, &b->text16, &b->len16, &b->runs,
 				&b->runCount, &b->links, &b->linkCount);
+			md_take_imgs(b, &ib);
 			inl_free(&ib);
 			md_free(b->raw);
 			b->raw = NULL;
@@ -2070,6 +2101,13 @@ static uint32_t md_hash_block(MdDoc *d, MdBlock *b)
 			h *= MD_FNV_PRIME;
 		}
 	}
+	for (i = 0; i < b->imgCount; i++) {
+		const char *u = d->urls + b->imgs[i].urlOff;
+		while (*u) {
+			h ^= (uint32_t)(unsigned char)*u++;
+			h *= MD_FNV_PRIME;
+		}
+	}
 	if (b->type == MD_BLOCK_TABLE) {
 		h = md_hash_u32(h, (uint32_t)b->cols);
 		h = md_hash_u32(h, (uint32_t)b->rows);
@@ -2105,6 +2143,7 @@ static void md_free_block(MdBlock *b)
 	md_free(b->text16);
 	md_free(b->runs);
 	md_free(b->links);
+	md_free(b->imgs);
 	md_free(b->raw);
 	ZeroMemory(b, sizeof(*b));
 }

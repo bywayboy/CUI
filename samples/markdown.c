@@ -76,9 +76,11 @@ typedef struct App {
 	UiMarkdown *md;
 	int appended;
 	int fromFile;
-	char status[192];
+	char status[288];
+	char lastLink[192];
 	char *doc;
 	char imgPath[512];
+	char inlinePath[512];
 } App;
 
 static const char *g_intro =
@@ -114,9 +116,8 @@ static const char *g_intro =
 	"### 图片对齐（title 提示）\n"
 	"\n";
 
-static int make_bmp(const char *path)
+static int make_bmp(const char *path, int W, int H)
 {
-	enum { W = 480, H = 300 };
 	int stride = (W * 3 + 3) & ~3;
 	int size = 54 + stride * H;
 	unsigned char *buf = (unsigned char *)HeapAlloc(GetProcessHeap(),
@@ -169,9 +170,27 @@ static void build_sample(App *a)
 	if (n == 0 || n >= sizeof(a->imgPath) - 32)
 		lstrcpynA(a->imgPath, "C:\\Windows\\Temp\\", (int)sizeof(a->imgPath));
 	lstrcatA(a->imgPath, "cui_md_demo.bmp");
-	make_bmp(a->imgPath);
+	make_bmp(a->imgPath, 480, 300);
+	lstrcpynA(a->inlinePath, a->imgPath, (int)sizeof(a->inlinePath));
+	{
+		char *base = a->inlinePath;
+		char *p = base;
+		char *last = base;
+		while (*p) {
+			if (*p == '/' || *p == '\\') last = p + 1;
+			p++;
+		}
+		lstrcpynA(last, "cui_md_inline.bmp",
+			(int)sizeof(a->inlinePath) - (int)(last - base));
+	}
+	make_bmp(a->inlinePath, 96, 48);
 	{
 		char *p = a->imgPath;
+		while (*p) {
+			if (*p == '\\') *p = '/';
+			p++;
+		}
+		p = a->inlinePath;
 		while (*p) {
 			if (*p == '\\') *p = '/';
 			p++;
@@ -183,6 +202,19 @@ static void build_sample(App *a)
 	db_addf(&b, "![左对齐](%s \"left\")\n\n", a->imgPath);
 	db_addf(&b, "![居中](%s \"center\")\n\n", a->imgPath);
 	db_addf(&b, "![右对齐](%s \"right\")\n\n", a->imgPath);
+	db_addf(&b, "### 行内图片与链接\n\n");
+	db_addf(&b, "行内图片跟随文字：这里是一张小图 ![小图](%s) ，后面继续正文。\n\n",
+		a->inlinePath);
+	db_puts(&b,
+		"链接交互：点击 [CUI Markdown 链接](https://example.com/markdown) 会触发回调。\n\n"
+		"### 语法高亮\n\n"
+		"```c\n"
+		"// 注释\n"
+		"int main(void) {\n"
+		"    const char *s = \"hello\";\n"
+		"    return 42;\n"
+		"}\n"
+		"```\n\n");
 	db_puts(&b,
 		"### 真实表格\n"
 		"\n"
@@ -332,12 +364,19 @@ static void open_markdown(UiApp *app, App *a)
 	HeapFree(GetProcessHeap(), 0, text);
 }
 
+static void on_link(void *user, const char *url)
+{
+	App *a = (App *)user;
+	lstrcpynA(a->lastLink, url ? url : "(null)", (int)sizeof(a->lastLink));
+}
+
 static void on_init(UiApp *app, void *user)
 {
 	App *a = (App *)user;
 	build_sample(a);
 	a->md = UiMarkdown_Create(app->gfx, Ui_Id("md.doc", 0, 0), NULL);
 	if (a->md) {
+		UiMarkdown_SetLinkFn(a->md, on_link, a);
 		UiMarkdown_SetText(a->md, a->doc);
 		UiMarkdown_SetFollowTail(a->md, 0);
 	}
@@ -368,6 +407,10 @@ static void on_frame(UiApp *app, void *user)
 			UiMarkdown_DebugMeasured(a->md),
 			UiMarkdown_DebugMeasureCalls(a->md),
 			t->themeId == UI_THEME_DARK ? "深色" : "浅色");
+		if (a->lastLink[0]) {
+			lstrcatA(a->status, " ｜ 链接: ");
+			lstrcatA(a->status, a->lastLink);
+		}
 	} else {
 		lstrcpynA(a->status, "UiMarkdown 创建失败", (int)sizeof(a->status));
 	}

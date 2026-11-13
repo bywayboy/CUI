@@ -3010,3 +3010,8 @@ int Gfx_IntFontWeight(GfxFont *f)
 {
 	return f ? f->weight : 400;
 }
+
+void Gfx_IntDrawBitmap(Gfx *g, GfxBitmap *b, GfxRect dst)
+{
+	Gfx_DrawBitmap(g, b, dst);
+}
