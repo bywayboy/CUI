@@ -278,7 +278,8 @@ void Ui_RegisterWidget(UiContext *ctx, UiId id, UiRect rc)
 	w->layer = ctx->layer;
 	w->z = ctx->z;
 	w->cursor = UI_CURSOR_ARROW;
-	w->cursorPoll = 0;
+	w->hoverFn = NULL;
+	w->hoverUser = NULL;
 	w->scope = ctx->inputScope;
 }
 
@@ -321,12 +322,14 @@ void Ui_SetCursor(UiContext *ctx, UiId id, int kind)
 		if (ctx->widgets[i].id == id) ctx->widgets[i].cursor = (uint8_t)kind;
 }
 
-void Ui_SetCursorPoll(UiContext *ctx, UiId id, int on)
+void Ui_SetHoverFn(UiContext *ctx, UiId id, UiHoverFn fn, void *user)
 {
 	if (!ctx || !id) return;
 	for (int i = 0; i < ctx->widgetCount; i++)
-		if (ctx->widgets[i].id == id)
-			ctx->widgets[i].cursorPoll = on ? 1 : 0;
+		if (ctx->widgets[i].id == id) {
+			ctx->widgets[i].hoverFn = fn;
+			ctx->widgets[i].hoverUser = user;
+		}
 }
 
 int Ui_CursorAt(const UiContext *ctx, float x, float y)
@@ -431,11 +434,13 @@ void Ui_OnMouseMove(UiContext *ctx, float x, float y)
 	if (h != oldHover) {
 		InvalidateWidget(ctx, oldHover);
 		InvalidateWidget(ctx, h);
-	} else if (h != UI_ID_NONE) {
-		/* 单控件内部有精细命中区 (Markdown 链接等): 指针在控件内移动
-		 * 也必须重绘, 否则光标/悬停颜色会停在上一帧直到点击. */
+	}
+	/* 控件内精细命中区: 鼠标移动事件内同步判定, 只在状态变化时重绘 */
+	if (h != UI_ID_NONE) {
 		int wi = widget_at(ctx, x, y);
-		if (wi >= 0 && ctx->widgets[wi].cursorPoll) InvalidateWidget(ctx, h);
+		if (wi >= 0 && ctx->widgets[wi].hoverFn &&
+			ctx->widgets[wi].hoverFn(ctx->widgets[wi].hoverUser, ctx, x, y))
+			InvalidateWidget(ctx, h);
 	}
 	if (ctx->drag.active) InvalidateWidget(ctx, ctx->drag.id);
 	else if (ctx->pressed) InvalidateWidget(ctx, ctx->pressed);

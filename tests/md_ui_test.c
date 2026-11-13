@@ -360,6 +360,78 @@ void __stdcall startup(void)
 		}
 	}
 
+	/* 实时光标解析 (WM_SETCURSOR 直接调用): 与帧/重绘无关 */
+	{
+		DynBuf cb;
+		int i, x, y, hand = 0, cx = 0, cy = 0, yEnd;
+		ZeroMemory(&cb, sizeof(cb));
+		for (i = 0; i < 10; i++)
+			db_addf(&cb, "段落 %d 用于把链接推到可视区中部。\n\n", i + 1);
+		db_puts(&cb, "链接：[点我](https://example.com) 结束\n\n");
+		for (i = 0; i < 30; i++)
+			db_addf(&cb, "尾部段落 %d。\n\n", i + 1);
+		UiMarkdown_SetText(md, cb.p);
+		db_free(&cb);
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		CHECK(Ui_HitTest(&g_ctx, area.x + 40.0f, area.y + 40.0f)
+			!= UI_ID_NONE);
+		yEnd = (int)(area.y + area.h) - 4;
+		/* 事件路径: 逐点投递鼠标移动, 控件在移动事件内更新光标 */
+		for (y = (int)area.y + 12; y < yEnd && !hand; y += 6)
+			for (x = (int)area.x + 4; x < (int)(area.x + area.w) - 4; x += 6) {
+				Ui_OnMouseMove(&g_ctx, (float)x, (float)y);
+				if (Ui_CursorAt(&g_ctx, (float)x, (float)y)
+					== UI_CURSOR_HAND) {
+					hand = 1;
+					cx = x;
+					cy = y;
+					break;
+				}
+			}
+		CHECK(hand == 1);
+		if (hand) {
+			/* 链接仍可见但指针在右侧空白: 移动事件后应为箭头 */
+			Ui_OnMouseMove(&g_ctx, area.x + area.w - 10.0f, (float)cy);
+			CHECK(Ui_CursorAt(&g_ctx, area.x + area.w - 10.0f,
+				(float)cy) != UI_CURSOR_HAND);
+			/* 滚动改变内容相对指针位置: 原点不再命中, 新位置仍可命中 */
+			Ui_OnMouseMove(&g_ctx, (float)cx, (float)cy);
+			CHECK(Ui_CursorAt(&g_ctx, (float)cx, (float)cy)
+				== UI_CURSOR_HAND);
+			Ui_OnMouseWheel(&g_ctx, (float)cx, (float)cy, -3.0f);
+			for (i = 0; i < 6; i++) {
+				Sleep(25);
+				Gfx_Begin(g);
+				Ui_BeginFrame(&g_ctx);
+				Ui_Markdown(md, &g_ctx, area);
+				Ui_EndFrame(&g_ctx);
+				CHECK(Gfx_End(g) == 1);
+			}
+			CHECK(Ui_CursorAt(&g_ctx, (float)cx, (float)cy)
+				!= UI_CURSOR_HAND);
+			{
+				int h2 = 0;
+				for (y = (int)area.y + 12; y < yEnd && !h2; y += 6)
+					for (x = (int)area.x + 4;
+						x < (int)(area.x + area.w) - 4; x += 6) {
+						Ui_OnMouseMove(&g_ctx, (float)x, (float)y);
+						if (Ui_CursorAt(&g_ctx, (float)x,
+							(float)y) == UI_CURSOR_HAND) {
+							h2 = 1;
+							break;
+						}
+					}
+				CHECK(h2 == 1);
+			}
+		}
+	}
+
 	/* 容器: 标题区抬高首行, 子块照常分行 */
 	{
 		const char *cdoc =
@@ -367,6 +439,14 @@ void __stdcall startup(void)
 			"> [!NOTE]\n> 警报正文\n";
 		UiMarkdown_SetText(md, cdoc);
 		CHECK(UiMarkdown_DebugRows(md) == 3);
+		/* 两帧: 首帧从旧滚动位置测量并回到顶部, 次帧补齐首行 */
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
 		Ui_BeginFrame(&g_ctx);
 		Ui_EndFrame(&g_ctx);
 		Gfx_Begin(g);

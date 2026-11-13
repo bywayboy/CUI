@@ -60,6 +60,7 @@ typedef struct MdRow {
 	int measured;
 	float measuredW;
 	GfxRichText *rt;
+	float rtH;           /* 布局高度缓存: 命中预筛, 避免逐移动 DWrite 查询 */
 
 	/* IMAGE */
 	UiImage *img;
@@ -444,6 +445,7 @@ static void md_row_release(UiMarkdown *md, MdRow *r)
 	r->cellN = 0;
 	r->tblCols = r->tblRows = 0;
 	r->tblH = 0.0f;
+	r->rtH = 0.0f;
 	r->imgReady = 0;
 	r->imgW = r->imgH = 0.0f;
 }
@@ -970,6 +972,7 @@ static int md_hit_links_at(UiMarkdown *md, UiRect content, int first, int last,
 		lx = mx - tx;
 		ly = my - ty;
 		if (lx < 0.0f || ly < 0.0f) continue;
+		if (r->rtH > 0.0f && ly >= r->rtH) continue;   /* 行内快速预筛 */
 		if (!Gfx_RichHitTest(r->rt, lx, ly, &pos)) continue;
 		for (li = 0; li < r->blk->linkCount; li++) {
 			int start, len;
@@ -990,6 +993,30 @@ static int md_hit_links(UiMarkdown *md, UiContext *ui, UiRect content,
 	if (!ui || !ui->mouseOver || !Ui_InputAllowed(ui)) return 0;
 	return md_hit_links_at(md, content, first, last, ui->mouseX, ui->mouseY,
 		rowOut, linkOut);
+}
+
+/* 控件内悬停判定 (鼠标移动事件内同步执行): 只在链接进出时返回 1
+ * 请求重绘; 光标按需更新. */
+static int md_hover_fn(void *user, UiContext *ui, float x, float y)
+{
+	UiMarkdown *md = (UiMarkdown *)user;
+	UiRect content;
+	int first, last, r = -1, l = -1, changed;
+	if (!md || !ui || !md->hasLinks || md->rowCount <= 0) return 0;
+	if (md->sv.inner.w > 0.0f && md->sv.inner.h > 0.0f &&
+		Ui_RectContains(md->sv.inner, x, y)) {
+		content = UiScrollView_ContentRect(&md->sv);
+		UiScrollLayout_VisibleRange(&md->layout, md->sv.offset,
+			md->sv.inner.h, &first, &last);
+		if (first < 0) first = 0;
+		if (last >= md->rowCount) last = md->rowCount - 1;
+		md_hit_links_at(md, content, first, last, x, y, &r, &l);
+	}
+	changed = (r != md->hoverRow || l != md->hoverLink);
+	md->hoverRow = r;
+	md->hoverLink = l;
+	Ui_SetCursor(ui, md->id, r >= 0 ? UI_CURSOR_HAND : UI_CURSOR_ARROW);
+	return changed;
 }
 
 /* 悬停只改颜色: 沿用布局自带下划线, 不再叠加加粗下划线 */
@@ -1045,6 +1072,7 @@ static GfxRichText *md_row_make_rt(UiMarkdown *md, int index)
 			md_highlight(md, r->rt, r->blk);
 		else
 			md_apply_inline_images(md, index, r->rt, wrapW);
+		r->rtH = Gfx_RichHeight(r->rt);
 		md_live_push(md, index);
 	}
 	return r->rt;
@@ -1898,7 +1926,6 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 	UiScrollView_Tick(&md->sv, ui, dt);
 
 	(void)Ui_State(ui, md->id, rc, 1);
-	Ui_SetCursorPoll(ui, md->id, md->hasLinks);
 
 	UiScrollLayout_SetWidth(&md->layout, contentW);
 	if (contentW != md->contentW) {
@@ -1939,6 +1966,10 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 
 	UiScrollView_Begin(&md->sv, ui, rc, contentW,
 		UiScrollLayout_ContentHeight(&md->layout));
+	/* 悬停钩子放在 ScrollView 注册之后: 它用同一个 id 再注册视口,
+	 * 后注册项才是命中项. */
+	if (md->hasLinks)
+		Ui_SetHoverFn(ui, md->id, md_hover_fn, md);
 
 	if (anchorValid)
 		UiScrollView_ScrollTo(&md->sv, ui, anchorTarget, 0);
@@ -1963,6 +1994,8 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 			md->hoverRow = hr;
 			md->hoverLink = hl;
 			Ui_SetCursor(ui, md->id, UI_CURSOR_HAND);
+		} else {
+			Ui_SetCursor(ui, md->id, UI_CURSOR_ARROW);
 		}
 		md_hover_set(md, md->hoverRow, md->hoverLink);
 		if (ui->mouseDown && ui->pressed == md->id) {

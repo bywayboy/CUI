@@ -1020,3 +1020,33 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md);
 标题同时改用 12 bold 小字号（新增内部 `fSmallBold`），提升可读性。
 验证：浅/深 4K 截图标题与底/色条对比清晰；`md_test` 341/0、
 `md_ui_test` 49/0。
+
+### 修正（二）：链接光标 —— 事件驱动（2026-11-13，最终方案）
+
+前两版（逐帧重绘、WM_SETCURSOR 实时查询）都不对，根因与正确做法：
+
+1. 真实移动先发 `WM_SETCURSOR`（OS 行为，无法避免），若处理函数实时做
+   DWrite 命中会带来逐移动成本；若回放上一帧缓存，单控件内的命中区又会
+   滞后/被同 id 后注册的 ScrollView 视口项覆盖。
+2. 正确模型：**控件逻辑在鼠标移动事件内判断**。`Ui_OnMouseMove` 命中
+   控件后调用该控件的 `UiHoverFn`（新增）；Markdown 在其中用当前滚动
+   偏移 + 可见行 + `rtH` 行内预筛做点命中，只在链接进入/离开时返回 1
+   请求重绘，并用 `Ui_SetCursor` 更新控件光标。
+3. `WM_MOUSEMOVE` 处理在 `Ui_OnMouseMove` 之后立即 `app_apply_cursor`：
+   只有 `GetCursor() != cur` 才 `SetCursor`，光标变化与重绘无关。
+4. `WM_SETCURSOR` 只回放缓存的控件光标，不再做任何命中查询；同样
+   “不同才 SetCursor”。滚动（无鼠标移动）由滚动动画帧中的
+   `Ui_Markdown` 重新判定并更新缓存光标，帧末应用。
+
+清理：移除上一版无效的 `Ui_SetCursorPoll` / `Ui_SetCursorFn` 及
+`cursorPoll/cursorFn` 字段；`UiHoverFn` 取代之，返回 1 才重绘，
+不是每次移动都重绘。已删除临时调试 API。
+
+验证：
+
+| 项 | 结果 |
+| --- | --- |
+| 事件路径 | 投递 `WM_MOUSEMOVE`：链接上 HAND → 空白 ARROW → 移回 HAND，无点击/无重绘依赖 |
+| 静止滚动 | 指针固定，滚轮让链接移走：HAND → ARROW |
+| headless | `md_ui_test` 63/0：移动事件找链接 HAND、右侧空白 ARROW、滚动后原坐标失效且新坐标仍 HAND |
+| 回归 | `md_test` 341/0、`gfx_rich_test` 34/0、`net_test` 877/0；19 exe 0CRT；build.cmd CRLF 201/201 |

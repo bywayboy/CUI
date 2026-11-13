@@ -228,11 +228,14 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 	case WM_SETCURSOR:
 		if (LOWORD(lp) == HTCLIENT && app && app->ui.scale > 0.0f) {
+			HCURSOR cur;
 			POINT pt;
 			GetCursorPos(&pt);
 			ScreenToClient(hwnd, &pt);
-			SetCursor(Ui_CursorHandle(Ui_CursorAt(&app->ui,
-				(float)pt.x / app->ui.scale, (float)pt.y / app->ui.scale)));
+			cur = Ui_CursorHandle(Ui_CursorAt(&app->ui,
+				(float)pt.x / app->ui.scale, (float)pt.y / app->ui.scale));
+			/* 只在需要时改光标: WM_SETCURSOR 每次移动都会来 */
+			if (cur && GetCursor() != cur) SetCursor(cur);
 			return TRUE;
 		}
 		break;
@@ -254,6 +257,8 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		if (app->cb && app->cb->mouse)
 			app->cb->mouse(app, UI_APP_MOUSE_MOVE, x, y, app->user);
 		Ui_OnMouseMove(&app->ui, x, y);
+		/* 悬停回调已同步更新控件光标: 立即应用, 不等重绘 */
+		app_apply_cursor(app);
 		return 0;
 	}
 	case WM_MOUSELEAVE:

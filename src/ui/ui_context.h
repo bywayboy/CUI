@@ -35,6 +35,11 @@ enum {
 	UI_CURSOR_SIZE_WE
 };
 
+/* 控件内悬停判定: 指针在此控件上移动时调用 (WM_MOUSEMOVE 内同步执行).
+ * 控件可更新内部 hover 状态并用 Ui_SetCursor 声明光标; 返回 1 = 视觉
+ * 状态变化, 需要重绘 (返回 0 时不额外触发帧). */
+typedef int (*UiHoverFn)(void *user, UiContext *ctx, float x, float y);
+
 typedef struct {
 	UiId id;
 	UiRect rect;
@@ -42,7 +47,8 @@ typedef struct {
 	int layer;
 	int z;
 	uint8_t cursor;   /* UI_CURSOR_*: 命中此控件时的鼠标形状 */
-	uint8_t cursorPoll; /* 1 = 鼠标在控件内移动时逐次重绘 (命中目标会变化) */
+	UiHoverFn hoverFn; /* 非 NULL: 指针在控件上移动时调用 */
+	void *hoverUser;
 	UiId scope;
 } UiWidget;
 
@@ -134,9 +140,9 @@ UiId Ui_HitTest(const UiContext *ctx, float x, float y);
 /* 给本帧已注册的控件声明光标形状 (同一 ID 的多次注册一起生效, 例如
  * TextArea 的 surface + ScrollView viewport). 松开/不声明时回到箭头. */
 void Ui_SetCursor(UiContext *ctx, UiId id, int kind);
-/* 控件内部有精细命中区 (如文档链接): 标记后鼠标在控件内每次移动都会
- * 触发展开/重绘, 使 Ui_SetCursor 的逐位置判定能跟上指针. */
-void Ui_SetCursorPoll(UiContext *ctx, UiId id, int on);
+/* 注册控件内悬停判定 (见 UiHoverFn). 控件内部有链接等精细命中区时,
+ * 在鼠标移动事件中同步判断光标/悬停, 只在变化时改光标并请求重绘. */
+void Ui_SetHoverFn(UiContext *ctx, UiId id, UiHoverFn fn, void *user);
 
 /* 命中处应显示的 UI_CURSOR_*; 无控件/模态遮罩时返回箭头. */
 int  Ui_CursorAt(const UiContext *ctx, float x, float y);
