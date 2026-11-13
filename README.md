@@ -81,7 +81,7 @@ CUI/
 └─ src/
    ├─ demo.c              标准样例（UiApp 壳 + 组件，约 340 行）
    ├─ edit.c / edit.h     自绘单行编辑框 UiEdit（选区/剪贴板/滚动/IME 组合）
-   ├─ log.c / log.h       调试日志（OutputDebugString；可选 /DSC_LOG_FILE 落盘）
+   ├─ log.c / log.h       调试日志（默认 SC_LOG_ENABLE=0 全关；开发加 /DSC_LOG_ENABLE=1，文件落盘再加 /DSC_LOG_FILE）
    ├─ lib/crtstub.c       0CRT 存根（mem*/str*/sprintf/malloc/浮点等）
    ├─ lib/heap.*          通用侵入式最小堆（IO 定时器 + UiTimer 共用）
    ├─ net/

@@ -419,10 +419,7 @@ static void on_frame(UiApp *app, void *user)
 	area = Ui_Rect(x, y, w, app->h - y - 20.0f);
 	if (a->md) {
 		Ui_Markdown(a->md, &app->ui, area);
-		wsprintfA(a->status, "行 %d / 实测 %d / 调用 %d ｜ %s ｜ 滚轮滚动",
-			UiMarkdown_DebugRows(a->md),
-			UiMarkdown_DebugMeasured(a->md),
-			UiMarkdown_DebugMeasureCalls(a->md),
+		wsprintfA(a->status, "%s ｜ 滚轮滚动；链接可点击",
 			t->themeId == UI_THEME_DARK ? "深色" : "浅色");
 		if (a->lastLink[0]) {
 			lstrcatA(a->status, " ｜ 链接: ");

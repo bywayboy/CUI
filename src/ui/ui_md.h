@@ -87,7 +87,7 @@ void UiMarkdown_ScrollToTop(UiMarkdown *md);
 void UiMarkdown_SetFollowTail(UiMarkdown *md, int on);
 float UiMarkdown_ContentHeight(const UiMarkdown *md);
 
-/* 诊断 (阶段 3 懒测量验收): 行数 / 已实测行数 / 本帧实测次数 */
+/* 测试访问器 (headless 验收懒测量/行数), 不产生任何输出. */
 int UiMarkdown_DebugRows(const UiMarkdown *md);
 int UiMarkdown_DebugMeasured(const UiMarkdown *md);
 int UiMarkdown_DebugMeasureCalls(const UiMarkdown *md);

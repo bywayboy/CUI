@@ -252,14 +252,6 @@ void __stdcall startup(void)
 	CHECK(Gfx_End(g) == 1);
 	t_frame2 = now_ms() - t0;
 	CHECK(t_frame2 < 50.0);
-	{
-		char line[240];
-		sprintf(line,
-			"md_ui_test: rows=%d measured=%d calls=%d parse=%.1fms "
-			"frame1=%.1fms frame2=%.1fms\n",
-			rows, measured1, calls1, t_parse, t_frame, t_frame2);
-		out_(line);
-	}
 
 	/* 滚轮向下: 只新增可见行附近的实测 */
 	Ui_OnMouseWheel(&g_ctx, 380.0f, 400.0f, -3.0f);

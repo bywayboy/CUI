@@ -1,12 +1,14 @@
 /*
  * log.c - 调试日志实现（0CRT 兼容）
- * 输出调试通道: OutputDebugStringA(DebugView 里能看到)
- * 文件日志: 默认关闭；开发构建加 /DSC_LOG_FILE 后写 exe 同目录 .log
+ * 默认 SC_LOG_ENABLE=0: 本文件不生成任何代码, 调用点由 log.h 的宏消除.
+ * 打开后: OutputDebugStringA(DebugView); 叠加 SC_LOG_FILE 时再写 .log.
  * 注意: crtstub 的 vsprintf 不支持 %02d 宽度格式, 时间戳手动补零
  */
 #include <windows.h>
 #include <stdarg.h>
 #include "log.h"
+
+#if SC_LOG_ENABLE
 
 int vsprintf(char *buf, const char *fmt, va_list ap);
 size_t strlen(const char *s);
@@ -103,3 +105,5 @@ void Log_Write(const char *fmt, ...)
 	OutputDebugStringA(buf);
 	LeaveCriticalSection(&g_lock);
 }
+
+#endif /* SC_LOG_ENABLE */

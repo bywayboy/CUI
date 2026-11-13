@@ -3683,8 +3683,11 @@ Log_Write("[app] ready %d", 1);      /* 任意线程 */
 Log_Close();
 ```
 
-- 始终输出到 `OutputDebugStringA`，用 DebugView / VS 输出窗口查看。
-- 开发构建加 `/DSC_LOG_FILE` 后，会写 `exe 同目录 .log`。
+- **默认完全关闭**：`SC_LOG_ENABLE=0`（log.h 默认值），`Log_Init/Log_Write/
+  Log_Close` 在调用点展开为 no-op，gfx/net/组件内的诊断日志一并消失，
+  exe 中也不保留格式串；开发排查时加 `/DSC_LOG_ENABLE=1` 打开。
+- 打开后输出到 `OutputDebugStringA`，用 DebugView / VS 输出窗口查看。
+- 再叠加 `/DSC_LOG_FILE` 才会写 `exe 同目录 .log`。
 - 日志前缀 `[HH:MM:SS.mmm]` 由代码手动补零。
 
 ### 15.2 渲染诊断
