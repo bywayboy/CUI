@@ -34,8 +34,10 @@ typedef struct UiTextArea {
 	UiRect rc;             /* 最近一次字段矩形 */
 	UiRect textRc;         /* 本帧文本视口 (sv.inner) */
 	float lineH;
+	float lineScale;       /* lineH 对齐设备像素时使用的 scale */
 	float wrapW;
 	float lastWrapW;
+	float drawOffset;      /* 设备像素对齐的绘制位移: 只用于绘制, 不回写 */
 
 	int *lineStart;        /* 动态行索引 */
 	int *lineLen;

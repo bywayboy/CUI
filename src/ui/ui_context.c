@@ -362,6 +362,14 @@ int Ui_CursorAt(const UiContext *ctx, float x, float y)
 	return i >= 0 ? (int)ctx->widgets[i].cursor : UI_CURSOR_ARROW;
 }
 
+float Ui_PxSnap(const UiContext *ctx, float dip)
+{
+	float s = (ctx && ctx->scale > 0.0f) ? ctx->scale : 1.0f;
+	float px = dip * s;
+	int n = (int)(px >= 0.0f ? px + 0.5f : px - 0.5f);
+	return (float)n / s;
+}
+
 HCURSOR Ui_CursorHandle(int kind)
 {
 	LPCWSTR name = IDC_ARROW;

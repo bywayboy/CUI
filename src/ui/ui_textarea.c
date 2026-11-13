@@ -937,6 +937,7 @@ static void ta_place_from_point(UiTextArea *ta, Gfx *g, GfxFont *f,
 	int line, col, pos;
 	float lineH = ta->lineH > 0.0f ? ta->lineH : 20.0f;
 	if (!ta || ta->lineCount <= 0) return;
+	/* 命中映射用精确 offset: snap 只服务绘制, 不参与计算 */
 	line = (int)((y - ta->textRc.y + ta->sv.offset) / lineH);
 	if (line < 0) line = 0;
 	if (line >= ta->lineCount) line = ta->lineCount - 1;
@@ -1163,7 +1164,7 @@ static void ta_draw_selection(UiTextArea *ta, Gfx *g, GfxFont *f,
 		int le = ls + ta->lineLen[i];
 		int x0i = a > ls ? a : ls;
 		int x1i = b < le ? b : le;
-		float y = ta->textRc.y + (float)i * ta->lineH - ta->sv.offset;
+		float y = ta->textRc.y + (float)i * ta->lineH - ta->drawOffset;
 		if (x1i > x0i) {
 			float x0 = ta->textRc.x + ta_x_of(ta, g, f, i, x0i - ls);
 			float x1 = ta->textRc.x + ta_x_of(ta, g, f, i, x1i - ls);
@@ -1257,10 +1258,17 @@ int Ui_TextArea(UiTextArea *ta, UiContext *ui, UiRect rc, int enabled)
 	st = Ui_DrawSurface(ui, ta->id, rc, &ss, enabled);
 	Ui_SetPressPoll(ui, ta->id, 1);   /* 拖选需要跟随指针重绘 */
 
+	if (ta->lineScale != ui->scale) {
+		ta->lineH = 0.0f;      /* DPI/scale 变化: 行距需按新像素网格重算 */
+		ta->lineScale = ui->scale;
+	}
 	lineH = ta->lineH;
 	if (lineH <= 0.0f) {
 		lineH = Gfx_TextHeight(g, f) + TA_LINE_GAP;
 		if (lineH < 14.0f) lineH = 14.0f;
+		/* 行距对齐设备像素: 否则行起点在两行之间来回取整, 滚动时
+		 * 表现为行距跳动 */
+		lineH = Ui_PxSnap(ui, lineH);
 		ta->lineH = lineH;
 	}
 	ta->sv.cfg.wheelStep = lineH * 3.0f;
@@ -1297,6 +1305,8 @@ int Ui_TextArea(UiTextArea *ta, UiContext *ui, UiRect rc, int enabled)
 	contentH = (float)ta->lineCount * lineH;
 	if (contentH < lineH) contentH = lineH;
 	UiScrollView_Begin(&ta->sv, ui, rc, wrapW, contentH);
+	/* 绘制/命中统一用设备像素对齐后的位移, 避免亚像素相位抖动 */
+	ta->drawOffset = Ui_PxSnap(ui, ta->sv.offset);
 	ta->textRc = ta->sv.inner;
 	/* 文本视口内显示 I 形光标; 滚动条 track/thumb 是后注册的独立控件,
 	 * 在滚动条上仍然保持箭头. */
@@ -1345,7 +1355,7 @@ int Ui_TextArea(UiTextArea *ta, UiContext *ui, UiRect rc, int enabled)
 	caretCol = ta_col_of(ta, caretLine, ta->caret);
 	compW = ta_measure_w(ta, g, f, ta->imeEdit.comp, ta->imeEdit.compLen);
 	for (i = first; i <= last; i++) {
-		float y = ta->textRc.y + (float)i * lineH - ta->sv.offset;
+		float y = ta->textRc.y + (float)i * lineH - ta->drawOffset;
 		if (ta->imeEdit.compLen > 0 && i == caretLine)
 			ta_draw_composition(ta, g, f, i, y, textCol);
 		else
@@ -1359,7 +1369,7 @@ int Ui_TextArea(UiTextArea *ta, UiContext *ui, UiRect rc, int enabled)
 	}
 
 	caretX = ta->textRc.x + ta_x_of(ta, g, f, caretLine, caretCol) + compW;
-	caretY = ta->textRc.y + (float)caretLine * lineH - ta->sv.offset;
+	caretY = ta->textRc.y + (float)caretLine * lineH - ta->drawOffset;
 	if (focused && ta->blinkOn && !ta->readonly) {
 		Gfx_Line(g, caretX, caretY + 2.0f, caretX,
 			caretY + lineH - 2.0f, t->text, 1.4f);

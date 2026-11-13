@@ -114,6 +114,9 @@ float wrapW;                /* text viewport width */
 - End 后按**真实帧间隔**推进 `UiScrollView_Tick` 并自失效；空闲后首帧的
   dt 尖峰（>25ms）按常规帧处理，避免每次滚轮先跳近 1/3 行程；
   `UiTextArea_Busy()` 返回 `sv.busy`，app 可据此在 `animating` 中持续出帧。
+- **设备像素对齐**：`lineH` 与绘制用的 `drawOffset`（`Ui_PxSnap`）都取整到
+  设备像素；行起点不再在两个像素之间来回取整，平滑滚动时行距稳定。
+  scale 变化时重算 `lineH`（`lineScale` 记录上次对齐比例）。
 
 ## 6. 键位
 

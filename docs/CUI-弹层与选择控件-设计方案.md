@@ -164,6 +164,7 @@ typedef struct UiSelect {
   - 滚轮步长 `wheelStep=rowH*3`、`wheelTauMs=100`（平滑尾随，与
     Markdown/TextArea 一致；`UiSelect_SetScrollSmoothing(0)` 恢复即时）；
     键盘 focus 滚入视口仍为即时；`UiSelect_Busy()` 供 animating 出帧；
+    列表项绘制用 `Ui_PxSnap` 对齐滚动位移，避免亚像素抖动；
   - 弹层没有 UiApp 的 tick 回调，在 End 后补一次 `UiScrollView_Tick(16ms)`，
     让轨道翻页写入的 `target` 立即落地；thumb 拖动/滚轮本身不依赖 Tick；
   - 键盘 focus 移动后调用 `UiScrollView_ScrollTo(..., animate=0)` 把该项

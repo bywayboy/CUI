@@ -152,6 +152,9 @@ void Ui_SetHoverFn(UiContext *ctx, UiId id, UiHoverFn fn, void *user);
 
 /* 命中处应显示的 UI_CURSOR_*; 无控件/模态遮罩时返回箭头. */
 int  Ui_CursorAt(const UiContext *ctx, float x, float y);
+/* DIP 对齐到设备像素: 滚动中的文本行用它定位, 避免亚像素相位变化
+ * 造成行距/文字逐帧抖动. */
+float Ui_PxSnap(const UiContext *ctx, float dip);
 
 /* UI_CURSOR_* -> 系统光标句柄 (不缓存, 交给 user32 复用). */
 HCURSOR Ui_CursorHandle(int kind);

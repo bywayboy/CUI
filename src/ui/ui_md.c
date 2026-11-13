@@ -1674,8 +1674,7 @@ static void md_draw_row(UiMarkdown *md, UiContext *ui, int index,
 {
 	MdRow *r = &md->rows[index];
 	float y = content.y + UiScrollLayout_ItemY(&md->layout, index);
-	float h = md->layout.items[index].height;
-	UiRect rr = Ui_Rect(content.x, y, content.w, h);
+	float h = md->layout.items[index].height;	UiRect rr = Ui_Rect(content.x, y, content.w, h);
 	float top, bottom, x, wrapW;
 	int d;
 
@@ -2060,6 +2059,10 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 	{
 		UiRect content = UiScrollView_ContentRect(&md->sv);
 		int i, event = 0, hr = -1, hl = -1;
+		/* 只对滚动位移整体取整一次: 所有行共享同一整数设备偏移,
+		 * 行内/行间的亚像素相位恒定. 逐行取整会让不同行在不同
+		 * 舍入阈值切换, 块间距逐帧 ±1px 抖动. */
+		content.y = Ui_PxSnap(ui, content.y);
 		if (first < 0) first = 0;
 		if (last >= md->rowCount) last = md->rowCount - 1;
 		if (!md->sv.draggingThumb &&

@@ -2409,6 +2409,7 @@ void on_timer(UiApp *app, void *user) { UiSelect_Blink(&tags, &app->ui); }
 - 列表滚动区**复用 `UiScrollView`**：滚轮 3 行/格（默认 100ms 平滑尾随，
   `UiSelect_SetScrollSmoothing(0)` 恢复即时）、thumb 拖动、轨道点击翻页、
   滚动条 hover 高亮、右侧预留槽全部走 ScrollView；track 透明，只显示 6 DIP thumb；
+  列表项起点用 `Ui_PxSnap` 对齐设备像素，平滑滚动不出现亚像素抖动；
   弹层没有 UiApp tick，帧末 `End` 后按**真实帧间隔**补一次 `UiScrollView_Tick`
   （空闲首帧的 dt 尖峰按常规帧处理），`UiSelect_Busy()` 可让 animating 持续出帧；
 - 打开时自动把选中项滚入可视区（`UiScrollView_ScrollTo(..., 0)`）；
@@ -2517,9 +2518,9 @@ UiTextArea_Shutdown(&ta);
 - **动态容量**：文本、行索引、UTF-8 缓冲按需倍增；`maxLen<=0` 不限长，
   正数仍限制表单长度。容量不会溢出，退出用 `Shutdown` 释放。
 - **软换行 + 垂直滚动**：滚动区复用 `UiScrollView`（滚轮/thumb/轨道翻页/
-  预留槽）；行高 = 输入字体高 + 4 DIP。滚轮默认 **100ms 平滑尾随**
-  （`UiTextArea_SetScrollSmoothing(0)` 恢复即时）；`ensureCaret` 与拖选
-  自动滚动始终即时，不会与惯性互相拉扯；`UiTextArea_Busy` 供 animating。
+  预留槽）；行高 = 输入字体高 + 4 DIP，并对齐设备像素。滚轮默认
+  **100ms 平滑尾随**（`UiTextArea_SetScrollSmoothing(0)` 恢复即时）；
+  `ensureCaret` 与拖选自动滚动始终即时；`UiTextArea_Busy` 供 animating。
 - **鼠标光标**：文本视口声明 I 形光标，禁用状态保持箭头；滚动条 track/thumb
   是后注册的 overlay 控件，在滚动条上仍显示箭头。
 - **增量布局**：末尾追加只从最后一行续排（O(新增字符)）；段落内普通编辑

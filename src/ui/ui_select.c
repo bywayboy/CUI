@@ -683,7 +683,8 @@ void UiSelect_DrawPopup(UiSelect *s, UiPopupManager *pm, UiContext *ui)
 			Ui_Rect(inner.x + 12.0f, inner.y, inner.w - 24.0f, rowH),
 			t->text3, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 	} else {
-		first = (int)(s->sv.offset / rowH);
+		float off = Ui_PxSnap(ui, s->sv.offset);   /* 仅绘制/命中矩形对齐 */
+		first = (int)(s->sv.offset / rowH);        /* 可见范围用精确值 */
 		last = (int)((s->sv.offset + inner.h) / rowH) + 1;
 		if (first < 0) first = 0;
 		if (last > s->visCount) last = s->visCount;
@@ -695,7 +696,7 @@ void UiSelect_DrawPopup(UiSelect *s, UiPopupManager *pm, UiContext *ui)
 			id = sel_child(s->id, "ui.select.item", orig);
 			en = sel_item_enabled(s, orig);
 			row = Ui_Rect(inner.x,
-				inner.y + (float)k * rowH - s->sv.offset,
+				inner.y + (float)k * rowH - off,
 				inner.w, rowH);
 			st = Ui_StateInstant(ui, id, row, en);
 			if (en && ui->clicked == id) {

@@ -432,6 +432,11 @@ void __stdcall startup(void)
 		}
 	}
 
+	/* 设备像素对齐: 滚动位移/行距取整 */
+	CHECK(Ui_PxSnap(&g_ctx, 10.1f) == 10.0f);
+	CHECK(Ui_PxSnap(&g_ctx, 10.6f) == 11.0f);
+	CHECK(Ui_PxSnap(&g_ctx, -3.2f) == -3.0f);
+
 	/* 容器: 标题区抬高首行, 子块照常分行 */
 	{
 		const char *cdoc =
