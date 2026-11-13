@@ -76,6 +76,7 @@ typedef struct App {
 	UiMarkdown *md;
 	int appended;
 	int fromFile;
+	int wantOpen;
 	char status[288];
 	char lastLink[192];
 	char *doc;
@@ -429,7 +430,7 @@ static void on_frame(UiApp *app, void *user)
 		if (a->md && Ui_Button(&app->ui, Ui_Id("md.open", 0, 0),
 			Ui_Rect(xOpen, 18.0f, 96.0f, btnH),
 			"打开文件", UI_BTN_DEFAULT, 1))
-			open_markdown(app, a);
+			a->wantOpen = 1;   /* 帧结束后再弹模态对话框, 避免重入 */
 		if (a->md && Ui_Button(&app->ui, Ui_Id("md.top", 0, 0),
 			Ui_Rect(xTop, 18.0f, 96.0f, btnH),
 			"回到顶部", UI_BTN_DEFAULT, 1))
@@ -452,6 +453,18 @@ static int on_animating(UiApp *app, void *user)
 	return a->md ? UiMarkdown_Busy(a->md) : 0;
 }
 
+/* 模态文件对话框必须在 Ui_EndFrame 之后打开: 对话框的消息循环会把
+ * WM_PAINT 重新派发回主窗口, 若在 on_frame 内弹框, 同一帧的 clicked
+ * 状态尚未清除, 会反复重入本按钮并无限创建对话框. */
+static void on_after_frame(UiApp *app, void *user)
+{
+	App *a = (App *)user;
+	if (a->wantOpen) {
+		a->wantOpen = 0;
+		open_markdown(app, a);
+	}
+}
+
 static void on_shutdown(UiApp *app, void *user)
 {
 	App *a = (App *)user;
@@ -466,7 +479,7 @@ void __stdcall startup(void)
 {
 	App app;
 	static const UiAppCallbacks cb = {
-		on_init, on_frame, NULL, on_shutdown, on_animating,
+		on_init, on_frame, on_after_frame, on_shutdown, on_animating,
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL
 	};
 	ZeroMemory(&app, sizeof(app));

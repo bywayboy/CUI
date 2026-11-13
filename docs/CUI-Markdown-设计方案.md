@@ -888,6 +888,11 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md);
 4. **换肤后行内颜色不更新**：链接色与代码 token 色在创建 `GfxRichText`
    时烙进布局。记录 `UiTheme.themeRev`，变化时释放并重建全部行布局，
    链接/代码高亮随主题更新。
+5. **打开文件对话框无限重入**：模态 `GetOpenFileNameW` 在 `on_frame`
+   内调用时，其模态消息循环会把 `WM_PAINT` 重新派发回主窗口；此时外层
+   帧尚未 `Ui_EndFrame`，`clicked` 仍是"打开文件"按钮，于是再次进入
+   按钮分支、再次弹框，形成无限创建。改为按钮只置 `wantOpen` 标志，
+   在 `after_frame`（`Ui_EndFrame` 之后、`Gfx_End` 之后）执行模态对话框。
 
 验证：
 
@@ -896,5 +901,6 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md);
 | 悬停 | 4K@192 截图：悬停仅颜色变化（像素均值 109,138,255 → 120,148,251），下划线像素数不变（3015），离开完全恢复 |
 | 点击 | 状态栏显示 `链接: https://example.com/markdown` |
 | 换肤 | 深色下代码 token/链接颜色正确重建，不再出现深底暗字 |
+| 打开文件 | 连续两次点击各只出现 1 个 `#32770` 对话框；Esc 关闭后归零，无层叠/重入 |
 | 退出 | 关闭窗口后 `HasExited=True`、`ExitCode=0`，tasklist 无残留 |
 | 回归 | `md_test` 305/0、`md_ui_test` 44/0、`gfx_rich_test` 26/0、`net_test` 877/0；19 exe 0CRT；build.cmd CRLF 201/201 |
