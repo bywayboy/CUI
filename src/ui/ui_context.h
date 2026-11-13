@@ -42,6 +42,7 @@ typedef struct {
 	int layer;
 	int z;
 	uint8_t cursor;   /* UI_CURSOR_*: 命中此控件时的鼠标形状 */
+	uint8_t cursorPoll; /* 1 = 鼠标在控件内移动时逐次重绘 (命中目标会变化) */
 	UiId scope;
 } UiWidget;
 
@@ -133,6 +134,9 @@ UiId Ui_HitTest(const UiContext *ctx, float x, float y);
 /* 给本帧已注册的控件声明光标形状 (同一 ID 的多次注册一起生效, 例如
  * TextArea 的 surface + ScrollView viewport). 松开/不声明时回到箭头. */
 void Ui_SetCursor(UiContext *ctx, UiId id, int kind);
+/* 控件内部有精细命中区 (如文档链接): 标记后鼠标在控件内每次移动都会
+ * 触发展开/重绘, 使 Ui_SetCursor 的逐位置判定能跟上指针. */
+void Ui_SetCursorPoll(UiContext *ctx, UiId id, int on);
 
 /* 命中处应显示的 UI_CURSOR_*; 无控件/模态遮罩时返回箭头. */
 int  Ui_CursorAt(const UiContext *ctx, float x, float y);

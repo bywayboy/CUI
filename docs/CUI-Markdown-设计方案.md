@@ -261,6 +261,8 @@ void Gfx_RichBold(GfxRichText *rt, int start, int len, int on);
 void Gfx_RichItalic(GfxRichText *rt, int start, int len, int on);
 void Gfx_RichUnderline(GfxRichText *rt, int start, int len, int on);
 void Gfx_RichStrike(GfxRichText *rt, int start, int len, int on);
+/* 仅切换字体家族 (字号/字重不变): 行内代码等宽字体 */
+int  Gfx_RichFontFamily(GfxRichText *rt, int start, int len, GfxFont *font);
 
 float Gfx_RichWidth(const GfxRichText *rt);
 float Gfx_RichHeight(const GfxRichText *rt);
@@ -644,7 +646,7 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md);
 
 | 项 | 判据 |
 | --- | --- |
-| 块类型 | 6 级标题、Setext、段落、围栏/缩进代码、引用嵌套、有序/无序/任务列表、HR、表格、图片逐项截图 |
+| 块类型 | 6 级标题、Setext、段落、围栏/缩进代码、引用嵌套、有序/无序/任务列表、HR、表格、图片、`:::`/GitHub 警报容器逐项截图 |
 | 行内 | 粗体/斜体/粗斜体、删除线、行内代码、链接、自动链接、转义、数字/命名实体、硬换行 |
 | 强调边界 | `**a *b* c**`、`a*b*c`（星号允许词内）、`a_b_c`（下划线不允许词内）、未闭合 `*`、`~~` 嵌套 |
 | 表格 | 对齐（左/中/右）、`\|` 转义、窄宽换行、超宽裁剪、≥50 行分组后跨组列宽一致 |
@@ -904,3 +906,117 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md);
 | 打开文件 | 连续两次点击各只出现 1 个 `#32770` 对话框；Esc 关闭后归零，无层叠/重入 |
 | 退出 | 关闭窗口后 `HasExited=True`、`ExitCode=0`，tasklist 无残留 |
 | 回归 | `md_test` 305/0、`md_ui_test` 44/0、`gfx_rich_test` 26/0、`net_test` 877/0；19 exe 0CRT；build.cmd CRLF 201/201 |
+
+### 补充：行内代码呈现（2026-11-13，已完成）
+
+解析层原本已支持 code span（n 个反引号配对、内容不做其他解析、换行转空格、
+首尾各一个空格的裁剪、未配对反引号按字面输出）；本轮补齐**视觉呈现**：
+
+- `gfx_rich` 新增 `Gfx_RichFontFamily(rt, start, len, font)`：从 `GfxFont`
+  的 `IDWriteTextFormat` 取字体家族，仅对范围切换家族，字号/字重/斜体保持
+  不变；越界按现有 `rich_clamp_range` 语义裁剪，参数非法返回 0。
+- 行内代码 run 在应用 `cCodeText` 颜色之外，再切换为代码字体家族
+  （`style.code`，默认 Consolas），字号跟随所在行——标题内不会缩成 13px。
+- 段落/标题/列表沿用原有 `RangeRects` 圆角底色；**表格单元格**现在同样
+  在文字前绘制行内代码底色，与正文一致。
+- 样例新增演示：`` `code` ``、多反引号 ``a`b``、`**不解析**`、`[非链接](x)`
+  与表格单元格内代码。
+
+验证：
+
+| 项 | 结果 |
+| --- | --- |
+| gfx_rich 断言 | 34 passed / 0 failed（新增家族切换、宽度变化、越界裁剪、空参 6 项） |
+| 原生 4K@192 | 正文/列表/表格中的行内代码均为等宽字体 + 底色；多反引号与"不解析"示例正确 |
+| 深色主题 | 行内代码底色与文字随主题重建 |
+| 回归 | `md_test` 305/0、`md_ui_test` 44/0、`net_test` 877/0；19 exe 0CRT |
+
+## 14. 容器指令与行内代码样式（设计，2026-11-13）
+
+### 14.1 语法
+
+- VuePress/Docusaurus 风格容器：
+  `::: <kind> [标题]` … `:::`；kind 大小写不敏感，支持
+  `note/info`、`tip/hint`、`warning/attention`、`danger/caution/error`；
+  未识别的首词按 `note` 处理，整段 info 作为标题；标题缺省用本地化默认值。
+  围栏为 ≥3 个反引号后的冒号（`:::`）；闭合行须 ≥ 开启行冒号数且其后只有空白。
+  未闭合的 `:::` 不吞内容，回退为普通段落字面量。
+- GitHub 警报：`> [!NOTE]` / `[!TIP]` / `[!IMPORTANT]` / `[!WARNING]` /
+  `[!CAUTION]`（大小写不敏感）。首行标记从引用内容中剥离，其余行按普通块
+  递归解析；未识别标记（如 `[!FOO]`）保持原样。
+
+### 14.2 模型
+
+- 新增块类型 `MD_BLOCK_CONTAINER`，字段 `boxKind`（`MD_BOX_*`）与
+  `titleOff/titleLen`（`MdDoc.urls` 池，UTF-8）。子块递归存放，可嵌套；
+  GitHub 警报复用同一块类型。
+- 哈希混入 `boxKind` 与标题文本；渲染行沿用现有叶子块 flatten 机制。
+- UiMarkdown 在 flatten 时按容器记录盒子 `{kind, firstRow, lastRow, indent,
+  title}`；首行额外预留标题高度，盒子背景/色条按行区间整体绘制并按视口裁剪。
+
+### 14.3 样式
+
+- 新增 `UiMarkdownStyle.inlineCodeBg / inlineCodeText`：行内代码与代码块
+  语义分离；浅色默认琥珀底 `#FFF4E5` + 深琥珀字，深色默认 `#3A2A16`
+  + 亮琥珀字，可由应用覆盖。
+- 容器色条取主题语义色（note=primary、tip=success、warning=warning、
+  danger=error），底色按浅/深主题固定低饱和色；标题用 `fSmall` 加粗语义色。
+- 半径 6 DIP，左侧色条 3 DIP，标题区 20 DIP，正文缩进 `quoteIndent`。
+
+### 实施记录：容器与配色（2026-11-13，已完成）
+
+- 解析器新增 `MD_BLOCK_CONTAINER`、`MD_BOX_NOTE/TIP/WARNING/DANGER`；
+  `:::` 容器支持 `<kind> [标题]`、默认标题、未知类型回退、未闭合回退段落、
+  嵌套（闭合行冒号数 ≥ 开启行）；GitHub `> [!NOTE]` 等警报在引用首行识别，
+  剥离标记后按普通块递归解析；哈希混入 kind 与标题。
+- UiMarkdown flatten 生成容器盒子 `{kind, firstRow, lastRow, indent, depth,
+  title}`；首行 `extraTop` 累加标题带高度，盒子按 `depth*boxTitleH` 下移，
+  外盒先于内盒绘制（先占位后展开），绘制顺序保证嵌套正确；盒子按
+  `inner` 显示坐标裁剪，末行收在块间距之前留出卡片间隙。
+- 行内代码：`Gfx_RichFontFamily` 等宽家族 + `inlineCodeBg/inlineCodeText`
+  琥珀配色；**代码块 run 仍使用 `codeText`**（语法高亮 token 覆盖其上），
+  避免整块正文被行内代码配色污染。
+- 修正：盒子裁剪曾把 `content.y`（含滚动偏移）当成视口上界，导致所有盒子
+  被裁掉；改为 `inner.y/inner.h` 显示坐标。
+
+验证：
+
+| 项 | 结果 |
+| --- | --- |
+| 解析金样 | `md_test` 341/0（新增 10 组容器断言：多冒号、默认标题、未知类型、未闭合、嵌套、GitHub 警报/大小写/未识别/同行正文） |
+| UI 断言 | `md_ui_test` 49/0（容器 3 行、高度 >90、无越界写） |
+| 原生 4K@192 | 浅/深主题下 note/tip/warning/danger 卡片、标题、色条、嵌套内盒正确；相邻卡片有间距 |
+| 配色回归 | 代码块默认色恢复 `codeText`（浅色深灰 / 深色浅灰），仅行内代码为琥珀；表格内行内代码同样为琥珀 + 等宽 |
+| 回归 | `gfx_rich_test` 34/0、`net_test` 877/0；19 exe 0CRT；build.cmd CRLF 201/201 |
+
+### 修正：链接悬停光标不跟手（2026-11-13）
+
+- 根因：Ui 只在 hover 目标 **id 变化**时失效重绘。整篇 Markdown 是一个
+  控件，指针在文档内部移动不会产生新帧，链接命中/光标停留在上一帧；
+  只在点击（强制帧）或移出整篇文档时才更新。
+- 新增 `Ui_SetCursorPoll(ui, id, on)`：标记控件内部存在精细命中区，指针
+  在控件内每次移动都失效重绘（`Ui_OnMouseMove` 检查 `cursorPoll`）。
+  `UiMarkdown` 在文档含链接时开启（flatten 时记录 `hasLinks`）。
+- 效果：首次悬停即出现手型；移出链接下一帧恢复箭头，不再需要点击；
+  点击/拖动逻辑不变（仍为单 widget）。
+
+验证：`GetCursorInfo` 采样 —— 首次悬停 `HAND`、移到正文空白 `ARROW`、
+再次悬停 `HAND`、再移出 `ARROW`；`md_test` 341/0、`md_ui_test` 49/0、
+`gfx_rich_test` 34/0、`net_test` 877/0。
+
+### 修正：容器标题对比度（2026-11-13）
+
+浅色主题下“注意”标题几乎看不见：容器标题取 `primary.text`，而该 token
+是**主按钮上的白字**（白字配 `#EAF2FD` 浅蓝底）。改为按浅/深主题固定
+高对比语义色（不进 `UiMarkdownStyle`，避免再被按钮 token 误导）：
+
+| 类型 | 浅色 标题/色条 | 浅色底 | 深色 标题/色条 | 深色底 |
+| --- | --- | --- | --- | --- |
+| note | `#1557B0` | `#EAF2FD` | `#8FB8FF` | `#17304A` |
+| tip | `#1E7B47` | `#E9F7EF` | `#63D68F` | `#16331F` |
+| warning | `#B45309` | `#FFF4E5` | `#F0B45A` | `#3A2A16` |
+| danger | `#C0392B` | `#FDECEC` | `#FF8A94` | `#3A1D1D` |
+
+标题同时改用 12 bold 小字号（新增内部 `fSmallBold`），提升可读性。
+验证：浅/深 4K 截图标题与底/色条对比清晰；`md_test` 341/0、
+`md_ui_test` 49/0。

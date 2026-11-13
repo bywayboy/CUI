@@ -21,7 +21,7 @@
 
 #define MD_OVERSCAN      32
 #define MD_MARKER_W      22.0f
-#define MD_OWN_FONT_MAX  10
+#define MD_OWN_FONT_MAX  12
 
 static void md_free_(void *p)
 {
@@ -55,6 +55,7 @@ typedef struct MdRow {
 	int markerNo;
 	int task;
 	float markerW;
+	float extraTop;      /* 容器首行: 标题区高度 */
 	uint32_t hash;
 	int measured;
 	float measuredW;
@@ -86,6 +87,15 @@ typedef struct MdOldRow {
 	int measured;
 } MdOldRow;
 
+/* 容器盒子: 由 flatten 生成, 渲染时按行区间绘制背景/色条/标题 */
+typedef struct MdBox {
+	int kind;
+	int firstRow, lastRow;
+	int indent;
+	int depth;           /* 祖先容器数: 标题带下移 depth*boxTitleH */
+	int titleOff, titleLen;
+} MdBox;
+
 struct UiMarkdown {
 	UiId id;
 	Gfx *gfx;
@@ -102,11 +112,13 @@ struct UiMarkdown {
 	int itemCap;
 	MdRow *rows;
 	int rowCount, rowCap;
+	MdBox *boxes;
+	int boxCount, boxCap;
 
 	UiMarkdownStyle st;
 	int followTheme;
 	GfxFont *fH[6];
-	GfxFont *fBody, *fCode, *fSmall;
+	GfxFont *fBody, *fCode, *fSmall, *fSmallBold;
 	GfxFont *ownFonts[MD_OWN_FONT_MAX];
 	int ownCount;
 	int fontsReady;
@@ -118,8 +130,11 @@ struct UiMarkdown {
 	float tableCellPadX, tableCellPadY, tableMinColW;
 	float ruleH, ruleGap, imageMaxH, imagePlaceholderH;
 	int imageAlign;
+	float boxTitleH, boxIndent, boxRadius, boxBarW;
 	UiColor cText, cText2, cLink, cLinkHover;
 	UiColor cCodeText, cCodeBg, cCodeBorder;
+	UiColor cInlineCodeText, cInlineCodeBg;
+	UiColor cBoxBar[MD_BOX_COUNT], cBoxBg[MD_BOX_COUNT];
 	UiColor cQuoteBar, cQuoteBg, cRule, cMarker;
 	UiColor cTableBorder, cTableHeader;
 	UiColor cTokKeyword, cTokString, cTokComment, cTokNumber;
@@ -127,6 +142,7 @@ struct UiMarkdown {
 	float contentW;
 	int needEstimate;
 	int pendingTop, followTail;
+	int hasLinks;       /* 文档含可悬停链接: 指针移动需逐次重绘 */
 
 	UiContext *ui;
 	double lastNow;
@@ -190,6 +206,8 @@ UiMarkdownStyle UiMarkdownStyle_Light(void)
 	s.codeText = 0xFF24292F;
 	s.codeBg = 0xFFF2F4F7;
 	s.codeBorder = 0xFFE1E5EA;
+	s.inlineCodeText = 0xFFB45309;
+	s.inlineCodeBg = 0xFFFFF4E5;
 	s.quoteBar = 0xFFC9D1D9;
 	s.quoteBg = 0x0A1E6FD9;
 	s.tableBorder = 0xFFDDE1E6;
@@ -213,6 +231,8 @@ UiMarkdownStyle UiMarkdownStyle_Dark(void)
 	s.codeText = 0xFFE6E8EB;
 	s.codeBg = 0xFF20242A;
 	s.codeBorder = 0xFF343A42;
+	s.inlineCodeText = 0xFFF0B45A;
+	s.inlineCodeBg = 0xFF3A2A16;
 	s.quoteBar = 0xFF4A515B;
 	s.quoteBg = 0x146CB0FF;
 	s.tableBorder = 0xFF343A42;
@@ -237,6 +257,10 @@ UiMarkdownStyle UiMarkdownStyle_FromTheme(const UiTheme *t)
 	s.codeText = t->text;
 	s.codeBg = t->frame;
 	s.codeBorder = t->border;
+	s.inlineCodeText = t->themeId == UI_THEME_DARK
+		? 0xFFF0B45A : 0xFFB45309;
+	s.inlineCodeBg = t->themeId == UI_THEME_DARK
+		? 0xFF3A2A16 : 0xFFFFF4E5;
 	s.quoteBar = t->border;
 	s.quoteBg = t->rowOff;
 	s.tableBorder = t->border;
@@ -284,6 +308,7 @@ static void md_free_fonts(UiMarkdown *md)
 	md->fontsReady = 0;
 	ZeroMemory(md->fH, sizeof(md->fH));
 	md->fBody = md->fCode = md->fSmall = NULL;
+	md->fSmallBold = NULL;
 }
 
 static void md_build_fonts(UiMarkdown *md)
@@ -302,6 +327,8 @@ static void md_build_fonts(UiMarkdown *md)
 	md->fBody = md->st.body ? md->st.body : md_own_font(md, 14.0f, 400);
 	md->fCode = md->st.code ? md->st.code : md_own_mono(md, 13.0f);
 	md->fSmall = md->st.tiny ? md->st.tiny : md_own_font(md, 12.0f, 400);
+	md->fSmallBold = md_own_font(md, 12.0f, 700);
+	if (!md->fSmallBold) md->fSmallBold = md->fSmall;
 	md->fontsReady = md->fBody && md->fH[0] && md->fCode && md->fSmall;
 }
 
@@ -337,6 +364,10 @@ static void md_resolve_style(UiMarkdown *md, const UiTheme *t)
 	md->cCodeText = md->st.codeText ? md->st.codeText : md->cText;
 	md->cCodeBg = md->st.codeBg ? md->st.codeBg : (t ? t->frame : 0xFFF2F4F7);
 	md->cCodeBorder = md->st.codeBorder ? md->st.codeBorder : (t ? t->border : 0xFFE1E5EA);
+	md->cInlineCodeText = md->st.inlineCodeText ? md->st.inlineCodeText
+		: (t ? t->warning.text : 0xFFB45309);
+	md->cInlineCodeBg = md->st.inlineCodeBg ? md->st.inlineCodeBg
+		: ((t && t->themeId == UI_THEME_DARK) ? 0xFF3A2A16 : 0xFFFFF4E5);
 	md->cQuoteBar = md->st.quoteBar ? md->st.quoteBar : (t ? t->border : 0xFFC9D1D9);
 	md->cQuoteBg = md->st.quoteBg;
 	md->cRule = md->st.ruleColor ? md->st.ruleColor : (t ? t->border : 0xFFE1E5EA);
@@ -353,6 +384,24 @@ static void md_resolve_style(UiMarkdown *md, const UiTheme *t)
 		: (t ? t->text3 : 0xFF6E7781);
 	md->cTokNumber = md->st.tokNumber ? md->st.tokNumber
 		: (t ? t->blue2 : 0xFF0550AE);
+
+	/* 容器: 标题/色条用与浅色底有足够对比的固定语义色.
+	 * 不能取 role.text: primary.text 是主按钮上的白字, 浅色标题会看不见. */
+	{
+		int dark = t && t->themeId == UI_THEME_DARK;
+		md->cBoxBar[MD_BOX_NOTE] = dark ? 0xFF8FB8FF : 0xFF1557B0;
+		md->cBoxBar[MD_BOX_TIP] = dark ? 0xFF63D68F : 0xFF1E7B47;
+		md->cBoxBar[MD_BOX_WARNING] = dark ? 0xFFF0B45A : 0xFFB45309;
+		md->cBoxBar[MD_BOX_DANGER] = dark ? 0xFFFF8A94 : 0xFFC0392B;
+		md->cBoxBg[MD_BOX_NOTE] = dark ? 0xFF17304A : 0xFFEAF2FD;
+		md->cBoxBg[MD_BOX_TIP] = dark ? 0xFF16331F : 0xFFE9F7EF;
+		md->cBoxBg[MD_BOX_WARNING] = dark ? 0xFF3A2A16 : 0xFFFFF4E5;
+		md->cBoxBg[MD_BOX_DANGER] = dark ? 0xFF3A1D1D : 0xFFFDECEC;
+		md->boxTitleH = 20.0f;
+		md->boxIndent = md->quoteIndent;
+		md->boxRadius = 6.0f;
+		md->boxBarW = md->quoteBarW;
+	}
 }
 
 /* ── 行构建 ────────────────────────────────────────────────────────── */
@@ -427,6 +476,29 @@ static int md_live_push(UiMarkdown *md, int idx)
 	return 1;
 }
 
+static int md_box_push(UiMarkdown *md, int kind, int first, int last,
+	int indent, int depth, int titleOff, int titleLen)
+{
+	MdBox *b;
+	if (md->boxCount >= md->boxCap) {
+		int nc = md->boxCap ? md->boxCap * 2 : 16;
+		MdBox *np = (MdBox *)md_realloc_(md->boxes,
+			(SIZE_T)nc * sizeof(MdBox));
+		if (!np) return 0;
+		md->boxes = np;
+		md->boxCap = nc;
+	}
+	b = &md->boxes[md->boxCount++];
+	b->kind = kind;
+	b->firstRow = first;
+	b->lastRow = last;
+	b->indent = indent;
+	b->depth = depth;
+	b->titleOff = titleOff;
+	b->titleLen = titleLen;
+	return 1;
+}
+
 static MdRow *md_row_push(UiMarkdown *md, MdBlock *blk, int indent, int qd,
 	int mk, int no, int task)
 {
@@ -467,6 +539,32 @@ static int md_flatten(UiMarkdown *md, MdBlock *b, int indent, int qd,
 			if (r) added = 1;
 		}
 		return added;
+	case MD_BLOCK_CONTAINER: {
+		int first = md->rowCount;
+		int bi = md->boxIndent > 0.0f ? (int)md->boxIndent
+			: (int)md->quoteIndent;
+		float th = md->boxTitleH > 0.0f ? md->boxTitleH : 20.0f;
+		int boxAt;
+		if (bi <= 0) bi = 16;
+		/* 先占位再展开: 外盒必须先于内盒绘制, 否则内层底色被外层覆盖 */
+		boxAt = md->boxCount;
+		md_box_push(md, b->boxKind, first, first, indent,
+			bi > 0 ? indent / bi : 0, b->titleOff, b->titleLen);
+		for (i = 0; i < b->childCount; i++) {
+			int r = md_flatten(md, &b->children[i], indent + bi, qd,
+				added ? MD_MK_NONE : mk,
+				added ? 0 : no, added ? MD_TASK_NONE : task);
+			if (r) added = 1;
+		}
+		if (md->rowCount > first) {
+			md->rows[first].extraTop += th;
+			if (boxAt >= 0 && boxAt < md->boxCount)
+				md->boxes[boxAt].lastRow = md->rowCount - 1;
+		} else if (boxAt >= 0 && boxAt < md->boxCount) {
+			md->boxCount--;
+		}
+		return added;
+	}
 	case MD_BLOCK_LIST:
 		for (i = 0; i < b->childCount; i++) {
 			MdBlock *item = &b->children[i];
@@ -487,6 +585,7 @@ static int md_flatten(UiMarkdown *md, MdBlock *b, int indent, int qd,
 		}
 		return added;
 	default:
+		if (b->linkCount > 0) md->hasLinks = 1;
 		return md_row_push(md, b, indent, qd, mk, no, task) ? 1 : 0;
 	}
 }
@@ -521,7 +620,7 @@ static GfxFont *md_row_font(const UiMarkdown *md, const MdRow *r)
 static void md_row_pads(const UiMarkdown *md, const MdRow *r,
 	float *top, float *bottom)
 {
-	*top = 0.0f;
+	*top = r->extraTop;
 	*bottom = md->blockGap;
 	switch (r->blk->type) {
 	case MD_BLOCK_HEADING:
@@ -577,10 +676,10 @@ static float md_row_estimate(const UiMarkdown *md, const MdRow *r)
 	case MD_BLOCK_HR:
 		return md->ruleH + top + bottom;
 	case MD_BLOCK_IMAGE:
-		return md->imagePlaceholderH + bottom;
+		return md->imagePlaceholderH + top + bottom;
 	case MD_BLOCK_TABLE:
 		h = (float)(r->blk->rows > 0 ? r->blk->rows : 1) * 22.0f + 12.0f;
-		return h + bottom;
+		return h + top + bottom;
 	case MD_BLOCK_CODE:
 		h = md_est_text(r->blk->text16, r->blk->len16, wrapW, size,
 			md->lineSpacing);
@@ -634,8 +733,9 @@ static void md_estimate_all(UiMarkdown *md)
 
 static void md_image_load(UiMarkdown *md, UiImage *img, const char *url);
 
+/* codeBlock: 代码块整体 run 使用 codeText; 行内代码用琥珀色 + 等宽 */
 static void md_apply_runs(UiMarkdown *md, GfxRichText *rt, const MdRun *runs,
-	int runCount)
+	int runCount, int codeBlock)
 {
 	int i;
 	if (!rt || !runs) return;
@@ -649,7 +749,14 @@ static void md_apply_runs(UiMarkdown *md, GfxRichText *rt, const MdRun *runs,
 			Gfx_RichColor(rt, r->start, r->len, md->cLink);
 			Gfx_RichUnderline(rt, r->start, r->len, 1);
 		} else if (r->style & MD_R_CODE) {
-			Gfx_RichColor(rt, r->start, r->len, md->cCodeText);
+			if (codeBlock) {
+				Gfx_RichColor(rt, r->start, r->len, md->cCodeText);
+			} else {
+				Gfx_RichColor(rt, r->start, r->len, md->cInlineCodeText);
+				/* 行内代码: 换等宽家族, 字号跟随所在行 */
+				if (md->fCode)
+					Gfx_RichFontFamily(rt, r->start, r->len, md->fCode);
+			}
 		}
 	}
 }
@@ -932,7 +1039,8 @@ static GfxRichText *md_row_make_rt(UiMarkdown *md, int index)
 	r->rt = Gfx_RichCreate(md->gfx, r->blk->text16, r->blk->len16,
 		font, wrapW, ls, GFX_RICH_WRAP);
 	if (r->rt) {
-		md_apply_runs(md, r->rt, r->blk->runs, r->blk->runCount);
+		md_apply_runs(md, r->rt, r->blk->runs, r->blk->runCount,
+			r->blk->type == MD_BLOCK_CODE);
 		if (r->blk->type == MD_BLOCK_CODE)
 			md_highlight(md, r->rt, r->blk);
 		else
@@ -1128,7 +1236,7 @@ static int md_table_build(UiMarkdown *md, int index)
 					GFX_RICH_WRAP);
 				r->cellRt[rr * cols + c] = rt;
 				if (rt) {
-					md_apply_runs(md, rt, cell->runs, cell->runCount);
+					md_apply_runs(md, rt, cell->runs, cell->runCount, 0);
 					h = Gfx_RichHeight(rt);
 				}
 			}
@@ -1157,14 +1265,14 @@ static void md_measure_row(UiMarkdown *md, int index)
 		md_image_ensure(md, index);
 		md_image_measure(md, r, avail);
 		r->imgStateSeen = r->img ? UiImage_State(r->img) : UI_IMG_IDLE;
-		h = r->imgH + bottom;
+		h = r->imgH + top + bottom;
 		break;
 	}
 	case MD_BLOCK_TABLE:
 		if (!md_table_build(md, index))
 			h = md_row_estimate(md, r);
 		else
-			h = r->tblH + bottom;
+			h = r->tblH + top + bottom;
 		break;
 	default: {
 		GfxRichText *rt = md_row_make_rt(md, index);
@@ -1264,6 +1372,7 @@ static void md_rows_clear(UiMarkdown *md, int keep_rt)
 		md_row_release(md, &md->rows[i]);
 	md->liveCount = 0;
 	md->rowCount = 0;
+	md->boxCount = 0;
 }
 
 /* 迁移旧行高度: prefix + suffix 按 hash 匹配 (不迁移 rt, 按需重建) */
@@ -1271,6 +1380,7 @@ static void md_rebuild_rows(UiMarkdown *md, MdOldRow *old, int oldN)
 {
 	int i, oi, ni, n;
 	md_rows_clear(md, 0);
+	md->hasLinks = 0;
 	for (i = 0; i < md->doc.count; i++)
 		md_flatten(md, &md->doc.blocks[i], 0, 0, MD_MK_NONE, 0, MD_TASK_NONE);
 	if (!md_rebuild_items(md)) return;
@@ -1377,6 +1487,24 @@ static void md_draw_table(UiMarkdown *md, int index, float x, float y)
 				else
 					tx = xx + padX;
 				if (tx < xx + padX) tx = xx + padX;
+				{
+					int ri, k;
+					for (ri = 0; cell && ri < cell->runCount; ri++) {
+						const MdRun *run = &cell->runs[ri];
+						GfxRect cr[16];
+						int cn;
+						if (!(run->style & MD_R_CODE) || run->len <= 0)
+							continue;
+						cn = Gfx_RichRangeRects(rt, run->start, run->len,
+							cr, 16);
+						for (k = 0; k < cn; k++)
+							Gfx_FillRoundRect(md->gfx, Ui_Rect(
+								tx + cr[k].x - 1.0f,
+								yy + padY + cr[k].y,
+								cr[k].w + 2.0f, cr[k].h),
+								3.0f, md->cInlineCodeBg);
+					}
+				}
 				Gfx_RichDraw(rt, md->gfx, tx, yy + padY, md->cText);
 			}
 			if (c > 0)
@@ -1391,6 +1519,48 @@ static void md_draw_table(UiMarkdown *md, int index, float x, float y)
 	Gfx_FillRect(md->gfx, Ui_Rect(x, y, 1.0f, yy - y), md->cTableBorder);
 	Gfx_FillRect(md->gfx, Ui_Rect(x + totalW - 1.0f, y, 1.0f, yy - y),
 		md->cTableBorder);
+}
+
+/* 容器盒子: 整段背景/左侧色条/标题 (按视口裁剪, 绘制在行内容之前) */
+static void md_draw_boxes(UiMarkdown *md, UiRect content)
+{
+	int i;
+	for (i = 0; i < md->boxCount; i++) {
+		MdBox *b = &md->boxes[i];
+		float y0, y1, x, w, bh;
+		int kind = b->kind;
+		if (b->firstRow < 0 || b->lastRow >= md->rowCount ||
+			b->lastRow < b->firstRow)
+			continue;
+		y0 = content.y + UiScrollLayout_ItemY(&md->layout, b->firstRow);
+		y0 += (float)b->depth * md->boxTitleH;
+		y1 = content.y + UiScrollLayout_ItemY(&md->layout, b->lastRow) +
+			md->layout.items[b->lastRow].height;
+		/* 行高含块尾间距: 盒子收在间距之前, 相邻卡片之间留白 */
+		if (y1 - y0 > md->blockGap) y1 -= md->blockGap;
+		/* y0/y1 是显示坐标; 视口上下界同样用 inner 的显示坐标 */
+		if (y1 <= md->sv.inner.y ||
+			y0 >= md->sv.inner.y + md->sv.inner.h) continue;
+		x = content.x + (float)b->indent;
+		w = content.w - (float)b->indent;
+		if (w < 16.0f) continue;
+		if (kind < 0 || kind >= MD_BOX_COUNT) kind = MD_BOX_NOTE;
+		Gfx_FillRoundRect(md->gfx, Ui_Rect(x, y0, w, y1 - y0),
+			md->boxRadius, md->cBoxBg[kind]);
+		bh = y1 - y0 - 4.0f;
+		if (bh > 0.0f)
+			Gfx_FillRect(md->gfx, Ui_Rect(x, y0 + 2.0f, md->boxBarW, bh),
+				md->cBoxBar[kind]);
+		if (b->titleLen > 0 && b->titleOff >= 0 &&
+			b->titleOff < md->doc.urlsLen) {
+			Gfx_Text(md->gfx,
+				md->fSmallBold ? md->fSmallBold : md->fSmall,
+				MdDoc_Url(&md->doc, b->titleOff),
+				Ui_Rect(x + md->boxBarW + 10.0f, y0 + 2.0f,
+					w - md->boxBarW - 20.0f, md->boxTitleH - 4.0f),
+				md->cBoxBar[kind], GFX_TEXT_VCENTER);
+		}
+	}
 }
 
 static void md_draw_row(UiMarkdown *md, UiContext *ui, int index,
@@ -1431,7 +1601,7 @@ static void md_draw_row(UiMarkdown *md, UiContext *ui, int index,
 		float dh = r->imgH > 1.0f ? r->imgH : md->imagePlaceholderH;
 		float ox = align == MD_ALIGN_CENTER ? (wrapW - dw) * 0.5f
 			: (align == MD_ALIGN_RIGHT ? wrapW - dw : 0.0f);
-		UiRect ir = Ui_Rect(x + ox, y, dw, dh);
+		UiRect ir = Ui_Rect(x + ox, y + top, dw, dh);
 		if (r->img) {
 			UiImage_SetRect(r->img, ir);
 			UiImage_Draw(r->img, ui->theme);
@@ -1444,7 +1614,7 @@ static void md_draw_row(UiMarkdown *md, UiContext *ui, int index,
 		break;
 	}
 	case MD_BLOCK_TABLE:
-		md_draw_table(md, index, x, y);
+		md_draw_table(md, index, x, y + top);
 		break;
 	case MD_BLOCK_CODE:
 		Gfx_FillRoundRect(md->gfx, Ui_Rect(x, y + top * 0.25f,
@@ -1465,7 +1635,7 @@ static void md_draw_row(UiMarkdown *md, UiContext *ui, int index,
 				for (k = 0; k < cn; k++)
 					Gfx_FillRoundRect(md->gfx, Ui_Rect(x + cr[k].x - 1.0f,
 						y + top + cr[k].y, cr[k].w + 2.0f, cr[k].h),
-						3.0f, md->cCodeBg);
+						3.0f, md->cInlineCodeBg);
 			}
 			Gfx_RichDraw(r->rt, md->gfx, x, y + top, md->cText);
 		}
@@ -1505,6 +1675,10 @@ UiMarkdown *UiMarkdown_Create(Gfx *gfx, UiId id, UiNet *net)
 		UiScrollView_SetPadding(&md->sv, pad);
 	}
 	UiScrollLayout_Init(&md->layout, NULL, 0);
+	md->boxTitleH = 20.0f;
+	md->boxIndent = 16.0f;
+	md->boxRadius = 6.0f;
+	md->boxBarW = 3.0f;
 	md_build_fonts(md);
 	return md;
 }
@@ -1514,6 +1688,7 @@ void UiMarkdown_Destroy(UiMarkdown *md)
 	if (!md) return;
 	md_rows_clear(md, 0);
 	md_free_(md->rows);
+	md_free_(md->boxes);
 	md_free_(md->items);
 	md_free_(md->live);
 	md_free_(md->text);
@@ -1723,6 +1898,7 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 	UiScrollView_Tick(&md->sv, ui, dt);
 
 	(void)Ui_State(ui, md->id, rc, 1);
+	Ui_SetCursorPoll(ui, md->id, md->hasLinks);
 
 	UiScrollLayout_SetWidth(&md->layout, contentW);
 	if (contentW != md->contentW) {
@@ -1806,6 +1982,7 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 			}
 			if (!ui->mouseDown) md->pressActive = 0;
 		}
+		md_draw_boxes(md, content);
 		for (i = first; i <= last; i++) {
 			MdRow *r2 = &md->rows[i];
 			int k;

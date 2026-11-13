@@ -53,6 +53,7 @@ typedef struct UiMarkdownStyle {
 
 	UiColor text, text2, link, linkHover;
 	UiColor codeText, codeBg, codeBorder;
+	UiColor inlineCodeText, inlineCodeBg;   /* 行内代码 (与代码块分离) */
 	UiColor quoteBar, quoteBg, tableBorder, tableHeaderBg;
 	UiColor ruleColor, markerColor;
 	UiColor tokKeyword, tokString, tokComment, tokNumber;

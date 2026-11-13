@@ -360,6 +360,25 @@ void __stdcall startup(void)
 		}
 	}
 
+	/* 容器: 标题区抬高首行, 子块照常分行 */
+	{
+		const char *cdoc =
+			"::: warning 注意\n第一段正文\n\n第二段正文\n:::\n\n"
+			"> [!NOTE]\n> 警报正文\n";
+		UiMarkdown_SetText(md, cdoc);
+		CHECK(UiMarkdown_DebugRows(md) == 3);
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		CHECK(UiMarkdown_DebugMeasured(md) == 3);
+		CHECK(UiMarkdown_ContentHeight(md) > 90.0f);
+		CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
+	}
+
 
 done:
 	if (md) UiMarkdown_Destroy(md);

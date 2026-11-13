@@ -200,6 +200,25 @@ void Gfx_RichItalic(GfxRichText *rt, int start, int len, int on)
 		: DWRITE_FONT_STYLE_NORMAL, rich_range(start, len));
 }
 
+int Gfx_RichFontFamily(GfxRichText *rt, int start, int len, GfxFont *font)
+{
+	IDWriteTextFormat *fmt;
+	WCHAR fam[64];
+	UINT32 n;
+	if (!rt || !rt->layout || !font) return 0;
+	rich_clamp_range(rt, &start, &len);
+	if (len <= 0) return 0;
+	fmt = Gfx_IntFontFormat(font);
+	if (!fmt) return 0;
+	n = fmt->GetFontFamilyNameLength();
+	if (n == 0) return 0;
+	if (n >= 63) n = 63;
+	if (FAILED(fmt->GetFontFamilyName(fam, n + 1))) return 0;
+	fam[n] = 0;
+	return SUCCEEDED(rt->layout->SetFontFamilyName(fam,
+		rich_range(start, len))) ? 1 : 0;
+}
+
 void Gfx_RichUnderline(GfxRichText *rt, int start, int len, int on)
 {
 	if (!rt || !rt->layout) return;

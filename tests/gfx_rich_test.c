@@ -45,6 +45,7 @@ void __stdcall startup(void)
 	HWND hwnd = NULL;
 	Gfx *g = NULL;
 	GfxFont *body = NULL;
+	GfxFont *mono = NULL;
 	GfxRichText *narrow = NULL;
 	GfxRichText *wide = NULL;
 	GfxRichText *spaced = NULL;
@@ -75,6 +76,8 @@ void __stdcall startup(void)
 	body = Gfx_CreateFont(g, 16.0f, 400);
 	CHECK(body != NULL);
 	if (!body) goto done;
+	mono = Gfx_CreateFontFamily(g, L"Consolas", 16.0f, 400);
+	CHECK(mono != NULL);
 
 	len = lstrlenW(txt);
 	narrow = Gfx_RichCreate(g, txt, len, body, 180.0f, 0.0f, GFX_RICH_WRAP);
@@ -111,6 +114,18 @@ void __stdcall startup(void)
 		CHECK(Gfx_RichHitTest(wide, 2.0f, hWide * 0.5f, &pos) == 1);
 		CHECK(pos >= 0 && pos <= len);
 		CHECK(Gfx_RichHitTest(wide, -1.0f, 0.0f, &pos) == 0);
+
+		/* 范围字体家族 (行内代码等宽): 越界裁剪不崩溃, 宽度应变化 */
+		if (mono) {
+			float w0 = Gfx_RichWidth(wide);
+			CHECK(Gfx_RichFontFamily(wide, 0, 5, mono) == 1);
+			CHECK(Gfx_RichWidth(wide) != w0);
+			CHECK(Gfx_RichFontFamily(wide, -2, 4, mono) == 1);
+			CHECK(Gfx_RichFontFamily(wide, -20, 5, mono) == 0);
+			CHECK(Gfx_RichFontFamily(wide, len, 1, mono) == 0);
+			CHECK(Gfx_RichFontFamily(NULL, 0, 1, mono) == 0);
+			CHECK(Gfx_RichFontFamily(wide, 0, 1, NULL) == 0);
+		}
 
 		/* 行内图片: 应参与行高 */
 		{
@@ -149,6 +164,7 @@ done:
 	if (wide) Gfx_RichDestroy(wide);
 	if (spaced) Gfx_RichDestroy(spaced);
 	if (body) Gfx_DestroyFont(g, body);
+	if (mono) Gfx_DestroyFont(g, mono);
 	if (g) Gfx_Shutdown(g);
 	if (hwnd) DestroyWindow(hwnd);
 

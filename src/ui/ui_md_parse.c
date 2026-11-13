@@ -1259,6 +1259,105 @@ static int md_quote(const MdLine *ln, int *contentOff)
 	return 1;
 }
 
+/* ── 容器指令 (::: 与 GitHub > [!NOTE]) ─────────────────────────── */
+
+static int md_word_eq(const char *p, int n, const char *w)
+{
+	int i;
+	for (i = 0; i < n; i++) {
+		char a = p[i], b = w[i];
+		if (!b) return 0;
+		if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+		if (a != b) return 0;
+	}
+	return w[n] == 0;
+}
+
+static int md_box_kind_of(const char *p, int n)
+{
+	if (md_word_eq(p, n, "note") || md_word_eq(p, n, "info"))
+		return MD_BOX_NOTE;
+	if (md_word_eq(p, n, "tip") || md_word_eq(p, n, "hint"))
+		return MD_BOX_TIP;
+	if (md_word_eq(p, n, "warning") || md_word_eq(p, n, "attention"))
+		return MD_BOX_WARNING;
+	if (md_word_eq(p, n, "danger") || md_word_eq(p, n, "caution") ||
+		md_word_eq(p, n, "error"))
+		return MD_BOX_DANGER;
+	return -1;
+}
+
+static const char *md_box_default_title(int kind)
+{
+	switch (kind) {
+	case MD_BOX_TIP: return "提示";
+	case MD_BOX_WARNING: return "警告";
+	case MD_BOX_DANGER: return "危险";
+	default: return "注意";
+	}
+}
+
+static int md_box_title_set(MdDoc *d, MdBlock *b, const char *p, int len,
+	int kind)
+{
+	int n = 0, off;
+	if (len > 0) {
+		off = md_url_put(d, p, len, 0, &n);
+	} else {
+		const char *t = md_box_default_title(kind);
+		int tl = 0;
+		while (t[tl]) tl++;
+		off = md_url_put(d, t, tl, 0, &n);
+	}
+	if (off < 0) return 0;
+	b->titleOff = off;
+	b->titleLen = n;
+	return 1;
+}
+
+/* 开启行: 最多 3 空格 + >=3 个冒号 + info */
+static int md_colon_fence(const MdLine *ln, int *colons, int *infoOff,
+	int *infoLen)
+{
+	int i = 0, n = 0;
+	while (i < 3 && i < ln->len && ln->p[i] == ' ') i++;
+	while (i + n < ln->len && ln->p[i + n] == ':') n++;
+	if (n < 3) return 0;
+	*colons = n;
+	*infoOff = i + n;
+	*infoLen = ln->len - i - n;
+	return 1;
+}
+
+/* 闭合行: 冒号数 >= 开启行且其后只有空白 */
+static int md_colon_close(const MdLine *ln, int openColons)
+{
+	int i = 0, n = 0;
+	while (i < 3 && i < ln->len && ln->p[i] == ' ') i++;
+	while (i + n < ln->len && ln->p[i + n] == ':') n++;
+	if (n < openColons) return 0;
+	while (i + n < ln->len &&
+		(ln->p[i + n] == ' ' || ln->p[i + n] == '\t'))
+		n++;
+	return i + n == ln->len;
+}
+
+/* GitHub 警报首行 "[!TYPE]" (允许前导空白) */
+static int md_alert_marker(const MdLine *ln, int *kind, int *consumed)
+{
+	int i = 0, j, k;
+	while (i < ln->len && (ln->p[i] == ' ' || ln->p[i] == '\t')) i++;
+	if (i + 3 > ln->len || ln->p[i] != '[' || ln->p[i + 1] != '!') return 0;
+	j = i + 2;
+	while (j < ln->len && ln->p[j] != ']') j++;
+	if (j >= ln->len) return 0;
+	k = md_box_kind_of(ln->p + i + 2, j - (i + 2));
+	if (k < 0) return 0;
+	*consumed = j + 1;
+	*kind = k;
+	return 1;
+}
+
 static int md_list_marker(const MdLine *ln, int *ordered, int *startNo,
 	int *markerLen, int *contentOff, int *contentCol)
 {
@@ -1784,7 +1883,7 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 		if (depth < MD_MAX_DEPTH && md_quote(ln, &infoOff)) {
 			MdBlock *b = md_add_block(d, parent);
 			MdLines sub;
-			int j = i, subi = 0;
+			int j = i, subi = 0, k;
 			if (!b) break;
 			b->type = MD_BLOCK_QUOTE;
 			ZeroMemory(&sub, sizeof(sub));
@@ -1796,11 +1895,93 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 					q->srcOff + co, q->srcLen - co);
 				j++;
 			}
+			/* GitHub 警报: 首行 "[!NOTE]" 等标记 -> 容器块 */
+			{
+				int kind = -1, used = 0;
+				if (sub.n > 0 &&
+					md_alert_marker(&sub.v[0], &kind, &used)) {
+					MdLine *l0 = &sub.v[0];
+					int onlySpace = 1, rest;
+					for (k = used; k < l0->len; k++) {
+						if (l0->p[k] != ' ' && l0->p[k] != '\t') {
+							onlySpace = 0;
+							break;
+						}
+					}
+					b->type = MD_BLOCK_CONTAINER;
+					b->boxKind = (uint8_t)kind;
+					md_box_title_set(d, b, NULL, 0, kind);
+					if (onlySpace) {
+						if (sub.n > 1) {
+							for (k = 0; k + 1 < sub.n; k++)
+								sub.v[k] = sub.v[k + 1];
+							sub.n--;
+						} else {
+							sub.n = 0;
+						}
+					} else {
+						while (used < l0->len &&
+							(l0->p[used] == ' ' || l0->p[used] == '\t'))
+							used++;
+						rest = l0->len - used;
+						l0->p += used;
+						l0->len = rest;
+						l0->srcOff += used;
+						l0->srcLen -= used;
+					}
+				}
+			}
 			md_parse_blocks(d, &sub, &subi, b, depth + 1);
 			md_free(sub.v);
 			md_set_span(b, ls, i, j);
 			i = j;
 			continue;
+		}
+
+		/* ::: kind [标题] ... ::: 容器 (未闭合则回退为段落字面量) */
+		if (depth < MD_MAX_DEPTH) {
+			int cn = 0, ioff = 0, ilen = 0;
+			if (md_colon_fence(ln, &cn, &ioff, &ilen)) {
+				int j = i + 1, closed = -1, k;
+				while (j < ls->n) {
+					if (md_colon_close(&ls->v[j], cn)) {
+						closed = j;
+						break;
+					}
+					j++;
+				}
+				if (closed >= 0) {
+					MdBlock *b = md_add_block(d, parent);
+					MdLines sub;
+					int subi = 0, kind, s = ioff, e = ioff + ilen, we;
+					if (!b) break;
+					b->type = MD_BLOCK_CONTAINER;
+					while (s < e && (ln->p[s] == ' ' || ln->p[s] == '\t')) s++;
+					we = s;
+					while (we < e && ln->p[we] != ' ' &&
+						ln->p[we] != '\t') we++;
+					kind = md_box_kind_of(ln->p + s, we - s);
+					if (kind < 0) {
+						kind = MD_BOX_NOTE;
+						/* 未识别首词: 整段 info 作为标题 */
+						md_box_title_set(d, b, ln->p + s, e - s, kind);
+					} else {
+						while (we < e && (ln->p[we] == ' ' ||
+							ln->p[we] == '\t')) we++;
+						md_box_title_set(d, b, ln->p + we, e - we, kind);
+					}
+					b->boxKind = (uint8_t)kind;
+					ZeroMemory(&sub, sizeof(sub));
+					for (k = i + 1; k < closed; k++)
+						lines_add(&sub, ls->v[k].p, ls->v[k].len,
+							ls->v[k].srcOff, ls->v[k].srcLen);
+					md_parse_blocks(d, &sub, &subi, b, depth + 1);
+					md_free(sub.v);
+					md_set_span(b, ls, i, closed + 1);
+					i = closed + 1;
+					continue;
+				}
+			}
 		}
 
 		{
@@ -2112,6 +2293,18 @@ static uint32_t md_hash_block(MdDoc *d, MdBlock *b)
 		h = md_hash_u32(h, (uint32_t)b->cols);
 		h = md_hash_u32(h, (uint32_t)b->rows);
 		for (i = 0; i < b->cols; i++) h = md_hash_u32(h, b->align[i]);
+	}
+	if (b->type == MD_BLOCK_CONTAINER) {
+		const char *u;
+		h = md_hash_u32(h, b->boxKind);
+		h = md_hash_u32(h, (uint32_t)b->titleLen);
+		if (b->titleOff >= 0 && b->titleOff < d->urlsLen) {
+			u = d->urls + b->titleOff;
+			while (*u) {
+				h ^= (uint32_t)(unsigned char)*u++;
+				h *= MD_FNV_PRIME;
+			}
+		}
 	}
 	for (i = 0; i < b->childCount; i++) {
 		uint32_t ch = md_hash_block(d, &b->children[i]);

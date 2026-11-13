@@ -249,6 +249,70 @@ static void test_quote(void)
 	MdDoc_Shutdown(&d);
 }
 
+static void test_containers(void)
+{
+	MdDoc d;
+	CHECK(parse_(&d, "::: tip 小提示\n正文\n:::"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_CONTAINER);
+	CHECK(d.blocks[0].boxKind == MD_BOX_TIP);
+	CHECK(d.blocks[0].childCount == 1);
+	CHECK(child(&d.blocks[0], 0)->type == MD_BLOCK_PARAGRAPH);
+	CHECK(wstr_eq(child(&d.blocks[0], 0)->text16, L"正文"));
+	CHECK(strcmp(MdDoc_Url(&d, d.blocks[0].titleOff), "小提示") == 0);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "::: warning\n**x**\n:::"));
+	CHECK(d.blocks[0].type == MD_BLOCK_CONTAINER);
+	CHECK(d.blocks[0].boxKind == MD_BOX_WARNING);
+	CHECK(strcmp(MdDoc_Url(&d, d.blocks[0].titleOff), "警告") == 0);
+	MdDoc_Shutdown(&d);
+
+	/* 未识别首词: 整段 info 作为标题, kind=note */
+	CHECK(parse_(&d, "::: 自定义 标题\nx\n:::"));
+	CHECK(d.blocks[0].boxKind == MD_BOX_NOTE);
+	CHECK(strcmp(MdDoc_Url(&d, d.blocks[0].titleOff), "自定义 标题") == 0);
+	MdDoc_Shutdown(&d);
+
+	/* 未闭合: 回退为段落字面量 */
+	CHECK(parse_(&d, "::: tip\nx"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_PARAGRAPH);
+	CHECK(wstr_eq(d.blocks[0].text16, L"::: tip x"));
+	MdDoc_Shutdown(&d);
+
+	/* 嵌套: 外层 4 冒号, 内层 3 冒号 */
+	CHECK(parse_(&d, ":::: note\n::: tip\nx\n:::\n::::"));
+	CHECK(d.blocks[0].type == MD_BLOCK_CONTAINER);
+	CHECK(child(&d.blocks[0], 0)->type == MD_BLOCK_CONTAINER);
+	CHECK(child(&d.blocks[0], 0)->boxKind == MD_BOX_TIP);
+	CHECK(wstr_eq(child(child(&d.blocks[0], 0), 0)->text16, L"x"));
+	MdDoc_Shutdown(&d);
+
+	/* GitHub 警报 */
+	CHECK(parse_(&d, "> [!NOTE]\n> 内容"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_CONTAINER);
+	CHECK(d.blocks[0].boxKind == MD_BOX_NOTE);
+	CHECK(d.blocks[0].childCount == 1);
+	CHECK(wstr_eq(child(&d.blocks[0], 0)->text16, L"内容"));
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "> [!warning]\n> 注意安全"));
+	CHECK(d.blocks[0].type == MD_BLOCK_CONTAINER);
+	CHECK(d.blocks[0].boxKind == MD_BOX_WARNING);
+	MdDoc_Shutdown(&d);
+
+	/* 未识别 marker: 保持引用原样 */
+	CHECK(parse_(&d, "> [!FOO]\n> x"));
+	CHECK(d.blocks[0].type == MD_BLOCK_QUOTE);
+	CHECK(wstr_eq(child(&d.blocks[0], 0)->text16, L"[!FOO] x"));
+	MdDoc_Shutdown(&d);
+
+	/* 标记后同行为正文 */
+	CHECK(parse_(&d, "> [!TIP] 后面正文"));
+	CHECK(d.blocks[0].type == MD_BLOCK_CONTAINER);
+	CHECK(wstr_eq(child(&d.blocks[0], 0)->text16, L"后面正文"));
+	MdDoc_Shutdown(&d);
+}
+
 static void test_lists(void)
 {
 	MdDoc d;
@@ -668,6 +732,7 @@ void __stdcall startup(void)
 	test_paragraphs();
 	test_code();
 	test_quote();
+	test_containers();
 	test_lists();
 	test_tables();
 	test_inline();

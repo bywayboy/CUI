@@ -38,6 +38,10 @@ void Gfx_RichItalic(GfxRichText *rt, int start, int len, int on);
 void Gfx_RichUnderline(GfxRichText *rt, int start, int len, int on);
 void Gfx_RichStrike(GfxRichText *rt, int start, int len, int on);
 
+/* 把 [start, len) 的字体家族切换为 font 的家族 (字号/字重/斜体不变)。
+ * 用于行内代码等需要等宽字体的范围。返回 1 成功。 */
+int Gfx_RichFontFamily(GfxRichText *rt, int start, int len, GfxFont *font);
+
 /* 测量: 高度含换行; 宽度为最宽行 (含行尾空白)。 */
 float Gfx_RichWidth(const GfxRichText *rt);
 float Gfx_RichHeight(const GfxRichText *rt);

@@ -5,7 +5,7 @@
  * docs/CUI-Markdown-设计方案.md §3。
  *
  * 产物:
- *   MdDoc -> MdBlock 树 (QUOTE/LIST 是容器; 其余是叶子)
+ *   MdDoc -> MdBlock 树 (QUOTE/LIST/CONTAINER 是容器; 其余是叶子)
  *   叶子块的 text16 是展示文本 (UTF-16, 实体/转义已解开, 强调符号已移除)
  *   MdRun 引用 text16 的字符区间并携带样式位
  *   MdLink 指向块内 run 区间 + 文档 URL 池
@@ -33,7 +33,17 @@ enum {
 	MD_BLOCK_TABLE,
 	MD_BLOCK_QUOTE,
 	MD_BLOCK_LIST,
-	MD_BLOCK_ITEM
+	MD_BLOCK_ITEM,
+	MD_BLOCK_CONTAINER
+};
+
+/* 容器类型 (::: note/tip/warning/danger 与 GitHub > [!NOTE] 共用) */
+enum {
+	MD_BOX_NOTE = 0,
+	MD_BOX_TIP,
+	MD_BOX_WARNING,
+	MD_BOX_DANGER,
+	MD_BOX_COUNT
 };
 
 /* run 样式位 */
@@ -109,6 +119,8 @@ typedef struct MdBlock {
 	int langOff, langLen;/* CODE: 信息串语言 (urls 池) */
 	int urlOff, urlLen;  /* IMAGE: URL (urls 池) */
 	uint8_t imgAlign;    /* IMAGE: MD_ALIGN_*; 255 = 用样式默认 */
+	uint8_t boxKind;     /* CONTAINER: MD_BOX_* */
+	int titleOff, titleLen; /* CONTAINER: 标题 (urls 池, UTF-8) */
 
 	wchar_t *text16;     /* 叶子展示文本 */
 	int len16;
