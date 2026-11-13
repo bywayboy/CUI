@@ -470,5 +470,6 @@ void __stdcall startup(void)
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL
 	};
 	ZeroMemory(&app, sizeof(app));
-	UiApp_Run(L"CUI Markdown", 760, 720, UI_THEME_LIGHT, &cb, &app);
+	ExitProcess((UINT)UiApp_Run(L"CUI Markdown", 760, 720,
+		UI_THEME_LIGHT, &cb, &app));
 }

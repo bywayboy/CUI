@@ -845,7 +845,7 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md);
   （点 → UTF-16 位置）+ 链接字符区间，不再做矩形换算。
 - 单 widget（整篇一个控件 ID）：`pressed == mdId` 时记录按下点；
   `clicked == mdId` 且抬起位置仍在同一链接才触发；回调 + `clickedUrl`
-  本帧有效。悬停时手型光标并加粗下划线。
+  本帧有效。悬停时手型光标，**仅切换链接文字颜色**（沿用布局自带下划线）。
 
 语法高亮：
 
@@ -870,3 +870,31 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md);
 | 链接 | UI 级命中已通；原生点击状态栏显示 `https://example.com/markdown`，hover 手型 |
 | 高亮 | 注释灰、关键字红、字符串/数字蓝，深色主题同步 |
 | 回归 | `md_test` 305/0、`md_ui_test` 44/0、`gfx_rich_test` 26/0、`net_test` 877/0 |
+
+### 补充：悬停/滚动/换肤回归修正（2026-11-13，已完成）
+
+问题与修正：
+
+1. **悬停下划线叠加**：之前悬停时在链接下方再填一条 2px `cLinkHover`，
+   与布局自带下划线叠加后明显变粗。改为只对链接字符区间做
+   `Gfx_RichColor`（`cLink` ↔ `cLinkHover`），离开/悬停目标切换时恢复
+   基础色；布局重建/逐出时清空记录，避免对已销毁布局写颜色。
+2. **关窗后进程残留**：样例 `startup` 只调用 `UiApp_Run` 后返回，未走
+   `ExitProcess`；改为 `ExitProcess((UINT)UiApp_Run(...))`，与其它样例一致。
+3. **滚轮/拖 thumb 被吞掉**：行高实测导致 `contentH` 变化时，锚点校正会用
+   `ScrollTo(anchorTarget, 0)` 把 `target` 硬拉回当前 `offset`，正在进行的
+   滚轮平滑动画被逐帧掐死。改为仅在滚动空闲（无滚轮待消费、未拖 thumb、
+   `target == offset` 且速度为 0）时做锚点校正。
+4. **换肤后行内颜色不更新**：链接色与代码 token 色在创建 `GfxRichText`
+   时烙进布局。记录 `UiTheme.themeRev`，变化时释放并重建全部行布局，
+   链接/代码高亮随主题更新。
+
+验证：
+
+| 项 | 结果 |
+| --- | --- |
+| 悬停 | 4K@192 截图：悬停仅颜色变化（像素均值 109,138,255 → 120,148,251），下划线像素数不变（3015），离开完全恢复 |
+| 点击 | 状态栏显示 `链接: https://example.com/markdown` |
+| 换肤 | 深色下代码 token/链接颜色正确重建，不再出现深底暗字 |
+| 退出 | 关闭窗口后 `HasExited=True`、`ExitCode=0`，tasklist 无残留 |
+| 回归 | `md_test` 305/0、`md_ui_test` 44/0、`gfx_rich_test` 26/0、`net_test` 877/0；19 exe 0CRT；build.cmd CRLF 201/201 |

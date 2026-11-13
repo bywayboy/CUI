@@ -139,8 +139,10 @@ struct UiMarkdown {
 	int imgBusy;
 	const char *clickedUrl;
 	int hoverRow, hoverLink;
+	int hovRow, hovLink;
 	int downRow, downLink;
 	int pressActive;
+	uint32_t themeRev;
 
 	UiMarkdownLinkFn linkFn;
 	void *linkUser;
@@ -358,6 +360,11 @@ static void md_resolve_style(UiMarkdown *md, const UiTheme *t)
 static void md_row_release(UiMarkdown *md, MdRow *r)
 {
 	int i;
+	if (md->hovRow >= 0 && md->hovRow < md->rowCount &&
+		&md->rows[md->hovRow] == r) {
+		md->hovRow = -1;
+		md->hovLink = -1;
+	}
 	if (r->rt) {
 		Gfx_RichDestroy(r->rt);
 		r->rt = NULL;
@@ -876,6 +883,33 @@ static int md_hit_links(UiMarkdown *md, UiContext *ui, UiRect content,
 	if (!ui || !ui->mouseOver || !Ui_InputAllowed(ui)) return 0;
 	return md_hit_links_at(md, content, first, last, ui->mouseX, ui->mouseY,
 		rowOut, linkOut);
+}
+
+/* 悬停只改颜色: 沿用布局自带下划线, 不再叠加加粗下划线 */
+static void md_hover_set(UiMarkdown *md, int row, int link)
+{
+	int start, len;
+	if (md->hovRow == row && md->hovLink == link) return;
+	if (md->hovRow >= 0 && md->hovRow < md->rowCount) {
+		MdRow *pr = &md->rows[md->hovRow];
+		if (pr->rt && md->hovLink >= 0 && md->hovLink < pr->blk->linkCount) {
+			md_link_chars(pr->blk, md->hovLink, &start, &len);
+			if (len > 0) Gfx_RichColor(pr->rt, start, len, md->cLink);
+		}
+	}
+	md->hovRow = -1;
+	md->hovLink = -1;
+	if (row >= 0 && row < md->rowCount) {
+		MdRow *nr = &md->rows[row];
+		if (nr->rt && link >= 0 && link < nr->blk->linkCount) {
+			md_link_chars(nr->blk, link, &start, &len);
+			if (len > 0) {
+				Gfx_RichColor(nr->rt, start, len, md->cLinkHover);
+				md->hovRow = row;
+				md->hovLink = link;
+			}
+		}
+	}
 }
 
 static GfxRichText *md_row_make_rt(UiMarkdown *md, int index)
@@ -1434,16 +1468,6 @@ static void md_draw_row(UiMarkdown *md, UiContext *ui, int index,
 						3.0f, md->cCodeBg);
 			}
 			Gfx_RichDraw(r->rt, md->gfx, x, y + top, md->cText);
-			if (md->hoverRow == index && md->hoverLink >= 0) {
-				GfxRect lr[8];
-				int s, l, ln;
-				md_link_chars(r->blk, md->hoverLink, &s, &l);
-				ln = Gfx_RichRangeRects(r->rt, s, l, lr, 8);
-				for (k = 0; k < ln; k++)
-					Gfx_FillRect(md->gfx, Ui_Rect(x + lr[k].x,
-						y + top + lr[k].y + lr[k].h - 2.0f,
-						lr[k].w, 2.0f), md->cLinkHover);
-			}
 		}
 		break;
 	}
@@ -1678,6 +1702,14 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 
 	md_resolve_style(md, ui->theme);
 	if (!md->fontsReady) md_build_fonts(md);
+	{
+		/* 链接/代码高亮颜色烙在行布局里, 换肤后必须重建可见行 */
+		uint32_t rev = ui->theme ? ui->theme->themeRev : 0;
+		if (rev != md->themeRev) {
+			md->themeRev = rev;
+			if (md->rowCount > 0) md_invalidate_width(md);
+		}
+	}
 
 	contentW = UiScrollView_ContentWidth(&md->sv, rc);
 	viewH = rc.h - md->sv.pad.top - md->sv.pad.bottom;
@@ -1718,6 +1750,17 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 	anchorTarget = anchorValid
 		? UiScrollLayout_ItemY(&md->layout, anchor) + anchorDelta : 0.0f;
 
+	/* 锚点校正只在滚动空闲时做: 滚轮/拖 thumb 当帧, 以及平滑动画尚未
+	 * 到位 (target != offset) 时, ScrollTo 会把 target 拉回当前 offset,
+	 * 把这次滚动整个吞掉. */
+	{
+		float d = md->sv.target - md->sv.offset;
+		int scrolling = (ui->wheelTarget == md->sv.id &&
+			ui->wheelDelta != 0.0f) || md->sv.draggingThumb ||
+			d > 0.5f || d < -0.5f || md->sv.velocity != 0.0f;
+		if (scrolling) anchorValid = 0;
+	}
+
 	UiScrollView_Begin(&md->sv, ui, rc, contentW,
 		UiScrollLayout_ContentHeight(&md->layout));
 
@@ -1745,6 +1788,7 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 			md->hoverLink = hl;
 			Ui_SetCursor(ui, md->id, UI_CURSOR_HAND);
 		}
+		md_hover_set(md, md->hoverRow, md->hoverLink);
 		if (ui->mouseDown && ui->pressed == md->id) {
 			if (!md->pressActive) {
 				md->pressActive = 1;

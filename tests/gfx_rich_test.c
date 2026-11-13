@@ -129,12 +129,6 @@ void __stdcall startup(void)
 				int irc;
 				h0 = Gfx_RichHeight(ir);
 				irc = Gfx_RichInlineImage(ir, 0, 2, bmp, 48.0f, 32.0f);
-				{
-					char dbg[96];
-					sprintf(dbg, "inline rc=%d h=%.1f h0=%.1f\n", irc,
-						Gfx_RichHeight(ir), h0);
-					out_(dbg);
-				}
 				CHECK(irc == 1);
 				CHECK(Gfx_RichHeight(ir) >= 30.0f);
 				CHECK(Gfx_RichHeight(ir) > h0);
