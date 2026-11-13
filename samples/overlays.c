@@ -350,7 +350,9 @@ static int on_animating(UiApp *app, void *user)
 {
 	OverlaysDemo *d = (OverlaysDemo *)user;
 	(void)app;
-	return UiDialog_Busy(&d->dialog) || UiDialog_Busy(&d->confirm);
+	return UiDialog_Busy(&d->dialog) || UiDialog_Busy(&d->confirm) ||
+		UiSelect_Busy(&d->themeSel) || UiSelect_Busy(&d->citySel) ||
+		UiSelect_Busy(&d->tagSel) || UiSelect_Busy(&d->dialogSelect);
 }
 
 static void on_tick(UiApp *app, double dtMs, void *user)

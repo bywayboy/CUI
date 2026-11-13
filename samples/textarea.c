@@ -25,7 +25,17 @@ static const char kSample[] =
 	"The quick brown fox jumps over the lazy dog. "
 	"The quick brown fox jumps over the lazy dog.\n"
 	"\n"
-	"第四行：Ctrl+A/C/X/V、Shift+方向键、Home/End、Ctrl+Home/End 均可使用。";
+	"第四行：Ctrl+A/C/X/V、Shift+方向键、Home/End、Ctrl+Home/End 均可使用。\n"
+	"第五行：滚轮带平滑尾随（约 100ms），光标定位与拖选自动滚动为即时。\n"
+	"第六行：滚动只绘制可见行，成本与文档规模无关。\n"
+	"第七行：继续输入可验证动态扩容，不受固定缓冲区限制。\n"
+	"第八行：IME 组合串显示在光标位置，上屏后进入撤销无关的普通编辑流。\n"
+	"第九行：选区跨行时按行绘制高亮，末行空白参与选择。\n"
+	"第十行：软换行宽度随字段宽度变化，重新排版只发生在宽度改变时。\n"
+	"第十一行：Home/End 按视觉行移动，Ctrl+Home/End 到全文首尾。\n"
+	"第十二行：此段用于制造超出视口的内容，方便观察滚动与滚动条。\n"
+	"第十三行：滚动条 thumb 支持拖拽，拖动期间内容即时跟随。\n"
+	"第十四行：松开鼠标后焦点仍停留在文本框，可直接继续输入。";
 
 static void set_status(TextAreaDemo *d, const char *s)
 {
@@ -179,6 +189,13 @@ static void on_shutdown(UiApp *app, void *user)
 	UiTextArea_Shutdown(&d->disabled);
 }
 
+static int on_animating(UiApp *app, void *user)
+{
+	TextAreaDemo *d = (TextAreaDemo *)user;
+	(void)app;
+	return UiTextArea_Busy(&d->edit) || UiTextArea_Busy(&d->ro);
+}
+
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 {
 	UiAppCallbacks cb;
@@ -186,6 +203,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 	ZeroMemory(&cb, sizeof(cb));
 	cb.init = on_init;
 	cb.frame = on_frame;
+	cb.animating = on_animating;
 	cb.key = on_key;
 	cb.chr = on_chr;
 	cb.ime = on_ime;

@@ -104,11 +104,16 @@ float wrapW;                /* text viewport width */
 - `sv.id = ta->id`（与字段同一个 ID：字段矩形就是滚动视口，命中/滚轮共用）；
 - padding `{12, 8, 12, 8}`；`reserveSpace=1`，滚动条不压文字；
 - 滚动条宽 6、minThumb 24、track 透明、常显；
-- `wheelStep=lineH*3`、`wheelTauMs=0`（立即滚动）；
+- `wheelStep=lineH*3`、`wheelTauMs=100`（平滑滚轮，与 Markdown 一致；
+  `UiTextArea_SetScrollSmoothing(ta, 0)` 可恢复即时滚动）；
 - `Begin(rc, wrapW, lineCount*lineH)` → 画可见行 → `End` 画滚动条；
 - 光标移动/输入后 `ensureCaret`，Begin 之后用
-  `UiScrollView_ScrollTo(...,0)` 把光标行滚入视口；
-- End 后 `UiScrollView_Tick(16)` 让轨道翻页写入的 target 立即生效。
+  `UiScrollView_ScrollTo(...,0)` 把光标行滚入视口；**这条路径始终即时**，
+  避免编辑时光标被惯性拖着走；
+- 拖选到边缘的 `ta_drag_autoscroll` 同样用 `ScrollTo(...,0)` 即时跟随；
+- End 后按**真实帧间隔**推进 `UiScrollView_Tick` 并自失效；空闲后首帧的
+  dt 尖峰（>25ms）按常规帧处理，避免每次滚轮先跳近 1/3 行程；
+  `UiTextArea_Busy()` 返回 `sv.busy`，app 可据此在 `animating` 中持续出帧。
 
 ## 6. 键位
 

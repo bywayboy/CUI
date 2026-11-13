@@ -2406,9 +2406,11 @@ void on_timer(UiApp *app, void *user) { UiSelect_Blink(&tags, &app->ui); }
 - 右侧箭头是矢量 chevron（两段圆头线），展开/收起做 180ms ease-out 旋转，
   颜色从 `text3` 渐到 `primary.base`；动画期间控件自行失效触发器矩形，
   不依赖应用持续 `animating` 回调；`animReduced` 时直接跳到终态；
-- 列表滚动区**复用 `UiScrollView`**：滚轮 3 行/格、thumb 拖动、轨道点击翻页、
+- 列表滚动区**复用 `UiScrollView`**：滚轮 3 行/格（默认 100ms 平滑尾随，
+  `UiSelect_SetScrollSmoothing(0)` 恢复即时）、thumb 拖动、轨道点击翻页、
   滚动条 hover 高亮、右侧预留槽全部走 ScrollView；track 透明，只显示 6 DIP thumb；
-  弹层没有 UiApp tick，帧末 `End` 后补一次 `UiScrollView_Tick(16ms)` 让轨道翻页生效；
+  弹层没有 UiApp tick，帧末 `End` 后按**真实帧间隔**补一次 `UiScrollView_Tick`
+  （空闲首帧的 dt 尖峰按常规帧处理），`UiSelect_Busy()` 可让 animating 持续出帧；
 - 打开时自动把选中项滚入可视区（`UiScrollView_ScrollTo(..., 0)`）；
 - 列表项用 `Ui_StateInstant`：hover 立即出现/消失，不做淡入淡出，避免快速
   移动时的滞后/卡顿感；触发器本身仍用 `Ui_State` 的平滑状态；
@@ -2495,9 +2497,12 @@ UiTextArea ta;
 UiTextArea_Init(&ta, Ui_Id("form.note", 0, 0), 0);   /* 0 = 不限长 */
 UiTextArea_SetPlaceholder(&ta, L"输入备注…");
 UiTextArea_AttachIme(&ta, &app->ime);
+UiTextArea_SetScrollSmoothing(&ta, 100.0f);  /* 0 = 即时; 默认 100ms */
 
 /* frame */
 if (Ui_TextArea(&ta, &ui, rc, 1)) { /* 文本已修改 */ }
+/* animating 回调: 平滑滚动/滚动条淡入期间持续出帧 */
+if (UiTextArea_Busy(&ta)) { /* 需要下一帧 */ }
 
 /* 键盘 / 字符 / IME / 光标闪烁 */
 UiTextArea_Key(&ta, &ui, vk);
@@ -2512,7 +2517,9 @@ UiTextArea_Shutdown(&ta);
 - **动态容量**：文本、行索引、UTF-8 缓冲按需倍增；`maxLen<=0` 不限长，
   正数仍限制表单长度。容量不会溢出，退出用 `Shutdown` 释放。
 - **软换行 + 垂直滚动**：滚动区复用 `UiScrollView`（滚轮/thumb/轨道翻页/
-  预留槽）；行高 = 输入字体高 + 4 DIP。
+  预留槽）；行高 = 输入字体高 + 4 DIP。滚轮默认 **100ms 平滑尾随**
+  （`UiTextArea_SetScrollSmoothing(0)` 恢复即时）；`ensureCaret` 与拖选
+  自动滚动始终即时，不会与惯性互相拉扯；`UiTextArea_Busy` 供 animating。
 - **鼠标光标**：文本视口声明 I 形光标，禁用状态保持箭头；滚动条 track/thumb
   是后注册的 overlay 控件，在滚动条上仍显示箭头。
 - **增量布局**：末尾追加只从最后一行续排（O(新增字符)）；段落内普通编辑

@@ -161,7 +161,9 @@ typedef struct UiSelect {
     右侧预留槽全部由 ScrollView 提供；
   - 滚动条样式：宽 6 / 最小 thumb 24 / margin 2 / `reserveSpace=1` /
     `alwaysVisible=1`；track 用全透明色，只显示 thumb（el-scrollbar 观感）；
-  - 滚轮步长 `wheelStep=rowH*3`、`wheelTauMs=0`（立即生效）；
+  - 滚轮步长 `wheelStep=rowH*3`、`wheelTauMs=100`（平滑尾随，与
+    Markdown/TextArea 一致；`UiSelect_SetScrollSmoothing(0)` 恢复即时）；
+    键盘 focus 滚入视口仍为即时；`UiSelect_Busy()` 供 animating 出帧；
   - 弹层没有 UiApp 的 tick 回调，在 End 后补一次 `UiScrollView_Tick(16ms)`，
     让轨道翻页写入的 `target` 立即落地；thumb 拖动/滚轮本身不依赖 Tick；
   - 键盘 focus 移动后调用 `UiScrollView_ScrollTo(..., animate=0)` 把该项

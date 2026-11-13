@@ -287,7 +287,7 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | `UiControls` | `Checkbox/CheckboxGroup/RadioGroup/Switch/Slider` | 表单控件；应用持有状态、键盘/禁用、Slider hover/press 反馈 + 抓取偏移跟手拖动 |
 | `UiPopup` | `UiPopup_Place` | below/above/right/left 翻转 + 视口夹取 |
 | `UiPopupManager` | `Init/BeginFrame/IsOpen/AnyOpen/Open/Close/Key` | 单弹层、点击外部/Esc 关闭、焦点回归、弹层打开时底层不参与命中 |
-| `UiSelect` | `Init/Shutdown/SetItems/SetSelected/SetDisabledMask` | 单选/多选下拉；列表复用 `UiScrollView`（滚轮/thumb 拖动/轨道翻页）、禁用项、键盘 |
+| `UiSelect` | `Init/Shutdown/SetItems/SetSelected/SetDisabledMask/SetScrollSmoothing/Busy` | 单选/多选下拉；列表复用 `UiScrollView`（平滑滚轮/thumb 拖动/轨道翻页）、禁用项、键盘 |
 | | `SetMultiple/SetMask/GetMask` | 多选（32 位 mask）；触发器摘要 `A, B +N` |
 | | `SetFilterable/AttachIme/SearchActive/Char/OnIme/Blink` | 顶部搜索框（UiEdit + IME），ASCII 大小写不敏感过滤 |
 | | `SetPlaceholder/SetSearchHint` | 持久 placeholder（`Ui_Select` 参数优先）与搜索框提示 |
@@ -296,7 +296,7 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | `UiDialog` | `Init/AttachIme/SetFocusOrder/Open/Close/IsOpen` | 窗内模态；焦点保存/恢复、Tab 循环、背景输入隔离 |
 | | `Begin/End/Key/Tick/Busy/TakeResult` | body 仅布局；开合动画、Esc 取消、淡出后一次性结果 |
 | | `Ui_ConfirmDialog` | 标题/换行正文/取消/确认；危险操作样式 |
-| `UiTextArea` | `Init/Shutdown/SetText/SetTextUtf8/SetCaret/TextUtf8` | 多行动态缓冲、软换行、增量行布局、滚动/选择/IME |
+| `UiTextArea` | `Init/Shutdown/SetText/SetTextUtf8/SetCaret/TextUtf8/SetScrollSmoothing/Busy` | 多行动态缓冲、软换行、增量行布局、平滑滚动/选择/IME |
 | | `SetPlaceholder/SetReadonly/AttachIme` | placeholder / 只读 / 输入法接线 |
 | | `Ui_TextArea/Key/Char/OnIme/Blink` | 绘制、键盘、字符、IME、光标闪烁 |
 | `UiDatePicker` | `Init/SetMode/SetValue/SetRange/SetBounds/SetDisabledFn` | 四模式：日期/日期+时间/范围/范围+时间；应用持有状态 |

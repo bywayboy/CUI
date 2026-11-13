@@ -1,4 +1,5 @@
 #include "ui/ui_select.h"
+#include "ui/ui_frame.h"
 #include "ui/ui_icon.h"
 #include <string.h>
 
@@ -161,6 +162,7 @@ static void sel_refilter(UiSelect *s, UiContext *ui)
 		s->sv.offset = 0.0f;
 		s->sv.target = 0.0f;
 		s->sv.velocity = 0.0f;
+		s->lastTickNow = 0.0;
 		if (s->focus < 0 || !sel_item_enabled(s, s->focus) ||
 			!sel_match(s, s->focus))
 			s->focus = sel_first(s);
@@ -289,6 +291,7 @@ static void sel_open(UiSelect *s, UiPopupManager *pm, UiContext *ui,
 	s->sv.offset = 0.0f;
 	s->sv.target = 0.0f;
 	s->sv.velocity = 0.0f;
+	s->lastTickNow = 0.0;
 	s->ensureFocus = 1;
 	UiPopupManager_Open(pm, ui, s->id, s->id, focusOnClose);
 }
@@ -311,7 +314,7 @@ void UiSelect_Init(UiSelect *s, UiId id)
 
 	cfg = UiScrollConfig_Desktop();
 	cfg.wheelStep = s->rowH * 3.0f;   /* 3 行/格 */
-	cfg.wheelTauMs = 0.0f;            /* 列表不做平滑尾随, 滚轮立即生效 */
+	cfg.wheelTauMs = 100.0f;          /* 平滑滚轮 (与 Markdown/TextArea 一致) */
 	cfg.bounce = 0;
 	cfg.autoHideBar = 0;
 	bar = UiScrollbarStyle_Default();
@@ -352,6 +355,7 @@ void UiSelect_SetItems(UiSelect *s, const char *const *items, int count)
 	s->sv.offset = 0.0f;
 	s->sv.target = 0.0f;
 	s->sv.velocity = 0.0f;
+	s->lastTickNow = 0.0;
 }
 
 void UiSelect_SetSelected(UiSelect *s, int index)
@@ -733,9 +737,16 @@ void UiSelect_DrawPopup(UiSelect *s, UiPopupManager *pm, UiContext *ui)
 	}
 
 	UiScrollView_End(&s->sv, ui);
-	/* 轨道翻页只写 target; tau=0 时 Tick 立即落到 target 并失效下一帧.
-	 * 弹层没有 UiApp 的 tick 回调, 所以在这里推进一次. */
-	UiScrollView_Tick(&s->sv, ui, 16.0f);
+	/* 轨道翻页只写 target; 平滑滚动按真实帧间隔推进并失效下一帧. */
+	{
+		double now = UiFrame_Now();
+		float dt = s->lastTickNow > 0.0
+			? (float)(now - s->lastTickNow) : 16.0f;
+		s->lastTickNow = now;
+		if (dt < 0.0f) dt = 0.0f;
+		if (dt > 25.0f) dt = 16.0f;   /* 空闲尖峰不参与平滑行程 */
+		UiScrollView_Tick(&s->sv, ui, dt);
+	}
 	Ui_PopLayer(ui);
 }
 
@@ -822,4 +833,20 @@ int UiSelect_Key(UiSelect *s, UiPopupManager *pm, UiContext *ui, UINT vk)
 		}
 	}
 	return 0;
+}
+
+void UiSelect_SetScrollSmoothing(UiSelect *s, float tauMs)
+{
+	if (!s) return;
+	if (tauMs < 0.0f) tauMs = 0.0f;
+	s->sv.cfg.wheelTauMs = tauMs;
+	if (tauMs <= 0.0f) {
+		s->sv.offset = s->sv.target;
+		s->sv.velocity = 0.0f;
+	}
+}
+
+int UiSelect_Busy(const UiSelect *s)
+{
+	return s ? UiScrollView_Busy(&s->sv) : 0;
 }

@@ -59,6 +59,7 @@ typedef struct UiTextArea {
 	int dragging;
 	int blinkOn;
 	int wasFocused;
+	double lastTickNow;   /* 平滑滚动用真实帧间隔 */
 	float xPref;
 	int hasXPref;
 
@@ -76,6 +77,12 @@ void UiTextArea_TextW(const UiTextArea *ta, wchar_t *out, int cap);
 void UiTextArea_SetPlaceholder(UiTextArea *ta, const wchar_t *hint);
 void UiTextArea_SetReadonly(UiTextArea *ta, int readonly);
 void UiTextArea_AttachIme(UiTextArea *ta, UiIme *ime);
+
+/* 滚轮平滑时间常数 (ms): 0 = 即时; 默认 100. 光标定位/拖选自动滚动始终
+ * 即时, 不受此设置影响. */
+void UiTextArea_SetScrollSmoothing(UiTextArea *ta, float tauMs);
+/* 平滑滚动/滚动条淡入等动画进行中: app 可用于 animating 回调持续出帧. */
+int  UiTextArea_Busy(const UiTextArea *ta);
 
 /* 画字段; 返回 1 = 本帧文本被修改. */
 int  Ui_TextArea(UiTextArea *ta, UiContext *ui, UiRect rc, int enabled);

@@ -42,6 +42,7 @@ typedef struct UiSelect {
 	double arrowT0;
 	int arrowTarget;
 	int arrowAnim;
+	double lastTickNow;    /* 列表平滑滚动用真实帧间隔 */
 	int visCount;          /* 当前过滤后的可见项数 */
 	int searchActive;      /* 搜索框是否已接管焦点/IME */
 	int blinkOn;
@@ -80,6 +81,12 @@ int  Ui_Select(UiSelect *s, UiPopupManager *pm, UiContext *ui, UiRect rc,
 
 /* 帧末调用; 未打开时什么都不做. */
 void UiSelect_DrawPopup(UiSelect *s, UiPopupManager *pm, UiContext *ui);
+
+/* 列表滚轮平滑时间常数 (ms): 0 = 即时; 默认 100. 键盘 focus 滚入视口
+ * 仍为即时. */
+void UiSelect_SetScrollSmoothing(UiSelect *s, float tauMs);
+/* 列表滚动/滚动条淡入动画进行中: app 可用于 animating 持续出帧. */
+int  UiSelect_Busy(const UiSelect *s);
 
 /* 键盘: 方向键导航; 单选 Enter 提交; 多选 Enter 切换 (无搜索时 Space 也切换);
  * 可搜索时 Backspace/Delete/左右/Home/End 编辑搜索词, Space 输入空格,

@@ -1,4 +1,5 @@
 #include "ui/ui_textarea.h"
+#include "ui/ui_frame.h"
 #include "ui/ui_paint.h"
 #include <windows.h>
 #include <string.h>
@@ -799,7 +800,7 @@ void UiTextArea_Init(UiTextArea *ta, UiId id, int maxLen)
 	}
 
 	cfg = UiScrollConfig_Desktop();
-	cfg.wheelTauMs = 0.0f;
+	cfg.wheelTauMs = 100.0f;   /* 与 Markdown 一致的平滑滚轮; 0 = 即时 */
 	cfg.bounce = 0;
 	cfg.autoHideBar = 0;
 	bar = UiScrollbarStyle_Default();
@@ -1370,10 +1371,38 @@ int Ui_TextArea(UiTextArea *ta, UiContext *ui, UiRect rc, int enabled)
 	ta->imeEdit.textHDip = lineH;
 
 	UiScrollView_End(&ta->sv, ui);
-	UiScrollView_Tick(&ta->sv, ui, 16.0f);
+	{
+		/* 用真实帧间隔推进平滑滚动: 固定 16ms 在低帧率下会变成逐帧跳 */
+		double now = UiFrame_Now();
+		float dt = ta->lastTickNow > 0.0
+			? (float)(now - ta->lastTickNow) : 16.0f;
+		ta->lastTickNow = now;
+		if (dt < 0.0f) dt = 0.0f;
+		/* 空闲后第一帧的 dt 是"距上次绘制"的空闲间隔, 直接使用会让
+		 * 平滑滚动先跳近 1/3 行程; 超过一帧半就按常规帧处理. */
+		if (dt > 25.0f) dt = 16.0f;
+		UiScrollView_Tick(&ta->sv, ui, dt);
+	}
 
 	ch = ta->changed;
 	ta->changed = 0;
 	(void)st;
 	return ch;
+}
+
+void UiTextArea_SetScrollSmoothing(UiTextArea *ta, float tauMs)
+{
+	if (!ta) return;
+	if (tauMs < 0.0f) tauMs = 0.0f;
+	ta->sv.cfg.wheelTauMs = tauMs;
+	/* 关闭平滑时立即落到目标位置, 语义与 0 = 即时一致 */
+	if (tauMs <= 0.0f) {
+		ta->sv.offset = ta->sv.target;
+		ta->sv.velocity = 0.0f;
+	}
+}
+
+int UiTextArea_Busy(const UiTextArea *ta)
+{
+	return ta ? UiScrollView_Busy(&ta->sv) : 0;
 }
