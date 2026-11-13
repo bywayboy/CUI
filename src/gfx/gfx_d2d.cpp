@@ -33,6 +33,7 @@
 #include <stdint.h>
 
 #include "gfx.h"
+#include "gfx/gfx_internal.h"
 #include "log.h"
 #include "grain_cso.h"   /* fxc 生成: g_grainCso / g_grainCsoSize */
 
@@ -2965,4 +2966,47 @@ int Gfx_DrawGlowRect(Gfx *g, GfxRect rc, float radius, float glowW,
 			D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, NULL);
 	}
 	return 1;
+}
+
+/* ── 可选模块内部接口 (gfx_internal.h) ────────────────────────────────
+ * gfx_rich.cpp 等可选模块通过这里访问绘制设备; 核心不反向依赖它们。 */
+
+int Gfx_IntReady(Gfx *g)
+{
+	return g && g->rt != NULL;
+}
+
+IDWriteFactory *Gfx_IntDWrite(Gfx *g)
+{
+	return g ? g->dw : NULL;
+}
+
+ID2D1RenderTarget *Gfx_IntRT(Gfx *g)
+{
+	return g ? g->rt : NULL;
+}
+
+ID2D1SolidColorBrush *Gfx_IntBrush(Gfx *g, GfxColor c)
+{
+	return GetBrush(g, c);
+}
+
+int Gfx_IntVisible(Gfx *g, GfxRect r)
+{
+	return IsVisible(g, r);
+}
+
+IDWriteTextFormat *Gfx_IntFontFormat(GfxFont *f)
+{
+	return f ? f->fmt : NULL;
+}
+
+float Gfx_IntFontSize(GfxFont *f)
+{
+	return f ? f->size : 0.0f;
+}
+
+int Gfx_IntFontWeight(GfxFont *f)
+{
+	return f ? f->weight : 400;
 }

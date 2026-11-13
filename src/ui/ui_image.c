@@ -426,6 +426,16 @@ int UiImage_LastError(const UiImage *img)
 	return img ? img->error : UI_IMG_E_PARAM;
 }
 
+int UiImage_PixelWidth(const UiImage *img)
+{
+	return (img && img->state == UI_IMG_READY) ? img->bw : 0;
+}
+
+int UiImage_PixelHeight(const UiImage *img)
+{
+	return (img && img->state == UI_IMG_READY) ? img->bh : 0;
+}
+
 int UiImage_Busy(const UiImage *img)
 {
 	if (!img) return 0;

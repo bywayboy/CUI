@@ -79,6 +79,9 @@ void UiImage_Clear(UiImage *img);
 int UiImage_State(const UiImage *img);
 int UiImage_LastError(const UiImage *img);
 int UiImage_Busy(const UiImage *img);
+/* 解码后的像素尺寸 (READY 前为 0) */
+int UiImage_PixelWidth(const UiImage *img);
+int UiImage_PixelHeight(const UiImage *img);
 const char *UiImage_StrError(int err);
 
 /* 必须在 Ui_BeginFrame/EndFrame 之间调用 */
