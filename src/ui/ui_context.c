@@ -278,6 +278,7 @@ void Ui_RegisterWidget(UiContext *ctx, UiId id, UiRect rc)
 	w->layer = ctx->layer;
 	w->z = ctx->z;
 	w->cursor = UI_CURSOR_ARROW;
+	w->pressPoll = 0;
 	w->hoverFn = NULL;
 	w->hoverUser = NULL;
 	w->scope = ctx->inputScope;
@@ -330,6 +331,27 @@ void Ui_SetHoverFn(UiContext *ctx, UiId id, UiHoverFn fn, void *user)
 			ctx->widgets[i].hoverFn = fn;
 			ctx->widgets[i].hoverUser = user;
 		}
+}
+
+void Ui_SetPressPoll(UiContext *ctx, UiId id, int on)
+{
+	if (!ctx || !id) return;
+	for (int i = 0; i < ctx->widgetCount; i++)
+		if (ctx->widgets[i].id == id)
+			ctx->widgets[i].pressPoll = on ? 1 : 0;
+}
+
+void Ui_InvalidateRect(UiContext *ctx, UiRect rc)
+{
+	RECT r;
+	float s;
+	if (!ctx || !ctx->hwnd || rc.w <= 0.0f || rc.h <= 0.0f) return;
+	s = ctx->scale > 0.0f ? ctx->scale : 1.0f;
+	r.left = (LONG)((rc.x - 1.0f) * s);
+	r.top = (LONG)((rc.y - 1.0f) * s);
+	r.right = (LONG)((rc.x + rc.w + 1.0f) * s) + 1;
+	r.bottom = (LONG)((rc.y + rc.h + 1.0f) * s) + 1;
+	InvalidateRect(ctx->hwnd, &r, FALSE);
 }
 
 int Ui_CursorAt(const UiContext *ctx, float x, float y)
@@ -438,12 +460,28 @@ void Ui_OnMouseMove(UiContext *ctx, float x, float y)
 	/* 控件内精细命中区: 鼠标移动事件内同步判定, 只在状态变化时重绘 */
 	if (h != UI_ID_NONE) {
 		int wi = widget_at(ctx, x, y);
-		if (wi >= 0 && ctx->widgets[wi].hoverFn &&
-			ctx->widgets[wi].hoverFn(ctx->widgets[wi].hoverUser, ctx, x, y))
-			InvalidateWidget(ctx, h);
+		UiRect dirty;
+		if (wi >= 0 && ctx->widgets[wi].hoverFn) {
+			dirty = Ui_Rect(0, 0, 0, 0);
+			if (ctx->widgets[wi].hoverFn(ctx->widgets[wi].hoverUser, ctx,
+				x, y, &dirty)) {
+				if (dirty.w > 0.0f && dirty.h > 0.0f)
+					Ui_InvalidateRect(ctx, dirty);
+				else
+					InvalidateWidget(ctx, h);
+			}
+		}
 	}
 	if (ctx->drag.active) InvalidateWidget(ctx, ctx->drag.id);
-	else if (ctx->pressed) InvalidateWidget(ctx, ctx->pressed);
+	else if (ctx->pressed) {
+		/* 只有显式声明“按下跟随指针”的控件才需要逐移动重绘, 否则
+		 * 按下期间每次移动都会整控件重绘 (文本/文档等无视觉变化). */
+		int pi;
+		for (pi = ctx->widgetCount - 1; pi >= 0; pi--)
+			if (ctx->widgets[pi].id == ctx->pressed) break;
+		if (pi >= 0 && ctx->widgets[pi].pressPoll)
+			InvalidateWidget(ctx, ctx->pressed);
+	}
 }
 
 void Ui_OnMouseDown(UiContext *ctx, float x, float y)

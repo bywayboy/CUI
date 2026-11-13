@@ -1254,6 +1254,7 @@ int Ui_TextArea(UiTextArea *ta, UiContext *ui, UiRect rc, int enabled)
 	ss.glowW = 4.0f;
 	ss.glowMask = UI_GLOW_HOVER | UI_GLOW_FOCUS;
 	st = Ui_DrawSurface(ui, ta->id, rc, &ss, enabled);
+	Ui_SetPressPoll(ui, ta->id, 1);   /* 拖选需要跟随指针重绘 */
 
 	lineH = ta->lineH;
 	if (lineH <= 0.0f) {

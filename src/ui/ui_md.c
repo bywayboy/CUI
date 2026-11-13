@@ -61,6 +61,8 @@ typedef struct MdRow {
 	float measuredW;
 	GfxRichText *rt;
 	float rtH;           /* 布局高度缓存: 命中预筛, 避免逐移动 DWrite 查询 */
+	GfxRect *codeRects;  /* 行内代码底色矩形 (布局局部坐标), 建 rt 时缓存 */
+	int codeN, codeCap;
 
 	/* IMAGE */
 	UiImage *img;
@@ -73,6 +75,7 @@ typedef struct MdRow {
 	int cellN;
 	float *colW;
 	float *rowH;
+	float *cellW;        /* 单元格文本宽缓存 (对齐用) */
 	int tblCols, tblRows;
 	float tblH;
 
@@ -419,6 +422,9 @@ static void md_row_release(UiMarkdown *md, MdRow *r)
 		Gfx_RichDestroy(r->rt);
 		r->rt = NULL;
 	}
+	md_free_(r->codeRects);
+	r->codeRects = NULL;
+	r->codeN = r->codeCap = 0;
 	if (r->cellRt) {
 		for (i = 0; i < r->cellN; i++)
 			if (r->cellRt[i]) Gfx_RichDestroy(r->cellRt[i]);
@@ -429,6 +435,8 @@ static void md_row_release(UiMarkdown *md, MdRow *r)
 	r->colW = NULL;
 	md_free_(r->rowH);
 	r->rowH = NULL;
+	md_free_(r->cellW);
+	r->cellW = NULL;
 	if (r->img) {
 		UiImage_Destroy(r->img);
 		r->img = NULL;
@@ -995,14 +1003,47 @@ static int md_hit_links(UiMarkdown *md, UiContext *ui, UiRect content,
 		rowOut, linkOut);
 }
 
-/* 控件内悬停判定 (鼠标移动事件内同步执行): 只在链接进出时返回 1
- * 请求重绘; 光标按需更新. */
-static int md_hover_fn(void *user, UiContext *ui, float x, float y)
+static UiRect md_row_display_rect(const UiMarkdown *md, int row)
+{
+	UiRect rc = { 0, 0, 0, 0 };
+	UiRect content;
+	if (!md || row < 0 || row >= md->rowCount || !md->layout.items)
+		return rc;
+	content = UiScrollView_ContentRect(&md->sv);
+	rc.x = md->sv.inner.x;
+	rc.y = content.y + UiScrollLayout_ItemY(&md->layout, row);
+	rc.w = md->sv.inner.w;
+	rc.h = md->layout.items[row].height;
+	return rc;
+}
+
+static UiRect md_rect_union(UiRect a, UiRect b)
+{
+	UiRect r;
+	float ax1, ay1, bx1, by1;
+	if (a.w <= 0.0f || a.h <= 0.0f) return b;
+	if (b.w <= 0.0f || b.h <= 0.0f) return a;
+	ax1 = a.x + a.w;
+	ay1 = a.y + a.h;
+	bx1 = b.x + b.w;
+	by1 = b.y + b.h;
+	r.x = a.x < b.x ? a.x : b.x;
+	r.y = a.y < b.y ? a.y : b.y;
+	r.w = (ax1 > bx1 ? ax1 : bx1) - r.x;
+	r.h = (ay1 > by1 ? ay1 : by1) - r.y;
+	return r;
+}
+
+/* 控件内悬停判定 (鼠标移动事件内同步执行): 只在链接进出时返回 1,
+ * 并通过 dirty 给出旧/新链接行区域, 避免整文档重绘. */
+static int md_hover_fn(void *user, UiContext *ui, float x, float y,
+	UiRect *dirty)
 {
 	UiMarkdown *md = (UiMarkdown *)user;
 	UiRect content;
-	int first, last, r = -1, l = -1, changed;
+	int first, last, r = -1, l = -1, changed, oldRow;
 	if (!md || !ui || !md->hasLinks || md->rowCount <= 0) return 0;
+	oldRow = md->hoverRow;
 	if (md->sv.inner.w > 0.0f && md->sv.inner.h > 0.0f &&
 		Ui_RectContains(md->sv.inner, x, y)) {
 		content = UiScrollView_ContentRect(&md->sv);
@@ -1016,6 +1057,9 @@ static int md_hover_fn(void *user, UiContext *ui, float x, float y)
 	md->hoverRow = r;
 	md->hoverLink = l;
 	Ui_SetCursor(ui, md->id, r >= 0 ? UI_CURSOR_HAND : UI_CURSOR_ARROW);
+	if (changed && dirty)
+		*dirty = md_rect_union(md_row_display_rect(md, oldRow),
+			md_row_display_rect(md, r));
 	return changed;
 }
 
@@ -1046,6 +1090,36 @@ static void md_hover_set(UiMarkdown *md, int row, int link)
 	}
 }
 
+/* 行内代码底色矩形随布局构建一次; 每帧直接平移绘制, 不再逐帧
+ * 调 Gfx_RichRangeRects (DWrite 命中查询). */
+static void md_code_cache_build(UiMarkdown *md, int index)
+{
+	MdRow *r = &md->rows[index];
+	int i, k;
+	md_free_(r->codeRects);
+	r->codeRects = NULL;
+	r->codeN = r->codeCap = 0;
+	if (!r->rt || !r->blk->runs) return;
+	for (i = 0; i < r->blk->runCount; i++) {
+		const MdRun *run = &r->blk->runs[i];
+		GfxRect tmp[16];
+		int n;
+		if (!(run->style & MD_R_CODE) || run->len <= 0) continue;
+		n = Gfx_RichRangeRects(r->rt, run->start, run->len, tmp, 16);
+		for (k = 0; k < n; k++) {
+			if (r->codeN >= r->codeCap) {
+				int nc = r->codeCap ? r->codeCap * 2 : 8;
+				GfxRect *np = (GfxRect *)md_realloc_(r->codeRects,
+					(SIZE_T)nc * sizeof(GfxRect));
+				if (!np) return;
+				r->codeRects = np;
+				r->codeCap = nc;
+			}
+			r->codeRects[r->codeN++] = tmp[k];
+		}
+	}
+}
+
 static GfxRichText *md_row_make_rt(UiMarkdown *md, int index)
 {
 	MdRow *r = &md->rows[index];
@@ -1070,8 +1144,10 @@ static GfxRichText *md_row_make_rt(UiMarkdown *md, int index)
 			r->blk->type == MD_BLOCK_CODE);
 		if (r->blk->type == MD_BLOCK_CODE)
 			md_highlight(md, r->rt, r->blk);
-		else
+		else {
 			md_apply_inline_images(md, index, r->rt, wrapW);
+			md_code_cache_build(md, index);
+		}
 		r->rtH = Gfx_RichHeight(r->rt);
 		md_live_push(md, index);
 	}
@@ -1225,7 +1301,8 @@ static int md_table_build(UiMarkdown *md, int index)
 	r->colW = (float *)md_alloc_(cols * (int)sizeof(float));
 	r->cellRt = (GfxRichText **)md_alloc_(rows * cols * (int)sizeof(GfxRichText *));
 	r->rowH = (float *)md_alloc_(rows * (int)sizeof(float));
-	if (!r->colW || !r->cellRt || !r->rowH) {
+	r->cellW = (float *)md_alloc_(rows * cols * (int)sizeof(float));
+	if (!r->colW || !r->cellRt || !r->rowH || !r->cellW) {
 		md_free_(nat);
 		md_row_release(md, r);
 		return 0;
@@ -1265,6 +1342,7 @@ static int md_table_build(UiMarkdown *md, int index)
 				r->cellRt[rr * cols + c] = rt;
 				if (rt) {
 					md_apply_runs(md, rt, cell->runs, cell->runCount, 0);
+					r->cellW[rr * cols + c] = Gfx_RichWidth(rt);
 					h = Gfx_RichHeight(rt);
 				}
 			}
@@ -1504,7 +1582,7 @@ static void md_draw_table(UiMarkdown *md, int index, float x, float y)
 			GfxRichText *rt = r->cellRt[rr * r->tblCols + c];
 			if (rt) {
 				MdCell *cell = &r->blk->cells[rr * r->tblCols + c];
-				float tw = Gfx_RichWidth(rt);
+				float tw = r->cellW ? r->cellW[rr * r->tblCols + c] : 0.0f;
 				float tx;
 				int al = (cell && r->blk->align) ? r->blk->align[c]
 					: MD_ALIGN_LEFT;
@@ -1652,19 +1730,14 @@ static void md_draw_row(UiMarkdown *md, UiContext *ui, int index,
 			y + top, md->cCodeText);
 		break;
 	default: {
-		int i, k;
+		int k;
 		if (r->rt) {
-			for (i = 0; i < r->blk->runCount; i++) {
-				const MdRun *run = &r->blk->runs[i];
-				GfxRect cr[16];
-				int cn;
-				if (!(run->style & MD_R_CODE) || run->len <= 0) continue;
-				cn = Gfx_RichRangeRects(r->rt, run->start, run->len, cr, 16);
-				for (k = 0; k < cn; k++)
-					Gfx_FillRoundRect(md->gfx, Ui_Rect(x + cr[k].x - 1.0f,
-						y + top + cr[k].y, cr[k].w + 2.0f, cr[k].h),
-						3.0f, md->cInlineCodeBg);
-			}
+			for (k = 0; k < r->codeN; k++)
+				Gfx_FillRoundRect(md->gfx,
+					Ui_Rect(x + r->codeRects[k].x - 1.0f,
+						y + top + r->codeRects[k].y,
+						r->codeRects[k].w + 2.0f, r->codeRects[k].h),
+					3.0f, md->cInlineCodeBg);
 			Gfx_RichDraw(r->rt, md->gfx, x, y + top, md->cText);
 		}
 		break;
@@ -1989,7 +2062,8 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 		int i, event = 0, hr = -1, hl = -1;
 		if (first < 0) first = 0;
 		if (last >= md->rowCount) last = md->rowCount - 1;
-		if (Ui_RectContains(rc, ui->mouseX, ui->mouseY) &&
+		if (!md->sv.draggingThumb &&
+			Ui_RectContains(rc, ui->mouseX, ui->mouseY) &&
 			md_hit_links(md, ui, content, first, last, &hr, &hl)) {
 			md->hoverRow = hr;
 			md->hoverLink = hl;

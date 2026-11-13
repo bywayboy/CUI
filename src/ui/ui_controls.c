@@ -567,6 +567,7 @@ int Ui_Slider(UiSlider *s, UiContext *ui, UiRect rc,
 		ui->mouseX <= track.x + track.w + 12.0f;
 
 	st = Ui_State(ui, s->id, hit, enabled);
+	Ui_SetPressPoll(ui, s->id, 1);   /* 按住拖动需要跟随指针重绘 */
 	hov = enabled ? st.hover : 0.0f;
 	prs = enabled ? st.press : 0.0f;
 	/* 点标签/百分比时不显示"按下" (不改变值); 拖动中即使 hover 被输入层

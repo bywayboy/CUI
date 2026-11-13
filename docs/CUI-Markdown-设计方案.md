@@ -1050,3 +1050,32 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md);
 | 静止滚动 | 指针固定，滚轮让链接移走：HAND → ARROW |
 | headless | `md_ui_test` 63/0：移动事件找链接 HAND、右侧空白 ARROW、滚动后原坐标失效且新坐标仍 HAND |
 | 回归 | `md_test` 341/0、`gfx_rich_test` 34/0、`net_test` 877/0；19 exe 0CRT；build.cmd CRLF 201/201 |
+
+### 性能：鼠标移动 / 拖滚动条（2026-11-13）
+
+实测方法：`SendMessage(WM_MOUSEMOVE)` 定量投递（另有 `WM_NULL` 基准扣除
+跨进程消息开销），`GetProcessTimes` 读应用 CPU；4K@200%（1520×1440 窗口）。
+
+发现并修复：
+
+1. `Ui_OnMouseMove` 在按下期间**每次移动都失效 pressed 控件**。在文档内
+   按住拖动时 200 次移动产生 232 帧整窗重绘。改为显式 opt-in
+   `Ui_SetPressPoll`（滑块、TextArea 拖选），其余控件按下期间移动不再重绘。
+2. 行内代码底色与表格单元格文本宽每帧重复调 `Gfx_RichRangeRects` /
+   `Gfx_RichWidth`（DWrite 查询）。改为建布局时缓存：`MdRow.codeRects`、
+   `MdRow.cellW`，绘制只做平移。
+3. 链接 hover 变化过去失效整个文档 widget。`UiHoverFn` 增加 dirty 输出，
+   Markdown 返回旧/新链接**行**的并集，经 `Ui_InvalidateRect` 局部失效。
+
+结果（同机同文档）：
+
+| 场景 | 修改前 | 修改后 |
+| --- | --- | --- |
+| 正文移动（2000 次，含消息开销） | 109 ms | 47 ms（WM_NULL 基准 31 ms） |
+| 拖 thumb（200 步） | 329 ms | 62 ms（0.31 ms/步） |
+| 链接/空白交替（2000 次） | 3109 ms | 3359 ms（每次切换 1 帧，仍由宿主整窗背景+Present 主导；Markdown 只重绘链接行） |
+
+说明：链接切换的剩余成本是宿主每帧绘制整窗渐变与合成，不是文档布局；
+若要继续下降需要滚动快路径（层缓存/带状平移），属后续独立优化。
+回归：`md_test` 341/0、`md_ui_test` 63/0、`gfx_rich_test` 34/0、
+`net_test` 877/0；滑块 65%→84% 拖动、TextArea 拖选原生验证通过。

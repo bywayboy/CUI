@@ -36,9 +36,10 @@ enum {
 };
 
 /* 控件内悬停判定: 指针在此控件上移动时调用 (WM_MOUSEMOVE 内同步执行).
- * 控件可更新内部 hover 状态并用 Ui_SetCursor 声明光标; 返回 1 = 视觉
- * 状态变化, 需要重绘 (返回 0 时不额外触发帧). */
-typedef int (*UiHoverFn)(void *user, UiContext *ctx, float x, float y);
+ * 可更新内部 hover 状态并用 Ui_SetCursor 声明光标. 返回 1 = 需要重绘;
+ * 同时通过 dirty 给出局部区域 (w/h<=0 表示整个控件), 避免整控件失效. */
+typedef int (*UiHoverFn)(void *user, UiContext *ctx, float x, float y,
+	UiRect *dirty);
 
 typedef struct {
 	UiId id;
@@ -47,6 +48,7 @@ typedef struct {
 	int layer;
 	int z;
 	uint8_t cursor;   /* UI_CURSOR_*: 命中此控件时的鼠标形状 */
+	uint8_t pressPoll; /* 1 = 按下期间指针移动需逐次重绘 (滑块/拖选等) */
 	UiHoverFn hoverFn; /* 非 NULL: 指针在控件上移动时调用 */
 	void *hoverUser;
 	UiId scope;
@@ -140,6 +142,10 @@ UiId Ui_HitTest(const UiContext *ctx, float x, float y);
 /* 给本帧已注册的控件声明光标形状 (同一 ID 的多次注册一起生效, 例如
  * TextArea 的 surface + ScrollView viewport). 松开/不声明时回到箭头. */
 void Ui_SetCursor(UiContext *ctx, UiId id, int kind);
+/* 按下期间需要跟随指针的控件 (滑块/拖选): 每次移动失效自身. */
+void Ui_SetPressPoll(UiContext *ctx, UiId id, int on);
+/* 局部失效 (DIP 客户区坐标): 悬停/内容小范围变化时避免整控件重绘. */
+void Ui_InvalidateRect(UiContext *ctx, UiRect rc);
 /* 注册控件内悬停判定 (见 UiHoverFn). 控件内部有链接等精细命中区时,
  * 在鼠标移动事件中同步判断光标/悬停, 只在变化时改光标并请求重绘. */
 void Ui_SetHoverFn(UiContext *ctx, UiId id, UiHoverFn fn, void *user);
