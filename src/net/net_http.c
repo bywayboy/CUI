@@ -232,6 +232,17 @@ void net_http_free(NetConn *conn)
 	}
 }
 
+void net_http_req_free(NetHttpReq *r)
+{
+	if (!r) return;
+	if (r->method) free(r->method);
+	if (r->url) free(r->url);
+	if (r->contentType) free(r->contentType);
+	if (r->extraHeaders) free(r->extraHeaders);
+	if (r->body) free(r->body);
+	free(r);
+}
+
 static void http_pool_put_(NetConn *conn)
 {
 	NetIo *io = conn->io;
@@ -531,12 +542,7 @@ static void http_redirect_(NetConn *conn, const char *location)
 
 	nc = net_conn_new(conn->io, NET_K_HTTP, conn->id);
 	if (!nc) {
-		if (r->url) free(r->url);
-		if (r->method) free(r->method);
-		if (r->body) free(r->body);
-		if (r->contentType) free(r->contentType);
-		if (r->extraHeaders) free(r->extraHeaders);
-		free(r);
+		net_http_req_free(r);
 		http_finish_(conn, UI_NET_E_OOM);
 		return;
 	}
@@ -776,7 +782,7 @@ void net_http_start(NetConn *conn, NetHttpReq *req)
 	int pport = 0;
 	char pauth[192];
 
-	if (!conn || !req) { if (req) free(req); return; }
+	if (!conn || !req) { net_http_req_free(req); return; }
 	net = conn->io->owner;
 	if (conn->http) {
 		/* 复用的 keep-alive 连接 */
@@ -788,7 +794,7 @@ void net_http_start(NetConn *conn, NetHttpReq *req)
 			NetHttpResult *r = (NetHttpResult *)calloc(1, sizeof(NetHttpResult));
 			if (r) { r->error = UI_NET_E_OOM; net_emit_http(conn->io, conn->id, r); }
 			net_conn_close(conn);
-			free(req);
+			net_http_req_free(req);
 			return;
 		}
 		NetBuf_Init(&h->request);

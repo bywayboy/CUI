@@ -6,7 +6,7 @@
  *   2) 显式补间 (TWEEN): 转场 (淡入/上滑), from -> to 在固定时长内按缓动走完
  *
  * 约定:
- *   - 只在 UI 线程访问; 固定池, 零分配;
+ *   - 只在 UI 线程访问; 池按需增长, Ui_ContextShutdown 释放;
  *   - 时间由 Ui_AnimAdvance(dt) 推进 (QPC 得来的毫秒);
  *   - 控件不持有动画状态, 只按 UiId + 通道读取;
  *   - "显示动画"关闭时 (reduced=1) 所有通道立即到位.
@@ -31,7 +31,7 @@ enum {
 	UI_AN_CH = 16
 };
 
-#define UI_AN_MAX_ENTRIES 64
+#define UI_AN_INITIAL_ENTRIES 64
 
 enum { UI_AN_IDLE = 0, UI_AN_SMOOTH, UI_AN_TWEEN };
 enum { UI_AN_EASE_LINEAR = 0, UI_AN_EASE_OUT, UI_AN_EASE_INOUT };

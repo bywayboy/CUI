@@ -14,8 +14,8 @@
 #include "ui/ui_theme.h"
 #include "ui/ui_anim.h"
 
-#define UI_MAX_WIDGETS 256
-#define UI_MAX_WHEEL_TARGETS 16
+#define UI_WIDGET_INITIAL_CAP 512
+#define UI_WHEEL_INITIAL_CAP 16
 #define UI_MAX_CLIP_DEPTH 8
 #define UI_LAYER_BASE    0
 #define UI_LAYER_OVERLAY 1
@@ -72,11 +72,15 @@ struct UiContext {
 	int mouseDown;
 	int mouseOver;            /* 光标在窗口客户区内 (WM_MOUSELEAVE 清 0) */
 	int inputBlock;           /* >0: 本帧不注册控件/滚轮目标 (翻页转场) */
-	UiId inputOwner;          /* 持续的模态输入 owner; 0 = 无 */
+	UiId inputOwner;          /* 持续的模态输入 owner (栈顶); 0 = 无 */
+	UiId inputOwnerStack[4];
+	int inputOwnerDepth;
 	UiId inputScope;          /* 当前注册作用域; 帧开始/结束清零 */
 
-	UiWidget widgets[UI_MAX_WIDGETS];
+	UiWidget *widgets;        /* 按需增长; Ui_ContextShutdown 释放 */
 	int widgetCount;
+	int widgetCap;
+	int widgetOom;            /* 扩容失败: 本帧后续注册被丢弃 */
 	int layer;
 	int z;                    /* 当前注册层 z-index */
 	int zDepth;
@@ -90,8 +94,9 @@ struct UiContext {
 	UiRect hitClipStack[UI_MAX_CLIP_DEPTH];
 
 	/* 滚轮路由: 本帧登记的滚动区域, 最后登记(内层/后画)优先. */
-	UiWheelTarget wheelTargets[UI_MAX_WHEEL_TARGETS];
+	UiWheelTarget *wheelTargets;
 	int wheelTargetCount;
+	int wheelCap;
 	UiId wheelTarget;         /* 待消费的滚轮目标 */
 	float wheelDelta;         /* 累计滚轮格数 (+ = 向上) */
 
@@ -117,8 +122,9 @@ struct UiContext {
 		int active;
 	} drag;
 
-	/* 动画: 固定池, 按控件 ID 存通道值 (见 ui_anim.h) */
-	UiAnimEntry anim[UI_AN_MAX_ENTRIES];
+	/* 动画: 按控件 ID 存通道值 (见 ui_anim.h), 按需增长 */
+	UiAnimEntry *anim;
+	int         animCap;
 	uint32_t    animFrame;
 	double      animTimeMs;
 	int         animReduced;      /* 系统关闭了"显示动画" */
@@ -128,6 +134,8 @@ struct UiContext {
 };
 
 void Ui_ContextInit(UiContext *ctx, HWND hwnd, Gfx *gfx, UiTheme *theme);
+/* 释放 UiContext 内按需增长的存储; 调用后 context 不可再绘制. */
+void Ui_ContextShutdown(UiContext *ctx);
 void Ui_SetViewport(UiContext *ctx, float w, float h, float scale);
 /* 组件主动失效一个 DIP 矩形 (异步加载完成/逐帧动画时调用) */
 void Ui_ContextInvalidate(UiContext *ctx, UiRect rc);
@@ -136,6 +144,9 @@ void Ui_BeginFrame(UiContext *ctx);
 void Ui_EndFrame(UiContext *ctx);
 
 int Ui_InputAllowed(const UiContext *ctx);
+/* 模态输入 owner 栈: 对话框/嵌套对话框使用; inputOwner 始终为栈顶. */
+int  Ui_PushInputOwner(UiContext *ctx, UiId owner);
+void Ui_PopInputOwner(UiContext *ctx, UiId owner);
 void Ui_RegisterWidget(UiContext *ctx, UiId id, UiRect rc);
 UiId Ui_HitTest(const UiContext *ctx, float x, float y);
 

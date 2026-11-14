@@ -137,6 +137,7 @@ void UiMenu_Draw(UiMenu *m, UiPopupManager *pm, UiContext *ui)
 		UI_POPUP_ALIGN_START, 6.0f);
 	m->panelRc = panel;
 
+	UiPopupManager_BeginDraw(pm, ui);
 	Ui_PushLayer(ui, UI_Z_OVERLAY);
 	panelId = menu_child(m->id, "ui.menu.panel", 0);
 	Ui_RegisterWidget(ui, panelId, panel);
@@ -204,6 +205,7 @@ void UiMenu_Draw(UiMenu *m, UiPopupManager *pm, UiContext *ui)
 	if (hitClip) Ui_PopClipRect(ui);
 	Gfx_PopClip(ui->gfx);
 	Ui_PopLayer(ui);
+	UiPopupManager_EndDraw(pm, ui);
 }
 
 int UiMenu_Key(UiMenu *m, UiPopupManager *pm, UiContext *ui, UINT vk)

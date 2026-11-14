@@ -2,6 +2,25 @@
 #include "log.h"
 #include <string.h>
 
+void *realloc(void *p, size_t sz);
+
+static UiAnimEntry *anim_reserve(UiContext *ctx, int need)
+{
+	UiAnimEntry *p;
+	int cap;
+	if (!ctx) return 0;
+	if (need <= ctx->animCap) return ctx->anim;
+	cap = ctx->animCap > 0 ? ctx->animCap : UI_AN_INITIAL_ENTRIES;
+	while (cap < need) cap *= 2;
+	p = (UiAnimEntry *)realloc(ctx->anim, (size_t)cap * sizeof(*p));
+	if (!p) return 0;
+	ZeroMemory(p + ctx->animCap,
+		(size_t)(cap - ctx->animCap) * sizeof(*p));
+	ctx->anim = p;
+	ctx->animCap = cap;
+	return p;
+}
+
 /* 各通道的平滑时间常数 (ms)。交互按"按下最快、光晕最慢"排, 手感更自然。 */
 static float chan_tau(int ch)
 {
@@ -77,8 +96,9 @@ static float ease_apply(int ease, float p)
 static UiAnimEntry *entry_find(UiContext *ctx, UiId id, int create)
 {
 	int i, freeIdx = -1;
+	UiAnimEntry *pool;
 	if (!ctx || !id) return 0;
-	for (i = 0; i < UI_AN_MAX_ENTRIES; i++) {
+	for (i = 0; i < ctx->animCap; i++) {
 		UiAnimEntry *e = &ctx->anim[i];
 		if (e->used && e->id == id) {
 			e->seen = ctx->animFrame;
@@ -87,7 +107,11 @@ static UiAnimEntry *entry_find(UiContext *ctx, UiId id, int create)
 		if (!e->used && freeIdx < 0) freeIdx = i;
 	}
 	if (!create) return 0;
-	if (freeIdx < 0) return 0;          /* 池满: 忽略新动画, 不能崩 */
+	if (freeIdx < 0) {
+		freeIdx = ctx->animCap;
+		pool = anim_reserve(ctx, freeIdx + 1);
+		if (!pool) return 0;
+	}
 	{
 		UiAnimEntry *e = &ctx->anim[freeIdx];
 		memset(e, 0, sizeof(*e));
@@ -217,7 +241,7 @@ void Ui_AnimAdvance(UiContext *ctx, float dtMs)
 	/* 不在 Advance 里清脏区: 组件可能在上一帧绘制 (WM_PAINT) 时登记,
 	 * 由 Ui_AnimTakeDirty 统一取走, 否则逐帧自绘的 loading 动画会丢帧。 */
 
-	for (i = 0; i < UI_AN_MAX_ENTRIES; i++) {
+	for (i = 0; i < ctx->animCap; i++) {
 		UiAnimEntry *e = &ctx->anim[i];
 		int moved = 0;
 		if (!e->used) continue;
@@ -265,7 +289,7 @@ int Ui_AnimBusy(UiContext *ctx)
 {
 	int i, ch;
 	if (!ctx) return 0;
-	for (i = 0; i < UI_AN_MAX_ENTRIES; i++) {
+	for (i = 0; i < ctx->animCap; i++) {
 		UiAnimEntry *e = &ctx->anim[i];
 		if (!e->used) continue;
 		for (ch = 0; ch < UI_AN_CH; ch++)

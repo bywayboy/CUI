@@ -38,6 +38,9 @@ UiRect UiPopup_Place(const UiContext *ui, UiRect anchor, float w, float h,
 typedef struct UiPopupManager {
 	UiId openId;          /* 当前弹层 id, 0 = 关闭 */
 	UiId ownerId;         /* 触发器 id, 关闭后焦点回归 */
+	UiId scope;           /* 打开时捕获的 inputOwner; 绘制时恢复注册作用域 */
+	UiId scopeSaved[4];
+	int  scopeDepth;
 	int  focusOnClose;    /* 关闭后是否显示键盘焦点样式 */
 	int  closed;          /* 单帧: 本帧发生关闭 */
 	int  outsidePress;    /* 单帧: 打开期间在弹层外按下 */
@@ -55,6 +58,11 @@ int  UiPopupManager_AnyOpen(const UiPopupManager *pm);
 void UiPopupManager_Open(UiPopupManager *pm, UiContext *ui, UiId id,
 	UiId owner, int focusOnClose);
 void UiPopupManager_Close(UiPopupManager *pm, UiContext *ui);
+
+/* 绘制弹层面板前/后调用: 临时把 inputScope 恢复为打开时捕获的 owner,
+ * 使帧末绘制、对话框内弹层都能被正确命中. */
+void UiPopupManager_BeginDraw(UiPopupManager *pm, UiContext *ui);
+void UiPopupManager_EndDraw(UiPopupManager *pm, UiContext *ui);
 
 /* Esc 关闭 (并显示触发器焦点). 返回 1 = 已处理. */
 int  UiPopupManager_Key(UiPopupManager *pm, UiContext *ui, UINT vk);

@@ -632,16 +632,24 @@ void net_ws_on_event(NetConn *conn, int connected, int err)
 		w->opt.handshakeTimeoutMs > 0 ? w->opt.handshakeTimeoutMs : 8000);
 }
 
+void net_ws_open_req_free(NetWsOpenReq *req)
+{
+	if (!req) return;
+	if (req->url) free(req->url);
+	if (req->extraHeaders) free(req->extraHeaders);
+	free(req);
+}
+
 void net_ws_start(NetConn *conn, NetWsOpenReq *req)
 {
 	NetWsConn *w;
 
-	if (!conn || !req) { if (req) free(req); return; }
+	if (!conn || !req) { net_ws_open_req_free(req); return; }
 	w = (NetWsConn *)calloc(1, sizeof(NetWsConn));
 	if (!w) {
 		ws_emit_close_(conn, 0, "out of memory");
 		net_conn_close(conn);
-		free(req);
+		net_ws_open_req_free(req);
 		return;
 	}
 	NetBuf_Init(&w->request);

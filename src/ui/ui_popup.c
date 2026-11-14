@@ -100,14 +100,10 @@ void UiPopupManager_Open(UiPopupManager *pm, UiContext *ui, UiId id,
 	UiId owner, int focusOnClose)
 {
 	if (!pm || !ui || !id) return;
-	if (pm->openId && pm->openId != id) {
-		/* 切换弹层: 旧弹层不显示焦点, 直接让位. */
-		pm->openId = id;
-	} else if (pm->openId == id) {
-		return;
-	}
+	/* 同一会话切换触发项 (如导航栏切换顶级项) 也要更新 owner/scope. */
 	pm->openId = id;
 	pm->ownerId = owner;
+	pm->scope = ui->inputOwner;
 	pm->focusOnClose = focusOnClose != 0;
 	pm->closed = 0;
 	pm->outsidePress = 0;
@@ -132,7 +128,24 @@ void UiPopupManager_Close(UiPopupManager *pm, UiContext *ui)
 		if (ui->hwnd) InvalidateRect(ui->hwnd, NULL, FALSE);
 	}
 	pm->ownerId = UI_ID_NONE;
+	pm->scope = UI_ID_NONE;
+	pm->scopeDepth = 0;
 	pm->focusOnClose = 0;
+}
+
+void UiPopupManager_BeginDraw(UiPopupManager *pm, UiContext *ui)
+{
+	if (!pm || !ui) return;
+	if (pm->scopeDepth < (int)(sizeof(pm->scopeSaved) /
+		sizeof(pm->scopeSaved[0])))
+		pm->scopeSaved[pm->scopeDepth++] = ui->inputScope;
+	ui->inputScope = pm->scope;
+}
+
+void UiPopupManager_EndDraw(UiPopupManager *pm, UiContext *ui)
+{
+	if (!pm || !ui || pm->scopeDepth <= 0) return;
+	ui->inputScope = pm->scopeSaved[--pm->scopeDepth];
 }
 
 void UiPopupManager_BeginFrame(UiPopupManager *pm, UiContext *ui)

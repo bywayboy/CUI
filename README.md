@@ -36,6 +36,9 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
   包含可编辑备注 TextArea。
 - `samples/textarea.c`：多行编辑器样例。软换行、垂直滚动、选区、剪贴板、
   IME、readonly/disabled；7000+ 字符动态追加与中段编辑。
+- `samples/nav.c`：多级导航菜单样例。水平/垂直切换、图标 rail、水平尾部
+  `>>` 收起、垂直高度不足时的底部 `>>`、多级子菜单、选中路径面包屑；
+  子菜单超高时用"更多 >>"续页，不出现滚动条。
 
 > 来源：RMControl `installer/src`（提交 `1bc6929` 时的实现）。
 > 安装器目前仍保留自己的副本；CUI 是**独立可复用**版本，后续可让安装器切到它。
@@ -48,7 +51,8 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
 
 ```
 CUI/
-├─ build.cmd              MSVC x64 构建脚本（0CRT，产物见下）
+├─ build.cmd              MSVC x64 构建入口（载入 VS 环境 / 头文件清单 / 0CRT 校验）
+├─ build.mk               NMAKE 增量构建图（编译、着色器、链接）
 ├─ README.md              本文档
 ├─ docs/
 │  ├─ CUI-使用白皮书.md   详尽的使用/接入/排错文档
@@ -56,6 +60,7 @@ CUI/
 │  ├─ CUI-Tab-设计方案.md  TabBar/TabPager 结构与转场设计（含 CARD 计划）
 │  ├─ CUI-弹层与选择控件-设计方案.md  弹层管理器 + Select/Menu 状态与命中路由
 │  ├─ CUI-TextArea-设计方案.md  动态文本/增量布局/IME 代理/滚动设计
+│  ├─ CUI-导航菜单-设计方案.md  多级导航/溢出分页/无滚动弹层/选中路径
 │  ├─ CUI-日期选择-设计方案.md  DatePicker 四模式/双联动范围/时间列/键入校验
 │  ├─ CUI-网络层-设计方案.md  IOCP+SChannel/自研 DNS/APC 归位/定时器/验证判据
 │  └─ CUI-图片-设计方案.md   UiImage：WIC 解码/URL-文件-内存/GPU loading/失效
@@ -119,6 +124,7 @@ CUI/
       ├─ ui_image.*        Image：WIC 解码/URL-文件-内存/GPU loading/fit/淡入
       ├─ ui_datetime.*     0CRT 日期数学：civil↔day-number/格式化/解析
       ├─ ui_menu.*         Menu / 右键上下文菜单（分隔/禁用/危险项）
+      ├─ ui_nav.*          多级导航菜单：水平/垂直/rail、>> 溢出、无滚动分页
       ├─ ui_tooltip.*      悬停延迟提示
       ├─ ui_theme.*       颜色/字体令牌（亮/暗 + 自定义 5 语义色）
       ├─ ui_paint.*       Ui_DrawSurface：填充/描边/光晕的统一外观
@@ -154,6 +160,7 @@ bin\cui_icons.exe       REM 按钮 / Toast / TabBar 图标（MDL2 glyph）
 bin\cui_controls.exe    REM Checkbox / Radio / Switch / Slider / Tooltip
 bin\cui_overlays.exe    REM Select/Menu + Dialog/ConfirmDialog（含 TextArea 测试）
 bin\cui_textarea.exe    REM 多行文本：软换行 / 滚动 / 选择 / IME
+bin\cui_nav.exe         REM 导航菜单：水平/垂直/rail / >> 溢出 / 多级子菜单
 bin\cui_datepicker.exe  REM DatePicker：日期 / 日期+时间 / 范围 / 范围+时间
 bin\cui_net.exe         REM 网络层：HTTP(S) / WS / WSS / UiTimer
 bin\cui_ws_server.exe   REM WebSocket 服务端：WS/WSS / 回显 / 广播
@@ -161,7 +168,10 @@ bin\cui_net_test.exe    REM 网络层断言（CUI_NET_LIVE=1 跑实网，需先�
 bin\cui_image.exe       REM 图片：URL / 文件 / 内存 + GPU loading 动画
 ```
 
-构建是 **0CRT**：`/NODEFAULTLIB` + `/ENTRY:startup`，由 `crtstub.c` 提供
+构建是 **增量** 的：`build.cmd` 生成头文件清单后调用 `nmake`，只重编比
+`.obj` 新的源文件；任一 `src/**/*.h` 或 `build.mk`（编译/链接参数）变化会
+重编全部对象。首次构建或需要彻底重来用 `build.cmd clean`。构建是 **0CRT**：
+`/NODEFAULTLIB` + `/ENTRY:startup`，由 `crtstub.c` 提供
 `startup -> WinMain`、/GS/SEH 运行时、SSE2/AVX2/ERMSB 内存与字符串、完整
 printf（flags/宽度/精度/length）和分配器；`mem_avx2.c` 单独 `/arch:AVX2`。
 脚本用 `/Oi- /GS- /Gs32768`，最后用 `dumpbin` 检查导入表里没有

@@ -43,7 +43,10 @@ static void dialog_finish(UiDialog *d, UiContext *ui)
 	d->progress = 0.0f;
 	d->result = d->pendingResult;
 	d->pendingResult = UI_DIALOG_NONE;
-	ui->inputOwner = UI_ID_NONE;
+	if (d->ownerPushed) {
+		Ui_PopInputOwner(ui, d->id);
+		d->ownerPushed = 0;
+	}
 	ui->widgetCount = ui->wheelTargetCount = 0;
 	dialog_clear_input(ui);
 	ui->navId = d->savedNav;
@@ -77,8 +80,10 @@ void UiDialog_SetFocusOrder(UiDialog *d, const UiId *ids, int count)
 
 int UiDialog_Open(UiDialog *d, UiContext *ui, UiId owner)
 {
-	if (!d || !ui || !d->id || d->visible || ui->inputOwner ||
+	if (!d || !ui || !d->id || d->visible ||
 		ui->modal || ui->popupOpen) return 0;
+	if (!Ui_PushInputOwner(ui, d->id)) return 0;
+	d->ownerPushed = 1;
 	d->savedNav = owner ? owner : ui->navId;
 	d->savedFocus = ui->focusId;
 	d->savedFocusVisible = ui->navFocusVisible;

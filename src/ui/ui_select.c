@@ -645,6 +645,7 @@ void UiSelect_DrawPopup(UiSelect *s, UiPopupManager *pm, UiContext *ui)
 		UI_POPUP_ALIGN_START, 6.0f);
 	s->listRc = panel;
 
+	UiPopupManager_BeginDraw(pm, ui);
 	Ui_PushLayer(ui, UI_Z_OVERLAY);
 	panelId = sel_child(s->id, "ui.select.panel", 0);
 	Ui_RegisterWidget(ui, panelId, panel);
@@ -749,6 +750,7 @@ void UiSelect_DrawPopup(UiSelect *s, UiPopupManager *pm, UiContext *ui)
 		UiScrollView_Tick(&s->sv, ui, dt);
 	}
 	Ui_PopLayer(ui);
+	UiPopupManager_EndDraw(pm, ui);
 }
 
 /* ── 键盘 ──────────────────────────────────────────────────────────── */

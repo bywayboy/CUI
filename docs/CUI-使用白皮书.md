@@ -292,17 +292,31 @@ CUI 的取舍是：**只做安装器/工具类窗口需要的那一层**。体�
 build.cmd
 ```
 
-脚本会：
+脚本分两层：
 
-1. 在 `C:\Program Files\Microsoft Visual Studio\{18,2022,2019}\{Community,Professional,Enterprise}`
-   下寻找 `vcvarsall.bat`，并加载 x64 环境。
-2. 创建 `build\obj`、`bin`。
-3. 用 `%WindowsSdkVerBinPath%x64\fxc.exe` 把 `src\gfx\grain.hlsl` 编译成
-   `build\grain_cso.h`（内嵌字节数组，运行时不依赖 d3dcompiler）。
-4. 用 `/std:c11 /O1 /GS- /utf-8 /DNO_CRT_NO_DEFAULTLIB` 编译 C 文件。
-5. 用 `/std:c++17 /EHs-c- /GR- /D_HAS_EXCEPTIONS=0` 编译 `gfx_d2d.cpp`。
-6. 链接 `/SUBSYSTEM:WINDOWS /NODEFAULTLIB /ENTRY:startup /MANIFEST:NO`。
-7. 用 `dumpbin /imports` 检查导入表，若出现 `msvcrt / ucrtbase / api-ms-win-crt-*`
+- `build.cmd`：在 `C:\Program Files\Microsoft Visual Studio\{18,2022,2019}\{Community,Professional,Enterprise}`
+  下寻找 `vcvarsall.bat` 并加载 x64 环境；定位 Windows SDK 的 `fxc.exe`；
+  生成头文件清单 `build\headers.mk`；调用 `nmake /f build.mk`；最后用
+  `dumpbin /imports` 检查 0CRT 并列出产物。
+- `build.mk`（NMAKE）：编译、着色器、链接的全部规则与依赖。
+
+构建是**增量**的：
+
+- 只重编比 `.obj` 新的 `.c/.cpp`；
+- 任一 `src/**/*.h|*.hpp` 变化 → 全部对象重编（保守，但不会漏依赖）；
+- `build.mk`（编译/链接参数）变化 → 全部对象重编；
+- 无变化时只做 0CRT 校验与产物列表，基本不需要额外时间；
+- 需要彻底重来时执行 `build.cmd clean`。
+
+具体步骤：
+
+1. 创建 `build\obj`、`bin`。
+2. 用 `fxc.exe` 把 `src\gfx\grain.hlsl` 编译成 `build\grain_cso.h`
+   （内嵌字节数组，运行时不依赖 d3dcompiler）。
+3. 用 `/std:c11 /O1 /GS- /utf-8 /DNO_CRT_NO_DEFAULTLIB` 编译 C 文件。
+4. 用 `/std:c++17 /EHs-c- /GR- /D_HAS_EXCEPTIONS=0` 编译 `gfx_d2d.cpp`。
+5. 链接 `/SUBSYSTEM:WINDOWS /NODEFAULTLIB /ENTRY:startup /MANIFEST:NO`。
+6. 用 `dumpbin /imports` 检查导入表，若出现 `msvcrt / ucrtbase / api-ms-win-crt-*`
    就判定 0CRT 构建失败。
 
 产物：
@@ -329,11 +343,12 @@ bin\cui_textarea.exe
 Output: ...\bin\cui_demo.exe (47104 bytes)
 ```
 
-> 注意：`build.cmd` 必须保持 **CRLF** 行尾；改成 LF 后 cmd 在多行括号块/标签处
-> 可能直接卡住（无输出、无子进程）。编辑后可用 `file build.cmd` 检查。
+> 注意：`build.cmd` 与 `build.mk` 必须保持 **CRLF** 行尾；LF 会让 cmd 的多行
+> 括号块/nmake 的续行解析出错。`build.mk` 还要保持 **纯 ASCII**：nmake 按本地
+> 代码页解析，UTF-8 中文注释可能吞掉行尾反斜杠，导致后续行被当成命令。
 >
-> 注意：`build.cmd` 使用 `del /q build\obj\*.obj` 清理旧对象，属于正常构建步骤；
-> 它只删除构建目录中的中间文件，不碰源码。
+> 注意：构建不再删除旧对象；需要全量重编请用 `build.cmd clean`，它只删除
+> 构建目录中的中间文件与可执行文件，不碰源码。
 
 ### 3.3 运行 demo
 
@@ -2793,6 +2808,53 @@ UiImage_Destroy(img);                           /* 先于 Gfx_Shutdown */
 - **样例**：URL 源为 Bing 每日图——先 `UiHttp_Send` 取 `HPImageArchive.aspx`
   JSON，解析出 `images[0].url` 后再 `UiImage_LoadUrl`；状态行显示版权。
 
+### 8.21 NavBar 多级导航
+
+> 设计细节：[CUI-导航菜单-设计方案.md](CUI-导航菜单-设计方案.md)；样例
+> [samples/nav.c](../samples/nav.c)（`bin\cui_nav.exe`）；headless 断言
+> `tests/ui_nav_test.c`（`bin\cui_nav_test.exe`）。
+
+应用持有 `UiNavItem` 树，`UiNavBar` 只保存稳定 `UiId` 路径与打开层级：
+
+```c
+UiNavBar nav;
+UiNavBar_Init(&nav, Ui_Id("nav.main", 0, 0));
+UiNavBar_SetItems(&nav, roots, rootCount);
+UiNavBar_SetLayout(&nav, UI_NAV_HORIZONTAL);   /* 或 UI_NAV_VERTICAL */
+UiNavBar_SetRail(&nav, 1);                      /* 垂直只显示图标 */
+UiId path[3] = { ID_PRODUCT, ID_DESKTOP, ID_COMPONENTS };
+UiNavBar_SetSelected(&nav, path, 3);
+```
+
+```c
+/* 帧内: 先导航栏, 再普通控件; 帧末画所有子菜单面板 */
+UiPopupManager_BeginFrame(&pm, &ui);
+UiNavBar_Draw(&nav, &pm, &ui, navRc, 1);
+...其它控件...
+UiNavBar_DrawPopups(&nav, &pm, &ui);
+```
+
+语义：
+
+- **选中路径**：按 `UiId` 保存；数据暂时缺失时只高亮最长有效前缀，菜单
+  恢复后自动还原完整路径；叶子/祖先持续高亮。
+- **一个弹层会话**：多级子菜单全部属于 `nav.id` 的同一个 popup session，
+  不是并列弹层；会话内点击外部/Esc 关闭整条路径。
+- **水平溢出**：尾部放不下时收进 `>>`，点击打开隐藏顶级项；窗口变宽后
+  自动取消。
+- **垂直溢出**：高度不足时不出现滚动条，底部保留一行 `>>` 打开隐藏根部项；
+  rail 模式同样适用。
+- **无滚动子菜单**：面板超过 `panelMaxH` 时首页末尾显示"更多 >>"，
+  点击/回车在同会话下一层继续显示剩余行；Esc 从续页返回"更多"行。
+  `UI_NAV_MAX_DEPTH = 8` 同时容纳逻辑层级与续页。
+- **不越界**：每级面板都经 `UiPopup_Place`（8 DIP 边距、翻转/夹取），
+  右/下空间不足时翻到左/上，极端窄窗口下允许覆盖父面板但不越出视口。
+- **键盘**：方向键移动焦点，Enter 展开/提交，End 聚焦"更多"行，Esc 逐级
+  返回。
+- **悬停**：会话已打开时，悬停顶级项或父行立即切换/展开，无防抖延迟；
+  关闭态不因鼠标路过而弹菜单，仍由点击打开。
+- **动画**：只做颜色渐变（`Ui_State`），面板几何即时切换。
+
 ## 9. UiAnim 动画内核
 
 ### 9.1 两种运动模型
@@ -3606,7 +3668,7 @@ return DefWindowProcW(hwnd, msg, wp, lp);
 
 ### 14.1 入口
 
-`build.cmd`：
+`build.mk`：
 
 ```bat
 link /SUBSYSTEM:WINDOWS /NODEFAULTLIB /ENTRY:startup ...
@@ -3684,9 +3746,12 @@ dumpbin /imports bin\cui_demo.exe | findstr /i "msvcrt ucrtbase api-ms-win-crt"
 
 如果你新增 `.c/.cpp`：
 
-1. 加到 `build.cmd` 的编译列表；
-2. C 文件沿用 `CFLAGS`，C++ 文件沿用 `CXXFLAGS`；
-3. `mem_avx2.c` 必须单独 `cl ... /arch:AVX2`；
+1. 在 `build.mk` 对应目录的对象清单里加 `$(OBJ)\名字.obj`（`src`、`src\ui`、
+   `src\lib`、`src\net`、`src\gfx`、`samples`、`tests` 都有推断规则，
+   源文件放对目录即可，不用另写编译命令）；
+2. 需要参与链接的目标在对应 `link` 规则里补上该对象；
+3. C 文件沿用 `CFLAGS`，C++ 文件沿用 `CXXFLAGS`；特殊标志（如 `mem_avx2.c`
+   的 `/arch:AVX2`）用显式规则；
 4. 链接所需系统库（如 `ole32.lib`）；
 5. 重新跑 `dumpbin` 检查。
 

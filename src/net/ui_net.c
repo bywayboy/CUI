@@ -166,23 +166,10 @@ static void cmd_free_(NetCmd *c)
 {
 	if (!c) return;
 	if (c->type == NET_CMD_HTTP) {
-		NetHttpReq *r = (NetHttpReq *)c->p;
-		if (r) {
-			if (r->method) free(r->method);
-			if (r->url) free(r->url);
-			if (r->contentType) free(r->contentType);
-			if (r->extraHeaders) free(r->extraHeaders);
-			if (r->body) free(r->body);
-			free(r);
-		}
+		net_http_req_free((NetHttpReq *)c->p);
 	} else if (c->type == NET_CMD_WS_OPEN) {
-		NetWsOpenReq *r = (NetWsOpenReq *)c->p;
-		if (r) {
-			if (r->url) free(r->url);
-			if (r->extraHeaders) free(r->extraHeaders);
-			free(r);
-		}
-	} else if (c->type == NET_CMD_WS_SEND) {
+		net_ws_open_req_free((NetWsOpenReq *)c->p);
+	} else if (c->type == NET_CMD_WS_SEND || c->type == NET_CMD_WS_CLOSE) {
 		if (c->p) free(c->p);
 	} else if (c->type == NET_CMD_SRV_START) {
 		NetSrvStart *s = (NetSrvStart *)c->p;
@@ -531,6 +518,7 @@ static void io_timer_fire(NetIo *io, NetTimer *t)
 	}
 	conn = t->conn;
 	if (!conn || conn->dead) return;
+	net_conn_addref(conn);       /* 处理期间连接可能被关闭/释放 */
 	switch (t->kind) {
 	case NET_T_CONNECT:
 		/* DNS 阶段也复用该定时器: 还没连上就判超时 */
@@ -564,6 +552,7 @@ static void io_timer_fire(NetIo *io, NetTimer *t)
 	default:
 		break;
 	}
+	net_conn_release(conn);
 	(void)io;
 }
 
@@ -603,17 +592,16 @@ static void io_handle_cmd(NetIo *io, NetCmd *c)
 
 	case NET_CMD_HTTP: {
 		NetHttpReq *r = (NetHttpReq *)c->p;
-		c->p = NULL;
 		conn = net_http_pool_get(io, r);   /* 可能返回 NULL */
 		if (!conn) {
 			conn = net_conn_new(io, NET_K_HTTP, c->id);
 			if (!conn) {
 				NetHttpResult *res = (NetHttpResult *)calloc(1, sizeof(NetHttpResult));
 				if (res) { res->error = UI_NET_E_OOM; net_emit_http(io, c->id, res); }
-				cmd_free_(c);
-				return;
+				break;                     /* 请求仍归 cmd_free_ 释放 */
 			}
 		}
+		c->p = NULL;                       /* 所有权转移给连接 */
 		conn->id = c->id;                  /* 复用连接也要换成新请求 id */
 		net_http_start(conn, r);
 		break;
@@ -628,21 +616,22 @@ static void io_handle_cmd(NetIo *io, NetCmd *c)
 
 	case NET_CMD_WS_OPEN: {
 		NetWsOpenReq *r = (NetWsOpenReq *)c->p;
-		c->p = NULL;
 		conn = net_conn_new(io, NET_K_WS, c->id);
 		if (!conn) {
 			net_emit_ws_close(io, c->id, 0, "out of memory");
-			cmd_free_(c);
-			return;
+			break;                         /* 请求仍归 cmd_free_ 释放 */
 		}
+		c->p = NULL;                       /* 所有权转移给连接 */
 		net_ws_start(conn, r);
 		break;
 	}
 	case NET_CMD_WS_SEND:
 		conn = net_conn_by_id(io, c->id, NET_K_WS);
-		if (conn && conn->ws) net_ws_on_send_cmd(conn, (NetWsData *)c->p);
-		c->p = NULL;
-		break;
+		if (conn && conn->ws) {
+			net_ws_on_send_cmd(conn, (NetWsData *)c->p);
+			c->p = NULL;                   /* 已由 net_ws_on_send_cmd 释放 */
+		}
+		break;                             /* 否则留给 cmd_free_ */
 
 	case NET_CMD_WS_CLOSE: {
 		NetWsCloseCmd *r = (NetWsCloseCmd *)c->p;
@@ -1163,6 +1152,11 @@ UiNet *UiNet_Create(const UiNetConfig *cfg)
 
 fail:
 	if (net->io) {
+		if (net->io->sslCredOk) {
+			FreeCredentialsHandle(&net->io->sslCred);
+			net->io->sslCredOk = 0;
+		}
+		net_tls_shutdown(net->io);
 		if (net->io->iocp) CloseHandle(net->io->iocp);
 		free(net->io);
 	}
@@ -1189,6 +1183,11 @@ void UiNet_Destroy(UiNet *net)
 			c->type = NET_CMD_STOP;
 			InterlockedPushEntrySList(net->cmds, &c->entry);
 			PostQueuedCompletionStatus(net->io->iocp, 0, NET_WAKE_KEY, NULL);
+		} else if (net->io) {
+			/* 分配失败也必须让 IO 线程退出, 否则会把仍在使用的 io 释放掉 */
+			InterlockedExchange((volatile LONG *)&net->io->stop, 1);
+			if (net->io->iocp)
+				PostQueuedCompletionStatus(net->io->iocp, 0, NET_WAKE_KEY, NULL);
 		}
 	}
 	if (net->ioThread) {

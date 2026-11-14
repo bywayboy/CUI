@@ -391,6 +391,7 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		if (app) {
 			if (app->cb && app->cb->shutdown) app->cb->shutdown(app, app->user);
 			UiFrame_Shutdown(&app->clock);
+			Ui_ContextShutdown(&app->ui);
 			UiTheme_Shutdown(&app->theme, app->gfx);
 			if (app->gfx) {
 				Gfx_Shutdown(app->gfx);

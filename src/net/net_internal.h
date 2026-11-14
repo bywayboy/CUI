@@ -610,6 +610,7 @@ int  net_tls_server_close_notify(NetSrvConn *c);
 void net_tls_server_conn_free(NetSrvConn *c);
 
 /* ── HTTP (net_http.c) ────────────────────────────────────────────── */
+void net_http_req_free(NetHttpReq *r);
 NetConn *net_http_pool_get(NetIo *io, NetHttpReq *req);
 int  net_http_need_tunnel(NetConn *conn);
 void net_http_begin_tunnel(NetConn *conn);
@@ -621,6 +622,7 @@ void net_http_free(NetConn *conn);
 void net_http_pool_put(NetConn *conn);
 
 /* ── WS (net_ws.c) ────────────────────────────────────────────────── */
+void net_ws_open_req_free(NetWsOpenReq *req);
 void net_ws_start(NetConn *conn, NetWsOpenReq *req);
 void net_ws_on_plain(NetConn *conn, const char *data, int len);
 void net_ws_on_event(NetConn *conn, int connected, int err);

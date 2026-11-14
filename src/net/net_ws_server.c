@@ -191,7 +191,14 @@ void net_emit_srv_error(NetIo *io, uint64_t srvId, int err, const char *msg)
 void net_emit_srv_open(NetIo *io, NetSrvConn *c, NetSrvOpen *o)
 {
 	NetEv *ev;
-	if (!c || !o) { free(o); return; }
+	if (!c || !o) {
+		if (o) {
+			if (o->hdrs) free(o->hdrs);
+			if (o->hdrStore) free(o->hdrStore);
+			free(o);
+		}
+		return;
+	}
 	ev = net_ev_new(io->owner, NET_EV_SRV_OPEN, c->srv->id);
 	if (!ev) {
 		if (o->hdrs) free(o->hdrs);

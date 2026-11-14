@@ -337,6 +337,7 @@ void net_io_on_completion(NetIo *io, OVERLAPPED *ov, ULONG_PTR key,
 
 	case NET_OP_DNS_TCP_SEND:
 		if (op->gen != conn->dnsGen) {
+			free(op->buf);
 			free(op);
 			net_conn_release(conn);
 			break;
@@ -347,6 +348,7 @@ void net_io_on_completion(NetIo *io, OVERLAPPED *ov, ULONG_PTR key,
 			/* 继续收: DNS TCP 接收由 net_dns_on_tcp_recv 负责重新武装 */
 			net_dns_tcp_after_send(conn);
 		}
+		free(op->buf);
 		free(op);
 		net_conn_release(conn);
 		break;

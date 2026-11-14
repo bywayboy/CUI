@@ -26,7 +26,7 @@ typedef struct UiDialog {
 	float progress;
 	UiRect rect, body;
 	UiId savedScope;
-	int begun, alphaPushed, inputBlocked;
+	int begun, alphaPushed, inputBlocked, ownerPushed;
 } UiDialog;
 
 void UiDialog_Init(UiDialog *d, UiId id);

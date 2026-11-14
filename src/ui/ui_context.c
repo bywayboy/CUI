@@ -1,6 +1,45 @@
 #include "ui/ui_context.h"
 
+void *realloc(void *p, size_t sz);
+void free(void *p);
+
 static int rect_intersect(UiRect a, UiRect b, UiRect *out);
+
+static int reserve_widgets(UiContext *ctx, int need)
+{
+	UiWidget *p;
+	int cap;
+	if (!ctx || need <= ctx->widgetCap) return ctx ? 1 : 0;
+	cap = ctx->widgetCap > 0 ? ctx->widgetCap : UI_WIDGET_INITIAL_CAP;
+	while (cap < need) cap *= 2;
+	p = (UiWidget *)realloc(ctx->widgets, (size_t)cap * sizeof(*p));
+	if (!p) {
+		ctx->widgetOom = 1;
+		return 0;
+	}
+	ZeroMemory(p + ctx->widgetCap,
+		(size_t)(cap - ctx->widgetCap) * sizeof(*p));
+	ctx->widgets = p;
+	ctx->widgetCap = cap;
+	return 1;
+}
+
+static int reserve_wheel_targets(UiContext *ctx, int need)
+{
+	UiWheelTarget *p;
+	int cap;
+	if (!ctx || need <= ctx->wheelCap) return ctx ? 1 : 0;
+	cap = ctx->wheelCap > 0 ? ctx->wheelCap : UI_WHEEL_INITIAL_CAP;
+	while (cap < need) cap *= 2;
+	p = (UiWheelTarget *)realloc(ctx->wheelTargets,
+		(size_t)cap * sizeof(*p));
+	if (!p) return 0;
+	ZeroMemory(p + ctx->wheelCap,
+		(size_t)(cap - ctx->wheelCap) * sizeof(*p));
+	ctx->wheelTargets = p;
+	ctx->wheelCap = cap;
+	return 1;
+}
 
 /* 只失效一个控件矩形；找不到（控件集合变化）时退回整窗，保证正确性。 */
 static void InvalidateWidget(UiContext *ctx, UiId id)
@@ -49,6 +88,30 @@ void Ui_ContextInit(UiContext *ctx, HWND hwnd, Gfx *gfx, UiTheme *theme)
 	ctx->scale = 1.0f;
 	ctx->popupOpen = 0;
 	ctx->focusId = UI_ID_NONE;
+}
+
+void Ui_ContextShutdown(UiContext *ctx)
+{
+	if (!ctx) return;
+	if (ctx->widgets) {
+		free(ctx->widgets);
+		ctx->widgets = NULL;
+	}
+	if (ctx->wheelTargets) {
+		free(ctx->wheelTargets);
+		ctx->wheelTargets = NULL;
+	}
+	if (ctx->anim) {
+		free(ctx->anim);
+		ctx->anim = NULL;
+	}
+	ctx->widgetCount = ctx->widgetCap = 0;
+	ctx->wheelTargetCount = ctx->wheelCap = 0;
+	ctx->animCap = 0;
+	ctx->widgetOom = 0;
+	ctx->inputOwner = UI_ID_NONE;
+	ctx->inputOwnerDepth = 0;
+	ctx->inputScope = UI_ID_NONE;
 }
 
 void Ui_SetFocusId(UiContext *ctx, UiId id)
@@ -107,6 +170,32 @@ void Ui_PopClipRect(UiContext *ctx)
 	ctx->hitClip = ctx->hitClipStack[--ctx->hitClipDepth];
 }
 
+int Ui_PushInputOwner(UiContext *ctx, UiId owner)
+{
+	if (!ctx || !owner) return 0;
+	if (ctx->inputOwnerDepth >= (int)(sizeof(ctx->inputOwnerStack) /
+		sizeof(ctx->inputOwnerStack[0]))) return 0;
+	ctx->inputOwnerStack[ctx->inputOwnerDepth++] = owner;
+	ctx->inputOwner = owner;
+	return 1;
+}
+
+void Ui_PopInputOwner(UiContext *ctx, UiId owner)
+{
+	int i;
+	if (!ctx) return;
+	for (i = ctx->inputOwnerDepth - 1; i >= 0; i--) {
+		int j;
+		if (ctx->inputOwnerStack[i] != owner) continue;
+		for (j = i + 1; j < ctx->inputOwnerDepth; j++)
+			ctx->inputOwnerStack[j - 1] = ctx->inputOwnerStack[j];
+		ctx->inputOwnerDepth--;
+		break;
+	}
+	ctx->inputOwner = ctx->inputOwnerDepth > 0
+		? ctx->inputOwnerStack[ctx->inputOwnerDepth - 1] : UI_ID_NONE;
+}
+
 int Ui_InputAllowed(const UiContext *ctx)
 {
 	return ctx && ctx->inputBlock == 0 &&
@@ -127,12 +216,7 @@ void Ui_RegisterWheelTarget(UiContext *ctx, UiId id, UiRect rc)
 {
 	if (!ctx || !id || rc.w <= 0.0f || rc.h <= 0.0f) return;
 	if (!Ui_InputAllowed(ctx)) return;
-	if (ctx->wheelTargetCount >= UI_MAX_WHEEL_TARGETS) {
-		/* 保持“后登记优先”: 挤掉最早的一条. */
-		for (int i = 1; i < UI_MAX_WHEEL_TARGETS; i++)
-			ctx->wheelTargets[i - 1] = ctx->wheelTargets[i];
-		ctx->wheelTargetCount--;
-	}
+	if (!reserve_wheel_targets(ctx, ctx->wheelTargetCount + 1)) return;
 	ctx->wheelTargets[ctx->wheelTargetCount].id = id;
 	ctx->wheelTargets[ctx->wheelTargetCount].rect = rc;
 	ctx->wheelTargets[ctx->wheelTargetCount].clip =
@@ -262,14 +346,14 @@ static int rect_intersect(UiRect a, UiRect b, UiRect *out)
 
 void Ui_RegisterWidget(UiContext *ctx, UiId id, UiRect rc)
 {
+	UiWidget *w;
 	if (!ctx || !id || rc.w <= 0.0f || rc.h <= 0.0f) return;
 	if (!Ui_InputAllowed(ctx)) return;
-	if (ctx->widgetCount >= UI_MAX_WIDGETS) return;
-	UiWidget *w;
 	if (ctx->hitClipDepth > 0) {
 		/* w<0 = 被裁剪到空, 整个控件不可命中/注册. */
 		if (ctx->hitClip.w < 0.0f) return;
 	}
+	if (!reserve_widgets(ctx, ctx->widgetCount + 1)) return;
 	w = &ctx->widgets[ctx->widgetCount++];
 	w->id = id;
 	w->rect = rc;
