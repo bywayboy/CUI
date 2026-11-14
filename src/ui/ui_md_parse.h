@@ -15,6 +15,8 @@
  *   MdLink.urlOff/urlLen       MdDoc.urls 内的字节偏移 (0 结尾)
  *   MdBlock.langOff/langLen    MdDoc.urls 内的语言串偏移 (0 结尾)
  *   MdBlock.urlOff/urlLen      MdDoc.urls 内的图片 URL 偏移
+ *   MdMathRef.srcOff/srcLen    MdDoc.urls 内的 LaTeX 源码 (0 结尾)
+ *   MdBlock.mathOff/mathLen    MdDoc.urls 内的块级公式源码 (0 结尾)
  *   MdBlock.srcOff/srcLen      原始源串区间 (诊断/哈希)
  */
 #ifndef CUI_UI_MD_PARSE_H
@@ -34,7 +36,8 @@ enum {
 	MD_BLOCK_QUOTE,
 	MD_BLOCK_LIST,
 	MD_BLOCK_ITEM,
-	MD_BLOCK_CONTAINER
+	MD_BLOCK_CONTAINER,
+	MD_BLOCK_MATH
 };
 
 /* 容器类型 (::: note/tip/warning/danger 与 GitHub > [!NOTE] 共用) */
@@ -102,7 +105,15 @@ typedef struct MdCell {
 typedef struct MdImgRef {
 	int start, len;
 	int urlOff, urlLen;
+	int w, h;            /* 显式尺寸 (DIP); 0 = 未指定 */
 } MdImgRef;
+
+/* 行内公式: 占据 text16 的 [start,len) (原始源码, 渲染失败时作为回退),
+ * LaTeX 源码在 urls 池. */
+typedef struct MdMathRef {
+	int start, len;
+	int srcOff, srcLen;
+} MdMathRef;
 
 typedef struct MdBlock {
 	uint8_t type;
@@ -119,6 +130,8 @@ typedef struct MdBlock {
 	int langOff, langLen;/* CODE: 信息串语言 (urls 池) */
 	int urlOff, urlLen;  /* IMAGE: URL (urls 池) */
 	uint8_t imgAlign;    /* IMAGE: MD_ALIGN_*; 255 = 用样式默认 */
+	int imgW, imgH;      /* IMAGE: 显式尺寸 (DIP); 0 = 未指定 */
+	int mathOff, mathLen;/* MATH: 公式源码 (urls 池, UTF-8) */
 	uint8_t boxKind;     /* CONTAINER: MD_BOX_* */
 	int titleOff, titleLen; /* CONTAINER: 标题 (urls 池, UTF-8) */
 
@@ -131,6 +144,9 @@ typedef struct MdBlock {
 
 	MdImgRef *imgs;      /* 行内图片 (段落/标题) */
 	int imgCount, imgCap;
+
+	MdMathRef *maths;    /* 行内公式 (段落/标题) */
+	int mathCount, mathCap;
 
 	struct MdBlock *children;  /* QUOTE/LIST/ITEM */
 	int childCount, childCap;

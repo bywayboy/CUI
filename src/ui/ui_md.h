@@ -2,8 +2,8 @@
  * ui_md.h - Markdown 渲染组件 (应用持有)
  *
  * 解析用 ui_md_parse (纯 C), 排版用 DirectWrite 富文本 (gfx_rich),
- * 滚动用 UiScrollView/UiScrollLayout。当前阶段: 行模型 + 懒测量 + 滚动 +
- * 段落/标题/列表/引用/代码纯文本绘制; 装饰/链接/图片/表格见后续阶段。
+ * 滚动用 UiScrollView/UiScrollLayout。支持段落/标题/列表/引用/容器/代码/
+ * 表格/图片（含显式尺寸）/行内公式与块级公式（gfx_math 可选模块）。
  *
  * 设计见 docs/CUI-Markdown-设计方案.md
  */
@@ -87,10 +87,18 @@ void UiMarkdown_ScrollToTop(UiMarkdown *md);
 void UiMarkdown_SetFollowTail(UiMarkdown *md, int on);
 float UiMarkdown_ContentHeight(const UiMarkdown *md);
 
+/* 滚动位置/最大偏移 (DIP) 与设置: 供宿主做编辑/预览双视图联动. */
+float UiMarkdown_ScrollOffset(const UiMarkdown *md);
+float UiMarkdown_MaxOffset(const UiMarkdown *md);
+void UiMarkdown_ScrollToOffset(UiMarkdown *md, UiContext *ui,
+	float offset, int animate);
+
 /* 测试访问器 (headless 验收懒测量/行数), 不产生任何输出. */
 int UiMarkdown_DebugRows(const UiMarkdown *md);
 int UiMarkdown_DebugMeasured(const UiMarkdown *md);
 int UiMarkdown_DebugMeasureCalls(const UiMarkdown *md);
+int UiMarkdown_DebugMathCache(const UiMarkdown *md);    /* 缓存的公式条目数 */
+int UiMarkdown_DebugMathMisses(const UiMarkdown *md);   /* 累计新建布局次数 */
 
 #ifdef __cplusplus
 }

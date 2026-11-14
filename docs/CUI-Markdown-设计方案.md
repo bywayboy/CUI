@@ -961,7 +961,11 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md);
   + 亮琥珀字，可由应用覆盖。
 - 容器色条取主题语义色（note=primary、tip=success、warning=warning、
   danger=error），底色按浅/深主题固定低饱和色；标题用 `fSmall` 加粗语义色。
-- 半径 6 DIP，左侧色条 3 DIP，标题区 20 DIP，正文缩进 `quoteIndent`。
+- 半径 6 DIP，左侧色条 3 DIP，正文缩进 `quoteIndent`；
+- **卡片内边距统一**：标题带 32 DIP（顶距 8 + 标题 16 + 到正文 8），
+  正文末行额外 8 DIP 底内边距；代码块同样上下各 `codePadY(8)`，卡面从
+  行顶画到行底减去 `blockGap`。外间距仍由 `blockGap`/标题间距承担，
+  代码块与容器卡的内边距因此一致（此前代码块 8/0、容器标题 2/正文 0）。
 
 ### 实施记录：容器与配色（2026-11-13，已完成）
 
@@ -1105,3 +1109,320 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md);
   为 `i*lineH` 的精确倍数、命中也用同一 `lineH` 反算，不存在逐行累积；
 - 审计后已把此前的两处“snap 值参与计算”改回精确值：TextArea 的
   命中映射/可见范围、Select 的可见范围；Markdown 命中也回到精确基准。
+
+### 样例：预览 + 源码编辑器双联动（2026-11-13）
+
+- 窗口 1100×720：左侧 Markdown 预览，右侧可展开源码编辑器（默认收起，
+  「编辑源码 / 收起源码」按钮切换；展开时预览让出 380 DIP）。
+- 文档真源仍是 `char *doc`：`UiTextArea` 修改后经 `UiTextArea_TextUtf8`
+  取回 UTF-8，更新 `doc` 并 `UiMarkdown_SetText`，预览同帧更新（小文档
+  全量重解析；输入路径见下）。
+- 滚动联动：按 `offset / maxOffset` 比例双向映射。谁在本帧移动就驱动另
+  一侧（0.6 DIP 阈值区分驱动者）；文本更新后按编辑器比例回填预览。展开
+  时以预览位置为准映射编辑器视口并定位光标行，避免 SetText 的 caret=end
+  把两侧一起拉到底部。
+- 键盘：`UiTextArea_Key/Char/OnIme/Blink` 全部转发；IME 挂到 `app->ime`。
+- 新增 `UiMarkdown_ScrollOffset / UiMarkdown_MaxOffset /
+  UiMarkdown_ScrollToOffset`（设置会清除 pendingTop），供宿主做联动。
+- 「追加 50 行」「打开文件」同时更新文档真源、编辑器和预览。
+
+验证：默认收起；展开后两侧均从预览当前位置开始；编辑器滚动 → 预览跟随
+（ta=1012 → md=872），预览滚动 → 编辑器跟随（ta=1541 → md=1352）；
+在编辑器末尾输入 `## live-sync` + 两回车 + 正文，预览立即出现对应标题/
+正文；收起后编辑内容保留且预览占满宽度。
+
+### 补充：图片显式尺寸 `{width= height=}`（2026-11-13）
+
+- 语法采用 Pandoc/Markdown-Extra 属性：`![alt](url "title"){width=280 height=120}`，
+  块级与行内图片都支持；键大小写不敏感，`w/h` 为简写，未知属性忽略。
+- 数值按 **DIP**；只给 `width` 或 `height` 时按原始宽高比补另一个；
+  两个都给时按精确盒子显示（块级用 `UI_IMG_FIT_STRETCH` 拉伸，行内对象
+  直接绘到该矩形）；显式尺寸仍夹到内容宽，避免横向溢出。
+- 未指定尺寸时维持原策略：内容宽 + `imageMaxH` 等比缩放；显式高度不再被
+  `imageMaxH` 覆盖。
+- 解析产物：`MdBlock.imgW/imgH`（块级）、`MdImgRef.w/h`（行内），并混入
+  内容哈希，尺寸变化会触发行重建。
+
+验证：`md_test` 366/0（块级/行内、大小写/空格、省略一项、未知属性）；
+`md_ui_test` 76/0（`height=20`→高约 30、`40x15`→约 25、行内 200x100 撑高）；
+4K@200% 样例中 `280x120` 块图为 556×239 设备像素（≈280×120 DIP）。
+
+## 15. 数学公式（设计 + 阶段 1 实现，2026-11-13）
+
+### 15.1 语法
+
+- 行内：`$...$`、`\(...\)`；块级：`$$...$$`、`\[...\]`（独占行时优先块级）。
+- 转义 `\$` 为字面美元；代码 span/代码块优先于公式；公式内不解析 Markdown。
+- v1 命令：`\frac \sqrt ^ _ \left \right \text`、小写/大写希腊字母、常用运算符
+  （`\sum \int \prod \lim \infty \cdot \times \pm \le \ge \ne \to ...`）、
+  间距（`\, \; \: \! \quad \qquad`）；环境 `matrix/pmatrix/bmatrix/vmatrix/
+  aligned/cases`，`&` 分列、`\` 换行。
+- 未知命令、缺参数、未闭合、意外 `\right/\end` → 布局失败，由渲染层回退
+  原始 LaTeX 文本（不吞内容）。
+
+### 15.2 模块与盒子模型
+
+- `src/ui/md_math.h/.c`：纯 0CRT，无 gfx/window 依赖；输入 UTF-8 公式源 +
+  基准字号，输出盒子树。
+- 盒子类型 `MB_H/MB_V/MB_TEXT/MB_RULE/MB_SPACE`；每个盒子记录
+  `w/h/d`（宽/基线以上/以下）与相对父盒子的 `(x,y)`（y 为基线偏移）。
+- 度量与绘制均注入：
+  `MdMathMeasureFn`（字宽/高/深，实际用 DirectWrite，测试用固定值）；
+  `MdMathDraw`（text/rule 回调，实际用 D2D，测试记录序列）。
+- 排版规则：上下标层级 display/text→script(0.7)→scriptscript(0.5)；
+  分式轴 0.25em、线厚 0.06em；根号字形按内容高度选档 + 上横线；
+  `\left/\right` 定界符按内容高度选字号档位并垂直居中；
+  矩阵列宽取列最大、行距 0.35em，`aligned` 奇偶列分别右/左对齐，
+  `cases` 左花括号 + 左对齐列；`pmatrix/bmatrix/vmatrix` 自动包裹定界符。
+- 复杂度上限：节点 8192、递归 32 层、矩阵 64×64。
+
+### 15.3 阶段 1 完成内容
+
+- 新增 `src/ui/md_math.h/.c`、`tests/md_math_test.c`；`build.cmd` 中
+  `md_math.obj` 不进入 `CORE_OBJS`，只链接新测试目标
+  `bin\cui_md_math_test.exe`。
+- 测试覆盖：上下标（基线/字号）、分式（规则线/分子分母位置）、根号、
+  定界符放大、pmatrix/aligned/cases、希腊/运算符、间距、`\text`、
+  `\{` 转义、错误回退、复杂度上限。
+- 验证：`md_math_test` 60/0；其余回归 `md_test` 366/0、`md_ui_test` 76/0、
+  `gfx_rich_test` 34/0、`net_test` 877/0；build.cmd CRLF 208/208。
+
+### 15.4 后续阶段
+
+1. `gfx_math` 矢量绘制（Cambria Math + D2D 规则线），隐藏窗口像素断言；
+2. `gfx_rich` 行内自定义对象钩子 + Markdown 行内/块级接入（含过期 fallback）；
+3. 样例公式、深色主题、4K 截图；显示公式超宽等比缩到内容宽；
+4. 性能：按（源哈希, 字号）缓存盒子树，仅绘制可见公式。
+
+### 数学公式阶段 2：gfx_math 矢量绘制（2026-11-13）
+
+- 新增 `src/gfx/gfx_math.h/.cpp`（可选模块）：
+  - `Gfx_MathCreate(g, latex, len, sizeDip, textFont)` → 布局失败返回 NULL；
+  - `Gfx_MathWidth/Height/Depth`；`Gfx_MathDraw(g, x, baseline, color)`。
+- 实现：
+  - 文本 run 用 `IDWriteTextFormat`（数学族 **Cambria Math**，`\text{}` 用
+    应用传入的正文字体族）+ `IDWriteTextLayout`，按 `(文本, 字号, 样式)` 缓存，
+    滚动重绘不重建；基线以上取 `DWRITE_LINE_METRICS.baseline`。
+  - 规则线直接 `FillRectangle`；整式按 `Gfx_IntVisible` 脏区裁剪；
+    仅在一帧内 (`Gfx_Begin` 后) 绘制。
+  - 画刷走 `Gfx_IntBrush`，颜色由调用方传入（换肤无需重建布局）。
+  - 与 gfx 核心零耦合：gfx 核心不引用 `Gfx_Math*`，`gfx_math.obj` +
+    `md_math.obj` 只链接到 `bin\cui_gfx_math_test.exe`（0CRT）。
+- 修正：缓存数组首次分配不能用 `HeapReAlloc(NULL)`（改为 `HeapAlloc`），
+  否则所有公式布局失败。
+- 测试：`tests/gfx_math_test.c` 隐藏窗口 ULW —— 基本公式尺寸、字号放大、
+  pmatrix/aligned 创建与单帧绘制、错误公式返回 NULL。
+- 验证：`gfx_math_test` 18/0；`md_math_test` 60/0；其余全量回归通过；
+  build.cmd CRLF 215/215。
+
+### 数学公式阶段 3：gfx_rich 行内钩子 + Markdown 接入（2026-11-14）
+
+- 解析层（`ui_md_parse.c`）：
+  - 行内 `$...$`：开定界符后不能是空白，闭定界符前不能是空白、后不能紧跟
+    数字（货币规则）；不跨行；`\$` 仍走转义。行内 `\(...\)` 优先于反斜杠
+    转义识别，未闭合时回退为字面 `(`。
+  - 块级 `$$...$$` / `\[...\]`：行首（≤3 空格）独占块，支持单行与多行；
+    未闭合回退为段落。块内原始源码（含换行/反斜杠）原样保留。
+  - 源码区间写入 `MdMathRef {start,len,srcOff,srcLen}`；`text16` 保留原始
+    LaTeX（渲染失败时直接显示）。代码块与代码跨度内的 `$` 不解析。
+  - 哈希覆盖行内公式源码与块级公式源码，增量 diff 能感知公式变化。
+- `gfx_rich`：
+  - 新增 `Gfx_RichInlineCustom(rt, start, len, w, h, baseline, draw, user)`；
+    `RichInline` 增加显式 baseline（图片仍用 `0.85h`）。
+  - `Gfx_RichDraw` 在文字/图片之后用 `HitTestTextRange` 取范围矩形，回调
+    收到左上 x 与基线 y；自定义对象与文字共用一次布局断行。
+- `UiMarkdown`：
+  - 行内公式：按行字体/字号创建 `GfxMath`，宽度/高度/深度作为行内对象；
+    有行内对象时关闭 UNIFORM 行距，避免裁掉上下标。语法失败则按行内代码
+    样式（等宽 + 警示色 + 底色块）回退显示源码。
+  - 块级公式：独立行，基准 16 DIP、水平居中；超内容宽时按比例缩小重建
+    （最多 3 次，下限 8 DIP）；上下各 6 DIP 内边距；语法失败回退为等宽
+    源码富文本（可换行）。
+  - 公式对象随行布局缓存/驱逐释放；块级公式对象被驱逐后（`measured`
+    仍为 1）回到视口时按 `bm/bmFallback` 为空重新测量重建，避免空白行。
+  - 主题切换只改绘制颜色，不重建公式。
+- **修正**：`MdMath_Draw` 曾把盒子模型的正向上 y 直接加到屏幕基线，导致
+  分式、矩阵行、上下标整体镜像（上标变下标、行序颠倒）。改为
+  `base - c->y`，绘制回调约定为屏幕坐标（y 向下为正），`md_math_test`
+  基线断言同步调整。
+- 构建：`cui_markdown.exe` 与 `cui_md_ui_test.exe` 追加链接
+  `gfx_math.obj + md_math.obj`；其余目标不受影响。
+- 样例：行内公式、`\int`、`pmatrix`、`aligned`、`cases` 五组演示；
+  4K@200% 浅色/深色截图确认基线、行序、居中与换肤。
+- 验证：`md_test` 414/0、`md_ui_test` 87/0（含驱逐后重建）、
+  `md_math_test` 60/0、`gfx_math_test` 18/0、`gfx_rich_test` 34/0、
+  `net_test` 877/0；build.cmd CRLF 215/215，21 exe 0CRT。
+- 后续：按（源哈希, 字号）缓存盒子树；display 风格大号运算符；`cases`
+  大括号按内容高度缩放；超长行内公式的断行策略。
+
+### 数学公式阶段 4：布局缓存与复用（2026-11-14）
+
+- 目标：滚动驱逐后回看、编辑重解析、同一公式多行出现时，不重复解析 LaTeX、
+  不重复创建 DirectWrite 布局；主题切换只换颜色。
+- 缓存归属：`UiMarkdown` 私有（应用持有状态），不是进程全局；随组件销毁。
+- 键与校验：
+  - `FNV-1a(LaTeX 源)` + 源长度 + 字号 + `textFont` 指针；
+  - 命中前逐字节比较源副本，避免 32 位哈希碰撞误用。
+- 条目与生命周期：
+  - `{src 副本, GfxMath*, refs, lastUse}`；行持有引用，行释放 `refs--`；
+  - `refs=0` 的条目保留供回看；上限 128 条，满额时驱逐“无引用且最久未用”
+    的条目；若全部在用，本次不入缓存（`put` 时直接销毁）；
+  - 行内公式与块级公式共用同一缓存；块级等比缩宽的中间字号也按键缓存。
+  - `SetStyle` 重建字体前：先逐行释放（同时归还公式引用）→ 清缓存 →
+    重建字体；`UiMarkdown_Destroy` 顺序相同。原先 `SetStyle` 只把 `rt`
+    置 NULL 不释放行，会泄漏并留下悬空公式引用，本次一并修正。
+- 绘制可见性：行级 `UiScrollView_Cull` + `Gfx_MathDraw` 内 `Gfx_IntVisible`；
+  公式不把颜色烘进缓存，换肤零重建。
+- 测试（`md_ui_test` 新增访问器 `DebugMathCache/DebugMathMisses`）：
+  - 120 行相同块级公式：首帧只新建 1 次布局；
+  - 滚到底再回顶（行被驱逐后重建）：misses 不再增长、缓存条目数不变；
+  - 编辑后重解析（公式未变）：misses 与条目数均不变；
+  - 3 行混合文档（行内 14 DIP + 块级 16 DIP + 语法错误）：缓存 2 条，
+    语法错误不占缓存。
+- 验证：`md_ui_test` 96/0、`md_test` 414/0、`md_math_test` 60/0、
+  `gfx_math_test` 18/0、`gfx_rich_test` 34/0、`net_test` 877/0；
+  build.cmd CRLF 215/215，21 exe 0CRT。
+- 后续（阶段 5 已实现）：display 风格大号运算符；`cases` 大括号按内容
+  高度缩放；超长行内公式缩宽适配。
+
+### 数学公式阶段 5：display 运算符与尺寸适配（2026-11-14）
+
+- display 风格：
+  - `MdMath_Layout` / `Gfx_MathCreate` 增加 `display` 参数：块级公式传 1，
+    行内传 0；公式缓存键加入 `display`。
+  - `\sum` `\prod` `\int` `\oint` 在 display 且 level ≤ text 时放大约 1.45 倍。
+  - `\sum` / `\prod` 的上下限在 display 下居中排在运算符正上方/正下方：
+    列宽取运算符与上下限宽度最大值，运算符在列内居中；`\int` 按 TeX 默认
+    仍用右侧脚本；行内公式全部保持右侧脚本。
+  - 放大运算符的右侧脚本位置随字形高度外移，避免与字形重叠。
+- 定界符：
+  - `mm_delim_box` 由离散档位改为“基准字号度量 + 按高度比例连续放大”
+    （1.08 余量，缩放夹在 1.15x–5x）；矩阵圆括号不再过冲，`cases`
+    大括号覆盖全部行高。
+- 超长行内公式：
+  - 对象宽度超过行可用宽时按比例缩小字号重建（最多 3 次，下限 8 DIP），
+    重建走同一公式缓存；缩到下限仍超宽时由 DirectWrite 在公式前断行。
+- 测试：
+  - `md_math_test`：display `\sum` 运算符 >1.2 倍、上下限在运算符列内且
+    基线上/下；display `\int` 放大但脚本仍在右侧；`cases` 大括号 >1.8 倍
+    基准字号。
+  - `gfx_math_test`：新增 display 求和公式创建/高度/绘制。
+  - `md_ui_test`：200 DIP 窄宽下超长行内公式触发字号缩放（misses ≥ 2），
+    行高与测量状态正确。
+- 验证：`md_math_test` 74/0、`gfx_math_test` 20/0、`md_ui_test` 102/0、
+  `md_test` 414/0、`gfx_rich_test` 34/0、`net_test` 877/0；
+  build.cmd CRLF 215/215，21 exe 0CRT。
+- 4K@200% 截图：display `\sum` 上下限、`cases` 大括号、超长行内公式
+  在 1100/820 DIP 窗口下的适配。
+
+### 阶段 5 修正：数学轴居中与原子间距（2026-11-14）
+
+- 垂直居中（`\vcenter` 语义）：
+  - `mm_wrap_delim` 在定界符+内容布局完成后，把整组子盒平移
+    `dy = axis − (h − d)/2`，`axis = 0.25em`，再重新定界；
+  - `cases` / `pmatrix` / `\left…\right` 等多行构造整体以数学轴居中，
+    左侧 `f(x)=` 与块中心视觉对齐；单行文本 `h−d` 本身等于 2×axis，
+    平移量为 0，不改变原有对齐。
+- 原子间距（TeX 简化表）：
+  - `MBox.cls` 增加 ORD/OP/BIN/REL/OPEN/CLOSE/PUNCT/INNER 类别；
+    普通字符按字符分类，`\sum`/`\int` 记 OP，`\le`/`\ge`/`\in` 等记 REL，
+    `\cdot`/`\times` 等记 BIN；带定界符构造整体记 INNER。
+  - `mm_expr` 相邻原子插入间距：关系 0.28em、二元 0.22em、
+    运算符-普通 0.17em、标点后 0.17em、括号内侧 0.06em。
+  - 一元符号规则：表达式开头或 OPEN/BIN/REL/PUNCT/OP 之后的 `+/-`
+    按 ORD 处理，不产生前导间距（`-x` 不出现空隙）。
+  - 缩放定界符与内容之间留 0.1em 内边距；根号与内容留 0.05em 缝隙。
+- 测试：
+  - `cases` 两行基线以数学轴对称（首行在上、次行在下，基线和≈0）；
+  - 宽度 `x=y` > `xy` + 5，`x+y` > `xy` + 3，
+    `\left(x\right)` > `xy` + 5。
+- 验证：`md_math_test` 82/0、`md_ui_test` 102/0、`md_test` 414/0、
+  `gfx_math_test` 20/0、`gfx_rich_test` 34/0、`net_test` 877/0；
+  4K@200% 截图确认 `f(x)={…}` 垂直居中、关系/二元/括号间距。
+
+### 阶段 5 修正 2：墨迹度量 + 普通括号组 + 上下标间距（2026-11-14）
+
+- 墨迹度量（`gfx_math.cpp`）：
+  - `GMEntry` 分离 `lb`（布局基线，用于 `DrawTextLayout` 定位）与
+    `h/d`（真实墨迹上下高深）；
+  - 用 `IDWriteTextLayout::GetOverhangMetrics` 求墨迹相对**布局约束盒**
+    （`CreateTextLayout` 的 100000×100000，不是行高 `tm.height`）的溢出：
+    `h = lb − (−overhang.top)`、`d = GM_LAYOUT_BOX + overhang.bottom − lb`、
+    墨迹右端 `= GM_LAYOUT_BOX + overhang.right` 并入盒宽；
+  - 修正前误用 `tm.height` 计算底部溢出，导致所有字形深度恒为 0：
+    括号没有下深、被轴线居中逻辑整体压低，斜体 `f` 的右侧墨迹也未计入
+    advance，才会出现“括号在另一条线、f 贴住括号”；
+  - 定界符高度、上下标位置、行高全部基于墨迹，而不是字体全局行高。
+- 普通括号组：
+  - `(...)` / `[...]` 在 `mm_primary` 中解析成定界符组：`ST_PAREN`
+    停止条件 + `mm_delim_group` → `mm_wrap_delim`；
+  - 组内内容以数学轴居中、定界符按内容墨迹自适应高度、两侧各 0.15em
+    内边距；未配对时按语法错误回退源码。
+- 间距/行距补充规则：
+  - `ORD→INNER` 0.12em（`f(` 不再粘连），`INNER→ORD` 与 `INNER↔INNER`
+    0.06em；
+  - 上下标水平偏移 0.10em、上标基线 0.48em（`x²` 不再贴住 x）；
+  - 根号上横线再加 0.04em 间隙；
+  - 环境列间距：matrix 0.8em、cases 0.6em、aligned 0.28em；
+    行基线步长 `max(1.2em, rh + rd + 0.15em)`，行距不再随墨迹变小而拥挤。
+- 根号（`mm_radical_box`）：
+  - 不再固定把被开方项抬高 0.12em；
+  - 根号字号按被开方项墨迹高度 `needH + 0.10em` 与深度选择（可放大/缩小，
+    0.6x–5x），横线放在根号顶钩处（`y = rad.h − t/2`），与根号相连；
+  - 被开方项保持基线（`cb.y = 0`），根号宽度的 0.8 处开始排内容。
+- 度量来源说明：MathJax/KaTeX 使用 OpenType MATH 表常量 + advance 宽度；
+  DirectWrite 可通过 `IDWriteFontFace::TryGetFontTable` 取原始 MATH 表，
+  本实现先读出 Cambria Math 常量并在下一节固化为规则表；字形墨迹
+  （`GetOverhangMetrics`，相对约束盒）只用于边界/宽度，不参与固定间距规则。
+- 测试：高括号墨迹中心对齐（括号基线下移）、`x^2` 上标水平间距、
+  根号被开方项保持基线、未配对括号报错；`md_math_test` 91/0。
+- 验证：`md_math_test` 91/0、`md_ui_test` 102/0、`md_test` 414/0、
+  `gfx_math_test` 20/0、`gfx_rich_test` 34/0、`net_test` 877/0；
+  4K@200% 截图确认 `f( x )` 间距、x 在括号内墨迹居中、`x²` 上标间隙、
+  matrix/cases 行距与定界符内边距。
+
+### 阶段 5 修正 3：Cambria Math MATH 常量规则表（2026-11-14）
+
+- 用临时探针通过 `TryGetFontTable('MATH')` 读出 Cambria Math
+  （upem=2048，MATH 表 25722 字节）的真实常量，然后固化为
+  `md_math.c` 的 `MM_*` 规则表（探针已删除）：
+
+  | 常量 | 字体值 | em |
+  |:--|--:|--:|
+  | scriptPercentScaleDown | 73% | 0.73 |
+  | scriptScriptPercentScaleDown | 60% | 0.60 |
+  | axisHeight | 585 | 0.2856 |
+  | superscriptShiftUp | 750 | 0.3662 |
+  | subscriptShiftDown | 418 | 0.2041 |
+  | subSuperscriptGapMin | 300 | 0.1464 |
+  | upper/lowerLimitGapMin | 133 | 0.0649 |
+  | fractionRuleThickness | 133 | 0.0649 |
+  | fractionNumber/DenomGapMin | 133 | 0.0649 |
+  | fractionNumeratorShiftUp | 1200 | 0.5859 |
+  | fractionNumeratorDisplayStyleShiftUp | 1550 | 0.7568 |
+  | fractionDenominatorShiftDown | 1030 | 0.5029 |
+  | fractionDenominatorDisplayStyleShiftDown | 1370 | 0.6689 |
+  | radicalRuleThickness | 133 | 0.0649 |
+  | radicalVerticalGap | 166 | 0.0810 |
+  | displayOperatorMinHeight | 2500 | 1.2207 |
+
+- 应用：
+  - 字号层级改为 1.0 / 1.0 / 0.73 / 0.60；
+  - 分式：轴线、规则线厚度、gap 来自常量；分子/分母基线优先用
+    text/display 的 ShiftUp/ShiftDown，若内容更高再按内容深度撑开；
+  - 上下标：基线位移直接用 superscriptShiftUp / subscriptShiftDown；
+    同时有上下标时强制 `subSuperscriptGapMin` 最小间隙；
+  - display 大运算符：按 `displayOperatorMinHeight` 选择字号（墨迹高度
+    不足时按比例放大），不再写死 1.45x；
+  - 根号：规则线厚度/垂直间隙来自常量；根号只用基础或更大字形，
+    不缩到比基础字形更小，横线贴根号顶钩，被开方项保持基线。
+- 仍依赖字形墨迹的部分：推进宽度/右侧溢出、定界符高度选择、
+  被开方项边界。DirectWrite 未提供按 MATH 变体选择并绘制 glyph ID 的
+  高层接口，这部分用墨迹边界近似；所有轴线、位移、间距、规则线厚度
+  均来自 MATH 常量。
+- 测试：同时上下标最小间隙、x² 上标间距、根号基线、括号组居中；
+  `md_math_test` 96/0。
+- 验证：`md_math_test` 96/0、`md_ui_test` 102/0、`md_test` 414/0、
+  `gfx_math_test` 20/0、`gfx_rich_test` 34/0、`net_test` 877/0；
+  4K@200% 截图确认分式更紧凑、上下标比例/间隙、display 求和字号、
+  根号顶钩与横线连接。

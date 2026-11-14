@@ -21,9 +21,10 @@
 class RichInline : public IDWriteInlineObject {
 public:
 	LONG ref;
-	float w, h;
+	float w, h, base;
 
-	RichInline(float width, float height) : ref(1), w(width), h(height) {}
+	RichInline(float width, float height, float baseline)
+		: ref(1), w(width), h(height), base(baseline) {}
 
 	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **pp) override
 	{
@@ -55,7 +56,7 @@ public:
 		if (!metrics) return E_POINTER;
 		metrics->width = w;
 		metrics->height = h;
-		metrics->baseline = h * 0.85f;
+		metrics->baseline = base;
 		metrics->supportsSideways = FALSE;
 		return S_OK;
 	}
@@ -91,6 +92,13 @@ typedef struct RichImgRec {
 	float w, h;
 } RichImgRec;
 
+typedef struct RichCustomRec {
+	int start, len;
+	float w, h, base;
+	GfxRichCustomDrawFn draw;
+	void *user;
+} RichCustomRec;
+
 struct GfxRichText {
 	Gfx *g;
 	IDWriteTextLayout *layout;
@@ -98,6 +106,8 @@ struct GfxRichText {
 	int baseWeight;   /* 400 / 700, 供粗体关闭时恢复 */
 	RichImgRec *imgs;
 	int imgCount, imgCap;
+	RichCustomRec *cust;
+	int custCount, custCap;
 };
 
 static void rich_clamp_range(const GfxRichText *rt, int *start, int *len)
@@ -168,6 +178,7 @@ void Gfx_RichDestroy(GfxRichText *rt)
 	if (!rt) return;
 	if (rt->layout) rt->layout->Release();
 	if (rt->imgs) HeapFree(GetProcessHeap(), 0, rt->imgs);
+	if (rt->cust) HeapFree(GetProcessHeap(), 0, rt->cust);
 	HeapFree(GetProcessHeap(), 0, rt);
 }
 
@@ -277,13 +288,11 @@ void Gfx_RichDraw(GfxRichText *rt, Gfx *g, float x, float y, GfxColor color)
 	for (int i = 0; i < rt->imgCount; i++) {
 		DWRITE_HIT_TEST_METRICS m;
 		UINT32 actual = 0;
-		UINT32 n = 0;
 		ZeroMemory(&m, sizeof(m));
 		if (FAILED(rt->layout->HitTestTextRange((UINT32)rt->imgs[i].start,
 			(UINT32)rt->imgs[i].len, 0.0f, 0.0f, &m, 1, &actual)))
 			continue;
 		if (actual == 0) continue;
-		(void)n;
 		{
 			GfxRect dst;
 			dst.x = x + m.left;
@@ -292,6 +301,21 @@ void Gfx_RichDraw(GfxRichText *rt, Gfx *g, float x, float y, GfxColor color)
 			dst.h = m.height;
 			Gfx_IntDrawBitmap(g, rt->imgs[i].bmp, dst);
 		}
+	}
+
+	/* 行内自定义对象 (矢量公式): 回调在范围矩形内自行绘制 */
+	for (int i = 0; i < rt->custCount; i++) {
+		RichCustomRec *c = &rt->cust[i];
+		DWRITE_HIT_TEST_METRICS m;
+		UINT32 actual = 0;
+		ZeroMemory(&m, sizeof(m));
+		if (!c->draw) continue;
+		if (FAILED(rt->layout->HitTestTextRange((UINT32)c->start,
+			(UINT32)c->len, 0.0f, 0.0f, &m, 1, &actual)))
+			continue;
+		if (actual == 0) continue;
+		c->draw(c->user, g, x + m.left, y + m.top + c->base,
+			m.width, m.height, color);
 	}
 }
 
@@ -320,7 +344,7 @@ int Gfx_RichInlineImage(GfxRichText *rt, int start, int len,
 	}
 	mem = HeapAlloc(GetProcessHeap(), 0, sizeof(RichInline));
 	if (!mem) return -3;
-	obj = new (mem) RichInline(w, h);
+	obj = new (mem) RichInline(w, h, h * 0.85f);
 	range.startPosition = (UINT32)start;
 	range.length = (UINT32)len;
 	if (FAILED(rt->layout->SetInlineObject(obj, range))) {
@@ -344,6 +368,63 @@ int Gfx_RichInlineImage(GfxRichText *rt, int start, int len,
 	rt->imgs[rt->imgCount].w = w;
 	rt->imgs[rt->imgCount].h = h;
 	rt->imgCount++;
+	return 1;
+}
+
+int Gfx_RichInlineCustom(GfxRichText *rt, int start, int len, float w, float h,
+	float baseline, GfxRichCustomDrawFn draw, void *user)
+{
+	DWRITE_TEXT_RANGE range;
+	RichInline *obj;
+	void *mem;
+	int i;
+
+	if (!rt || !rt->layout || !draw || len <= 0) return -1;
+	rich_clamp_range(rt, &start, &len);
+	if (len <= 0 || w < 0.0f || h < 1.0f) return -2;
+	if (baseline < 0.0f) baseline = 0.0f;
+	if (baseline > h) baseline = h;
+
+	if (rt->custCount >= rt->custCap) {
+		int nc = rt->custCap ? rt->custCap * 2 : 4;
+		RichCustomRec *np = rt->cust
+			? (RichCustomRec *)HeapReAlloc(GetProcessHeap(), 0, rt->cust,
+				(SIZE_T)nc * sizeof(RichCustomRec))
+			: (RichCustomRec *)HeapAlloc(GetProcessHeap(), 0,
+				(SIZE_T)nc * sizeof(RichCustomRec));
+		if (!np) return -5;
+		rt->cust = np;
+		rt->custCap = nc;
+	}
+	mem = HeapAlloc(GetProcessHeap(), 0, sizeof(RichInline));
+	if (!mem) return -3;
+	obj = new (mem) RichInline(w, h, baseline);
+	range.startPosition = (UINT32)start;
+	range.length = (UINT32)len;
+	if (FAILED(rt->layout->SetInlineObject(obj, range))) {
+		obj->Release();
+		return -4;
+	}
+	obj->Release();   /* layout 持有引用 */
+
+	for (i = 0; i < rt->custCount; i++) {
+		if (rt->cust[i].start == start && rt->cust[i].len == len) {
+			rt->cust[i].w = w;
+			rt->cust[i].h = h;
+			rt->cust[i].base = baseline;
+			rt->cust[i].draw = draw;
+			rt->cust[i].user = user;
+			return 1;
+		}
+	}
+	rt->cust[rt->custCount].start = start;
+	rt->cust[rt->custCount].len = len;
+	rt->cust[rt->custCount].w = w;
+	rt->cust[rt->custCount].h = h;
+	rt->cust[rt->custCount].base = baseline;
+	rt->cust[rt->custCount].draw = draw;
+	rt->cust[rt->custCount].user = user;
+	rt->custCount++;
 	return 1;
 }
 

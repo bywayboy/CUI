@@ -419,6 +419,8 @@ typedef struct MdInl {
 	int ln, lcap;
 	MdImgRef *imgs;
 	int imgCount, imgCap;
+	MdMathRef *maths;
+	int mathCount, mathCap;
 } MdInl;
 
 static void inl_init(MdInl *b, MdDoc *d)
@@ -436,6 +438,7 @@ static void inl_free(MdInl *b)
 	md_free(b->dl);
 	md_free(b->links);
 	md_free(b->imgs);
+	md_free(b->maths);
 	ZeroMemory(b, sizeof(*b));
 }
 
@@ -812,7 +815,66 @@ static int inl_link(MdInl *b, const char *p, int len, int *consumed)
 	return 1;
 }
 
-static int inl_img_add(MdInl *b, int start, int len, int urlOff, int urlLen)
+/* 图片尺寸属性: ![alt](url){width=320 height=200} (Pandoc/Markdown-Extra).
+ * 键大小写不敏感, 支持 w/h 简写; 数值按 DIP. 返回消耗到的下标. */
+static int md_attr_eq(const char *p, int n, const char *w)
+{
+	int i;
+	for (i = 0; i < n; i++) {
+		char a = p[i], b = w[i];
+		if (!b) return 0;
+		if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+		if (a != b) return 0;
+	}
+	return w[n] == 0;
+}
+
+static int md_parse_img_attrs(const char *p, int len, int at, int *w, int *h)
+{
+	int i = at, end = -1;
+	if (i >= len || p[i] != '{') return at;
+	for (; i < len; i++) {
+		if (p[i] == '\n') return at;
+		if (p[i] == '}') { end = i; break; }
+	}
+	if (end < 0) return at;
+	i = at + 1;
+	while (i < end) {
+		int ks, ke, val = 0, any = 0;
+		while (i < end && (p[i] == ' ' || p[i] == '\t' || p[i] == ',')) i++;
+		ks = i;
+		while (i < end && p[i] != '=' && p[i] != ' ' && p[i] != '\t' &&
+			p[i] != ',') i++;
+		ke = i;
+		while (i < end && (p[i] == ' ' || p[i] == '\t')) i++;
+		if (i < end && p[i] == '=') {
+			i++;
+			while (i < end && (p[i] == ' ' || p[i] == '\t')) i++;
+			while (i < end && p[i] >= '0' && p[i] <= '9') {
+				val = val * 10 + (p[i] - '0');
+				if (val > 100000) val = 100000;
+				any = 1;
+				i++;
+			}
+			if (any) {
+				if (md_attr_eq(p + ks, ke - ks, "width") ||
+					md_attr_eq(p + ks, ke - ks, "w"))
+					*w = val;
+				else if (md_attr_eq(p + ks, ke - ks, "height") ||
+					md_attr_eq(p + ks, ke - ks, "h"))
+					*h = val;
+			}
+			while (i < end && p[i] != ',' && p[i] != ' ' && p[i] != '\t')
+				i++;
+		} else if (ke == ks) {
+			i++;
+		}
+	}
+	return end + 1;
+}
+
+static int inl_img_add(MdInl *b, int start, int len, int urlOff, int urlLen,
+	int w, int h)
 {
 	MdImgRef *r;
 	if (!md_grow((void **)&b->imgs, &b->imgCap, b->imgCount + 1,
@@ -823,12 +885,78 @@ static int inl_img_add(MdInl *b, int start, int len, int urlOff, int urlLen)
 	r->len = len;
 	r->urlOff = urlOff;
 	r->urlLen = urlLen;
+	r->w = w;
+	r->h = h;
+	return 1;
+}
+
+static int inl_math_add(MdInl *b, int start, int len, int srcOff, int srcLen)
+{
+	MdMathRef *r;
+	if (!md_grow((void **)&b->maths, &b->mathCap, b->mathCount + 1,
+		(int)sizeof(MdMathRef)))
+		return 0;
+	r = &b->maths[b->mathCount++];
+	r->start = start;
+	r->len = len;
+	r->srcOff = srcOff;
+	r->srcLen = srcLen;
+	return 1;
+}
+
+/* $...$: 源码区间写入 text16 (布局失败时作为回退) 与 urls 池 (LaTeX)。
+ * 开定界符后不能是空白; 闭定界符前不能是空白, 后不能紧跟数字 (货币规则)。 */
+static int inl_math_dollar(MdInl *b, const char *p, int len, int *consumed)
+{
+	int i, end = -1, srcOff, srcLen, start;
+	if (len < 3 || p[0] != '$' || p[1] == '$') return 0;
+	if (md_is_space_char(p[1])) return 0;
+	for (i = 1; i < len; i++) {
+		if (p[i] == '\n') return 0;
+		if (p[i] == '\\' && i + 1 < len) { i++; continue; }
+		if (p[i] != '$') continue;
+		if (md_is_space_char(p[i - 1])) continue;
+		if (i + 1 < len && p[i + 1] >= '0' && p[i + 1] <= '9') continue;
+		end = i;
+		break;
+	}
+	if (end < 0) return 0;
+	srcLen = end - 1;
+	if (srcLen <= 0) return 0;
+	srcOff = md_url_put(b->d, p + 1, srcLen, 0, NULL);
+	if (srcOff < 0) return 0;
+	start = b->n;
+	if (!inl_put_utf8(b, p + 1, srcLen, 0, -1)) return 0;
+	if (!inl_math_add(b, start, b->n - start, srcOff, srcLen)) return 0;
+	*consumed = end + 1;
+	return 1;
+}
+
+/* \(...\): 与 $...$ 相同的产物; 不跨行。 */
+static int inl_math_paren(MdInl *b, const char *p, int len, int *consumed)
+{
+	int i, end = -1, srcOff, srcLen, start;
+	if (len < 5 || p[0] != '\\' || p[1] != '(') return 0;
+	for (i = 2; i + 1 < len; i++) {
+		if (p[i] == '\n') return 0;
+		if (p[i] == '\\' && p[i + 1] == ')') { end = i; break; }
+		if (p[i] == '\\') i++;
+	}
+	if (end < 0 || end <= 2) return 0;
+	srcLen = end - 2;
+	srcOff = md_url_put(b->d, p + 2, srcLen, 0, NULL);
+	if (srcOff < 0) return 0;
+	start = b->n;
+	if (!inl_put_utf8(b, p + 2, srcLen, 0, -1)) return 0;
+	if (!inl_math_add(b, start, b->n - start, srcOff, srcLen)) return 0;
+	*consumed = end + 2;
 	return 1;
 }
 
 static int inl_image(MdInl *b, const char *p, int len, int *consumed)
 {
 	int close, after, urlOff = -1, urlLen = 0, end;
+	int aw = 0, ah = 0;
 	MdInl sub;
 
 	if (len < 3 || p[0] != '!' || p[1] != '[') return 0;
@@ -856,12 +984,13 @@ static int inl_image(MdInl *b, const char *p, int len, int *consumed)
 			return 0;
 		end = after;
 	}
+	end = md_parse_img_attrs(p, len, end, &aw, &ah);
 	inl_init(&sub, b->d);
 	inl_parse(&sub, p + 2, close - 2, 0);
 	{
 		int start = b->n;
 		inl_merge(b, &sub, -1);
-		inl_img_add(b, start, b->n - start, urlOff, urlLen);
+		inl_img_add(b, start, b->n - start, urlOff, urlLen, aw, ah);
 	}
 	*consumed = end;
 	return 1;
@@ -978,6 +1107,20 @@ static void inl_parse(MdInl *b, const char *p, int len, int allowLinks)
 	int i = 0;
 	while (i < len) {
 		char c = p[i];
+		if (c == '$') {
+			int used = 0;
+			if (inl_math_dollar(b, p + i, len - i, &used)) {
+				i += used;
+				continue;
+			}
+		}
+		if (c == '\\' && i + 1 < len && p[i + 1] == '(') {
+			int used = 0;
+			if (inl_math_paren(b, p + i, len - i, &used)) {
+				i += used;
+				continue;
+			}
+		}
 		if (c == '\\' && i + 1 < len) {
 			char n = p[i + 1];
 			if (n == '\n') { inl_put_w(b, L'\n', 0, -1); i += 2; continue; }
@@ -1115,6 +1258,17 @@ static void md_take_imgs(MdBlock *blk, MdInl *ib)
 	ib->imgs = NULL;
 	ib->imgCount = 0;
 	ib->imgCap = 0;
+}
+
+/* 行内公式记录随叶子块转移 */
+static void md_take_maths(MdBlock *blk, MdInl *ib)
+{
+	blk->maths = ib->maths;
+	blk->mathCount = ib->mathCount;
+	blk->mathCap = ib->mathCap;
+	ib->maths = NULL;
+	ib->mathCount = 0;
+	ib->mathCap = 0;
 }
 
 /* ── 块扫描 ───────────────────────────────────────────────────────── */
@@ -1810,6 +1964,116 @@ static int md_table_try(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent)
 	return 1;
 }
 
+/* ── 块级公式 ─────────────────────────────────────────────────────── */
+
+/* 行首 (<=3 空格) $$ 或 \[ : 返回内容起始下标, 否则 -1。
+ * kind: 0 = $$, 1 = \[ */
+static int md_math_fence(const MdLine *ln, int *kind)
+{
+	int i = 0;
+	while (i < 3 && i < ln->len && ln->p[i] == ' ') i++;
+	if (i + 1 < ln->len && ln->p[i] == '$' && ln->p[i + 1] == '$') {
+		*kind = 0;
+		return i + 2;
+	}
+	if (i + 1 < ln->len && ln->p[i] == '\\' && ln->p[i + 1] == '[') {
+		*kind = 1;
+		return i + 2;
+	}
+	return -1;
+}
+
+/* 整行只有闭合定界符 (允许前后空白) 返回 1 */
+static int md_math_close(const MdLine *ln, int kind)
+{
+	int i = 0;
+	while (i < 3 && i < ln->len && ln->p[i] == ' ') i++;
+	if (i + 2 > ln->len) return 0;
+	if (kind == 0) {
+		if (ln->p[i] != '$' || ln->p[i + 1] != '$') return 0;
+	} else {
+		if (ln->p[i] != '\\' || ln->p[i + 1] != ']') return 0;
+	}
+	i += 2;
+	while (i < ln->len && (ln->p[i] == ' ' || ln->p[i] == '\t')) i++;
+	return i == ln->len;
+}
+
+/* $$...$$ / \[...\] 独占块。支持单行与多行; 未闭合返回 0 (回退段落)。 */
+static int md_math_block_try(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent)
+{
+	MdLine *ln = &ls->v[*ip];
+	MdBuf mb;
+	MdBlock *b;
+	int kind, oi, j, closeAt = -1, closed = 0, s, e, srcOff;
+
+	oi = md_math_fence(ln, &kind);
+	if (oi < 0) return 0;
+	ZeroMemory(&mb, sizeof(mb));
+	{
+		const char *op = ln->p + oi;
+		int rem = ln->len - oi, m = 0;
+		while (m + 1 < rem) {
+			if (op[m] == '\\') { m += 2; continue; }
+			if ((kind == 0 && op[m] == '$' && op[m + 1] == '$') ||
+				(kind == 1 && op[m] == '\\' && op[m + 1] == ']')) {
+				closeAt = m;
+				break;
+			}
+			m++;
+		}
+		if (closeAt >= 0) {
+			int t = oi + closeAt + 2;
+			while (t < ln->len && (ln->p[t] == ' ' || ln->p[t] == '\t')) t++;
+			if (t != ln->len) closeAt = -1;
+		}
+	}
+	if (closeAt >= 0) {
+		if (closeAt > 0 && !mbuf_add(&mb, ln->p + oi, closeAt)) {
+			md_free(mb.p);
+			return 0;
+		}
+		j = *ip + 1;
+		closed = 1;
+	} else {
+		if (ln->len - oi > 0) mbuf_add(&mb, ln->p + oi, ln->len - oi);
+		j = *ip + 1;
+		while (j < ls->n) {
+			if (md_math_close(&ls->v[j], kind)) {
+				closed = 1;
+				j++;
+				break;
+			}
+			if (mb.n > 0) mbuf_add(&mb, "\n", 1);
+			mbuf_add(&mb, ls->v[j].p, ls->v[j].len);
+			j++;
+		}
+	}
+	if (!closed) {
+		md_free(mb.p);
+		return 0;
+	}
+	s = 0;
+	e = mb.n;
+	while (s < e && md_is_space_char(mb.p[s])) s++;
+	while (e > s && md_is_space_char(mb.p[e - 1])) e--;
+	if (e <= s) {
+		md_free(mb.p);
+		return 0;
+	}
+	srcOff = md_url_put(d, mb.p + s, e - s, 0, NULL);
+	md_free(mb.p);
+	if (srcOff < 0) return 0;
+	b = md_add_block(d, parent);
+	if (!b) return 0;
+	b->type = MD_BLOCK_MATH;
+	b->mathOff = srcOff;
+	b->mathLen = e - s;
+	md_set_span(b, ls, *ip, j);
+	*ip = j;
+	return 1;
+}
+
 static int md_interrupts(MdDoc *d, MdLines *ls, int i)
 {
 	MdLine *ln = &ls->v[i];
@@ -1821,6 +2085,10 @@ static int md_interrupts(MdDoc *d, MdLines *ls, int i)
 	if (md_fence_open(ln, &fch, &a, &b, &c, &e)) return 1;
 	if (md_quote(ln, &a)) return 1;
 	if (md_list_marker(ln, &o, &sn, &ml, &co, &cc)) return 1;
+	{
+		int mk = 0;
+		if (md_math_fence(ln, &mk) >= 0) return 1;
+	}
 	(void)d;
 	return 0;
 }
@@ -1879,6 +2147,8 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 			i = j;
 			continue;
 		}
+
+		if (md_math_block_try(d, ls, &i, parent)) continue;
 
 		if (depth < MD_MAX_DEPTH && md_quote(ln, &infoOff)) {
 			MdBlock *b = md_add_block(d, parent);
@@ -2004,6 +2274,7 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 				inl_to_leaf(&ib, &b->text16, &b->len16, &b->runs,
 					&b->runCount, &b->links, &b->linkCount);
 				md_take_imgs(b, &ib);
+				md_take_maths(b, &ib);
 				inl_free(&ib);
 				md_free(b->raw);
 				b->raw = NULL;
@@ -2114,6 +2385,7 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 				inl_to_leaf(&ib, &b->text16, &b->len16, &b->runs,
 					&b->runCount, &b->links, &b->linkCount);
 				md_take_imgs(b, &ib);
+				md_take_maths(b, &ib);
 				inl_free(&ib);
 				md_free(b->raw);
 				b->raw = NULL;
@@ -2178,6 +2450,7 @@ static int md_image_block(MdDoc *d, MdBlock *b)
 		if (!md_ref_lookup(d, p + altOff, altLen, &urlOff, &urlLen)) return 0;
 		end = after;
 	}
+	end = md_parse_img_attrs(p, len, end, &b->imgW, &b->imgH);
 	while (end < len && (p[end] == ' ' || p[end] == '\t')) end++;
 	if (end != len) return 0;
 
@@ -2226,6 +2499,7 @@ static void md_inline_pass(MdDoc *d, MdBlock *b)
 			inl_to_leaf(&ib, &b->text16, &b->len16, &b->runs,
 				&b->runCount, &b->links, &b->linkCount);
 			md_take_imgs(b, &ib);
+			md_take_maths(b, &ib);
 			inl_free(&ib);
 			md_free(b->raw);
 			b->raw = NULL;
@@ -2277,6 +2551,8 @@ static uint32_t md_hash_block(MdDoc *d, MdBlock *b)
 	}
 	if (b->type == MD_BLOCK_IMAGE && b->urlOff >= 0 && b->urlOff < d->urlsLen) {
 		const char *u = d->urls + b->urlOff;
+		h = md_hash_u32(h, (uint32_t)b->imgW);
+		h = md_hash_u32(h, (uint32_t)b->imgH);
 		while (*u) {
 			h ^= (uint32_t)(unsigned char)*u++;
 			h *= MD_FNV_PRIME;
@@ -2284,6 +2560,23 @@ static uint32_t md_hash_block(MdDoc *d, MdBlock *b)
 	}
 	for (i = 0; i < b->imgCount; i++) {
 		const char *u = d->urls + b->imgs[i].urlOff;
+		h = md_hash_u32(h, (uint32_t)b->imgs[i].w);
+		h = md_hash_u32(h, (uint32_t)b->imgs[i].h);
+		while (*u) {
+			h ^= (uint32_t)(unsigned char)*u++;
+			h *= MD_FNV_PRIME;
+		}
+	}
+	if (b->type == MD_BLOCK_MATH) {
+		const char *u = d->urls + (b->mathOff >= 0 ? b->mathOff : 0);
+		h = md_hash_u32(h, (uint32_t)b->mathLen);
+		while (*u) {
+			h ^= (uint32_t)(unsigned char)*u++;
+			h *= MD_FNV_PRIME;
+		}
+	}
+	for (i = 0; i < b->mathCount; i++) {
+		const char *u = d->urls + b->maths[i].srcOff;
 		while (*u) {
 			h ^= (uint32_t)(unsigned char)*u++;
 			h *= MD_FNV_PRIME;
@@ -2337,6 +2630,7 @@ static void md_free_block(MdBlock *b)
 	md_free(b->runs);
 	md_free(b->links);
 	md_free(b->imgs);
+	md_free(b->maths);
 	md_free(b->raw);
 	ZeroMemory(b, sizeof(*b));
 }

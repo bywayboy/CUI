@@ -29,7 +29,7 @@ IF ERRORLEVEL 1 (
 IF NOT EXIST bin MKDIR bin
 IF NOT EXIST build MKDIR build
 IF NOT EXIST build\obj MKDIR build\obj
-del /q build\obj\*.obj bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe bin\cui_net.exe bin\cui_net_test.exe bin\cui_image.exe bin\cui_gfx_rich_test.exe bin\cui_md_test.exe bin\cui_md_ui_test.exe bin\cui_markdown.exe 2>nul
+del /q build\obj\*.obj bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe bin\cui_net.exe bin\cui_net_test.exe bin\cui_image.exe bin\cui_gfx_rich_test.exe bin\cui_md_test.exe bin\cui_md_ui_test.exe bin\cui_md_math_test.exe bin\cui_gfx_math_test.exe bin\cui_markdown.exe 2>nul
 
 REM 自定义 D2D 效果的着色器: 离线编译成字节数组, 运行时不需要 d3dcompiler.dll
 SET "FXC=%WindowsSdkVerBinPath%x64\fxc.exe"
@@ -58,10 +58,14 @@ SET "OBJS=!OBJS! build\obj\gfx_d2d.obj"
 REM 可选模块: 不进入 OBJS, 只链接进使用富文本/Markdown 的目标
 ECHO [cui] src\gfx\gfx_rich.cpp (optional)
 cl %CXXFLAGS% src\gfx\gfx_rich.cpp /Fobuild\obj\gfx_rich.obj || GOTO :err
+ECHO [cui] src\gfx\gfx_math.cpp (optional)
+cl %CXXFLAGS% src\gfx\gfx_math.cpp /Fobuild\obj\gfx_math.obj || GOTO :err
 ECHO [cui] src\ui\ui_md_parse.c (optional)
 cl %CFLAGS% src\ui\ui_md_parse.c /Fobuild\obj\ui_md_parse.obj || GOTO :err
 ECHO [cui] src\ui\ui_md.c (optional)
 cl %CFLAGS% src\ui\ui_md.c /Fobuild\obj\ui_md.obj || GOTO :err
+ECHO [cui] src\ui\md_math.c (optional)
+cl %CFLAGS% src\ui\md_math.c /Fobuild\obj\md_math.obj || GOTO :err
 
 ECHO [cui] src\lib\mem_avx2.c (AVX2)
 cl %CFLAGS% /arch:AVX2 src\lib\mem_avx2.c /Fobuild\obj\mem_avx2.obj || GOTO :err
@@ -105,6 +109,10 @@ ECHO [cui] tests\md_test.c
 cl %CFLAGS% tests\md_test.c /Fobuild\obj\md_test.obj || GOTO :err
 ECHO [cui] tests\md_ui_test.c
 cl %CFLAGS% tests\md_ui_test.c /Fobuild\obj\md_ui_test.obj || GOTO :err
+ECHO [cui] tests\md_math_test.c
+cl %CFLAGS% tests\md_math_test.c /Fobuild\obj\md_math_test.obj || GOTO :err
+ECHO [cui] tests\gfx_math_test.c
+cl %CFLAGS% tests\gfx_math_test.c /Fobuild\obj\gfx_math_test.obj || GOTO :err
 
 ECHO [cui] link demo
 link /nologo /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:startup /MANIFEST:NO ^
@@ -164,7 +172,7 @@ link /nologo /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:s
 
 ECHO [cui] link markdown (optional module)
 link /nologo /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:startup /MANIFEST:NO ^
-    /OUT:bin\cui_markdown.exe !OBJS! build\obj\markdown.obj build\obj\ui_md.obj build\obj\ui_md_parse.obj build\obj\gfx_rich.obj %LIBS% comdlg32.lib || GOTO :err
+    /OUT:bin\cui_markdown.exe !OBJS! build\obj\markdown.obj build\obj\ui_md.obj build\obj\ui_md_parse.obj build\obj\gfx_rich.obj build\obj\gfx_math.obj build\obj\md_math.obj %LIBS% comdlg32.lib || GOTO :err
 
 ECHO [cui] link net_test
 link /nologo /SUBSYSTEM:CONSOLE /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:startup /MANIFEST:NO ^
@@ -173,6 +181,9 @@ link /nologo /SUBSYSTEM:CONSOLE /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:s
 ECHO [cui] link gfx_rich_test (optional module)
 link /nologo /SUBSYSTEM:CONSOLE /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:startup /MANIFEST:NO ^
     /OUT:bin\cui_gfx_rich_test.exe !OBJS! build\obj\gfx_rich_test.obj build\obj\gfx_rich.obj %LIBS% || GOTO :err
+ECHO [cui] link gfx_math_test (optional module)
+link /nologo /SUBSYSTEM:CONSOLE /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:startup /MANIFEST:NO ^
+    /OUT:bin\cui_gfx_math_test.exe !OBJS! build\obj\gfx_math_test.obj build\obj\gfx_math.obj build\obj\md_math.obj %LIBS% || GOTO :err
 
 ECHO [cui] link md_test (optional module)
 link /nologo /SUBSYSTEM:CONSOLE /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:startup /MANIFEST:NO ^
@@ -180,10 +191,13 @@ link /nologo /SUBSYSTEM:CONSOLE /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:s
 
 ECHO [cui] link md_ui_test (optional module)
 link /nologo /SUBSYSTEM:CONSOLE /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:startup /MANIFEST:NO ^
-    /OUT:bin\cui_md_ui_test.exe !OBJS! build\obj\md_ui_test.obj build\obj\ui_md.obj build\obj\ui_md_parse.obj build\obj\gfx_rich.obj %LIBS% || GOTO :err
+    /OUT:bin\cui_md_ui_test.exe !OBJS! build\obj\md_ui_test.obj build\obj\ui_md.obj build\obj\ui_md_parse.obj build\obj\gfx_rich.obj build\obj\gfx_math.obj build\obj\md_math.obj %LIBS% || GOTO :err
+ECHO [cui] link md_math_test (optional module)
+link /nologo /SUBSYSTEM:CONSOLE /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:startup /MANIFEST:NO ^
+    /OUT:bin\cui_md_math_test.exe !OBJS! build\obj\md_math_test.obj build\obj\md_math.obj %LIBS% || GOTO :err
 
 ECHO.
-FOR %%E IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe bin\cui_net.exe bin\cui_net_test.exe bin\cui_image.exe bin\cui_gfx_rich_test.exe bin\cui_md_test.exe bin\cui_md_ui_test.exe bin\cui_markdown.exe) DO (
+FOR %%E IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe bin\cui_net.exe bin\cui_net_test.exe bin\cui_image.exe bin\cui_gfx_rich_test.exe bin\cui_md_test.exe bin\cui_md_ui_test.exe bin\cui_md_math_test.exe bin\cui_gfx_math_test.exe bin\cui_markdown.exe) DO (
     dumpbin /imports %%E | findstr /i "msvcrt ucrtbase api-ms-win-crt" >NUL
     IF ERRORLEVEL 1 (
         ECHO [OK] no CRT dependency: %%E

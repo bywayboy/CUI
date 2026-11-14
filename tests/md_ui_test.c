@@ -349,6 +349,67 @@ void __stdcall startup(void)
 			CHECK(UiMarkdown_DebugRows(md) == 1);
 			CHECK(UiMarkdown_DebugMeasured(md) == 1);
 			CHECK(UiMarkdown_ContentHeight(md) > 30.0f);
+
+			/* 显式尺寸: height=20 (Gap 10 → 内容高 ~30) */
+			{
+				char doc3[700];
+				wsprintfA(doc3, "![x](%s){height=20}\n", path);
+				UiMarkdown_SetText(md, doc3);
+				Ui_BeginFrame(&g_ctx);
+				Ui_EndFrame(&g_ctx);
+				Gfx_Begin(g);
+				Ui_BeginFrame(&g_ctx);
+				Ui_Markdown(md, &g_ctx, area);
+				Ui_EndFrame(&g_ctx);
+				CHECK(Gfx_End(g) == 1);
+				CHECK(UiMarkdown_ContentHeight(md) > 18.0f);
+				CHECK(UiMarkdown_ContentHeight(md) < 40.0f);
+			}
+			/* 显式宽高同时生效: 64x32 图缩成 40x15 */
+			{
+				char doc4[700];
+				wsprintfA(doc4, "![x](%s){width=40 height=15}\n", path);
+				UiMarkdown_SetText(md, doc4);
+				Ui_BeginFrame(&g_ctx);
+				Ui_EndFrame(&g_ctx);
+				Gfx_Begin(g);
+				Ui_BeginFrame(&g_ctx);
+				Ui_Markdown(md, &g_ctx, area);
+				Ui_EndFrame(&g_ctx);
+				CHECK(Gfx_End(g) == 1);
+				CHECK(UiMarkdown_ContentHeight(md) > 14.0f);
+				CHECK(UiMarkdown_ContentHeight(md) < 32.0f);
+			}
+			/* 行内大图 (显式 200x100) 应撑高段落 */
+			{
+				char doc5[700];
+				wsprintfA(doc5, "前 ![x](%s){width=200 height=100} 后\n", path);
+				UiMarkdown_SetText(md, doc5);
+				Ui_BeginFrame(&g_ctx);
+				Ui_EndFrame(&g_ctx);
+				Gfx_Begin(g);
+				Ui_BeginFrame(&g_ctx);
+				Ui_Markdown(md, &g_ctx, area);
+				Ui_EndFrame(&g_ctx);
+				CHECK(Gfx_End(g) == 1);
+				CHECK(UiMarkdown_ContentHeight(md) > 100.0f);
+			}
+			/* 与样例一致的写法: 前缀文字 + title + 尺寸属性 */
+			{
+				char doc6[700];
+				wsprintfA(doc6,
+					"限定尺寸：![尺寸 280x120](%s \"center\"){width=280 height=120}\n",
+					path);
+				UiMarkdown_SetText(md, doc6);
+				Ui_BeginFrame(&g_ctx);
+				Ui_EndFrame(&g_ctx);
+				Gfx_Begin(g);
+				Ui_BeginFrame(&g_ctx);
+				Ui_Markdown(md, &g_ctx, area);
+				Ui_EndFrame(&g_ctx);
+				CHECK(Gfx_End(g) == 1);
+				CHECK(UiMarkdown_ContentHeight(md) > 100.0f);
+			}
 		}
 	}
 
@@ -456,6 +517,119 @@ void __stdcall startup(void)
 		CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
 	}
 
+	/* 公式: 行内对象撑高行, 块级独占一行, 语法错误回退源码 */
+	{
+		const char *mdoc =
+			"行内 $x^2+\\frac{a}{b}$ 公式\n\n"
+			"$$\n\\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}\n$$\n\n"
+			"$\\frac{a}$\n";
+		UiMarkdown_SetText(md, mdoc);
+		CHECK(UiMarkdown_DebugRows(md) == 3);
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		CHECK(UiMarkdown_DebugMeasured(md) == 3);
+		CHECK(UiMarkdown_ContentHeight(md) > 110.0f);
+		/* 行内 14 DIP + 块级 16 DIP 各缓存一棵; 语法错误不入缓存 */
+		CHECK(UiMarkdown_DebugMathCache(md) == 2);
+		CHECK(UiMarkdown_DebugMathMisses(md) == 2);
+		/* 编辑后重解析: 未变化的公式直接命中缓存 */
+		{
+			int me = UiMarkdown_DebugMathMisses(md);
+			UiMarkdown_SetText(md,
+				"行内 $x^2+\\frac{a}{b}$ 公式\n\n"
+				"$$\n\\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}\n$$\n\n"
+				"$\\frac{a}$\n\n后记段落\n");
+			CHECK(UiMarkdown_DebugRows(md) == 4);
+			Ui_BeginFrame(&g_ctx);
+			Ui_EndFrame(&g_ctx);
+			Gfx_Begin(g);
+			Ui_BeginFrame(&g_ctx);
+			Ui_Markdown(md, &g_ctx, area);
+			Ui_EndFrame(&g_ctx);
+			CHECK(Gfx_End(g) == 1);
+			CHECK(UiMarkdown_DebugMathMisses(md) == me);
+			CHECK(UiMarkdown_DebugMathCache(md) == 2);
+		}
+		CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
+	}
+
+	/* 块级公式被驱逐后回到视口必须重建 (measured 仍为 1) */
+	{
+		DynBuf gd;
+		int ii, c0, c1, m0, mc;
+		ZeroMemory(&gd, sizeof(gd));
+		for (ii = 0; ii < 120; ii++)
+			db_puts(&gd, "$$\n\\frac{a}{b}\n$$\n\n");
+		UiMarkdown_SetText(md, gd.p);
+		db_free(&gd);
+		CHECK(UiMarkdown_DebugRows(md) == 120);
+		m0 = UiMarkdown_DebugMathMisses(md);
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		c0 = UiMarkdown_DebugMeasureCalls(md);
+		/* 120 行同一公式 + 同一字号: 只创建一次布局 */
+		CHECK(UiMarkdown_DebugMathMisses(md) - m0 == 1);
+		mc = UiMarkdown_DebugMathCache(md);
+		UiMarkdown_ScrollToOffset(md, &g_ctx, 1.0e9f, 0);
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		UiMarkdown_ScrollToOffset(md, &g_ctx, 0.0f, 0);
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		c1 = UiMarkdown_DebugMeasureCalls(md);
+		CHECK(c1 > c0);
+		/* 驱逐后回看命中缓存: 不再新建布局, 条目数不变 */
+		CHECK(UiMarkdown_DebugMathMisses(md) - m0 == 1);
+		CHECK(UiMarkdown_DebugMathCache(md) == mc);
+		CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
+	}
+
+	/* 超长行内公式: 窄宽度下按比例缩小字号重建 (两次 miss: 基准 + 缩小) */
+	{
+		DynBuf lb;
+		int m1;
+		ZeroMemory(&lb, sizeof(lb));
+		db_puts(&lb,
+			"前 $\\sum_{k=0}^{n} \\frac{k^{2}+2k+1}{k+1}"
+			"+\\sum_{k=0}^{n}\\frac{k^{2}-2k+1}{k-1}"
+			"+\\int_{0}^{1}\\frac{x^{3}+1}{x+1}\\,dx$ 后\n");
+		UiMarkdown_SetText(md, lb.p);
+		db_free(&lb);
+		area.w = 200.0f;   /* 强制公式宽于可用宽, 走缩放路径 */
+		m1 = UiMarkdown_DebugMathMisses(md);
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		CHECK(UiMarkdown_DebugRows(md) == 1);
+		CHECK(UiMarkdown_DebugMeasured(md) == 1);
+		CHECK(UiMarkdown_DebugMathMisses(md) >= m1 + 2);
+		CHECK(UiMarkdown_ContentHeight(md) > 24.0f);
+		CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
+	}
 
 done:
 	if (md) UiMarkdown_Destroy(md);

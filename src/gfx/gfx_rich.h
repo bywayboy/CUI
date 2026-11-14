@@ -65,6 +65,15 @@ int Gfx_RichRangeRects(const GfxRichText *rt, int start, int len,
 int Gfx_RichInlineImage(GfxRichText *rt, int start, int len,
 	GfxBitmap *bmp, float w, float h);
 
+/* 自定义行内对象 (矢量公式等): 占位 w×(h) 参与断行/行高, baseline 为
+ * 顶部到基线距离; 绘制时回调收到范围矩形左端与基线 y。回调必须在一帧
+ * 内 (Gfx_RichDraw 内) 同步完成绘制, user 由调用方保证生命周期。 */
+typedef void (*GfxRichCustomDrawFn)(void *user, Gfx *g, float x,
+	float baseline, float w, float h, GfxColor color);
+
+int Gfx_RichInlineCustom(GfxRichText *rt, int start, int len, float w, float h,
+	float baseline, GfxRichCustomDrawFn draw, void *user);
+
 #ifdef __cplusplus
 }
 #endif

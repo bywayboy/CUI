@@ -18,6 +18,7 @@
 #include "ui/ui_scroll.h"
 #include "ui/ui_frame.h"
 #include "gfx/gfx_rich.h"
+#include "gfx/gfx_math.h"
 
 #define MD_OVERSCAN      32
 #define MD_MARKER_W      22.0f
@@ -56,6 +57,7 @@ typedef struct MdRow {
 	int task;
 	float markerW;
 	float extraTop;      /* 容器首行: 标题区高度 */
+	float extraBottom;   /* 容器末行: 卡内底部内边距 */
 	uint32_t hash;
 	int measured;
 	float measuredW;
@@ -83,6 +85,15 @@ typedef struct MdRow {
 	UiImage **inlImgs;
 	int *inlStates;
 	int inlN;
+
+	/* 行内公式: 每项对应 blk->maths[i]; NULL = 语法失败, 按源码回退 */
+	GfxMath **inlMath;
+	int mathN;
+
+	/* 块级公式 */
+	GfxMath *bm;
+	GfxRichText *bmFallback;   /* 语法失败时的源码文本 */
+	float bmW, bmH, bmD;
 } MdRow;
 
 typedef struct MdOldRow {
@@ -99,6 +110,20 @@ typedef struct MdBox {
 	int depth;           /* 祖先容器数: 标题带下移 depth*boxTitleH */
 	int titleOff, titleLen;
 } MdBox;
+
+/* 公式缓存条目: 同一 (源码, 字号, 字体) 只保留一棵盒子树与 DWrite 布局,
+ * 多行/重复公式共享; refs=0 的条目留在缓存里供滚动回看, 满额时 LRU 驱逐. */
+typedef struct MdMathCacheEnt {
+	uint32_t hash;
+	float size;
+	void *font;
+	int display;
+	char *src;
+	int len;
+	GfxMath *gm;
+	int refs;
+	uint32_t lastUse;
+} MdMathCacheEnt;
 
 struct UiMarkdown {
 	UiId id;
@@ -147,6 +172,11 @@ struct UiMarkdown {
 	int needEstimate;
 	int pendingTop, followTail;
 	int hasLinks;       /* 文档含可悬停链接: 指针移动需逐次重绘 */
+
+	MdMathCacheEnt *mmath;
+	int mmathN, mmathCap;
+	uint32_t mmathTick;
+	int mmathMisses;
 
 	UiContext *ui;
 	double lastNow;
@@ -318,7 +348,6 @@ static void md_free_fonts(UiMarkdown *md)
 static void md_build_fonts(UiMarkdown *md)
 {
 	float hsz[6] = { 26.0f, 22.0f, 19.0f, 16.0f, 15.0f, 14.0f };
-	int i;
 
 	md_free_fonts(md);
 	if (!md->gfx) return;
@@ -401,7 +430,7 @@ static void md_resolve_style(UiMarkdown *md, const UiTheme *t)
 		md->cBoxBg[MD_BOX_TIP] = dark ? 0xFF16331F : 0xFFE9F7EF;
 		md->cBoxBg[MD_BOX_WARNING] = dark ? 0xFF3A2A16 : 0xFFFFF4E5;
 		md->cBoxBg[MD_BOX_DANGER] = dark ? 0xFF3A1D1D : 0xFFFDECEC;
-		md->boxTitleH = 20.0f;
+		md->boxTitleH = 32.0f;   /* 8 顶距 + 16 标题 + 8 到正文 */
 		md->boxIndent = md->quoteIndent;
 		md->boxRadius = 6.0f;
 		md->boxBarW = md->quoteBarW;
@@ -409,6 +438,126 @@ static void md_resolve_style(UiMarkdown *md, const UiTheme *t)
 }
 
 /* ── 行构建 ────────────────────────────────────────────────────────── */
+
+/* ── 公式缓存 ──────────────────────────────────────────────────────── */
+
+#define MD_MATH_CACHE_MAX 128
+
+static uint32_t md_math_hash(const char *s, int n)
+{
+	uint32_t h = 2166136261u;
+	int i;
+	for (i = 0; i < n; i++) {
+		h ^= (uint32_t)(unsigned char)s[i];
+		h *= 16777619u;
+	}
+	return h;
+}
+
+static int md_math_src_eq(const MdMathCacheEnt *e, const char *s, int n)
+{
+	int i;
+	if (!e->src || e->len != n) return 0;
+	for (i = 0; i < n; i++)
+		if (e->src[i] != s[i]) return 0;
+	return e->src[n] == 0;
+}
+
+/* 取一个公式对象 (refs++), 未命中则创建并入缓存. 返回 NULL = 语法错误.
+ * 创建后 cache_get 增加一次引用, 调用方必须用 md_math_cache_put 归还. */
+static GfxMath *md_math_cache_get(UiMarkdown *md, const char *src, int len,
+	float size, GfxFont *font, int display)
+{
+	uint32_t h;
+	GfxMath *gm;
+	int i, victim = -1;
+	if (!md || !src || len <= 0 || !md->gfx) return NULL;
+	h = md_math_hash(src, len);
+	for (i = 0; i < md->mmathN; i++) {
+		MdMathCacheEnt *e = &md->mmath[i];
+		if (e->hash == h && e->size == size && e->font == font &&
+			e->display == (display ? 1 : 0) &&
+			md_math_src_eq(e, src, len)) {
+			e->refs++;
+			e->lastUse = ++md->mmathTick;
+			return e->gm;
+		}
+	}
+	gm = Gfx_MathCreate(md->gfx, src, len, size, font, display);
+	if (!gm) return NULL;
+	md->mmathMisses++;
+
+	if (md->mmathN >= MD_MATH_CACHE_MAX) {
+		uint32_t best = 0;
+		for (i = 0; i < md->mmathN; i++) {
+			if (md->mmath[i].refs != 0) continue;
+			if (victim < 0 || md->mmath[i].lastUse < best) {
+				victim = i;
+				best = md->mmath[i].lastUse;
+			}
+		}
+		if (victim < 0) return gm;   /* 全部在用: 不缓存, put 时直接销毁 */
+		Gfx_MathDestroy(md->mmath[victim].gm);
+		md_free_(md->mmath[victim].src);
+		md->mmath[victim] = md->mmath[--md->mmathN];
+	}
+	if (md->mmathN >= md->mmathCap) {
+		int nc = md->mmathCap ? md->mmathCap * 2 : 16;
+		MdMathCacheEnt *np = (MdMathCacheEnt *)md_realloc_(md->mmath,
+			(SIZE_T)nc * sizeof(MdMathCacheEnt));
+		if (!np) return gm;
+		md->mmath = np;
+		md->mmathCap = nc;
+	}
+	{
+		MdMathCacheEnt *e = &md->mmath[md->mmathN];
+		e->src = (char *)md_alloc_(len + 1);
+		if (!e->src) return gm;
+		for (i = 0; i < len; i++) e->src[i] = src[i];
+		e->src[len] = 0;
+		e->hash = h;
+		e->len = len;
+		e->size = size;
+		e->font = font;
+		e->display = display ? 1 : 0;
+		e->gm = gm;
+		e->refs = 1;
+		e->lastUse = ++md->mmathTick;
+		md->mmathN++;
+	}
+	return gm;
+}
+
+static void md_math_cache_put(UiMarkdown *md, GfxMath *gm)
+{
+	int i;
+	if (!gm) return;
+	if (md) {
+		for (i = 0; i < md->mmathN; i++) {
+			if (md->mmath[i].gm == gm) {
+				if (md->mmath[i].refs > 0) md->mmath[i].refs--;
+				md->mmath[i].lastUse = ++md->mmathTick;
+				return;
+			}
+		}
+	}
+	Gfx_MathDestroy(gm);
+}
+
+/* 只能在所有行已释放后调用 (否则行上的指针悬空) */
+static void md_math_cache_clear(UiMarkdown *md)
+{
+	int i;
+	if (!md) return;
+	for (i = 0; i < md->mmathN; i++) {
+		Gfx_MathDestroy(md->mmath[i].gm);
+		md_free_(md->mmath[i].src);
+	}
+	md_free_(md->mmath);
+	md->mmath = NULL;
+	md->mmathN = 0;
+	md->mmathCap = 0;
+}
 
 static void md_row_release(UiMarkdown *md, MdRow *r)
 {
@@ -450,6 +599,22 @@ static void md_row_release(UiMarkdown *md, MdRow *r)
 	md_free_(r->inlStates);
 	r->inlStates = NULL;
 	r->inlN = 0;
+	if (r->inlMath) {
+		for (i = 0; i < r->mathN; i++)
+			if (r->inlMath[i]) md_math_cache_put(md, r->inlMath[i]);
+		md_free_(r->inlMath);
+		r->inlMath = NULL;
+	}
+	r->mathN = 0;
+	if (r->bm) {
+		md_math_cache_put(md, r->bm);
+		r->bm = NULL;
+	}
+	if (r->bmFallback) {
+		Gfx_RichDestroy(r->bmFallback);
+		r->bmFallback = NULL;
+	}
+	r->bmW = r->bmH = r->bmD = 0.0f;
 	r->cellN = 0;
 	r->tblCols = r->tblRows = 0;
 	r->tblH = 0.0f;
@@ -553,7 +718,7 @@ static int md_flatten(UiMarkdown *md, MdBlock *b, int indent, int qd,
 		int first = md->rowCount;
 		int bi = md->boxIndent > 0.0f ? (int)md->boxIndent
 			: (int)md->quoteIndent;
-		float th = md->boxTitleH > 0.0f ? md->boxTitleH : 20.0f;
+		float th = md->boxTitleH > 0.0f ? md->boxTitleH : 32.0f;
 		int boxAt;
 		if (bi <= 0) bi = 16;
 		/* 先占位再展开: 外盒必须先于内盒绘制, 否则内层底色被外层覆盖 */
@@ -568,6 +733,8 @@ static int md_flatten(UiMarkdown *md, MdBlock *b, int indent, int qd,
 		}
 		if (md->rowCount > first) {
 			md->rows[first].extraTop += th;
+			/* 卡内底部内边距: 与代码块 codePadY 对齐 */
+			md->rows[md->rowCount - 1].extraBottom += 8.0f;
 			if (boxAt >= 0 && boxAt < md->boxCount)
 				md->boxes[boxAt].lastRow = md->rowCount - 1;
 		} else if (boxAt >= 0 && boxAt < md->boxCount) {
@@ -631,7 +798,7 @@ static void md_row_pads(const UiMarkdown *md, const MdRow *r,
 	float *top, float *bottom)
 {
 	*top = r->extraTop;
-	*bottom = md->blockGap;
+	*bottom = md->blockGap + r->extraBottom;
 	switch (r->blk->type) {
 	case MD_BLOCK_HEADING:
 		*top = md->headGapAbove;
@@ -644,6 +811,10 @@ static void md_row_pads(const UiMarkdown *md, const MdRow *r,
 	case MD_BLOCK_HR:
 		*top = md->ruleGap;
 		*bottom = md->ruleGap;
+		break;
+	case MD_BLOCK_MATH:
+		*top = 6.0f + r->extraTop;
+		*bottom = 6.0f + md->blockGap + r->extraBottom;
 		break;
 	default:
 		break;
@@ -694,6 +865,8 @@ static float md_row_estimate(const UiMarkdown *md, const MdRow *r)
 		h = md_est_text(r->blk->text16, r->blk->len16, wrapW, size,
 			md->lineSpacing);
 		return h + top + bottom;
+	case MD_BLOCK_MATH:
+		return 52.0f + top + bottom;
 	default:
 		h = md_est_text(r->blk->text16, r->blk->len16, wrapW, size,
 			md->lineSpacing);
@@ -917,6 +1090,36 @@ static int md_inl_changed(UiMarkdown *md, int index)
 	return 0;
 }
 
+/* 图片显示尺寸: 显式 width/height (DIP) 优先; 只给一个则等比.
+ * 未指定时沿用默认策略 (夹内容宽 + imageMaxH). 显式尺寸仍夹到可用宽,
+ * 避免横向溢出; 显式高度不再被 imageMaxH 覆盖. */
+static void md_img_size(float nw, float nh, int ew, int eh, float maxW,
+	float maxH, float *ow, float *oh)
+{
+	float w, h;
+	if (ew > 0 || eh > 0) {
+		if (ew > 0 && eh > 0) { w = (float)ew; h = (float)eh; }
+		else if (ew > 0) { w = (float)ew; h = w * nh / nw; }
+		else { h = (float)eh; w = h * nw / nh; }
+		if (w > maxW && w > 0.0f) {
+			float k = maxW / w;
+			w *= k;
+			h *= k;
+		}
+	} else {
+		w = nw > maxW ? maxW : nw;
+		h = w * nh / nw;
+		if (h > maxH) {
+			h = maxH;
+			w = h * nw / nh;
+		}
+	}
+	if (w < 1.0f) w = 1.0f;
+	if (h < 1.0f) h = 1.0f;
+	*ow = w;
+	*oh = h;
+}
+
 static void md_apply_inline_images(UiMarkdown *md, int index, GfxRichText *rt,
 	float wrapW)
 {
@@ -937,13 +1140,87 @@ static void md_apply_inline_images(UiMarkdown *md, int index, GfxRichText *rt,
 		if (!bmp || pw <= 0 || ph <= 0) continue;
 		w = (float)pw / scale;
 		h = (float)ph / scale;
-		if (w > wrapW) { w = wrapW; h = w * (float)ph / (float)pw; }
-		if (h > md->imageMaxH) {
-			h = md->imageMaxH;
-			w = h * (float)pw / (float)ph;
-		}
+		md_img_size(w, h, b->imgs[i].w, b->imgs[i].h, wrapW,
+			md->imageMaxH, &w, &h);
 		Gfx_RichInlineImage(rt, b->imgs[i].start, b->imgs[i].len, bmp, w, h);
 		r->inlStates[i] = UI_IMG_READY;
+	}
+}
+
+static void md_math_draw_cb(void *user, Gfx *g, float x, float baseline,
+	float w, float h, GfxColor color)
+{
+	(void)w;
+	(void)h;
+	Gfx_MathDraw((GfxMath *)user, g, x, baseline, color);
+}
+
+/* 行内公式对象按行字体/字号创建一次; 超可用宽时按比例缩小字号重建
+ * (走同一缓存); 创建失败保持 NULL, 渲染层回退为等宽源码文本。 */
+static void md_inl_math_ensure(UiMarkdown *md, int index, float maxW)
+{
+	MdRow *r = &md->rows[index];
+	MdBlock *b = r->blk;
+	GfxFont *font;
+	float size;
+	int i;
+	if (!b || b->mathCount <= 0 || !md->gfx) return;
+	if (r->inlMath) return;
+	r->inlMath = (GfxMath **)md_alloc_(
+		b->mathCount * (int)sizeof(GfxMath *));
+	if (!r->inlMath) return;
+	r->mathN = b->mathCount;
+	font = md_row_font(md, r);
+	size = md_row_font_size(md, r);
+	for (i = 0; i < b->mathCount; i++) {
+		const char *src = MdDoc_Url(&md->doc, b->maths[i].srcOff);
+		int len = b->maths[i].srcLen;
+		float sz = size;
+		int tries = 0;
+		for (;;) {
+			float w;
+			GfxMath *gm = md_math_cache_get(md, src, len, sz, font, 0);
+			if (!gm) break;
+			w = Gfx_MathWidth(gm);
+			if (maxW < 1.0f || w <= maxW || w <= 1.0f) {
+				r->inlMath[i] = gm;
+				break;
+			}
+			{
+				float ns = sz * maxW / w * 0.98f;
+				if (ns < 8.0f) ns = 8.0f;
+				md_math_cache_put(md, gm);
+				if (++tries >= 3 || ns >= sz - 0.01f) {
+					r->inlMath[i] = md_math_cache_get(md, src, len, ns,
+						font, 0);
+					break;
+				}
+				sz = ns;
+			}
+		}
+	}
+}
+
+static void md_apply_inline_math(UiMarkdown *md, int index, GfxRichText *rt,
+	float maxW)
+{
+	MdRow *r = &md->rows[index];
+	MdBlock *b = r->blk;
+	int i;
+	if (!rt || !b || b->mathCount <= 0) return;
+	md_inl_math_ensure(md, index, maxW);
+	for (i = 0; i < b->mathCount; i++) {
+		const MdMathRef *m = &b->maths[i];
+		GfxMath *gm = r->inlMath ? r->inlMath[i] : NULL;
+		if (!gm) {
+			Gfx_RichColor(rt, m->start, m->len, md->cInlineCodeText);
+			if (md->fCode)
+				Gfx_RichFontFamily(rt, m->start, m->len, md->fCode);
+			continue;
+		}
+		Gfx_RichInlineCustom(rt, m->start, m->len,
+			Gfx_MathWidth(gm), Gfx_MathHeight(gm) + Gfx_MathDepth(gm),
+			Gfx_MathHeight(gm), md_math_draw_cb, gm);
 	}
 }
 
@@ -1118,6 +1395,27 @@ static void md_code_cache_build(UiMarkdown *md, int index)
 			r->codeRects[r->codeN++] = tmp[k];
 		}
 	}
+	/* 语法失败的公式按源码回退: 与行内代码一致给底色 */
+	if (r->blk->mathCount > 0 && r->inlMath) {
+		for (i = 0; i < r->blk->mathCount; i++) {
+			const MdMathRef *m = &r->blk->maths[i];
+			GfxRect tmp[16];
+			int n, k;
+			if (r->inlMath[i]) continue;
+			n = Gfx_RichRangeRects(r->rt, m->start, m->len, tmp, 16);
+			for (k = 0; k < n; k++) {
+				if (r->codeN >= r->codeCap) {
+					int nc = r->codeCap ? r->codeCap * 2 : 8;
+					GfxRect *np = (GfxRect *)md_realloc_(r->codeRects,
+						(SIZE_T)nc * sizeof(GfxRect));
+					if (!np) return;
+					r->codeRects = np;
+					r->codeCap = nc;
+				}
+				r->codeRects[r->codeN++] = tmp[k];
+			}
+		}
+	}
 }
 
 static GfxRichText *md_row_make_rt(UiMarkdown *md, int index)
@@ -1129,14 +1427,16 @@ static GfxRichText *md_row_make_rt(UiMarkdown *md, int index)
 	if (r->rt) return r->rt;
 	if (r->blk->type == MD_BLOCK_HR ||
 		r->blk->type == MD_BLOCK_IMAGE ||
-		r->blk->type == MD_BLOCK_TABLE)
+		r->blk->type == MD_BLOCK_TABLE ||
+		r->blk->type == MD_BLOCK_MATH)
 		return NULL;
 	wrapW = md->contentW - (float)r->indent - r->markerW;
 	if (wrapW < 1.0f) wrapW = 1.0f;
 	font = md_row_font(md, r);
 	if (!font || !r->blk->text16) return NULL;
-	/* 含行内图片时用自然行距: UNIFORM 固定行高会压扁/裁掉行内对象 */
-	ls = r->blk->imgCount > 0 ? 0.0f : md->lineSpacing;
+	/* 含行内对象时用自然行距: UNIFORM 固定行高会压扁/裁掉行内对象 */
+	ls = (r->blk->imgCount > 0 || r->blk->mathCount > 0)
+		? 0.0f : md->lineSpacing;
 	r->rt = Gfx_RichCreate(md->gfx, r->blk->text16, r->blk->len16,
 		font, wrapW, ls, GFX_RICH_WRAP);
 	if (r->rt) {
@@ -1146,6 +1446,7 @@ static GfxRichText *md_row_make_rt(UiMarkdown *md, int index)
 			md_highlight(md, r->rt, r->blk);
 		else {
 			md_apply_inline_images(md, index, r->rt, wrapW);
+			md_apply_inline_math(md, index, r->rt, wrapW);
 			md_code_cache_build(md, index);
 		}
 		r->rtH = Gfx_RichHeight(r->rt);
@@ -1165,6 +1466,58 @@ static void md_u8_to_w(const char *s, wchar_t *out, int cap)
 	n = MultiByteToWideChar(CP_UTF8, 0, s, -1, out, cap);
 	if (n <= 0) out[0] = 0;
 	else out[cap - 1] = 0;
+}
+
+/* 块级公式: 基准 16 DIP, 超出可用宽时按比例重建 (最多 3 次);
+ * 语法错误回退为代码字体的原始源码。 */
+static void md_math_block_build(UiMarkdown *md, MdRow *r, float avail)
+{
+	const char *src;
+	float size = 16.0f;
+	int tries = 0;
+	if (r->bm || r->bmFallback) return;
+	if (!md->gfx || !r->blk) return;
+	if (avail < 1.0f) avail = 1.0f;
+	src = MdDoc_Url(&md->doc, r->blk->mathOff);
+	for (;;) {
+		float w;
+		r->bm = md_math_cache_get(md, src, r->blk->mathLen, size,
+			md->fBody, 1);
+		if (!r->bm) break;
+		w = Gfx_MathWidth(r->bm);
+		if (w <= avail || w <= 1.0f) break;
+		size *= avail / w * 0.98f;
+		if (size < 8.0f) size = 8.0f;
+		md_math_cache_put(md, r->bm);
+		r->bm = NULL;
+		if (++tries >= 3 || size <= 8.0f) {
+			r->bm = md_math_cache_get(md, src, r->blk->mathLen, size,
+				md->fBody, 1);
+			break;
+		}
+	}
+	if (r->bm) {
+		r->bmW = Gfx_MathWidth(r->bm);
+		r->bmH = Gfx_MathHeight(r->bm);
+		r->bmD = Gfx_MathDepth(r->bm);
+		return;
+	}
+	{
+		int cap = r->blk->mathLen + 1, got;
+		wchar_t *tmp = (wchar_t *)md_alloc_(
+			cap * (int)sizeof(wchar_t));
+		if (!tmp) return;
+		got = MultiByteToWideChar(CP_UTF8, 0, src, r->blk->mathLen,
+			tmp, cap);
+		if (got > 0) {
+			r->bmFallback = Gfx_RichCreate(md->gfx, tmp, got,
+				md->fCode ? md->fCode : md->fBody, avail,
+				md->lineSpacing, GFX_RICH_WRAP);
+			if (r->bmFallback)
+				Gfx_RichColor(r->bmFallback, 0, got, md->cCodeText);
+		}
+		md_free_(tmp);
+	}
 }
 
 static int md_starts_i(const char *s, const char *pre)
@@ -1224,6 +1577,12 @@ static void md_image_measure(UiMarkdown *md, MdRow *r, float avail)
 	int pw, ph;
 	float scale, nw, nh, dw, dh;
 	if (avail < 1.0f) avail = 1.0f;
+	/* 宽高都给定时按精确盒子拉伸 (与 HTML/img 语义一致); 只给一个时
+	 * 仍等比, 用 CONTAIN 留白. */
+	if (r->img)
+		UiImage_SetFit(r->img,
+			(r->blk->imgW > 0 && r->blk->imgH > 0)
+				? UI_IMG_FIT_STRETCH : UI_IMG_FIT_CONTAIN);
 	if (r->img && UiImage_State(r->img) == UI_IMG_READY) {
 		pw = UiImage_PixelWidth(r->img);
 		ph = UiImage_PixelHeight(r->img);
@@ -1231,13 +1590,8 @@ static void md_image_measure(UiMarkdown *md, MdRow *r, float avail)
 		if (pw > 0 && ph > 0) {
 			nw = (float)pw / scale;
 			nh = (float)ph / scale;
-			dw = nw > avail ? avail : nw;
-			if (dw < 1.0f) dw = 1.0f;
-			dh = dw * nh / nw;
-			if (dh > md->imageMaxH) {
-				dh = md->imageMaxH;
-				dw = dh * nw / nh;
-			}
+			md_img_size(nw, nh, r->blk->imgW, r->blk->imgH, avail,
+				md->imageMaxH, &dw, &dh);
 			r->imgReady = 1;
 			r->imgW = dw;
 			r->imgH = dh;
@@ -1380,6 +1734,16 @@ static void md_measure_row(UiMarkdown *md, int index)
 		else
 			h = r->tblH + top + bottom;
 		break;
+	case MD_BLOCK_MATH: {
+		float avail = md->contentW - (float)r->indent - r->markerW;
+		md_math_block_build(md, r, avail);
+		if (r->bm) h = r->bmH + r->bmD + top + bottom;
+		else if (r->bmFallback)
+			h = Gfx_RichHeight(r->bmFallback) + top + bottom;
+		else
+			h = md_row_estimate(md, r);
+		break;
+	}
 	default: {
 		GfxRichText *rt = md_row_make_rt(md, index);
 		h = rt ? Gfx_RichHeight(rt) + top + bottom
@@ -1410,6 +1774,9 @@ static void md_measure_visible(UiMarkdown *md, int first, int last)
 				md_measure_row(md, i);
 		} else if (r->blk->type == MD_BLOCK_TABLE) {
 			if (!r->cellRt) md_measure_row(md, i);
+		} else if (r->blk->type == MD_BLOCK_MATH) {
+			/* 块级公式对象被驱逐后 (measured 仍为 1) 回到视口需重建 */
+			if (!r->bm && !r->bmFallback) md_measure_row(md, i);
 		} else if (r->blk->imgCount > 0 && md_inl_changed(md, i)) {
 			if (r->rt) { Gfx_RichDestroy(r->rt); r->rt = NULL; }
 			r->measured = 0;
@@ -1662,8 +2029,8 @@ static void md_draw_boxes(UiMarkdown *md, UiRect content)
 			Gfx_Text(md->gfx,
 				md->fSmallBold ? md->fSmallBold : md->fSmall,
 				MdDoc_Url(&md->doc, b->titleOff),
-				Ui_Rect(x + md->boxBarW + 10.0f, y0 + 2.0f,
-					w - md->boxBarW - 20.0f, md->boxTitleH - 4.0f),
+				Ui_Rect(x + md->boxBarW + 10.0f, y0 + 8.0f,
+					w - md->boxBarW - 20.0f, 16.0f),
 				md->cBoxBar[kind], GFX_TEXT_VCENTER);
 		}
 	}
@@ -1721,10 +2088,22 @@ static void md_draw_row(UiMarkdown *md, UiContext *ui, int index,
 	case MD_BLOCK_TABLE:
 		md_draw_table(md, index, x, y + top);
 		break;
+	case MD_BLOCK_MATH: {
+		if (r->bm) {
+			float bx = x + (wrapW - r->bmW) * 0.5f;
+			if (bx < x) bx = x;
+			Gfx_MathDraw(r->bm, md->gfx, bx, y + top + r->bmH, md->cText);
+		} else if (r->bmFallback) {
+			Gfx_RichDraw(r->bmFallback, md->gfx, x, y + top,
+				md->cCodeText);
+		}
+		break;
+	}
 	case MD_BLOCK_CODE:
-		Gfx_FillRoundRect(md->gfx, Ui_Rect(x, y + top * 0.25f,
-			wrapW, h - bottom - top * 0.0f), md->codeRadius,
-			md->cCodeBg);
+		/* 卡面从行顶画到行底-blockGap: 上/下外间距与容器卡一致,
+		 * 卡内上下内边距均为 codePadY */
+		Gfx_FillRoundRect(md->gfx, Ui_Rect(x, y, wrapW,
+			h - md->blockGap), md->codeRadius, md->cCodeBg);
 		if (r->rt) Gfx_RichDraw(r->rt, md->gfx, x + md->codePadX,
 			y + top, md->cCodeText);
 		break;
@@ -1775,7 +2154,7 @@ UiMarkdown *UiMarkdown_Create(Gfx *gfx, UiId id, UiNet *net)
 		UiScrollView_SetPadding(&md->sv, pad);
 	}
 	UiScrollLayout_Init(&md->layout, NULL, 0);
-	md->boxTitleH = 20.0f;
+	md->boxTitleH = 32.0f;
 	md->boxIndent = 16.0f;
 	md->boxRadius = 6.0f;
 	md->boxBarW = 3.0f;
@@ -1787,6 +2166,7 @@ void UiMarkdown_Destroy(UiMarkdown *md)
 {
 	if (!md) return;
 	md_rows_clear(md, 0);
+	md_math_cache_clear(md);
 	md_free_(md->rows);
 	md_free_(md->boxes);
 	md_free_(md->items);
@@ -1874,12 +2254,14 @@ void UiMarkdown_SetStyle(UiMarkdown *md, const UiMarkdownStyle *st)
 		md->st = UiMarkdownStyle_Light();
 		md->followTheme = 1;
 	}
-	md_build_fonts(md);
-	md_live_reset(md);
+	/* 字体对象会被重建: 先释放行 (含公式引用), 再清公式缓存, 最后换字体 */
 	for (i = 0; i < md->rowCount; i++) {
+		md_row_release(md, &md->rows[i]);
 		md->rows[i].measured = 0;
-		md->rows[i].rt = NULL;
 	}
+	md->liveCount = 0;
+	md_math_cache_clear(md);
+	md_build_fonts(md);
 	md->needEstimate = 1;
 }
 
@@ -1938,6 +2320,24 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md)
 	return md ? md->layout.contentH : 0.0f;
 }
 
+float UiMarkdown_ScrollOffset(const UiMarkdown *md)
+{
+	return md ? md->sv.offset : 0.0f;
+}
+
+float UiMarkdown_MaxOffset(const UiMarkdown *md)
+{
+	return md ? UiScrollView_MaxOffset(&md->sv) : 0.0f;
+}
+
+void UiMarkdown_ScrollToOffset(UiMarkdown *md, UiContext *ui,
+	float offset, int animate)
+{
+	if (!md || !ui) return;
+	md->pendingTop = 0;
+	UiScrollView_ScrollTo(&md->sv, ui, offset, animate);
+}
+
 int UiMarkdown_DebugRows(const UiMarkdown *md)
 {
 	return md ? md->rowCount : 0;
@@ -1955,6 +2355,16 @@ int UiMarkdown_DebugMeasured(const UiMarkdown *md)
 int UiMarkdown_DebugMeasureCalls(const UiMarkdown *md)
 {
 	return md ? md->measureCalls : 0;
+}
+
+int UiMarkdown_DebugMathCache(const UiMarkdown *md)
+{
+	return md ? md->mmathN : 0;
+}
+
+int UiMarkdown_DebugMathMisses(const UiMarkdown *md)
+{
+	return md ? md->mmathMisses : 0;
 }
 
 int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)

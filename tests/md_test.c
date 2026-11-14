@@ -633,6 +633,47 @@ static void test_images(void)
 	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_IMAGE);
 	CHECK(d.blocks[0].imgAlign == 255);
 	MdDoc_Shutdown(&d);
+
+	/* 尺寸属性 (Pandoc/Markdown-Extra): 块级/行内, width/height 可省略 */
+	CHECK(parse_(&d, "![a](u){width=120 height=80}"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_IMAGE);
+	CHECK(d.blocks[0].imgW == 120 && d.blocks[0].imgH == 80);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "![a](u \"left\"){height=40}"));
+	CHECK(d.blocks[0].type == MD_BLOCK_IMAGE);
+	CHECK(d.blocks[0].imgW == 0 && d.blocks[0].imgH == 40);
+	CHECK(d.blocks[0].imgAlign == MD_ALIGN_LEFT);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "![a](u){ Width = 33 }"));
+	CHECK(d.blocks[0].imgW == 33 && d.blocks[0].imgH == 0);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "![尺寸 280x120](u \"center\"){width=280 height=120}"));
+	CHECK(d.blocks[0].type == MD_BLOCK_IMAGE);
+	CHECK(d.blocks[0].imgW == 280 && d.blocks[0].imgH == 120);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "x ![a](u){w=20 h=10} y"));
+	CHECK(d.blocks[0].type == MD_BLOCK_PARAGRAPH);
+	CHECK(wstr_eq(d.blocks[0].text16, L"x a y"));
+	CHECK(d.blocks[0].imgCount == 1);
+	CHECK(d.blocks[0].imgs[0].w == 20 && d.blocks[0].imgs[0].h == 10);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "x ![a](u \"center\"){width=280 height=120} y"));
+	CHECK(d.blocks[0].type == MD_BLOCK_PARAGRAPH);
+	CHECK(wstr_eq(d.blocks[0].text16, L"x a y"));
+	CHECK(d.blocks[0].imgCount == 1);
+	CHECK(d.blocks[0].imgs[0].w == 280 && d.blocks[0].imgs[0].h == 120);
+	MdDoc_Shutdown(&d);
+
+	/* 未知属性被忽略, 不影响图片本身 */
+	CHECK(parse_(&d, "![a](u){foo=1}"));
+	CHECK(d.blocks[0].type == MD_BLOCK_IMAGE);
+	CHECK(d.blocks[0].imgW == 0 && d.blocks[0].imgH == 0);
+	MdDoc_Shutdown(&d);
 }
 
 static void test_hash(void)
@@ -656,6 +697,101 @@ static void test_hash(void)
 	CHECK(parse_(&a, "# h"));
 	CHECK(a.blocks[0].hash != 0);
 	MdDoc_Shutdown(&a);
+}
+
+static void test_math(void)
+{
+	MdDoc d;
+
+	CHECK(parse_(&d, "a $x^2 + y$ b"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_PARAGRAPH);
+	{
+		const MdBlock *b = &d.blocks[0];
+		CHECK(b->mathCount == 1);
+		CHECK(wstr_eq(b->text16, L"a x^2 + y b"));
+		if (b->mathCount == 1) {
+			CHECK(b->maths[0].start == 2 && b->maths[0].len == 7);
+			CHECK(b->maths[0].srcLen == 7);
+			CHECK(strcmp(MdDoc_Url(&d, b->maths[0].srcOff), "x^2 + y") == 0);
+		}
+	}
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "a \\(b+c\\) d"));
+	CHECK(d.count == 1);
+	{
+		const MdBlock *b = &d.blocks[0];
+		CHECK(b->mathCount == 1 && wstr_eq(b->text16, L"a b+c d"));
+		if (b->mathCount == 1)
+			CHECK(strcmp(MdDoc_Url(&d, b->maths[0].srcOff), "b+c") == 0);
+	}
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "# $e=mc^2$"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_HEADING);
+	CHECK(d.blocks[0].mathCount == 1);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "costs $5 and $6"));
+	{
+		const MdBlock *b = &d.blocks[0];
+		CHECK(b->mathCount == 0);
+		CHECK(wstr_eq(b->text16, L"costs $5 and $6"));
+	}
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "esc \\$5 and \\$6"));
+	CHECK(d.blocks[0].mathCount == 0);
+	CHECK(wstr_eq(d.blocks[0].text16, L"esc $5 and $6"));
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "code `$x$` end"));
+	CHECK(d.blocks[0].mathCount == 0);
+	CHECK(block_has_style(&d.blocks[0], MD_R_CODE));
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "$$a^2+b^2$$"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_MATH);
+	CHECK(d.blocks[0].mathLen == 7);
+	CHECK(strcmp(MdDoc_Url(&d, d.blocks[0].mathOff), "a^2+b^2") == 0);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "$$\n\\frac{a}{b}\n$$"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_MATH);
+	CHECK(strcmp(MdDoc_Url(&d, d.blocks[0].mathOff), "\\frac{a}{b}") == 0);
+	CHECK(d.srcLen > 0);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "\\[\nx=1\n\\]"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_MATH);
+	CHECK(strcmp(MdDoc_Url(&d, d.blocks[0].mathOff), "x=1") == 0);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "before\n$$\nx=1\n$$\nafter"));
+	CHECK(d.count == 3);
+	CHECK(d.blocks[1].type == MD_BLOCK_MATH);
+	CHECK(d.blocks[0].type == MD_BLOCK_PARAGRAPH);
+	CHECK(d.blocks[2].type == MD_BLOCK_PARAGRAPH);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "$$unclosed"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_PARAGRAPH);
+	CHECK(wstr_eq(d.blocks[0].text16, L"$$unclosed"));
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "```\n$x$\n$$y$$\n```"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_CODE);
+	CHECK(d.blocks[0].mathCount == 0);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "x $a$ y"));
+	{
+		uint32_t h1 = d.blocks[0].hash;
+		MdDoc_Shutdown(&d);
+		CHECK(parse_(&d, "x $b$ y"));
+		CHECK(d.blocks[0].hash != h1);
+	}
+	MdDoc_Shutdown(&d);
 }
 
 static void test_robust(void)
@@ -738,6 +874,7 @@ void __stdcall startup(void)
 	test_inline();
 	test_links_refs();
 	test_images();
+	test_math();
 	test_hash();
 	test_robust();
 
