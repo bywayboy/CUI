@@ -6,11 +6,15 @@
  */
 #include "net/net_base.h"
 #include "net/ui_net.h"
+#include "net/ui_ws_server.h"
 #include "log.h"
 
 int sprintf(char *buf, const char *fmt, ...);
 size_t strlen(const char *s);
 void *memset(void *d, int c, size_t n);
+void *memcpy(void *d, const void *s, size_t n);
+int memcmp(const void *a, const void *b, size_t n);
+int strcmp(const char *a, const char *b);
 
 static int g_pass, g_fail;
 
@@ -439,6 +443,542 @@ static void test_net_live(void)
 	out_("--- live tests done ---\n");
 }
 
+/* ── 本机 WebSocket 服务端测试 ─────────────────────────────────────── */
+
+static void tcopy_(char *d, int cap, const char *s)
+{
+	int n = s ? (int)strlen(s) : 0;
+	if (n > cap - 1) n = cap - 1;
+	if (n > 0) memcpy(d, s, (size_t)n);
+	d[n] = '\0';
+}
+
+typedef struct SrvT {
+	volatile int listening;
+	volatile int port;
+	volatile int errors;
+	volatile int opens;
+	volatile int msgs;
+	volatile int closes;
+	int lastOp;
+	int lastLen;
+	char last[1024];
+	void *conn;
+	int closeCode;
+	char path[64];
+	char peer[48];
+	char proto[48];
+	char err[96];
+} SrvT;
+
+typedef struct CliT {
+	volatile int open;
+	volatile int closed;
+	volatile int msgs;
+	int lastOp;
+	int lastLen;
+	int closeCode;
+	unsigned char bin[1024];
+} CliT;
+
+static void srv_on_listening_(void *u, int port)
+{
+	SrvT *s = (SrvT *)u;
+	s->port = port;
+	s->listening = 1;
+}
+
+static void srv_on_open_(void *u, UiWsConn *conn, const UiWsServerRequest *req)
+{
+	SrvT *s = (SrvT *)u;
+	s->opens++;
+	s->conn = conn;
+	if (req) {
+		tcopy_(s->path, (int)sizeof(s->path), req->path);
+		tcopy_(s->peer, (int)sizeof(s->peer), req->peer);
+		tcopy_(s->proto, (int)sizeof(s->proto), req->protocol);
+	}
+}
+
+static void srv_on_msg_(void *u, UiWsConn *conn, const void *d, int n, int op)
+{
+	SrvT *s = (SrvT *)u;
+	int k = n < (int)sizeof(s->last) ? n : (int)sizeof(s->last);
+	s->msgs++;
+	s->lastOp = op;
+	s->lastLen = n;
+	if (k > 0) memcpy(s->last, d, (size_t)k);
+	UiWsServer_Send(conn, d, n, op);
+}
+
+static void srv_on_close_(void *u, UiWsConn *conn, int code, const char *reason)
+{
+	SrvT *s = (SrvT *)u;
+	(void)conn;
+	(void)reason;
+	s->closes++;
+	s->closeCode = code;
+	s->conn = NULL;
+}
+
+static void srv_on_error_(void *u, int err, const char *msg)
+{
+	SrvT *s = (SrvT *)u;
+	s->errors++;
+	s->port = err;
+	tcopy_(s->err, (int)sizeof(s->err), msg);
+}
+
+static void cli_on_open_(void *u) { ((CliT *)u)->open = 1; }
+
+static void cli_on_msg_(void *u, const void *d, int n, int op)
+{
+	CliT *c = (CliT *)u;
+	int k = n < (int)sizeof(c->bin) ? n : (int)sizeof(c->bin);
+	c->msgs++;
+	c->lastOp = op;
+	c->lastLen = n;
+	if (k > 0) memcpy(c->bin, d, (size_t)k);
+}
+
+static void cli_on_close_(void *u, int code, const char *reason)
+{
+	CliT *c = (CliT *)u;
+	(void)reason;
+	c->closeCode = code;
+	c->closed = 1;
+}
+
+static void srv_cfg_(UiWsServerConfig *c, const char *path)
+{
+	memset(c, 0, sizeof(*c));
+	c->bindHost = "127.0.0.1";
+	c->port = 0;
+	c->path = path;
+	c->subprotocols = "chat,superchat";
+	c->maxConnections = 16;
+	c->maxMessageSize = 1024 * 1024;
+	c->handshakeTimeoutMs = 5000;
+}
+
+static void srv_cb_(UiWsServerCallbacks *cb, SrvT *s)
+{
+	memset(cb, 0, sizeof(*cb));
+	cb->listening = srv_on_listening_;
+	cb->open = srv_on_open_;
+	cb->message = srv_on_msg_;
+	cb->close = srv_on_close_;
+	cb->error = srv_on_error_;
+	(void)s;
+}
+
+static void test_ws_server_api(void)
+{
+	UiNetConfig ncfg;
+	UiNet *net;
+	UiWsServerConfig sc;
+	UiWsServerCallbacks cb;
+	UiWsOptions o;
+	UiWsCallbacks wcb;
+	SrvT S;
+	CliT C1, C2;
+	UiWsServer *srv;
+	void *w1, *w2;
+	char url[128];
+	unsigned char bin[8];
+	int i;
+
+	memset(&ncfg, 0, sizeof(ncfg));
+	net = UiNet_Create(&ncfg);
+	CHECK(net != NULL);
+	if (!net) return;
+
+	memset(&S, 0, sizeof(S));
+	memset(&C1, 0, sizeof(C1));
+	memset(&C2, 0, sizeof(C2));
+	srv_cfg_(&sc, "/ws");
+	srv_cb_(&cb, &S);
+	srv = UiWsServer_Create(net, &sc, &cb, &S);
+	CHECK(srv != NULL);
+	if (!srv) { UiNet_Destroy(net); return; }
+	CHECK(S.listening == 1);
+	CHECK(UiWsServer_Port(srv) > 0);
+	CHECK(UiWsServer_State(srv) == UI_WS_SRV_LISTENING);
+
+	memset(&o, 0, sizeof(o));
+	o.autoReconnect = 0;
+	o.pingIntervalMs = 0;
+	o.handshakeTimeoutMs = 5000;
+	o.extraHeaders = "Sec-WebSocket-Protocol: chat\r\n";
+	memset(&wcb, 0, sizeof(wcb));
+	wcb.open = cli_on_open_;
+	wcb.message = cli_on_msg_;
+	wcb.close = cli_on_close_;
+
+	sprintf(url, "ws://127.0.0.1:%d/ws", UiWsServer_Port(srv));
+	w1 = UiWs_Open(net, url, &o, &wcb, &C1);
+	CHECK(w1 != NULL);
+	CHECK(live_wait(&C1.open, 5000));
+	CHECK(live_wait(&S.opens, 5000));
+	CHECK(strcmp(S.path, "/ws") == 0);
+	CHECK(strcmp(S.proto, "chat") == 0);
+	CHECK(S.peer[0] != '\0');
+	CHECK(UiWsServer_ConnCount(srv) == 1);
+	CHECK(strcmp(UiWsConn_Path(S.conn), "/ws") == 0);
+	CHECK(strcmp(UiWsConn_Protocol(S.conn), "chat") == 0);
+	CHECK(strcmp(UiWsConn_Peer(S.conn), S.peer) == 0);
+
+	CHECK(UiWs_Send(w1, "hello", 5, 1) == 1);
+	CHECK(live_wait(&C1.msgs, 5000));
+	CHECK(C1.lastOp == 1 && C1.lastLen == 5 && memcmp(C1.bin, "hello", 5) == 0);
+	CHECK(S.msgs >= 1 && S.lastOp == 1 && S.lastLen == 5);
+
+	for (i = 0; i < 8; i++) bin[i] = (unsigned char)(i == 4 ? 0 : i * 31);
+	bin[4] = 0;
+	CHECK(UiWs_Send(w1, bin, 8, 2) == 1);
+	{
+		uint64_t t0 = GetTickCount64();
+		while (C1.msgs < 2 && GetTickCount64() - t0 < 5000)
+			MsgWaitForMultipleObjectsEx(0, NULL, 50, QS_ALLINPUT, MWMO_ALERTABLE);
+	}
+	CHECK(C1.msgs >= 2);
+	CHECK(C1.lastOp == 2 && C1.lastLen == 8 && memcmp(C1.bin, bin, 8) == 0);
+
+	CHECK(UiWsServer_Broadcast(srv, "bc", 2, 1) == 1);
+	{
+		uint64_t t0 = GetTickCount64();
+		while (C1.msgs < 3 && GetTickCount64() - t0 < 5000)
+			MsgWaitForMultipleObjectsEx(0, NULL, 50, QS_ALLINPUT, MWMO_ALERTABLE);
+	}
+	CHECK(C1.msgs >= 3 && C1.lastLen == 2 && memcmp(C1.bin, "bc", 2) == 0);
+
+	/* 第二个连接: 服务端主动关闭 */
+	w2 = UiWs_Open(net, url, &o, &wcb, &C2);
+	CHECK(w2 != NULL);
+	CHECK(live_wait(&C2.open, 5000));
+	{
+		uint64_t t0 = GetTickCount64();
+		while (S.opens < 2 && GetTickCount64() - t0 < 5000)
+			MsgWaitForMultipleObjectsEx(0, NULL, 50, QS_ALLINPUT, MWMO_ALERTABLE);
+	}
+	CHECK(S.opens >= 2);
+	CHECK(UiWsServer_ConnCount(srv) == 2);
+	UiWsServer_Close(S.conn, 1001, "srv bye");
+	CHECK(live_wait(&C2.closed, 5000));
+	CHECK(C2.closeCode == 1001);
+	{
+		uint64_t t0 = GetTickCount64();
+		while (UiWsServer_ConnCount(srv) > 1 && GetTickCount64() - t0 < 5000)
+			MsgWaitForMultipleObjectsEx(0, NULL, 50, QS_ALLINPUT, MWMO_ALERTABLE);
+	}
+	CHECK(UiWsServer_ConnCount(srv) == 1);
+
+	UiWs_Close(w1, 1000, "bye");
+	CHECK(live_wait(&C1.closed, 5000));
+	CHECK(C1.closeCode == 1000);
+	{
+		uint64_t t0 = GetTickCount64();
+		while (UiWsServer_ConnCount(srv) > 0 && GetTickCount64() - t0 < 5000)
+			MsgWaitForMultipleObjectsEx(0, NULL, 50, QS_ALLINPUT, MWMO_ALERTABLE);
+	}
+	CHECK(UiWsServer_ConnCount(srv) == 0);
+
+	UiWsServer_Destroy(srv);
+	UiNet_Destroy(net);
+}
+
+/* ── 原始 socket 辅助 ──────────────────────────────────────────────── */
+
+static SOCKET raw_connect_(int port)
+{
+	SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	struct sockaddr_in a;
+	DWORD tv = 4000;
+
+	if (s == INVALID_SOCKET) return INVALID_SOCKET;
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+	setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof(tv));
+	memset(&a, 0, sizeof(a));
+	a.sin_family = AF_INET;
+	a.sin_port = htons((u_short)port);
+	a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (connect(s, (struct sockaddr *)&a, sizeof(a)) != 0) {
+		closesocket(s);
+		return INVALID_SOCKET;
+	}
+	return s;
+}
+
+static int raw_rx_(SOCKET s, void *buf, int n)
+{
+	char *p = (char *)buf;
+	int got = 0;
+	while (got < n) {
+		int r = recv(s, p + got, n - got, 0);
+		if (r <= 0) return 0;
+		got += r;
+	}
+	return 1;
+}
+
+static SOCKET raw_upgrade_(int port, const char *path)
+{
+	SOCKET s = raw_connect_(port);
+	char req[512];
+	char buf[512];
+	int n = 0, r, len;
+
+	if (s == INVALID_SOCKET) return s;
+	len = sprintf(req,
+		"GET %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n"
+		"Upgrade: websocket\r\nConnection: Upgrade\r\n"
+		"Sec-WebSocket-Version: 13\r\n"
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+		path, port);
+	if (send(s, req, len, 0) != len) { closesocket(s); return INVALID_SOCKET; }
+	while (n < (int)sizeof(buf) - 1) {
+		r = recv(s, buf + n, 1, 0);
+		if (r <= 0) break;
+		n += r;
+		if (n >= 4 && memcmp(buf + n - 4, "\r\n\r\n", 4) == 0) break;
+	}
+	buf[n] = '\0';
+	if (!Net_MemFind(buf, n, "HTTP/1.1 101", 12)) {
+		closesocket(s);
+		return INVALID_SOCKET;
+	}
+	return s;
+}
+
+static int raw_http_probe_(int port, const char *path, const char *ver,
+	const char *expect)
+{
+	SOCKET s = raw_connect_(port);
+	char req[512];
+	char buf[1024];
+	int n = 0, r, len, found = 0;
+
+	if (s == INVALID_SOCKET) return 0;
+	len = sprintf(req,
+		"GET %s HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+		"Upgrade: websocket\r\nConnection: Upgrade\r\n"
+		"Sec-WebSocket-Version: %s\r\n"
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+		path, ver);
+	if (send(s, req, len, 0) != len) { closesocket(s); return 0; }
+	for (;;) {
+		if (n >= (int)sizeof(buf) - 1) break;
+		r = recv(s, buf + n, 1, 0);
+		if (r <= 0) break;
+		n += r;
+		if (n >= 4 && memcmp(buf + n - 4, "\r\n\r\n", 4) == 0) break;
+	}
+	buf[n] = '\0';
+	if (Net_MemFind(buf, n, expect, (int)strlen(expect))) found = 1;
+	closesocket(s);
+	return found;
+}
+
+static int raw_frame_send_(SOCKET s, int opcode, int fin, const void *d, int len)
+{
+	BYTE h[14];
+	BYTE mask[4] = { 0x11, 0x22, 0x33, 0x44 };
+	char body[512];
+	int hl = 2, i;
+
+	if (len < 0 || len > (int)sizeof(body)) return 0;
+	h[0] = (BYTE)((fin ? 0x80 : 0) | (opcode & 0x0F));
+	if (len < 126) {
+		h[1] = (BYTE)(0x80 | len);
+	} else {
+		h[1] = 0x80 | 126;
+		h[2] = (BYTE)((len >> 8) & 0xFF);
+		h[3] = (BYTE)(len & 0xFF);
+		hl = 4;
+	}
+	memcpy(h + hl, mask, 4);
+	hl += 4;
+	if (send(s, (const char *)h, hl, 0) != hl) return 0;
+	{
+		const BYTE *p = (const BYTE *)d;
+		for (i = 0; i < len; i++) body[i] = (char)(p[i] ^ mask[i & 3]);
+	}
+	return len == 0 || send(s, body, len, 0) == len;
+}
+
+static int raw_frame_recv_(SOCKET s, char *payload, int cap, int *op, int *fin)
+{
+	BYTE h[2], m[4];
+	uint64_t len;
+	int i;
+
+	if (!raw_rx_(s, h, 2)) return 0;
+	*fin = (h[0] & 0x80) ? 1 : 0;
+	*op = h[0] & 0x0F;
+	len = h[1] & 0x7F;
+	if (len == 126) {
+		BYTE e[2];
+		if (!raw_rx_(s, e, 2)) return 0;
+		len = ((uint64_t)e[0] << 8) | e[1];
+	} else if (len == 127) {
+		BYTE e[8];
+		if (!raw_rx_(s, e, 8)) return 0;
+		len = 0;
+		for (i = 0; i < 8; i++) len = (len << 8) | e[i];
+	}
+	if (h[1] & 0x80) {
+		if (!raw_rx_(s, m, 4)) return 0;
+	} else {
+		m[0] = m[1] = m[2] = m[3] = 0;
+	}
+	if (len > (uint64_t)cap) return 0;
+	if (len > 0 && !raw_rx_(s, payload, (int)len)) return 0;
+	if (h[1] & 0x80) {
+		for (i = 0; i < (int)len; i++) payload[i] ^= (char)m[i & 3];
+	}
+	return 1;
+}
+
+static void test_ws_server_http_reject(void)
+{
+	UiNetConfig ncfg;
+	UiNet *net;
+	UiWsServerConfig sc;
+	UiWsServerCallbacks cb;
+	SrvT S;
+	UiWsServer *srv;
+
+	memset(&ncfg, 0, sizeof(ncfg));
+	net = UiNet_Create(&ncfg);
+	CHECK(net != NULL);
+	if (!net) return;
+	memset(&S, 0, sizeof(S));
+	srv_cfg_(&sc, "/only");
+	srv_cb_(&cb, &S);
+	srv = UiWsServer_Create(net, &sc, &cb, &S);
+	CHECK(srv != NULL);
+	if (!srv) { UiNet_Destroy(net); return; }
+	CHECK(raw_http_probe_(UiWsServer_Port(srv), "/other", "13", "404") == 1);
+	CHECK(raw_http_probe_(UiWsServer_Port(srv), "/only", "8", "426") == 1);
+	CHECK(raw_http_probe_(UiWsServer_Port(srv), "/only", "13", "101") == 1);
+	UiWsServer_Destroy(srv);
+	UiNet_Destroy(net);
+}
+
+static void test_ws_server_raw(void)
+{
+	UiNetConfig ncfg;
+	UiNet *net;
+	UiWsServerConfig sc;
+	UiWsServerCallbacks cb;
+	SrvT S;
+	UiWsServer *srv;
+	SOCKET s;
+	char pay[256];
+	int op = 0, fin = 0;
+	BYTE closePay[2];
+
+	memset(&ncfg, 0, sizeof(ncfg));
+	net = UiNet_Create(&ncfg);
+	CHECK(net != NULL);
+	if (!net) return;
+	memset(&S, 0, sizeof(S));
+	srv_cfg_(&sc, "/raw");
+	srv_cb_(&cb, &S);
+	srv = UiWsServer_Create(net, &sc, &cb, &S);
+	CHECK(srv != NULL);
+	if (!srv) { UiNet_Destroy(net); return; }
+
+	/* raw 握手时未带子协议, 所以 protocol 应为空 */
+	s = raw_upgrade_(UiWsServer_Port(srv), "/raw");
+	CHECK(s != INVALID_SOCKET);
+	if (s != INVALID_SOCKET) {
+		CHECK(live_wait(&S.opens, 5000));
+		CHECK(S.proto[0] == '\0');
+		CHECK(raw_frame_send_(s, 1, 0, "he", 2) == 1);
+		CHECK(raw_frame_send_(s, 0, 1, "llo", 3) == 1);
+		CHECK(raw_frame_recv_(s, pay, (int)sizeof(pay), &op, &fin) == 1);
+		CHECK(op == 1 && fin == 1);
+		CHECK(memcmp(pay, "hello", 5) == 0);
+		CHECK(raw_frame_send_(s, 9, 1, "px", 2) == 1);
+		CHECK(raw_frame_recv_(s, pay, (int)sizeof(pay), &op, &fin) == 1);
+		CHECK(op == 10 && memcmp(pay, "px", 2) == 0);
+		closePay[0] = 0x03; closePay[1] = 0xE8;   /* 1000 */
+		CHECK(raw_frame_send_(s, 8, 1, closePay, 2) == 1);
+		CHECK(raw_frame_recv_(s, pay, (int)sizeof(pay), &op, &fin) == 1);
+		CHECK(op == 8);
+		closesocket(s);
+		CHECK(live_wait(&S.closes, 5000));
+		CHECK(S.closeCode == 1000);
+	}
+	UiWsServer_Destroy(srv);
+	UiNet_Destroy(net);
+}
+
+static void test_ws_server_wss(void)
+{
+	UiNetConfig ncfg;
+	UiNet *net;
+	UiWsServerConfig sc;
+	UiWsServerCallbacks cb;
+	UiWsOptions o;
+	UiWsCallbacks wcb;
+	SrvT S;
+	CliT C;
+	UiWsServer *srv;
+	void *w;
+	char url[128];
+
+	memset(&ncfg, 0, sizeof(ncfg));
+	ncfg.insecure = 1;
+	ncfg.connectTimeoutMs = 5000;
+	net = UiNet_Create(&ncfg);
+	CHECK(net != NULL);
+	if (!net) return;
+	memset(&S, 0, sizeof(S));
+	memset(&C, 0, sizeof(C));
+	srv_cfg_(&sc, "/ws");
+	if (GetFileAttributesA("build\\test_wss.pfx") != INVALID_FILE_ATTRIBUTES) {
+		sc.certPath = "build\\test_wss.pfx";
+		sc.certPassword = "cui-test";
+	} else {
+		sc.certSubject = "CN=localhost-cui-test";
+	}
+	srv_cb_(&cb, &S);
+	srv = UiWsServer_Create(net, &sc, &cb, &S);
+	if (!srv) {
+		out_("wss skipped (test cert not found)\n");
+		UiNet_Destroy(net);
+		return;
+	}
+	CHECK(S.listening == 1);
+
+	memset(&o, 0, sizeof(o));
+	o.autoReconnect = 0;
+	o.pingIntervalMs = 0;
+	o.handshakeTimeoutMs = 8000;
+	memset(&wcb, 0, sizeof(wcb));
+	wcb.open = cli_on_open_;
+	wcb.message = cli_on_msg_;
+	wcb.close = cli_on_close_;
+	sprintf(url, "wss://127.0.0.1:%d/ws", UiWsServer_Port(srv));
+	w = UiWs_Open(net, url, &o, &wcb, &C);
+	CHECK(w != NULL);
+	CHECK(live_wait(&C.open, 8000));
+	CHECK(live_wait(&S.opens, 8000));
+	if (C.open) {
+		CHECK(UiWs_Send(w, "tls", 3, 1) == 1);
+		CHECK(live_wait(&C.msgs, 5000));
+		CHECK(C.lastLen == 3 && memcmp(C.bin, "tls", 3) == 0);
+		CHECK(strcmp(UiWsConn_Protocol(S.conn), "") == 0);
+	}
+	UiWs_Close(w, 1000, "bye");
+	CHECK(live_wait(&C.closed, 5000));
+	CHECK(live_wait(&S.closes, 5000));
+	UiWsServer_Destroy(srv);
+	UiNet_Destroy(net);
+}
+
 void __stdcall startup(void)
 {
 	char line[160];
@@ -448,6 +988,10 @@ void __stdcall startup(void)
 	test_buf();
 	test_str();
 	test_net_lifecycle();
+	test_ws_server_api();
+	test_ws_server_http_reject();
+	test_ws_server_raw();
+	test_ws_server_wss();
 	if (GetEnvironmentVariableA("CUI_NET_LIVE", NULL, 0) > 0)
 		test_net_live();
 

@@ -29,7 +29,7 @@ IF ERRORLEVEL 1 (
 IF NOT EXIST bin MKDIR bin
 IF NOT EXIST build MKDIR build
 IF NOT EXIST build\obj MKDIR build\obj
-del /q build\obj\*.obj bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe bin\cui_net.exe bin\cui_net_test.exe bin\cui_image.exe bin\cui_gfx_rich_test.exe bin\cui_md_test.exe bin\cui_md_ui_test.exe bin\cui_md_math_test.exe bin\cui_gfx_math_test.exe bin\cui_markdown.exe 2>nul
+del /q build\obj\*.obj bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe bin\cui_net.exe bin\cui_net_test.exe bin\cui_image.exe bin\cui_gfx_rich_test.exe bin\cui_md_test.exe bin\cui_md_ui_test.exe bin\cui_md_math_test.exe bin\cui_gfx_math_test.exe bin\cui_markdown.exe bin\cui_ws_server.exe 2>nul
 
 REM 自定义 D2D 效果的着色器: 离线编译成字节数组, 运行时不需要 d3dcompiler.dll
 SET "FXC=%WindowsSdkVerBinPath%x64\fxc.exe"
@@ -45,7 +45,7 @@ SET "CXXFLAGS=/nologo /c /std:c++17 /O1 /GS- /Gy /Gs32768 /W3 /utf-8 /wd4244 /wd
 SET "LIBS=kernel32.lib user32.lib gdi32.lib d2d1.lib dwrite.lib d3d11.lib dxgi.lib dcomp.lib ole32.lib advapi32.lib shell32.lib imm32.lib winmm.lib ws2_32.lib secur32.lib crypt32.lib bcrypt.lib iphlpapi.lib windowscodecs.lib"
 
 SET "OBJS="
-FOR %%F IN (src\edit.c src\log.c src\lib\crtstub.c src\lib\heap.c src\ui\ui_anim.c src\ui\ui_context.c src\ui\ui_layout.c src\ui\ui_frame.c src\ui\ui_timer.c src\ui\ui_ime.c src\ui\ui_paint.c src\ui\ui_theme.c src\ui\ui_widgets.c src\ui\ui_icon.c src\ui\ui_popup.c src\ui\ui_tooltip.c src\ui\ui_controls.c src\ui\ui_select.c src\ui\ui_menu.c src\ui\ui_dialog.c src\ui\ui_textarea.c src\ui\ui_button_group.c src\ui\ui_toast.c src\ui\ui_input.c src\ui\ui_app.c src\ui\ui_progress.c src\ui\ui_scroll.c src\ui\ui_tab.c src\ui\ui_datetime.c src\ui\ui_datepicker.c src\ui\ui_image.c src\net\net_base.c src\net\net_tcp.c src\net\net_dns.c src\net\net_tls.c src\net\net_http.c src\net\net_ws.c src\net\ui_net.c) DO (
+FOR %%F IN (src\edit.c src\log.c src\lib\crtstub.c src\lib\heap.c src\ui\ui_anim.c src\ui\ui_context.c src\ui\ui_layout.c src\ui\ui_frame.c src\ui\ui_timer.c src\ui\ui_ime.c src\ui\ui_paint.c src\ui\ui_theme.c src\ui\ui_widgets.c src\ui\ui_icon.c src\ui\ui_popup.c src\ui\ui_tooltip.c src\ui\ui_controls.c src\ui\ui_select.c src\ui\ui_menu.c src\ui\ui_dialog.c src\ui\ui_textarea.c src\ui\ui_button_group.c src\ui\ui_toast.c src\ui\ui_input.c src\ui\ui_app.c src\ui\ui_progress.c src\ui\ui_scroll.c src\ui\ui_tab.c src\ui\ui_datetime.c src\ui\ui_datepicker.c src\ui\ui_image.c src\net\net_base.c src\net\net_tcp.c src\net\net_dns.c src\net\net_tls.c src\net\net_http.c src\net\net_ws.c src\net\ui_net.c src\net\net_ws_server.c src\net\net_tls_server.c) DO (
     ECHO [cui] %%F
     cl %CFLAGS% "%%F" /Fobuild\obj\%%~nF.obj || GOTO :err
     SET "OBJS=!OBJS! build\obj\%%~nF.obj"
@@ -99,6 +99,8 @@ ECHO [cui] samples\net.c
 cl %CFLAGS% samples\net.c /Fobuild\obj\net.obj || GOTO :err
 ECHO [cui] samples\image.c
 cl %CFLAGS% samples\image.c /Fobuild\obj\image.obj || GOTO :err
+ECHO [cui] samples\ws_server.c
+cl %CFLAGS% samples\ws_server.c /Fobuild\obj\ws_server.obj || GOTO :err
 ECHO [cui] samples\markdown.c (optional)
 cl %CFLAGS% samples\markdown.c /Fobuild\obj\markdown.obj || GOTO :err
 ECHO [cui] tests\net_test.c
@@ -170,6 +172,10 @@ ECHO [cui] link image
 link /nologo /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:startup /MANIFEST:NO ^
     /OUT:bin\cui_image.exe !OBJS! build\obj\image.obj %LIBS% || GOTO :err
 
+ECHO [cui] link ws_server
+link /nologo /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:startup /MANIFEST:NO ^
+    /OUT:bin\cui_ws_server.exe !OBJS! build\obj\ws_server.obj %LIBS% || GOTO :err
+
 ECHO [cui] link markdown (optional module)
 link /nologo /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:startup /MANIFEST:NO ^
     /OUT:bin\cui_markdown.exe !OBJS! build\obj\markdown.obj build\obj\ui_md.obj build\obj\ui_md_parse.obj build\obj\gfx_rich.obj build\obj\gfx_math.obj build\obj\md_math.obj %LIBS% comdlg32.lib || GOTO :err
@@ -197,7 +203,7 @@ link /nologo /SUBSYSTEM:CONSOLE /OPT:REF /OPT:ICF /NODEFAULTLIB /Brepro /ENTRY:s
     /OUT:bin\cui_md_math_test.exe !OBJS! build\obj\md_math_test.obj build\obj\md_math.obj %LIBS% || GOTO :err
 
 ECHO.
-FOR %%E IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe bin\cui_net.exe bin\cui_net_test.exe bin\cui_image.exe bin\cui_gfx_rich_test.exe bin\cui_md_test.exe bin\cui_md_ui_test.exe bin\cui_md_math_test.exe bin\cui_gfx_math_test.exe bin\cui_markdown.exe) DO (
+FOR %%E IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe bin\cui_net.exe bin\cui_net_test.exe bin\cui_image.exe bin\cui_ws_server.exe bin\cui_gfx_rich_test.exe bin\cui_md_test.exe bin\cui_md_ui_test.exe bin\cui_md_math_test.exe bin\cui_gfx_math_test.exe bin\cui_markdown.exe) DO (
     dumpbin /imports %%E | findstr /i "msvcrt ucrtbase api-ms-win-crt" >NUL
     IF ERRORLEVEL 1 (
         ECHO [OK] no CRT dependency: %%E
@@ -207,7 +213,7 @@ FOR %%E IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_mu
     )
 )
 ECHO === BUILD OK ===
-FOR %%I IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe bin\cui_net.exe bin\cui_net_test.exe bin\cui_image.exe bin\cui_gfx_rich_test.exe bin\cui_md_test.exe bin\cui_md_ui_test.exe bin\cui_markdown.exe) DO ECHO Output: %%~fI (%%~zI bytes)
+FOR %%I IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe bin\cui_net.exe bin\cui_net_test.exe bin\cui_image.exe bin\cui_ws_server.exe bin\cui_gfx_rich_test.exe bin\cui_md_test.exe bin\cui_md_ui_test.exe bin\cui_markdown.exe) DO ECHO Output: %%~fI (%%~zI bytes)
 EXIT /B 0
 
 :err

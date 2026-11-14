@@ -324,10 +324,73 @@ void net_tls_handshake_input(NetConn *conn)
 
 /* ── 解密 ───────────────────────────────────────────────────────────── */
 
+/* 客户端/服务端共用: 把 cipher 中完整记录解密并追加到 plain.
+ * 返回 0=成功/需要更多密文, 否则 UiNetErr. */
+int net_tls_decrypt_buf(NetTls *t, NetBuf *cipher, NetBuf *plain)
+{
+	int guard = 0;
+
+	if (!t || !cipher || !plain || !t->established) return UI_NET_E_TLS;
+	while (cipher->len > 0 && guard++ < 64) {
+		SecBuffer bufs[4];
+		SecBufferDesc d;
+		SECURITY_STATUS st;
+		int i, dataOff = -1, dataLen = 0, extraOff = -1, extraLen = 0;
+
+		memset(bufs, 0, sizeof(bufs));
+		bufs[0].BufferType = SECBUFFER_DATA;
+		bufs[0].pvBuffer = cipher->p;
+		bufs[0].cbBuffer = (unsigned long)cipher->len;
+		bufs[1].BufferType = SECBUFFER_EMPTY;
+		bufs[2].BufferType = SECBUFFER_EMPTY;
+		bufs[3].BufferType = SECBUFFER_EMPTY;
+		d.ulVersion = SECBUFFER_VERSION;
+		d.cBuffers = 4;
+		d.pBuffers = bufs;
+
+		st = DecryptMessage(&t->ctx, &d, 0, NULL);
+		if (st == SEC_E_INCOMPLETE_MESSAGE) break;
+		if (st == SEC_I_CONTEXT_EXPIRED) return UI_NET_E_CLOSED; /* close_notify */
+		if (st == SEC_I_RENEGOTIATE) {
+			Log_Write("[tls] renegotiate not supported");
+			return UI_NET_E_TLS;
+		}
+		if (st != SEC_E_OK) {
+			Log_Write("[tls] decrypt failed 0x%x", (unsigned)st);
+			return UI_NET_E_CLOSED;
+		}
+
+		for (i = 0; i < 4; i++) {
+			if (bufs[i].BufferType == SECBUFFER_DATA && dataOff < 0) {
+				dataOff = (int)((char *)bufs[i].pvBuffer - cipher->p);
+				dataLen = (int)bufs[i].cbBuffer;
+			}
+			if (bufs[i].BufferType == SECBUFFER_EXTRA) {
+				extraOff = (int)((char *)bufs[i].pvBuffer - cipher->p);
+				extraLen = (int)bufs[i].cbBuffer;
+			}
+		}
+		if (dataOff >= 0 && dataLen > 0) {
+			if (!NetBuf_Append(plain, cipher->p + dataOff, dataLen))
+				return UI_NET_E_OOM;
+		}
+
+		if (extraLen > 0 && extraOff >= 0) {
+			memmove(cipher->p, cipher->p + extraOff, (size_t)extraLen);
+			cipher->len = extraLen;
+			cipher->p[extraLen] = '\0';
+		} else {
+			cipher->len = 0;
+			if (cipher->p) cipher->p[0] = '\0';
+		}
+	}
+	return 0;
+}
+
 void net_tls_on_cipher(NetConn *conn)
 {
 	NetTls *t;
-	int guard = 0;
+	int err;
 
 	if (!conn || !conn->tls || conn->dead) return;
 	t = conn->tls;
@@ -338,63 +401,8 @@ void net_tls_on_cipher(NetConn *conn)
 		NetBuf_Clear(&conn->in);
 	}
 
-	while (t->cipher.len > 0 && guard++ < 64) {
-		SecBuffer bufs[4];
-		SecBufferDesc d;
-		SECURITY_STATUS st;
-		int i, dataOff = -1, dataLen = 0, extraOff = -1, extraLen = 0;
-
-		memset(bufs, 0, sizeof(bufs));
-		bufs[0].BufferType = SECBUFFER_DATA;
-		bufs[0].pvBuffer = t->cipher.p;
-		bufs[0].cbBuffer = (unsigned long)t->cipher.len;
-		bufs[1].BufferType = SECBUFFER_EMPTY;
-		bufs[2].BufferType = SECBUFFER_EMPTY;
-		bufs[3].BufferType = SECBUFFER_EMPTY;
-		d.ulVersion = SECBUFFER_VERSION;
-		d.cBuffers = 4;
-		d.pBuffers = bufs;
-
-		st = DecryptMessage(&t->ctx, &d, 0, NULL);
-		if (st == SEC_E_INCOMPLETE_MESSAGE) break;
-		if (st == SEC_I_CONTEXT_EXPIRED) {        /* close_notify */
-			net_conn_fail(conn, UI_NET_E_CLOSED);
-			return;
-		}
-		if (st == SEC_I_RENEGOTIATE) {
-			Log_Write("[tls] renegotiate not supported");
-			net_conn_fail(conn, UI_NET_E_TLS);
-			return;
-		}
-		if (st != SEC_E_OK) {
-			Log_Write("[tls] decrypt failed 0x%x", (unsigned)st);
-			net_conn_fail(conn, UI_NET_E_CLOSED);
-			return;
-		}
-
-		for (i = 0; i < 4; i++) {
-			if (bufs[i].BufferType == SECBUFFER_DATA && dataOff < 0) {
-				dataOff = (int)((char *)bufs[i].pvBuffer - t->cipher.p);
-				dataLen = (int)bufs[i].cbBuffer;
-			}
-			if (bufs[i].BufferType == SECBUFFER_EXTRA) {
-				extraOff = (int)((char *)bufs[i].pvBuffer - t->cipher.p);
-				extraLen = (int)bufs[i].cbBuffer;
-			}
-		}
-		if (dataOff >= 0 && dataLen > 0)
-			NetBuf_Append(&conn->plain, t->cipher.p + dataOff, dataLen);
-
-		if (extraLen > 0 && extraOff >= 0) {
-			memmove(t->cipher.p, t->cipher.p + extraOff, (size_t)extraLen);
-			t->cipher.len = extraLen;
-			t->cipher.p[extraLen] = '\0';
-		} else {
-			t->cipher.len = 0;
-			if (t->cipher.p) t->cipher.p[0] = '\0';
-		}
-	}
-
+	err = net_tls_decrypt_buf(t, &t->cipher, &conn->plain);
+	if (err) { net_conn_fail(conn, err); return; }
 	if (conn->dead || conn->plain.len <= 0) return;
 	if (conn->kind == NET_K_HTTP)
 		net_http_on_plain(conn, conn->plain.p, conn->plain.len);
@@ -404,14 +412,12 @@ void net_tls_on_cipher(NetConn *conn)
 
 /* ── 加密 ───────────────────────────────────────────────────────────── */
 
-int net_tls_encrypt(NetConn *conn, const void *data, int len)
+int net_tls_encrypt_buf(NetTls *t, NetBuf *out, const void *data, int len)
 {
-	NetTls *t;
 	const char *p = (const char *)data;
 	int remain = len;
 
-	if (!conn || !conn->tls || !conn->tls->established) return 0;
-	t = conn->tls;
+	if (!t || !out || !t->established) return 0;
 	if (t->maxMessage == 0) t->maxMessage = 16384;
 
 	while (remain > 0) {
@@ -448,7 +454,7 @@ int net_tls_encrypt(NetConn *conn, const void *data, int len)
 		}
 		{
 			int n = (int)(bufs[0].cbBuffer + bufs[1].cbBuffer + bufs[2].cbBuffer);
-			int ok = NetBuf_Append(&conn->out, buf, n);
+			int ok = NetBuf_Append(out, buf, n);
 			free(buf);
 			if (!ok) return 0;
 		}
@@ -456,4 +462,10 @@ int net_tls_encrypt(NetConn *conn, const void *data, int len)
 		remain -= chunk;
 	}
 	return 1;
+}
+
+int net_tls_encrypt(NetConn *conn, const void *data, int len)
+{
+	if (!conn || !conn->tls) return 0;
+	return net_tls_encrypt_buf(conn->tls, &conn->out, data, len);
 }

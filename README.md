@@ -72,12 +72,14 @@ CUI/
 │  ├─ textarea.c          多行文本：软换行/滚动/选择/IME/readonly
 │  ├─ datepicker.c        DatePicker 四模式 + ±30 天边界演示
 │  ├─ net.c               网络层：HTTP(S) / WebSocket(wss) / UiTimer
+│  ├─ ws_server.c         WebSocket 服务端：ws/wss / 回显 / 广播 / 连接日志
 │  └─ image.c             图片：URL / 本地文件 / 内存 + GPU loading
 ├─ tests/
 │  ├─ net_test.c          headless + 实网断言（CUI_NET_LIVE=1）
 │  ├─ net_server_http.ps1 本机 HTTP 测试服务器（18080，含 keep-alive）
 │  ├─ net_server_ws.ps1   本机 WS 回显（18081）
-│  └─ net_server_wss.ps1  本机 WSS 回显（18082，自签证书）
+│  ├─ net_server_wss.ps1  本机 WSS 回显（18082，自签证书）
+│  └─ gen_test_cert.ps1   生成 build\test_wss.pfx（WSS 服务端自测，用完即移出证书库）
 └─ src/
    ├─ demo.c              标准样例（UiApp 壳 + 组件，约 340 行）
    ├─ edit.c / edit.h     自绘单行编辑框 UiEdit（选区/剪贴板/滚动/IME 组合）
@@ -86,13 +88,16 @@ CUI/
    ├─ lib/heap.*          通用侵入式最小堆（IO 定时器 + UiTimer 共用）
    ├─ net/
    │  ├─ ui_net.h         公开 API：UiNet / UiHttp / UiWs / 错误码 / 配置
+   │  ├─ ui_ws_server.h   公开 API：UiWsServer / UiWsConn（ws/wss 服务端）
    │  ├─ ui_net.c         IO 线程 + IOCP + 命令队列 + APC 归位 + 关闭哨兵
    │  ├─ net_tcp.c        ConnectEx / 重叠收发 / 引用计数释放
    │  ├─ net_dns.c        自研 DNS：服务器发现 / hosts / A+AAAA / TC→TCP / 缓存
    │  ├─ net_tls.c        SChannel 握手 / 就地加解密 / 证书链+主机名校验 / pinning
+   │  ├─ net_tls_server.c SChannel 服务端：PFX/证书库凭据 + AcceptSecurityContext
    │  ├─ net_http.c       HTTP/1.1 / chunked / keep-alive 池 / 重定向 / 代理隧道
    │  ├─ net_ws.c         WS 握手 / 帧编解码 / 心跳 / 退避重连
-   │  └─ net_internal.h   内部结构（NetIo/NetConn/命令/事件）
+   │  ├─ net_ws_server.c  AcceptEx / Upgrade / 帧会话 / ping-pong / 广播 / 关闭握手
+   │  └─ net_internal.h   内部结构（NetIo/NetConn/NetSrv/命令/事件）
    ├─ gfx/
    │  ├─ gfx.h            后端无关 2D 接口（DIP 坐标 / 0xAARRGGBB）
    │  ├─ gfx_d2d.cpp      Direct2D + DWrite + D3D11/DComp 实现（ULW 回退）
@@ -151,6 +156,7 @@ bin\cui_overlays.exe    REM Select/Menu + Dialog/ConfirmDialog（含 TextArea �
 bin\cui_textarea.exe    REM 多行文本：软换行 / 滚动 / 选择 / IME
 bin\cui_datepicker.exe  REM DatePicker：日期 / 日期+时间 / 范围 / 范围+时间
 bin\cui_net.exe         REM 网络层：HTTP(S) / WS / WSS / UiTimer
+bin\cui_ws_server.exe   REM WebSocket 服务端：WS/WSS / 回显 / 广播
 bin\cui_net_test.exe    REM 网络层断言（CUI_NET_LIVE=1 跑实网，需先起 tests\net_server_*.ps1）
 bin\cui_image.exe       REM 图片：URL / 文件 / 内存 + GPU loading 动画
 ```
@@ -321,6 +327,8 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | `UiNet` | `UiNet_Create/Destroy` | App 持有；1 IO 线程 + IOCP + SChannel；GUI↔IO 用队列/APC，零锁 |
 | `UiHttp` | `UiHttp_Send/Cancel/Header` | HTTP/1.1 + HTTPS；chunked/重定向/keep-alive 池/代理；回调在 GUI 线程 |
 | `UiWs` | `UiWs_Open/Send/Close/State` | ws/wss；分片/心跳/指数退避重连；事件回调在 GUI 线程 |
+| `UiWsServer` | `UiWsServer_Create/Destroy/Port/State/ConnCount/Send/Broadcast/Close/CloseAll` | ws/wss 服务端；复用同一 IO 线程；回调在 GUI 线程；路径/子协议/证书(PFX 或证书库) |
+| `UiWsConn` | `UiWsConn_Path/Peer/Protocol` | 单连接元信息；close/error 回调返回后句柄失效 |
 | `UiTimer` | `UiTimer_Create/Destroy/After/Every/Cancel/WaitHandle/Dispatch` | GUI 定时器；`UiApp` 内嵌 `app->timer`，回调可安全失效 |
 | `UiNetConfig` | `connect/request/dns/timeout/idle/redirect/proxy/insecure/pinSha256/trace` | 0 字段用默认；`insecure` 仅调试 |
 | `UiImage` | `UiImage_Create/Destroy/SetContext/SetRect/SetFit/SetAnchor/SetBackground/SetProvider` | 应用持有；URL 走 `UiNet`，WIC 解码；留白/剪裁/拉伸/原始像素 + 3×3 锚点 + 留白底色；越界一律裁剪 |
@@ -541,14 +549,18 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   ±30 天越界禁用、小窗夹取、暗色主题；
   `ui_datetime` headless 1164 断言 0 失败；controls/textarea/scroll/overlays
   冒烟回归干净；12 个 exe 0CRT。
-- 网络层回归：`cui_net_test.exe` headless 877 断言 + `CUI_NET_LIVE=1` 实网 52
+- 网络层回归：`cui_net_test.exe` headless 945 断言 + `CUI_NET_LIVE=1` 实网 52
   断言全部通过：HTTP 200/chunked/302 重定向/POST、keep-alive 同连接复用
   （`X-Conn-Req` 第 2 次）、400ms 超时、取消后不回调、hosts、自研 DNS（A/AAAA、
   缓存、TC 未触发）+ HTTPS `www.example.com` 577B、自签证书被拒
-  `UI_NET_E_TLS`、ws 回显、wss（自签 + `insecure`）回显；`cui_net.exe` 200% DPI
-  真实鼠标/键盘验证 GET/POST、WS 连接/发送/断开、键入
-  `https://www.example.com/` 返回 200/577B、`UiTimer` 每秒递增；14 个 exe 0CRT。
-  测试服务器见 `tests/net_server_{http,ws,wss}.ps1`。
+  `UI_NET_E_TLS`、ws 回显、wss（自签 + `insecure`）回显；服务端覆盖
+  路径/版本拒绝、分片重组、ping-pong、二进制含 NUL、广播、双向 close、
+  服务端主动关闭的连接计数回收、WSS（PFX 证书 + TLS 握手 + 回显）。
+  `cui_net.exe` 200% DPI 真实鼠标/键盘验证 GET/POST、WS 连接/发送/断开、键入
+  `https://www.example.com/` 返回 200/577B、`UiTimer` 每秒递增；
+  `cui_ws_server.exe` 提供 WS/WSS 启停、连接日志、回显与广播；22 个 exe 0CRT。
+  测试服务器见 `tests/net_server_{http,ws,wss}.ps1`；WSS 自测证书由
+  `tests/gen_test_cert.ps1` 生成（导出后即从证书库移除）。
 - Image 回归：`cui_image.exe` 200% DPI 真实鼠标验证 **Bing 每日图**（先取
   `HPImageArchive` JSON、再加载当日 1920×1080 JPEG，spinner → 180ms 淡入，
   状态行显示版权）、`%TEMP%` BMP 文件、内存字节三源；留白/剪裁/拉伸/原始

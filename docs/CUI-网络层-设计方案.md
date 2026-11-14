@@ -98,17 +98,21 @@ GUI: UiNet_Destroy
 | --- | --- |
 | `src/net/net_base.h/.c` | 错误码、动态字节缓冲、字符串/大小写/十六进制、SHA-1/Base64、随机数 |
 | `src/lib/heap.c/.h` | 通用侵入式最小堆（net IO 定时器与 UiTimer 共用） |
-| `src/net/ui_net.h` | **唯一公开头**：`UiNet` / `UiHttp` / `UiWs` API、错误码、配置 |
-| `src/net/net_internal.h` | 内部结构：NetIo / NetConn / 命令 / 事件 / 各模块入口 |
-| `src/net/ui_net.c` | `UiNet_Create/Destroy`、IO 线程、IOCP 循环、命令分发、APC 派发、IO 定时器、连接注册表 |
+| `src/net/ui_net.h` | **客户端公开头**：`UiNet` / `UiHttp` / `UiWs` API、错误码、配置 |
+| `src/net/ui_ws_server.h` | **服务端公开头**：`UiWsServer` / `UiWsConn`、配置、回调 |
+| `src/net/net_internal.h` | 内部结构：NetIo / NetConn / NetSrv / 命令 / 事件 / 各模块入口 |
+| `src/net/ui_net.c` | `UiNet_Create/Destroy`、IO 线程、IOCP 循环、命令分发、APC 派发、IO 定时器、连接/服务注册表 |
 | `src/net/net_dns.c` | 自研 DNS：服务器发现、hosts、A/AAAA 组包解析、重试、TC→TCP、缓存 |
 | `src/net/net_tcp.c` | socket 生命周期、ConnectEx、重叠收发、send 队列、引用计数释放 |
 | `src/net/net_tls.c` | SChannel 凭据、握手状态机、加解密、证书校验、pinning、关闭 |
 | `src/net/net_http.c` | URL 解析、请求序列化、增量响应解析、chunked、keep-alive 池、重定向、代理 |
 | `src/net/net_ws.c` | upgrade、帧编解码、分片、控制帧、心跳、重连、关闭握手 |
+| `src/net/net_ws_server.c` | AcceptEx、Upgrade 校验、服务端帧会话、广播、关闭握手、服务端定时器 |
+| `src/net/net_tls_server.c` | PFX/证书库凭据、`AcceptSecurityContext`、服务端加解密与 close_notify |
 | `src/ui/ui_timer.h/.c` | GUI 线程定时器（最小堆 + waitable timer） |
 | `samples/net.c` | 演示 UI：HTTP 请求、WS 连接、定时器 |
-| `tests/net_test.c` | headless 断言：纯逻辑全量（堆/队列/URL/Base64/SHA1/DNS 包/HTTP/WS/定时器） |
+| `samples/ws_server.c` | 演示 UI：WS/WSS 服务端启停、连接日志、回显、广播 |
+| `tests/net_test.c` | headless 断言：纯逻辑全量 + 服务端 ws/wss 回环 |
 
 依赖新增：`ws2_32.lib`、`secur32.lib`、`crypt32.lib`、`bcrypt.lib`、`iphlpapi.lib`。
 全部动态容量（`malloc/realloc`），无固定上限；0CRT 约束不变（无 CRT 函数）。
@@ -386,6 +390,64 @@ QueryContextAttributes(SECPKG_ATTR_REMOTE_CERT_CONTEXT, &cert)
   `close` 回调只来一次。
 - `wss` 与 https 共用同一 TLS 路径；v1 不支持 WS 代理（代理只作用于 HTTP 请求）。
 
+## 10.1 WebSocket 服务端（net_ws_server.c / net_tls_server.c）
+
+**架构**：`NetSrv` 挂到 `NetIo->servers`，**复用同一个 IO 线程与 IOCP**，不新增
+线程。监听/连接/定时器状态只在 IO 线程访问；GUI 命令走既有无锁队列
+（`NET_CMD_SRV_*`），事件经 `QueueUserAPC` 归位（`NET_EV_SRV_*`）。连接与
+服务端对象都带引用计数，命令/完成/定时器/停止路径进入时先取临时哨兵引用，
+避免回调中关闭导致的 UAF；`closing` 防止关闭重入，`inStop` 防止停止遍历期间
+释放 `NetSrv`。
+
+**Accept**：`WSASocket` + `AcceptEx`（接受后 `SO_UPDATE_ACCEPT_CONTEXT`），
+始终保留一个未完成 accept；`maxConnections` 满时明文连接回 503、TLS 连接直接
+关闭；`SO_EXCLUSIVEADDRUSE` 防端口劫持。
+
+**握手**：增量解析到 `\r\n\r\n`（64KB 上限）。只接受 `GET` + `HTTP/1.1` +
+`Upgrade: websocket` + `Connection: Upgrade` + `Version: 13`；路径与配置精确
+匹配（不含 query），子协议按配置优先级挑选；`Sec-WebSocket-Accept` 用 SHA-1
++ Base64 计算；可附加 `extraHeaders`。失败状态：400/404/405/408/426/431/500/503，
+响应带 `Connection: close` 并在发送完成后关闭。
+
+**帧会话**：服务端**强制要求客户端帧掩码**，拒绝 RSV 位、非法控制帧（FIN=0
+或 >125 字节）、未协商扩展；支持 16/64 位长度、分片重组、消息总量上限
+`maxMessageSize`、二进制含 NUL；控制帧优先，ping 自动回 pong；文本在 FIN 时
+做 UTF-8 校验（失败 1007）；单连接待发送缓冲受 `maxSendBuffer` 约束（超限即
+失败，避免内存膨胀）。`pingIntervalMs` 主动心跳、`idleTimeoutMs` 入站空闲、
+`closeTimeoutMs` 关闭握手超时；收到 close 先回 echo 再关闭。
+
+**TLS（wss）**：证书来源二选一——PFX 文件（`PFXImportCertStore`，支持密码）
+或 Windows 证书库（`CurrentUser/LocalMachine\MY`，按 Subject 或 SHA-1 指纹，
+必须含私钥）。`AcquireCredentialsHandleW(SECPKG_CRED_INBOUND)` +
+`AcceptSecurityContext`，握手 token 走明文发送队列；完成后把连接状态
+`TLS → HTTP`，后续密文复用 `net_tls_decrypt_buf`，应用数据交给同一 Upgrade/
+帧解析路径；关闭时尽力发送 `SCHANNEL_SHUTDOWN` close_notify。
+
+**公共 API**（`net/ui_ws_server.h`）：
+
+```c
+UiWsServer *UiWsServer_Create(UiNet *net, const UiWsServerConfig *cfg,
+                              const UiWsServerCallbacks *cb, void *user);
+void UiWsServer_Destroy(UiWsServer *srv);       /* 停监听 + 关闭全部 + 等清理 */
+int  UiWsServer_Port/State/ConnCount(const UiWsServer *srv);
+int  UiWsServer_Send(UiWsConn *conn, const void *data, int len, int opcode);
+int  UiWsServer_Broadcast(UiWsServer *srv, const void *data, int len, int opcode);
+void UiWsServer_Close(UiWsConn *conn, int code, const char *reason);
+void UiWsServer_CloseAll(UiWsServer *srv, int code, const char *reason);
+const char *UiWsConn_Path/Peer/Protocol(const UiWsConn *conn);
+```
+
+`Create` 同步等到 listening/error（端口 0 时立即拿到实际端口）；回调全部在
+GUI 线程，`close` 对已 open 连接只来一次（服务端主动关闭同样投递 close 以
+回收 GUI 连接句柄与 `ConnCount`）；回调里不得调用 `Destroy`。
+
+**取舍**：暂不支持 permessage-deflate、多监听地址、mTLS 客户端证书与 TLS
+会话恢复调优；单 IO 线程共享带宽，适合中小规模连接（默认上限 1024）。
+
+**验证**：headless 覆盖路径/版本拒绝、分片、ping-pong、二进制、广播、
+双向 close、服务端主动关闭计数回收、WSS（PFX 自签证书）握手与回显；
+`tests/gen_test_cert.ps1` 生成 `build\test_wss.pfx` 后立即从证书库移除。
+
 ## 11. GUI 定时器（src/ui/ui_timer）
 
 - 最小堆按 `(deadline, id)` 排序；节点含 interval / 周期标志 / 回调 / user。
@@ -404,9 +466,10 @@ QueryContextAttributes(SECPKG_ATTR_REMOTE_CERT_CONTEXT, &cert)
   已有 stub；不引入 CRT、STL、异常。
 - 新链接库：`ws2_32.lib secur32.lib crypt32.lib bcrypt.lib iphlpapi.lib`。
 - 构建：`build.cmd` 把 `src/net/*.c src/ui/ui_timer.c` 加入 `OBJS`（所有样例共享），
-  新增 `samples/net.c` → `bin\cui_net.exe`；新增 `tests/net_test.c` →
+  新增 `samples/net.c` → `bin\cui_net.exe`、`samples/ws_server.c` →
+  `bin\cui_ws_server.exe`；新增 `tests/net_test.c` →
   `bin\cui_net_test.exe`（`/SUBSYSTEM:CONSOLE`，写 stdout 断言计数，非 0 退出码即失败）。
-- 0CRT 校验：对两个新 exe 执行与现有样例相同的 imports 检查（不得出现 msvcrt）。
+- 0CRT 校验：对所有 exe 执行相同的 imports 检查（不得出现 msvcrt）。
 
 ## 13. 分阶段落地与判据
 
@@ -473,3 +536,32 @@ GUI 线程持锁阻塞 send、`static` 分片缓冲、无 TLS、传输层耦合 
 | 实网 | 52 断言 0 失败：HTTP 200/chunked/redirect/POST、keep-alive 复用（同连接第 2 请求）、400ms 超时、取消不回调、hosts、DNS 自解析 + HTTPS（example.com 577B）、自签证书被拒（`UI_NET_E_TLS`）、ws 回显、wss 回显 |
 | 原生 UI | 200% DPI 真实鼠标：GET/POST/WS 连接/发送/断开；真实键入 `https://www.example.com/` 后 GET 返回 200/577B；定时器 1s 递增 |
 | 构建 | 14 个 exe 0CRT（`cui_net.exe` / `cui_net_test.exe` 新增） |
+
+## 17. WebSocket 服务端修订记录（2026-11-14）
+
+新增 `ui_ws_server.h` / `net_ws_server.c` / `net_tls_server.c`，服务端并入既有
+IO 线程。实现中确认/修正的关键点：
+
+1. **接收状态路由**：TLS 完成后必须把连接状态从 `NET_SRV_C_TLS` 推进到
+   `NET_SRV_C_HTTP`，否则解密后的明文不会进入 Upgrade 解析（现象是 TLS 握手
+   成功但 101 永不返回）。
+2. **服务端主动关闭也要投递 close 事件**：只发 close 帧不投事件会让 GUI 侧
+   `UiWsConnH` 与 `ConnCount` 永久残留；`close` 对已 open 连接只投一次。
+3. **引用计数 + 关闭重入**：完成/定时器/命令/停止循环进入时取哨兵引用；
+   `closing` 挡住 close_notify 发送失败引发的再次关闭；`inStop` 挡住停止遍历
+   中 `NetSrv` 被提前释放。
+4. **发送背压**：`maxSendBuffer` 同时约束明文与 TLS 密文缓冲，超限直接失败，
+   避免慢客户端拖垮内存。
+5. **WSS 自测证书**：`tests/gen_test_cert.ps1` 用
+   `New-SelfSignedCertificate` 生成 CN=localhost-cui-test，导出
+   `build\test_wss.pfx` 后立即从 `CurrentUser\My` 移除；`net_test` 优先用 PFX，
+   找不到再查证书库，两者都没有则跳过并打印原因。
+
+验证结果（2026-11-14）：
+
+| 项 | 结果 |
+| --- | --- |
+| headless | `cui_net_test.exe` 945 断言 0 失败（新增服务端 API/HTTP 拒绝/原始帧/WSS） |
+| 服务端覆盖 | 路径/版本拒绝、子协议、分片重组、ping-pong、二进制含 NUL、广播、双向 close、服务端主动关闭计数回收、WSS 握手+回显 |
+| 构建 | 22 个 exe 0CRT，含新增 `cui_ws_server.exe` |
+| 样例 | `samples/ws_server.c`：WS/WSS 启停、连接日志、回显、广播 |

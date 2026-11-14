@@ -14,9 +14,11 @@
 #endif
 
 #include "net/net_base.h"
+#include "net/ui_ws_server.h"
 #include <mswsock.h>
 #include <security.h>
 #include <schannel.h>
+#include <wincrypt.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -65,7 +67,12 @@ enum {
 	NET_CMD_WS_OPEN,
 	NET_CMD_WS_SEND,
 	NET_CMD_WS_CLOSE,
-	NET_CMD_STOP
+	NET_CMD_STOP,
+	NET_CMD_SRV_START,
+	NET_CMD_SRV_STOP,
+	NET_CMD_SRV_SEND,
+	NET_CMD_SRV_CLOSE,
+	NET_CMD_SRV_BROADCAST
 };
 
 enum {
@@ -73,7 +80,37 @@ enum {
 	NET_EV_WS_OPEN,
 	NET_EV_WS_MSG,
 	NET_EV_WS_CLOSE,
-	NET_EV_SENTINEL
+	NET_EV_SENTINEL,
+	NET_EV_SRV_LISTENING,
+	NET_EV_SRV_ERROR,
+	NET_EV_SRV_OPEN,
+	NET_EV_SRV_MSG,
+	NET_EV_SRV_CLOSE,
+	NET_EV_SRV_STOPPED
+};
+
+/* 服务端定时器按 ownerKind 区分, 编号可与客户端重叠 */
+enum {
+	NET_T_SRV_HANDSHAKE = 1,
+	NET_T_SRV_PING,
+	NET_T_SRV_IDLE,
+	NET_T_SRV_CLOSE,
+	NET_T_SRV_MAX
+};
+
+enum {
+	NET_SRV_ST_STARTING = 1,
+	NET_SRV_ST_LISTENING,
+	NET_SRV_ST_STOPPING,
+	NET_SRV_ST_STOPPED
+};
+
+enum {
+	NET_SRV_C_TLS = 1,
+	NET_SRV_C_HTTP,
+	NET_SRV_C_WS,
+	NET_SRV_C_CLOSING,
+	NET_SRV_C_DEAD
 };
 
 typedef struct NetConn NetConn;
@@ -81,6 +118,8 @@ typedef struct NetIo NetIo;
 typedef struct NetTls NetTls;
 typedef struct NetHttpConn NetHttpConn;
 typedef struct NetWsConn NetWsConn;
+typedef struct NetSrv NetSrv;
+typedef struct NetSrvConn NetSrvConn;
 
 /* ── 命令 (GUI -> IO, 堆节点) ─────────────────────────────────────── */
 typedef struct NetHttpReq {
@@ -111,6 +150,31 @@ typedef struct NetWsCloseCmd {
 	char reason[124];
 } NetWsCloseCmd;
 
+typedef struct NetSrvStart {
+	uint64_t id;
+	UiWsServerConfig cfg;   /* 字符串均为本结构拥有的副本 */
+} NetSrvStart;
+
+typedef struct NetSrvSend {
+	uint64_t srvId;
+	uint64_t connId;        /* 0 = 广播 */
+	int opcode;
+	int len;
+	char data[1];
+} NetSrvSend;
+
+typedef struct NetSrvCloseCmd {
+	uint64_t srvId;
+	uint64_t connId;        /* 0 = 全部 */
+	int code;
+	char reason[124];
+} NetSrvCloseCmd;
+
+typedef struct NetSrvStop {
+	uint64_t id;
+	HANDLE done;
+} NetSrvStop;
+
 typedef struct NetCmd {
 	SLIST_ENTRY entry;
 	int type;
@@ -135,20 +199,38 @@ typedef struct NetWsMsg {
 	char data[1];
 } NetWsMsg;
 
+typedef struct NetSrvOpen {
+	char path[NET_URL_MAX];
+	char peer[64];
+	char protocol[64];
+	char *hdrStore;
+	UiHttpHeader *hdrs;
+	int hdrCount;
+} NetSrvOpen;
+
 typedef struct NetEv {
 	UiNet *net;
 	int type;
 	uint64_t id;
-	void *p;             /* NetHttpResult / NetWsMsg / NULL */
-	int code;            /* WS_CLOSE */
+	uint64_t srvId;
+	uint64_t connId;
+	void *p;             /* NetHttpResult / NetWsMsg / NetSrvOpen / NULL */
+	int code;            /* WS/SRV_CLOSE / SRV_LISTENING 端口 */
 	char reason[160];
-	HANDLE done;         /* SENTINEL */
+	HANDLE done;         /* SENTINEL / SRV_STOPPED */
 } NetEv;
 
 /* ── 定时器 ───────────────────────────────────────────────────────── */
+enum {
+	NET_TIMER_CONN = 1,
+	NET_TIMER_SRV
+};
+
 typedef struct NetTimer {
 	UiHeapNode hn;
+	int ownerKind;       /* NET_TIMER_* */
 	NetConn *conn;
+	NetSrvConn *sconn;
 	int kind;
 } NetTimer;
 
@@ -158,13 +240,17 @@ enum {
 	NET_OP_CONNECT,
 	NET_OP_DNS_RECV,
 	NET_OP_DNS_TCP_RECV,
-	NET_OP_DNS_TCP_SEND
+	NET_OP_DNS_TCP_SEND,
+	NET_OP_SRV_ACCEPT,
+	NET_OP_SRV_RECV,
+	NET_OP_SRV_SEND
 };
 
 /* ── 完成操作 ─────────────────────────────────────────────────────── */
 typedef struct NetOp {
 	OVERLAPPED ov;       /* 必须首成员 */
 	NetConn *conn;
+	NetSrvConn *srvConn; /* 服务端 recv/send */
 	int kind;            /* NET_OP_* */
 	int gen;             /* DNS 查询代次, 丢弃已作废的完成包 */
 	char *buf;
@@ -255,6 +341,77 @@ struct NetWsConn {
 	int fragOpcode;
 };
 
+/* ── WebSocket 服务端 ─────────────────────────────────────────────── */
+struct NetSrv {
+	NetIo *io;
+	uint64_t id;
+	UiWsServerConfig cfg;       /* 字符串所有权归本结构 */
+	SOCKET listenSock;
+	int state;
+	int port;
+	int family;
+	int tls;                    /* 配置了证书 => wss */
+	CredHandle cred;
+	int credOk;
+	HCERTSTORE certStore;
+	PCCERT_CONTEXT cert;
+	int acceptPending;
+	int stopping;
+	int inStop;
+	int connCount;
+	uint64_t connSeq;
+	HANDLE stopDone;
+	NetSrvConn *conns;
+	NetSrv *next;
+};
+
+struct NetSrvConn {
+	NetSrv *srv;
+	SOCKET s;
+	uint64_t id;
+	int state;
+	int dead;
+	int closing;
+	int refs;
+	int rxPending;
+	int sending;
+	int rxStopped;
+	ULONGLONG born;
+	ULONGLONG lastRecv;
+	NetBuf in;                  /* socket 原始字节 */
+	NetBuf plain;               /* TLS 解密后的明文 */
+	NetBuf out;                 /* 待发送 (已加密) */
+	NetBuf tx;                  /* 正在发送 */
+	NetBuf frag;                /* 分片消息累积 */
+	NetTls *tls;
+
+	int upgraded;
+	int opened;
+	int emittedClose;
+	int userClosed;
+	int closeSent;
+	int closeRecv;
+	int closeCode;
+	char closeReason[124];
+	int closeAfterSend;
+	int pingOutstanding;
+	int fragOpcode;
+
+	char path[NET_URL_MAX];
+	char peer[64];
+	char protocol[64];
+	char key[64];
+	char accept[64];
+
+	NetBuf hdrStore;            /* 握手头原文 */
+	UiHttpHeader *hdrs;
+	int hdrCount, hdrCap;
+	int headerBytes;
+
+	NetTimer *timers[NET_T_SRV_MAX];
+	NetSrvConn *next;
+};
+
 /* ── 连接 ─────────────────────────────────────────────────────────── */
 struct NetConn {
 	NetIo *io;
@@ -311,8 +468,12 @@ struct NetIo {
 	int stop;
 	int stopping;
 	LPFN_CONNECTEX connectEx;
+	LPFN_ACCEPTEX acceptEx;
+	LPFN_GETACCEPTEXSOCKADDRS getAcceptExSockaddrs;
 	CredHandle sslCred;
 	int sslCredOk;
+	NetSrv *servers;
+	uint64_t srvSeq;
 	/* DNS */
 	struct NetDnsCache *dnsCache;
 	SOCKADDR_STORAGE dnsServers[8];
@@ -343,6 +504,31 @@ typedef struct UiWsH {
 	struct UiWsH *next;
 } UiWsH;
 
+typedef struct UiWsConnH {
+	uint64_t id;
+	struct UiWsSrvH *srv;
+	int closed;
+	int closing;
+	char path[NET_URL_MAX];
+	char peer[64];
+	char protocol[64];
+	struct UiWsConnH *next;
+} UiWsConnH;
+
+typedef struct UiWsSrvH {
+	uint64_t id;
+	UiNet *net;
+	UiWsServerCallbacks cb;
+	void *user;
+	int closed;
+	int state;
+	int error;
+	int port;
+	HANDLE ready;
+	UiWsConnH *conns;
+	struct UiWsSrvH *next;
+} UiWsSrvH;
+
 struct UiNet {
 	UiNetConfig cfg;
 	char *proxy;
@@ -355,6 +541,7 @@ struct UiNet {
 	uint64_t nextId;
 	NetPend *pend;
 	UiWsH *wsList;
+	UiWsSrvH *srvList;
 	/* stats (GUI 读) */
 	volatile LONG64 evCount;
 };
@@ -362,7 +549,7 @@ struct UiNet {
 /* ── 核心 (ui_net.c) ──────────────────────────────────────────────── */
 NetEv *net_ev_new(UiNet *net, int type, uint64_t id);
 void   net_ev_free(NetEv *ev);
-void   net_post(NetIo *io, NetEv *ev);
+int    net_post(NetIo *io, NetEv *ev);
 void   net_cmd_post(UiNet *net, NetCmd *cmd);
 
 NetConn *net_conn_new(NetIo *io, int kind, uint64_t id);
@@ -409,6 +596,19 @@ void net_tls_on_cipher(NetConn *conn);          /* conn->in 新增密文 -> plai
 int  net_tls_encrypt(NetConn *conn, const void *data, int len); /* 追加到 out */
 void net_tls_free(NetConn *conn);
 
+/* 客户端/服务端共享的流式加解密 */
+int  net_tls_encrypt_buf(NetTls *t, NetBuf *out, const void *data, int len);
+int  net_tls_decrypt_buf(NetTls *t, NetBuf *cipher, NetBuf *plain); /* 0=OK/待更多, 否则 UiNetErr */
+
+/* ── TLS 服务端 (net_tls_server.c) ────────────────────────────────── */
+int  net_tls_server_init(NetSrv *srv);
+void net_tls_server_free(NetSrv *srv);
+void net_tls_server_start(NetSrvConn *c);
+void net_tls_server_input(NetSrvConn *c);
+void net_tls_server_decrypt(NetSrvConn *c);
+int  net_tls_server_close_notify(NetSrvConn *c);
+void net_tls_server_conn_free(NetSrvConn *c);
+
 /* ── HTTP (net_http.c) ────────────────────────────────────────────── */
 NetConn *net_http_pool_get(NetIo *io, NetHttpReq *req);
 int  net_http_need_tunnel(NetConn *conn);
@@ -433,11 +633,45 @@ void net_ws_on_ping_timeout(NetConn *conn);
 void net_ws_on_close_timeout(NetConn *conn);
 void net_ws_reconnect_now(NetConn *conn);
 
+/* 客户端/服务端共享的帧工具 */
+int net_ws_build_frame(int masked, int opcode, const void *data, int len,
+	int fin, NetBuf *out);
+int net_ws_parse_header(const char *buf, int len, int *fin, int *opcode,
+	int *masked, BYTE mask[4], uint64_t *plen, int *hlen);
+int net_ws_utf8_valid(const void *data, int len);
+
+/* ── WS 服务端 (net_ws_server.c) ──────────────────────────────────── */
+void net_srv_start(NetIo *io, NetSrvStart *st);
+void net_srv_stop(NetIo *io, uint64_t id, HANDLE done);
+void net_srv_send_cmd(NetIo *io, uint64_t srvId, uint64_t connId,
+	int opcode, const void *data, int len);
+void net_srv_broadcast_cmd(NetIo *io, uint64_t srvId, int opcode,
+	const void *data, int len);
+void net_srv_close_cmd(NetIo *io, uint64_t srvId, uint64_t connId,
+	int code, const char *reason);
+void net_srv_on_completion(NetIo *io, NetOp *op, DWORD bytes, DWORD err);
+void net_srv_conn_timer_fire(NetSrvConn *c, int kind);
+void net_srv_cancel_all(NetIo *io);
+void net_srv_free_all(NetIo *io);
+void net_srv_cleanup_op(NetOp *op);
+NetSrv *net_srv_by_id(NetIo *io, uint64_t id);
+void net_srv_on_plain(NetSrvConn *c);
+void srv_conn_fail_(NetSrvConn *c, int err, const char *msg);
+int  srv_conn_write_raw_(NetSrvConn *c, const void *data, int len);
+
 /* ── 事件构造 ─────────────────────────────────────────────────────── */
 void net_emit_http(NetIo *io, uint64_t id, NetHttpResult *r);
 void net_emit_ws_open(NetIo *io, uint64_t id);
 void net_emit_ws_msg(NetIo *io, uint64_t id, int opcode, const void *data, int len);
 void net_emit_ws_close(NetIo *io, uint64_t id, int code, const char *reason);
+void net_emit_srv_listening(NetIo *io, uint64_t srvId, int port);
+void net_emit_srv_error(NetIo *io, uint64_t srvId, int err, const char *msg);
+void net_emit_srv_open(NetIo *io, NetSrvConn *c, NetSrvOpen *o);
+void net_emit_srv_msg(NetIo *io, uint64_t srvId, uint64_t connId,
+	int opcode, const void *data, int len);
+void net_emit_srv_close(NetIo *io, uint64_t srvId, uint64_t connId,
+	int code, const char *reason);
+void net_emit_srv_stopped(NetIo *io, uint64_t srvId, HANDLE done);
 
 /* ── 工具 ─────────────────────────────────────────────────────────── */
 int  net_parse_url(const char *url, char *host, int hostCap, int *port,

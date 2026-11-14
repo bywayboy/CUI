@@ -53,49 +53,144 @@ static void ws_reset_(NetWsConn *w)
 
 /* ── 帧编码 ─────────────────────────────────────────────────────────── */
 
+/* 追加一个完整帧到 out; masked=1 用于客户端, 0 用于服务端. */
+int net_ws_build_frame(int masked, int opcode, const void *data, int len,
+	int fin, NetBuf *out)
+{
+	BYTE mask[4];
+	BYTE h[14];
+	int hl = 2;
+	int i;
+
+	if (!out || len < 0 || len > WS_MAX_FRAME) return 0;
+	h[0] = (BYTE)((fin ? 0x80 : 0) | (opcode & 0x0F));
+	h[1] = masked ? 0x80 : 0x00;
+	if (len < 126) {
+		h[1] |= (BYTE)len;
+	} else if (len < 65536) {
+		h[1] |= 126;
+		h[2] = (BYTE)((len >> 8) & 0xFF);
+		h[3] = (BYTE)(len & 0xFF);
+		hl = 4;
+	} else {
+		uint64_t l = (uint64_t)len;
+		int k;
+		h[1] |= 127;
+		for (k = 0; k < 8; k++) h[2 + k] = (BYTE)((l >> (56 - k * 8)) & 0xFF);
+		hl = 10;
+	}
+	if (masked) {
+		Net_Random(mask, 4);
+		memcpy(h + hl, mask, 4);
+		hl += 4;
+	}
+	if (!NetBuf_Append(out, h, hl)) return 0;
+	if (len > 0) {
+		if (masked) {
+			const BYTE *p = (const BYTE *)data;
+			int off = out->len;
+			if (!NetBuf_Reserve(out, len)) return 0;
+			for (i = 0; i < len; i++)
+				out->p[off + i] = (char)(p[i] ^ mask[i & 3]);
+			out->len += len;
+			out->p[out->len] = '\0';
+		} else if (!NetBuf_Append(out, data, len)) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+/* 解析帧头, 不消费. 返回 1=完整, 0=需更多, -1=协议错误 (RSV). */
+int net_ws_parse_header(const char *buf, int len, int *fin, int *opcode,
+	int *masked, BYTE mask[4], uint64_t *plen, int *hlen)
+{
+	BYTE b0, b1;
+	uint64_t l;
+	int hl = 2;
+	int m;
+
+	if (!buf || len < 2) return 0;
+	b0 = (BYTE)buf[0];
+	b1 = (BYTE)buf[1];
+	if (b0 & 0x70) return -1;              /* RSV1..3 必须为 0 */
+	*fin = (b0 & 0x80) ? 1 : 0;
+	*opcode = b0 & 0x0F;
+	m = (b1 & 0x80) ? 1 : 0;
+	l = b1 & 0x7F;
+	if (l == 126) {
+		if (len < 4) return 0;
+		l = ((uint64_t)(BYTE)buf[2] << 8) | (BYTE)buf[3];
+		hl = 4;
+	} else if (l == 127) {
+		int k;
+		if (len < 10) return 0;
+		l = 0;
+		for (k = 0; k < 8; k++) l = (l << 8) | (BYTE)buf[2 + k];
+		hl = 10;
+	}
+	if (m) {
+		if (len < hl + 4) return 0;
+		if (mask) memcpy(mask, buf + hl, 4);
+		hl += 4;
+	}
+	*masked = m;
+	*plen = l;
+	*hlen = hl;
+	return 1;
+}
+
+int net_ws_utf8_valid(const void *data, int len)
+{
+	const BYTE *s = (const BYTE *)data;
+	int i = 0;
+
+	while (i < len) {
+		uint32_t cp;
+		int n, k;
+		BYTE c = s[i++];
+		if (c < 0x80) continue;
+		if ((c & 0xE0) == 0xC0) {
+			n = 1;
+			cp = c & 0x1F;
+			if (cp < 2) return 0;
+		} else if ((c & 0xF0) == 0xE0) {
+			n = 2;
+			cp = c & 0x0F;
+		} else if ((c & 0xF8) == 0xF0) {
+			n = 3;
+			cp = c & 0x07;
+			if (cp > 4) return 0;
+		} else {
+			return 0;
+		}
+		if (i + n > len) return 0;
+		for (k = 0; k < n; k++) {
+			BYTE cc = s[i++];
+			if ((cc & 0xC0) != 0x80) return 0;
+			cp = (cp << 6) | (cc & 0x3F);
+		}
+		if ((n == 1 && cp < 0x80) ||
+		    (n == 2 && cp < 0x800) ||
+		    (n == 3 && (cp < 0x10000 || cp > 0x10FFFF)) ||
+		    (cp >= 0xD800 && cp <= 0xDFFF))
+			return 0;
+	}
+	return 1;
+}
+
 static int ws_send_frame_(NetConn *conn, int opcode, const void *data, int len,
 	int fin)
 {
 	NetBuf b;
-	BYTE mask[4];
-	int i, ok;
+	int ok;
 
 	if (!conn || conn->dead) return 0;
 	if (len < 0 || len > WS_MAX_FRAME) return 0;
 	NetBuf_Init(&b);
-	NetBuf_Reserve(&b, len + 14);
-	{
-		BYTE h[14];
-		int hl = 2;
-		h[0] = (BYTE)((fin ? 0x80 : 0) | (opcode & 0x0F));
-		h[1] = 0x80;                       /* 客户端必须掩码 */
-		if (len < 126) {
-			h[1] |= (BYTE)len;
-		} else if (len < 65536) {
-			h[1] |= 126;
-			h[2] = (BYTE)((len >> 8) & 0xFF);
-			h[3] = (BYTE)(len & 0xFF);
-			hl = 4;
-		} else {
-			uint64_t l = (uint64_t)len;
-			int k;
-			h[1] |= 127;
-			for (k = 0; k < 8; k++) h[2 + k] = (BYTE)((l >> (56 - k * 8)) & 0xFF);
-			hl = 10;
-		}
-		Net_Random(mask, 4);
-		memcpy(h + hl, mask, 4);
-		hl += 4;
-		NetBuf_Append(&b, h, hl);
-	}
-	if (len > 0) {
-		const BYTE *p = (const BYTE *)data;
-		int off = b.len;
-		NetBuf_Reserve(&b, len);
-		for (i = 0; i < len; i++)
-			b.p[off + i] = (char)(p[i] ^ mask[i & 3]);
-		b.len += len;
-		b.p[b.len] = '\0';
+	if (!net_ws_build_frame(1, opcode, data, len, fin, &b)) {
+		NetBuf_Free(&b);
+		return 0;
 	}
 	ok = net_conn_write(conn, b.p, b.len);
 	NetBuf_Free(&b);
@@ -420,40 +515,18 @@ static void ws_parse_frames_(NetConn *conn)
 	int guard = 0;
 
 	while (!conn->dead && guard++ < 128) {
-		BYTE b0, b1;
-		int fin, opcode, masked;
+		int fin, opcode, masked, hl, r;
 		uint64_t len;
-		int hl = 2;
 		BYTE mask[4];
 		char *tmp;
 		int i;
 
-		if (src->len < 2) return;
-		b0 = (BYTE)src->p[0];
-		b1 = (BYTE)src->p[1];
-		fin = (b0 & 0x80) ? 1 : 0;
-		opcode = b0 & 0x0F;
-		masked = (b1 & 0x80) ? 1 : 0;
-		len = b1 & 0x7F;
-
-		if (len == 126) {
-			if (src->len < 4) return;
-			len = ((uint64_t)(BYTE)src->p[2] << 8) | (BYTE)src->p[3];
-			hl = 4;
-		} else if (len == 127) {
-			int k;
-			if (src->len < 10) return;
-			len = 0;
-			for (k = 0; k < 8; k++) len = (len << 8) | (BYTE)src->p[2 + k];
-			hl = 10;
-		}
+		r = net_ws_parse_header(src->p, src->len, &fin, &opcode, &masked,
+			mask, &len, &hl);
+		if (r == 0) return;
+		if (r < 0) { net_conn_fail(conn, UI_NET_E_WS); return; }
 		if (len > WS_MAX_FRAME) { net_conn_fail(conn, UI_NET_E_WS); return; }
-		if (masked) {
-			if (src->len < hl + 4) return;
-			memcpy(mask, src->p + hl, 4);
-			hl += 4;
-		}
-		if ((int)(hl + len) > src->len) return;
+		if (len > (uint64_t)(src->len - hl)) return;
 
 		tmp = (char *)malloc((size_t)(len ? len : 1));
 		if (!tmp) { net_conn_fail(conn, UI_NET_E_OOM); return; }

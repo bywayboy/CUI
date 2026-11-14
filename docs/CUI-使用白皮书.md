@@ -183,7 +183,7 @@
    - [8.19 DatePicker 日期选择](#819-datepicker-日期选择)
    - [8.20 Image 图片](#820-image-图片)
 9. [UiAnim 动画内核](#9-uianim-动画内核)
-10. [网络层与定时器](#10-网络层与定时器uinet--uihttp--uiws--uitimer)
+10. [网络层与定时器](#10-网络层与定时器uinet--uihttp--uiws--uiwsserver--uitimer)
 11. [UiFrame 帧时钟](#11-uiframe-帧时钟)
 12. [UiEdit 编辑框](#12-uiedit-编辑框)
 13. [UiIme 输入法](#13-uiime-输入法)
@@ -3108,10 +3108,11 @@ D2D。Toast 卡片 = 软阴影 + 颗粒，只画一次，显示/停留期间应�
 
 ---
 
-## 10. 网络层与定时器（UiNet / UiHttp / UiWs / UiTimer）
+## 10. 网络层与定时器（UiNet / UiHttp / UiWs / UiWsServer / UiTimer）
 
 > 设计细节：[CUI-网络层-设计方案.md](CUI-网络层-设计方案.md)；样例
-> [samples/net.c](../samples/net.c)；headless/实网断言 [tests/net_test.c](../tests/net_test.c)。
+> [samples/net.c](../samples/net.c)、[samples/ws_server.c](../samples/ws_server.c)；
+> headless/实网断言 [tests/net_test.c](../tests/net_test.c)。
 
 ### 10.1 线程模型
 
@@ -3201,7 +3202,38 @@ UiWs_Close(ws, 1000, "bye");
   退避期间 `UiWs_Close` 立即停止。瞬断不投 `close`，只有最终关闭才回调一次。
 - `wss` 与 https 共用同一 TLS 路径；v1 不支持 WS 代理。
 
-### 10.6 UiTimer（GUI 定时器）
+### 10.6 WebSocket 服务端（UiWsServer）
+
+```c
+UiWsServerConfig sc = {0};
+sc.bindHost = "0.0.0.0";
+sc.port = 18082;              /* 0 = 临时端口, listening 回调给出实际值 */
+sc.path = "/ws";              /* NULL = 接受任意路径 */
+sc.subprotocols = "chat,superchat";
+sc.certPath = "server.pfx";   /* 或 certSubject / certThumbprint: 启用 wss */
+sc.certPassword = "secret";
+UiWsServerCallbacks cb = { on_listening, on_open, on_message, on_close, on_error };
+UiWsServer *srv = UiWsServer_Create(net, &sc, &cb, user);
+UiWsServer_Broadcast(srv, data, len, 1);
+UiWsServer_Close(conn, 1001, "bye");
+UiWsServer_Destroy(srv);      /* 停监听 + 关闭全部连接, 返回后不再回调 */
+```
+
+- 服务端**复用同一个 `UiNet` IO 线程/IOCP**，不新增线程；回调同样在 GUI 线程，
+  GUI 循环必须 alertable（`UiApp_Run` 已满足）。
+- 证书来源：PFX 文件（可带密码）或 Windows 证书库（Subject / SHA-1 指纹，
+  `CurrentUser\MY` 或 `LocalMachine\MY`，必须含私钥）；wss 与 ws 走同一套
+  Upgrade/帧逻辑，TLS 解密后的明文直接进入握手解析。
+- Upgrade：只接受 GET / HTTP/1.1 / Version 13；路径精确匹配，按配置挑选子协议；
+  400/404/405/408/426/431/500/503 等错误带 `Connection: close`。
+- 帧：强制客户端掩码；拒绝 RSV、非法控制帧；分片重组、UTF-8 校验、二进制含
+  NUL；ping 自动回 pong；`maxMessageSize` / `maxSendBuffer` 防内存膨胀。
+- 生命周期：`Create` 同步等到 listening/error（端口 0 可立即取实际端口）；
+  `close` 对已 open 连接只来一次，服务端主动关闭也会投递；回调里不得
+  `Destroy`（可 `Close`/`Send`）。`Destroy` 后连接与服务器句柄全部失效。
+- 暂不支持 permessage-deflate、多监听地址、mTLS 客户端证书。
+
+### 10.7 UiTimer（GUI 定时器）
 
 ```c
 uint64_t id = UiTimer_After(app->timer, 500, cb, user);
@@ -3213,18 +3245,21 @@ UiTimer_Cancel(app->timer, id);
 动画期按帧量化（≤8ms）。回调在 GUI 线程，可安全 `UiApp_Invalidate`，也可在
 回调里取消自己。最小堆与 IO 定时器共用 `src/lib/heap.*`。
 
-### 10.7 边界
+### 10.8 边界
 
 - 无 HTTP/2、无 gzip（不发 Accept-Encoding）、无 WPAD/PAC（只支持显式代理）、
-  无客户端证书；TLS renegotiation 不支持（遇到即断开）。
+  无客户端证书；TLS renegotiation 不支持（遇到即断开）；服务端不支持
+  permessage-deflate 与多监听地址。
 - 连接/请求体/响应体全部动态增长，无固定上限；单帧 16MB、单响应头 64KB 是
   防护性上限。
 - `UiNet` 必须与 `UiNet_Create` 同线程销毁；回调线程规则见 10.1。
-- **验证状态**：`cui_net_test.exe` headless 877 断言 + `CUI_NET_LIVE=1`
+- **验证状态**：`cui_net_test.exe` headless 945 断言 + `CUI_NET_LIVE=1`
   实网 52 断言（HTTP 200/chunked/redirect/POST、keep-alive 复用、400ms 超时、
   取消不回调、hosts、DNS 自解析 + HTTPS 证书校验、自签证书被拒、ws 回显、
-  wss 回显）全部通过；`cui_net.exe` 200% DPI 真实鼠标/键盘验证 GET/POST/
-  WS 连接/发送/断开与 https 键入请求；14 个 exe 0CRT。
+  wss 回显）全部通过；服务端新增路径/版本拒绝、分片、ping-pong、广播、
+  双向 close、连接计数回收与 WSS（PFX 自签证书）回环。`cui_net.exe` 200%
+  DPI 真实鼠标/键盘验证 GET/POST/WS 连接/发送/断开与 https 键入请求；
+  `cui_ws_server.exe` 提供 WS/WSS 启停、连接日志、回显与广播；22 个 exe 0CRT。
 
 ## 11. UiFrame 帧时钟
 

@@ -32,6 +32,9 @@ const char *UiNet_StrError(int err)
 	case UI_NET_E_REDIRECT: return "too many redirects";
 	case UI_NET_E_WS: return "websocket error";
 	case UI_NET_E_INTERNAL: return "internal error";
+	case UI_NET_E_LISTEN: return "listen failed";
+	case UI_NET_E_CERT: return "certificate failed";
+	case UI_NET_E_LIMIT: return "resource limit";
 	default: return "unknown";
 	}
 }
@@ -79,27 +82,38 @@ static void http_result_free_(NetHttpResult *r)
 void net_ev_free(NetEv *ev)
 {
 	if (!ev) return;
-	if (ev->type == NET_EV_HTTP_DONE) http_result_free_((NetHttpResult *)ev->p);
-	else if (ev->type == NET_EV_WS_MSG) free(ev->p);
+	if (ev->type == NET_EV_HTTP_DONE) {
+		http_result_free_((NetHttpResult *)ev->p);
+	} else if (ev->type == NET_EV_WS_MSG || ev->type == NET_EV_SRV_MSG) {
+		free(ev->p);
+	} else if (ev->type == NET_EV_SRV_OPEN) {
+		NetSrvOpen *o = (NetSrvOpen *)ev->p;
+		if (o) {
+			if (o->hdrs) free(o->hdrs);
+			if (o->hdrStore) free(o->hdrStore);
+			free(o);
+		}
+	}
 	free(ev);
 }
 
 static VOID CALLBACK apc_dispatch_(ULONG_PTR param);
 
-void net_post(NetIo *io, NetEv *ev)
+int net_post(NetIo *io, NetEv *ev)
 {
 	UiNet *net;
-	if (!io || !ev) return;
+	if (!io || !ev) return 0;
 	net = io->owner;
-	if (!net) return;
+	if (!net) { net_ev_free(ev); return 0; }
 	ev->net = net;
 	if (!net->alive || !QueueUserAPC(apc_dispatch_, net->guiThread,
 			(ULONG_PTR)ev)) {
 		net_ev_free(ev);
-		return;
+		return 0;
 	}
 	InterlockedIncrement64(&net->evCount);
 	io->evCount++;
+	return 1;
 }
 
 void net_emit_http(NetIo *io, uint64_t id, NetHttpResult *r)
@@ -170,6 +184,29 @@ static void cmd_free_(NetCmd *c)
 		}
 	} else if (c->type == NET_CMD_WS_SEND) {
 		if (c->p) free(c->p);
+	} else if (c->type == NET_CMD_SRV_START) {
+		NetSrvStart *s = (NetSrvStart *)c->p;
+		if (s) {
+			if (s->cfg.bindHost) free((void *)s->cfg.bindHost);
+			if (s->cfg.path) free((void *)s->cfg.path);
+			if (s->cfg.subprotocols) free((void *)s->cfg.subprotocols);
+			if (s->cfg.extraHeaders) free((void *)s->cfg.extraHeaders);
+			if (s->cfg.certPath) free((void *)s->cfg.certPath);
+			if (s->cfg.certPassword) free((void *)s->cfg.certPassword);
+			if (s->cfg.certSubject) free((void *)s->cfg.certSubject);
+			if (s->cfg.certThumbprint) free((void *)s->cfg.certThumbprint);
+			free(s);
+		}
+	} else if (c->type == NET_CMD_SRV_SEND || c->type == NET_CMD_SRV_BROADCAST) {
+		if (c->p) free(c->p);
+	} else if (c->type == NET_CMD_SRV_CLOSE) {
+		if (c->p) free(c->p);
+	} else if (c->type == NET_CMD_SRV_STOP) {
+		NetSrvStop *s = (NetSrvStop *)c->p;
+		if (s) {
+			if (s->done) SetEvent(s->done);
+			free(s);
+		}
 	}
 	free(c);
 }
@@ -211,6 +248,7 @@ void net_timer_arm(NetConn *conn, int kind, int ms)
 	t->hn.deadline = Net_NowMs() + (uint64_t)ms;
 	t->hn.seq = ++io->seq;
 	t->hn.ptr = t;
+	t->ownerKind = NET_TIMER_CONN;
 	t->conn = conn;
 	t->kind = kind;
 	if (!UiHeap_Push(&io->timers, &t->hn)) {
@@ -484,8 +522,14 @@ void net_on_recv_data(NetConn *conn)
 
 static void io_timer_fire(NetIo *io, NetTimer *t)
 {
-	NetConn *conn = t->conn;
+	NetConn *conn;
 
+	if (t->ownerKind == NET_TIMER_SRV) {
+		if (t->sconn && !t->sconn->dead)
+			net_srv_conn_timer_fire(t->sconn, t->kind);
+		return;
+	}
+	conn = t->conn;
 	if (!conn || conn->dead) return;
 	switch (t->kind) {
 	case NET_T_CONNECT:
@@ -534,10 +578,15 @@ static void io_run_timers(NetIo *io)
 		if (hn->deadline > now) break;
 		t = (NetTimer *)hn;
 		UiHeap_Pop(&io->timers);
-		if (t->conn && t->kind >= 1 &&
+		if (t->ownerKind == NET_TIMER_SRV) {
+			if (t->sconn && t->kind >= 1 && t->kind < NET_T_SRV_MAX &&
+			    t->sconn->timers[t->kind] == t)
+				t->sconn->timers[t->kind] = NULL;
+		} else if (t->conn && t->kind >= 1 &&
 		    t->kind < (int)(sizeof(t->conn->timers) / sizeof(t->conn->timers[0])) &&
-		    t->conn->timers[t->kind] == t)
+		    t->conn->timers[t->kind] == t) {
 			t->conn->timers[t->kind] = NULL;
+		}
 		io_timer_fire(io, t);
 		free(t);
 	}
@@ -604,6 +653,49 @@ static void io_handle_cmd(NetIo *io, NetCmd *c)
 		if (r) free(r);
 		break;
 	}
+
+	case NET_CMD_SRV_START: {
+		NetSrvStart *s = (NetSrvStart *)c->p;
+		c->p = NULL;
+		net_srv_start(io, s);
+		break;
+	}
+	case NET_CMD_SRV_STOP: {
+		NetSrvStop *s = (NetSrvStop *)c->p;
+		c->p = NULL;
+		if (s) {
+			net_srv_stop(io, s->id, s->done);
+			free(s);
+		}
+		break;
+	}
+	case NET_CMD_SRV_SEND: {
+		NetSrvSend *s = (NetSrvSend *)c->p;
+		c->p = NULL;
+		if (s) {
+			net_srv_send_cmd(io, s->srvId, s->connId, s->opcode, s->data, s->len);
+			free(s);
+		}
+		break;
+	}
+	case NET_CMD_SRV_BROADCAST: {
+		NetSrvSend *s = (NetSrvSend *)c->p;
+		c->p = NULL;
+		if (s) {
+			net_srv_broadcast_cmd(io, s->srvId, s->opcode, s->data, s->len);
+			free(s);
+		}
+		break;
+	}
+	case NET_CMD_SRV_CLOSE: {
+		NetSrvCloseCmd *s = (NetSrvCloseCmd *)c->p;
+		c->p = NULL;
+		if (s) {
+			net_srv_close_cmd(io, s->srvId, s->connId, s->code, s->reason);
+			free(s);
+		}
+		break;
+	}
 	default:
 		break;
 	}
@@ -641,6 +733,7 @@ static void io_cleanup(NetIo *io)
 	NetConn *c = io->conns;
 
 	io->stopping = 1;
+	net_srv_cancel_all(io);
 	while (c) {
 		NetConn *next = c->next;
 		if (c->s != INVALID_SOCKET) {
@@ -669,7 +762,8 @@ static void io_cleanup(NetIo *io)
 					OVERLAPPED *ov = ents[i].lpOverlapped;
 					if (ov) {
 						NetOp *op = (NetOp *)ov;
-						if (op->buf) free(op->buf);
+						if (op->kind >= NET_OP_SRV_ACCEPT) net_srv_cleanup_op(op);
+						else if (op->buf) free(op->buf);
 						free(op);
 					}
 				}
@@ -697,6 +791,7 @@ static void io_cleanup(NetIo *io)
 	io->conns = NULL;
 	io->idle = NULL;
 	io->idleCount = 0;
+	net_srv_free_all(io);
 	UiHeap_Free(&io->timers);
 	net_dns_cache_free(io);
 	if (io->sslCredOk) FreeCredentialsHandle(&io->sslCred);
@@ -794,6 +889,42 @@ static void ws_unlink_(UiNet *net, UiWsH *ws)
 	}
 }
 
+static UiWsSrvH *srv_find_(UiNet *net, uint64_t id)
+{
+	UiWsSrvH *s;
+	for (s = net->srvList; s; s = s->next)
+		if (s->id == id) return s;
+	return NULL;
+}
+
+static UiWsConnH *srv_conn_find_(UiWsSrvH *srv, uint64_t id)
+{
+	UiWsConnH *c;
+	if (!srv) return NULL;
+	for (c = srv->conns; c; c = c->next)
+		if (c->id == id) return c;
+	return NULL;
+}
+
+static void srv_handle_unlink_(UiNet *net, UiWsSrvH *srv)
+{
+	UiWsSrvH **pp;
+	for (pp = &net->srvList; *pp; pp = &(*pp)->next) {
+		if (*pp == srv) { *pp = srv->next; return; }
+	}
+}
+
+static void srv_conn_handles_free_(UiWsSrvH *srv)
+{
+	UiWsConnH *c = srv->conns;
+	srv->conns = NULL;
+	while (c) {
+		UiWsConnH *n = c->next;
+		free(c);
+		c = n;
+	}
+}
+
 static void gui_dispatch_(UiNet *net, NetEv *ev)
 {
 	switch (ev->type) {
@@ -846,6 +977,105 @@ static void gui_dispatch_(UiNet *net, NetEv *ev)
 			free(ws);
 		}
 		if (p) free(p);
+		break;
+	}
+	case NET_EV_SRV_LISTENING: {
+		UiWsSrvH *s = srv_find_(net, ev->srvId);
+		if (s) {
+			s->port = ev->code;
+			s->state = UI_WS_SRV_LISTENING;
+			if (!s->closed && s->cb.listening) s->cb.listening(s->user, s->port);
+			if (s->ready) SetEvent(s->ready);
+		}
+		break;
+	}
+	case NET_EV_SRV_ERROR: {
+		UiWsSrvH *s = srv_find_(net, ev->srvId);
+		if (s) {
+			s->error = ev->code;
+			s->state = UI_WS_SRV_ERROR;
+			if (!s->closed && s->cb.error)
+				s->cb.error(s->user, ev->code, ev->reason);
+			if (s->ready) SetEvent(s->ready);
+		}
+		break;
+	}
+	case NET_EV_SRV_OPEN: {
+		UiWsSrvH *s = srv_find_(net, ev->srvId);
+		NetSrvOpen *o = (NetSrvOpen *)ev->p;
+		UiWsConnH *c = NULL;
+		if (s && o && !s->closed) {
+			c = (UiWsConnH *)calloc(1, sizeof(UiWsConnH));
+			if (c) {
+				c->id = ev->connId;
+				c->srv = s;
+				Net_StrCopy(c->path, (int)sizeof(c->path), o->path);
+				Net_StrCopy(c->peer, (int)sizeof(c->peer), o->peer);
+				Net_StrCopy(c->protocol, (int)sizeof(c->protocol), o->protocol);
+				c->next = s->conns;
+				s->conns = c;
+			}
+		}
+		if (s && o && !s->closed && s->cb.open) {
+			UiWsServerRequest req;
+			memset(&req, 0, sizeof(req));
+			req.path = o->path;
+			req.peer = o->peer;
+			req.protocol = o->protocol;
+			req.headers = o->hdrs;
+			req.headerCount = o->hdrCount;
+			s->cb.open(s->user, c, &req);
+		}
+		if (s && !c && !s->closed) {
+			/* 句柄分配失败: 直接请 IO 关闭该连接 */
+			NetCmd *cmd = (NetCmd *)calloc(1, sizeof(NetCmd));
+			NetSrvCloseCmd *r = (NetSrvCloseCmd *)calloc(1, sizeof(NetSrvCloseCmd));
+			if (cmd && r) {
+				r->srvId = ev->srvId;
+				r->connId = ev->connId;
+				r->code = 1011;
+				cmd->type = NET_CMD_SRV_CLOSE;
+				cmd->p = r;
+				net_cmd_post(net, cmd);
+			} else {
+				if (cmd) free(cmd);
+				if (r) free(r);
+			}
+		}
+		break;
+	}
+	case NET_EV_SRV_MSG: {
+		UiWsSrvH *s = srv_find_(net, ev->srvId);
+		UiWsConnH *c = srv_conn_find_(s, ev->connId);
+		NetWsMsg *m = (NetWsMsg *)ev->p;
+		ev->p = NULL;
+		if (s && c && !c->closed && s->cb.message && m)
+			s->cb.message(s->user, c, m->data, m->len, m->opcode);
+		if (m) free(m);
+		break;
+	}
+	case NET_EV_SRV_CLOSE: {
+		UiWsSrvH *s = srv_find_(net, ev->srvId);
+		UiWsConnH *c = srv_conn_find_(s, ev->connId);
+		if (c) {
+			UiWsConnH **pp;
+			for (pp = &s->conns; *pp; pp = &(*pp)->next) {
+				if (*pp == c) { *pp = c->next; break; }
+			}
+			c->closed = 1;
+			if (!s->closed && s->cb.close)
+				s->cb.close(s->user, c, ev->code, ev->reason);
+			free(c);
+		}
+		break;
+	}
+	case NET_EV_SRV_STOPPED: {
+		UiWsSrvH *s = srv_find_(net, ev->srvId);
+		if (s) {
+			s->state = UI_WS_SRV_STOPPED;
+			s->closed = 1;
+		}
+		if (ev->done) SetEvent(ev->done);
 		break;
 	}
 	case NET_EV_SENTINEL:
@@ -988,6 +1218,17 @@ void UiNet_Destroy(UiNet *net)
 	w = net->wsList;
 	while (w) { UiWsH *n = w->next; free(w); w = n; }
 	net->wsList = NULL;
+	{
+		UiWsSrvH *s = net->srvList;
+		while (s) {
+			UiWsSrvH *n = s->next;
+			srv_conn_handles_free_(s);
+			if (s->ready) CloseHandle(s->ready);
+			free(s);
+			s = n;
+		}
+		net->srvList = NULL;
+	}
 
 	if (net->io) {
 		if (net->io->iocp) CloseHandle(net->io->iocp);
@@ -1208,4 +1449,231 @@ int UiWs_State(void *handle)
 {
 	UiWsH *ws = (UiWsH *)handle;
 	return ws ? ws->state : -1;
+}
+
+/* ── WS 服务端公开 API ─────────────────────────────────────────────── */
+
+static void srv_cfg_copy_(UiWsServerConfig *d, const UiWsServerConfig *s)
+{
+	memset(d, 0, sizeof(*d));
+	if (!s) return;
+	d->bindHost = dupstr_(s->bindHost);
+	d->port = s->port;
+	d->path = dupstr_(s->path);
+	d->subprotocols = dupstr_(s->subprotocols);
+	d->extraHeaders = dupstr_(s->extraHeaders);
+	d->certPath = dupstr_(s->certPath);
+	d->certPassword = dupstr_(s->certPassword);
+	d->certSubject = dupstr_(s->certSubject);
+	d->certThumbprint = dupstr_(s->certThumbprint);
+	d->certStoreLocalMachine = s->certStoreLocalMachine;
+	d->maxConnections = s->maxConnections;
+	d->maxMessageSize = s->maxMessageSize;
+	d->maxSendBuffer = s->maxSendBuffer;
+	d->handshakeTimeoutMs = s->handshakeTimeoutMs;
+	d->pingIntervalMs = s->pingIntervalMs;
+	d->idleTimeoutMs = s->idleTimeoutMs;
+	d->closeTimeoutMs = s->closeTimeoutMs;
+	d->trace = s->trace;
+}
+
+static int srv_send_post_(UiWsSrvH *s, UiWsConnH *c, const void *data, int len,
+	int opcode, int broadcast)
+{
+	NetCmd *cmd;
+	NetSrvSend *m;
+
+	if (!s || s->closed || !s->net || !s->net->alive) return 0;
+	if (len < 0 || (len > 0 && !data)) return 0;
+	cmd = (NetCmd *)calloc(1, sizeof(NetCmd));
+	m = (NetSrvSend *)calloc(1, sizeof(NetSrvSend) + (size_t)(len > 0 ? len : 0));
+	if (!cmd || !m) { if (cmd) free(cmd); if (m) free(m); return 0; }
+	m->srvId = s->id;
+	m->connId = broadcast ? 0 : (c ? c->id : 0);
+	if (!broadcast && (!c || c->closed)) {
+		free(cmd);
+		free(m);
+		return 0;
+	}
+	m->opcode = opcode;
+	m->len = len;
+	if (len > 0) memcpy(m->data, data, (size_t)len);
+	cmd->type = broadcast ? NET_CMD_SRV_BROADCAST : NET_CMD_SRV_SEND;
+	cmd->p = m;
+	net_cmd_post(s->net, cmd);
+	return 1;
+}
+
+UiWsServer *UiWsServer_Create(UiNet *net, const UiWsServerConfig *cfg,
+	const UiWsServerCallbacks *cb, void *user)
+{
+	UiWsSrvH *h;
+	NetCmd *cmd;
+	NetSrvStart *st;
+	uint64_t id;
+
+	if (!net || !net->alive) return NULL;
+	h = (UiWsSrvH *)calloc(1, sizeof(UiWsSrvH));
+	cmd = (NetCmd *)calloc(1, sizeof(NetCmd));
+	st = (NetSrvStart *)calloc(1, sizeof(NetSrvStart));
+	if (!h || !cmd || !st) {
+		if (h) free(h);
+		if (cmd) free(cmd);
+		if (st) free(st);
+		return NULL;
+	}
+
+	id = net->nextId++;
+	if (net->nextId == 0) net->nextId = 1;
+	h->id = id;
+	h->net = net;
+	if (cb) h->cb = *cb;
+	h->user = user;
+	h->state = UI_WS_SRV_STARTING;
+	h->ready = CreateEventW(NULL, FALSE, FALSE, NULL);
+	h->next = net->srvList;
+	net->srvList = h;
+
+	st->id = id;
+	srv_cfg_copy_(&st->cfg, cfg);
+
+	cmd->type = NET_CMD_SRV_START;
+	cmd->p = st;
+	net_cmd_post(net, cmd);
+
+	if (h->ready) {
+		WaitForSingleObjectEx(h->ready, INFINITE, TRUE);
+		CloseHandle(h->ready);
+		h->ready = NULL;
+	}
+	if (h->state == UI_WS_SRV_ERROR) {
+		srv_handle_unlink_(net, h);
+		srv_conn_handles_free_(h);
+		free(h);
+		return NULL;
+	}
+	return h;
+}
+
+void UiWsServer_Destroy(UiWsServer *srv)
+{
+	UiWsSrvH *h = (UiWsSrvH *)srv;
+	HANDLE done = NULL;
+
+	if (!h) return;
+	if (!h->closed && h->net && h->net->alive) {
+		NetCmd *cmd = (NetCmd *)calloc(1, sizeof(NetCmd));
+		NetSrvStop *st = (NetSrvStop *)calloc(1, sizeof(NetSrvStop));
+		done = CreateEventW(NULL, FALSE, FALSE, NULL);
+		if (cmd && st && done) {
+			st->id = h->id;
+			st->done = done;
+			cmd->type = NET_CMD_SRV_STOP;
+			cmd->p = st;
+			net_cmd_post(h->net, cmd);
+			WaitForSingleObjectEx(done, 20000, TRUE);
+		} else {
+			if (cmd) free(cmd);
+			if (st) free(st);
+		}
+	}
+	if (done) CloseHandle(done);
+	srv_handle_unlink_(h->net, h);
+	srv_conn_handles_free_(h);
+	if (h->ready) CloseHandle(h->ready);
+	free(h);
+}
+
+int UiWsServer_Port(const UiWsServer *srv)
+{
+	const UiWsSrvH *h = (const UiWsSrvH *)srv;
+	return h ? h->port : 0;
+}
+
+int UiWsServer_State(const UiWsServer *srv)
+{
+	const UiWsSrvH *h = (const UiWsSrvH *)srv;
+	return h ? h->state : UI_WS_SRV_STOPPED;
+}
+
+int UiWsServer_ConnCount(const UiWsServer *srv)
+{
+	const UiWsSrvH *h = (const UiWsSrvH *)srv;
+	const UiWsConnH *c;
+	int n = 0;
+	if (!h) return 0;
+	for (c = h->conns; c; c = c->next) n++;
+	return n;
+}
+
+int UiWsServer_Send(UiWsConn *conn, const void *data, int len, int opcode)
+{
+	UiWsConnH *c = (UiWsConnH *)conn;
+	if (!c || c->closed) return 0;
+	return srv_send_post_(c->srv, c, data, len, opcode, 0);
+}
+
+int UiWsServer_Broadcast(UiWsServer *srv, const void *data, int len, int opcode)
+{
+	return srv_send_post_((UiWsSrvH *)srv, NULL, data, len, opcode, 1);
+}
+
+void UiWsServer_Close(UiWsConn *conn, int code, const char *reason)
+{
+	UiWsConnH *c = (UiWsConnH *)conn;
+	NetCmd *cmd;
+	NetSrvCloseCmd *r;
+
+	if (!c || c->closed || c->closing || !c->srv || !c->srv->net ||
+	    !c->srv->net->alive) return;
+	cmd = (NetCmd *)calloc(1, sizeof(NetCmd));
+	r = (NetSrvCloseCmd *)calloc(1, sizeof(NetSrvCloseCmd));
+	if (!cmd || !r) { if (cmd) free(cmd); if (r) free(r); return; }
+	if (code <= 0) code = 1000;
+	r->srvId = c->srv->id;
+	r->connId = c->id;
+	r->code = code;
+	Net_StrCopy(r->reason, (int)sizeof(r->reason), reason ? reason : "");
+	c->closing = 1;
+	cmd->type = NET_CMD_SRV_CLOSE;
+	cmd->p = r;
+	net_cmd_post(c->srv->net, cmd);
+}
+
+void UiWsServer_CloseAll(UiWsServer *srv, int code, const char *reason)
+{
+	UiWsSrvH *h = (UiWsSrvH *)srv;
+	NetCmd *cmd;
+	NetSrvCloseCmd *r;
+
+	if (!h || h->closed || !h->net || !h->net->alive) return;
+	cmd = (NetCmd *)calloc(1, sizeof(NetCmd));
+	r = (NetSrvCloseCmd *)calloc(1, sizeof(NetSrvCloseCmd));
+	if (!cmd || !r) { if (cmd) free(cmd); if (r) free(r); return; }
+	if (code <= 0) code = 1000;
+	r->srvId = h->id;
+	r->connId = 0;
+	r->code = code;
+	Net_StrCopy(r->reason, (int)sizeof(r->reason), reason ? reason : "");
+	cmd->type = NET_CMD_SRV_CLOSE;
+	cmd->p = r;
+	net_cmd_post(h->net, cmd);
+}
+
+const char *UiWsConn_Path(const UiWsConn *conn)
+{
+	const UiWsConnH *c = (const UiWsConnH *)conn;
+	return c ? c->path : "";
+}
+
+const char *UiWsConn_Peer(const UiWsConn *conn)
+{
+	const UiWsConnH *c = (const UiWsConnH *)conn;
+	return c ? c->peer : "";
+}
+
+const char *UiWsConn_Protocol(const UiWsConn *conn)
+{
+	const UiWsConnH *c = (const UiWsConnH *)conn;
+	return c ? c->protocol : "";
 }

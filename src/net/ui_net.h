@@ -32,7 +32,10 @@ typedef enum UiNetErr {
 	UI_NET_E_HTTP,
 	UI_NET_E_REDIRECT,
 	UI_NET_E_WS,
-	UI_NET_E_INTERNAL
+	UI_NET_E_INTERNAL,
+	UI_NET_E_LISTEN,
+	UI_NET_E_CERT,
+	UI_NET_E_LIMIT
 } UiNetErr;
 
 const char *UiNet_StrError(int err);

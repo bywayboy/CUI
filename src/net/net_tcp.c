@@ -227,6 +227,10 @@ void net_io_on_completion(NetIo *io, OVERLAPPED *ov, ULONG_PTR key,
 	(void)key;
 
 	if (!op) return;                 /* 唤醒包 */
+	if (op->kind >= NET_OP_SRV_ACCEPT) {
+		net_srv_on_completion(io, op, bytes, st);
+		return;
+	}
 	conn = op->conn;
 	if (!conn) { free(op->buf); free(op); return; }
 
