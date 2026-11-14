@@ -576,18 +576,27 @@ static void nav_draw_root_item(UiNavBar *nav, UiPopupManager *pm, UiContext *ui,
 	}
 
 	if (vertical && nav->rail) {
+		/* 有子项的项在右缘显示 ›, 与展开态/水平态的箭头语义一致;
+		 * 右侧留 10 DIP 内缩, 不贴按钮边框; 图标整体左移让出标识位. */
+		float kidsW = nav_has_children(it) ? 14.0f : 0.0f;
+		float areaW = nav_maxf(0.0f, rc.w - kidsW);
 		if (iconW > 0.0f) {
-			ir = Ui_Rect(rc.x + (rc.w - iconW) * 0.5f,
+			ir = Ui_Rect(rc.x + (areaW - iconW) * 0.5f,
 				rc.y + (rc.h - s->iconSize) * 0.5f,
 				iconW, s->iconSize);
 			nav_icon_draw(ui, it, ir, textCol,
 				enabled && nav_item_enabled(it));
 		} else {
-			tr = Ui_Rect(rc.x + 4.0f, rc.y, rc.w - 8.0f, rc.h);
+			tr = Ui_Rect(rc.x + 4.0f, rc.y,
+				nav_maxf(0.0f, areaW - 8.0f), rc.h);
 			Gfx_Text(ui->gfx, t->fSmall, it->label ? it->label : "",
 				tr, textCol, GFX_TEXT_CENTER | GFX_TEXT_VCENTER |
 				GFX_TEXT_ELLIPSIS);
 		}
+		if (kidsW > 0.0f)
+			nav_chevron(ui, Ui_Rect(rc.x + rc.w - 24.0f, rc.y,
+				14.0f, rc.h), textCol,
+				enabled && nav_item_enabled(it));
 	} else {
 		textW = Gfx_TextWidth(ui->gfx, t->fBody,
 			it->label ? it->label : "");
@@ -925,11 +934,12 @@ static int nav_draw_panel(UiNavBar *nav, UiPopupManager *pm, UiContext *ui,
 					break;
 			}
 
-			if (leaf || anc || openChild) {
+			/* 展开子菜单的父项不用底色标记: hover 在兄弟行等待弹出时
+			 * 两行会同时像 hover. 改用左侧细线, 与 hover 底色区分. */
+			if (leaf || anc) {
 				fill = nav_col(s->itemSelected,
 					Ui_ColorAlpha(t->primary.base, 42));
 				if (anc) fill = nav_alpha_k(fill, 0.62f);
-				if (openChild && !leaf) fill = nav_alpha_k(fill, 0.8f);
 				Gfx_FillRoundRect(ui->gfx, row, s->radius, fill);
 			}
 			if (hot) {
@@ -992,8 +1002,9 @@ static int nav_draw_panel(UiNavBar *nav, UiPopupManager *pm, UiContext *ui,
 			Gfx_Text(ui->gfx, t->fBody, it->label ? it->label : "",
 				tr, col, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 
-			if (leaf || anc) {
+			if (leaf || anc || openChild) {
 				UiColor ind = nav_col(s->indicator, t->primary.base);
+				if (!leaf && !anc) ind = nav_alpha_k(ind, 0.55f);
 				Gfx_FillRoundRect(ui->gfx,
 					Ui_Rect(row.x + 3.0f, row.y + 7.0f, 3.0f,
 						nav_maxf(0.0f, row.h - 14.0f)),
