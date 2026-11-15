@@ -43,6 +43,7 @@ typedef struct UiTheme {
 	GfxFont *fLabel;    /* 12 bold 字段标签 */
 	GfxFont *fBig;      /* 22 bold 大标题 */
 	GfxFont *fIcon;     /* 16 Segoe MDL2 Assets (可能为 NULL) */
+	GfxFont *fIconS;    /* 12 Segoe MDL2 Assets，与正文同视觉大小 (可能为 NULL) */
 
 	/* 通用 */
 	UiColor page;

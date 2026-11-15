@@ -106,7 +106,7 @@ static int button_draw(UiContext *ui, UiId id, UiRect rc,
 	} else {
 		ss.bg = 0;
 		ss.bg2 = 0;
-		ss.hoverBg = (type == UI_BTYPE_DEFAULT) ? t->neutral.soft
+		ss.hoverBg = (type == UI_BTYPE_DEFAULT) ? t->neutral.hover
 			: Ui_ColorAlpha(role->soft, 200);
 		ss.pressBg = (type == UI_BTYPE_DEFAULT) ? t->neutral.press
 			: Ui_ColorAlpha(role->press, 180);

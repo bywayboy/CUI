@@ -268,6 +268,8 @@ CUI 的取舍是：**只做安装器/工具类窗口需要的那一层**。体�
 | 窗内 Dialog / ConfirmDialog | ✅ | 开合动画、Tab 焦点循环、嵌套 Popup、输入 scope 隔离；body 仅布局（8.18） |
 | Select / Menu | ✅ | 单选/多选/可搜索下拉、右键菜单；`UiPopupManager` 统一弹层（8.16） |
 | 日期选择 | ✅ | DatePicker 四模式：日期/日期+时间/范围/范围+时间；可编辑触发器 + 滚动时间列（8.19） |
+| 多级导航 | ✅ | `UiNavBar` 水平/垂直/rail、溢出收进 `>>`、无滚动续页（8.21） |
+| 行内分页 | ✅ | `UiPagination` 页码窗口/自动紧凑退化/保持首条/键盘（8.22） |
 | 原生文件对话框 | 由应用调用 | 注意动作延后，避免渲染重入 |
 | 多主题/换肤 | 自行扩展 | `UiTheme` 是一组令牌 |
 | 托盘/通知 | ❌ | 不属于 UI 层 |
@@ -1312,7 +1314,7 @@ alpha = glowBase * intensity * (0.42 - 0.12*k)
 
 ```c
 UiTheme theme;
-UiTheme_Init(&theme, gfx);       /* 创建 11 个字体 + 填颜色 */
+UiTheme_Init(&theme, gfx);       /* 创建 13 个字体 + 填颜色 */
 /* ... */
 UiTheme_Shutdown(&theme, gfx);
 ```
@@ -1332,6 +1334,8 @@ UiTheme_Shutdown(&theme, gfx);
 | `fInput` | 14 normal | 编辑框 |
 | `fLabel` | 12 bold | 字段标签 |
 | `fBig` | 22 bold | 大标题 |
+| `fIcon` | 16 MDL2 | 图标按钮 / 导航箭头（Segoe MDL2 Assets） |
+| `fIconS` | 12 MDL2 | 行内图标（分页箭头），与正文同视觉大小 |
 
 颜色令牌按用途分组：
 
@@ -1411,8 +1415,8 @@ static void draw_close(UiRect rc)
 
     ZeroMemory(&ss, sizeof(ss));
     ss.bg = 0xFFFFFFFF;
-    ss.hoverBg = 0xFFF1F3FA;
-    ss.pressBg = 0xFFE4E8F5;
+    ss.hoverBg = 0xFFE4E9F8;
+    ss.pressBg = 0xFFD5DDF0;
     ss.radius = rc.w * 0.5f;
 
     st = Ui_DrawSurface(&ui, Ui_Id("demo.close", 0, 0), rc, &ss, 1);
@@ -1802,8 +1806,10 @@ Ui_ButtonEx(&ui, Ui_Id("form.help", 0, 0), helpRc, "帮助", &text, 1);
   混向 `neutral.press` 并加 `primary` 混合描边。非 default 用 `role.soft`
   底、`role.base` 字与 150 alpha 描边。悬停时底色渐变为 `role.base`，
   文字同时混合到对比色，保证任意品牌色下都可读。
-- **TEXT**：常态透明；default 用 `neutral.soft`、非 default 用 `role.soft`
-  作为悬停/按下底，文字为 `text2` 或 `role.base`。
+- **TEXT**：常态透明；default 用 `neutral.hover`、非 default 用 `role.soft`
+  作为悬停/按下底，文字为 `text2` 或 `role.base`。亮色主题的
+  `btnHoverBg/btnPressBg` 已加深到 `#E4E9F8/#D5DDF0`，否则贴近白色卡片的
+  悬停几乎看不出来。
 - **shape**：`RECT` 用 `theme.buttonRadius`；`ROUND` 取 `h/2`；
   `CIRCLE` 取 `min(w,h)/2`（配合等宽高即为正圆）。
 - **disabled**：统一压成 `neutral.soft` 底、`neutral.border` 边、
@@ -2854,6 +2860,55 @@ UiNavBar_DrawPopups(&nav, &pm, &ui);
 - **悬停**：会话已打开时，悬停顶级项或父行立即切换/展开，无防抖延迟；
   关闭态不因鼠标路过而弹菜单，仍由点击打开。
 - **动画**：只做颜色渐变（`Ui_State`），面板几何即时切换。
+
+### 8.22 UiPagination 行内分页
+
+> 设计细节：[CUI-分页-设计方案.md](CUI-分页-设计方案.md)；样例
+> [samples/pagination.c](../samples/pagination.c)（`bin\cui_pagination.exe`）；
+> headless 断言 `tests/ui_pagination_test.c`（`bin\cui_pagination_test.exe`，320 项）。
+
+应用持有 `UiPagination`，组件只负责页数推导、页码窗口、绘制与键盘：
+
+```c
+UiPagination pg;
+UiPagination_Init(&pg, Ui_Id("vm.pg", 0, 0), 1000, 20);   /* 50 页 */
+
+UiPaginationStyle st;
+ZeroMemory(&st, sizeof(st));
+st.firstLast = 1;                    /* « ‹ 页码 › »，默认只有 ‹ › */
+UiPagination_Draw(&pg, &ui, rc, &st);
+
+int off = UiPagination_Offset(&pg);  /* page*pageSize，末页自行截断 */
+if (UiPagination_TakeChanged(&pg)) { /* page 被点击/键盘/setter 改写 */ }
+```
+
+```c
+/* 每页条数切换：保持原首条数据落在新页内 */
+UiPagination_SetPageSize(&pg, &ui, 50);
+/* 数据量变化：页数收缩时 clamp 到末页 */
+UiPagination_SetTotal(&pg, &ui, newTotal);
+/* 键盘：仅在 ui.navId == pg.id 时生效 */
+if (UiPagination_Key(&pg, &ui, vk)) { /* ←/→ Home/End PgUp/PgDn */ }
+```
+
+语义：
+
+- **数据模型**：`total + pageSize`，页数内部推导；页码 0 基、界面 +1。
+- **宽度退化**：数字页码 → `‹ 6 / 20 ›` → `‹ ›` → 不绘制；所有阈值按
+  实宽计算，任何宽度都不溢出给定矩形。
+- **页码窗口**：首末页常驻，中间窗口 + 单省略号；`maxSlots` 自适应并
+  clamp 到 `[5,9]`，`firstLast=1` 多出首/末两格。
+- **保持首条**：`SetPageSize` 用 `offset = page*oldSize` 再除以新 size，
+  切换 20→50→30 时原页首条仍在当前页。
+- **单页**：`pageCount==1` 默认隐藏，`showSingle=1` 强制显示。
+- **箭头**：默认用 `fIconS`（12 DIP MDL2 chevron），首/末页画双 chevron；
+  可用 `prevText/nextText` 换成文本，无图标字体时自动回退 `‹ › « »`。
+- **`changed`**：粘滞到 `TakeChanged`，点击/键盘/setter 都置位；
+  同一帧里多个实例演示同一份数据时必须给不同 `p->id`，页码由应用同步。
+- **键盘**：方向键 ±1、Home/End、PgUp/PgDn ±5；不占用滚轮，避免和
+  `UiScrollView` 抢事件。
+- **悬停**：页码/箭头与行内文字按钮共用 `neutral.hover/press` 实色，亮色主题
+  下是 `#E4E9F8/#D5DDF0`，在白色卡片上可辨识（`primary.soft` 色差太小）。
 
 ## 9. UiAnim 动画内核
 

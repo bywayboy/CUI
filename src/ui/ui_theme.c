@@ -298,8 +298,8 @@ static void theme_apply_preset(UiTheme *t, UiThemeId id)
 	t->btnPrimaryPress = 0xFF3F5BE0;
 	t->btnPrimaryText = 0xFFFFFFFF;
 	t->btnPrimaryBorder = 0;
-	t->btnHoverBg = 0xFFF1F3FA;
-	t->btnPressBg = 0xFFE4E8F5;
+	t->btnHoverBg = 0xFFE4E9F8;
+	t->btnPressBg = 0xFFD5DDF0;
 	t->btnText = t->text2;
 	t->btnBorder = 0xFFDEE5F2;
 	t->btnHoverBorder = 0xFFD0D8E8;
@@ -408,6 +408,7 @@ void UiTheme_Init(UiTheme *t, Gfx *gfx)
 	t->fLabel = Gfx_CreateFont(gfx, 12.0f, 700);
 	t->fBig = Gfx_CreateFont(gfx, 22.0f, 700);
 	t->fIcon = Gfx_CreateFontFamily(gfx, L"Segoe MDL2 Assets", 16.0f, 400);
+	t->fIconS = Gfx_CreateFontFamily(gfx, L"Segoe MDL2 Assets", 12.0f, 400);
 
 	theme_apply_global(t);
 	t->themeRev++;
@@ -469,7 +470,8 @@ void UiTheme_Shutdown(UiTheme *t, Gfx *gfx)
 	Gfx_DestroyFont(gfx, t->fLabel);
 	Gfx_DestroyFont(gfx, t->fBig);
 	Gfx_DestroyFont(gfx, t->fIcon);
+	Gfx_DestroyFont(gfx, t->fIconS);
 	t->fTitle = t->fHead = t->fBody = t->fSmall = NULL;
 	t->fTemp = t->fBtn = t->fMini = t->fTempBig = NULL;
-	t->fInput = t->fLabel = t->fBig = t->fIcon = NULL;
+	t->fInput = t->fLabel = t->fBig = t->fIcon = t->fIconS = NULL;
 }

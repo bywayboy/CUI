@@ -719,7 +719,7 @@ static void dp_draw_month(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui,
 			Gfx_FillRect(ui->gfx, cell, t->primary.soft);
 		if (en && st.hover > 0.004f && !sel)
 			Gfx_FillRoundRect(ui->gfx, in, 6.0f,
-				Ui_ColorAlpha(t->primary.base, (int)(st.hover * 22.0f)));
+				Ui_ColorAlpha(t->primary.base, (int)(st.hover * 32.0f)));
 		if (sel && en)
 			Gfx_FillRoundRect(ui->gfx, in, 6.0f, t->primary.base);
 		else if (isToday)
@@ -803,7 +803,7 @@ static void dp_draw_time(UiDatePicker *dp, UiContext *ui, UiRect panel, float ty
 					Gfx_FillRoundRect(ui->gfx, Ui_RectInset(row, 1.0f), 4.0f, t->primary.soft);
 				else if (st.hover > 0.004f)
 					Gfx_FillRoundRect(ui->gfx, Ui_RectInset(row, 1.0f), 4.0f,
-						Ui_ColorAlpha(t->primary.base, (int)(st.hover * 18.0f)));
+						Ui_ColorAlpha(t->primary.base, (int)(st.hover * 28.0f)));
 				col = sel ? t->primary.base : t->toastText;
 				wsprintfA(b, "%02d", k);
 				Gfx_Text(ui->gfx, t->fBody, b, row, col,

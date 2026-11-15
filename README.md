@@ -61,6 +61,7 @@ CUI/
 │  ├─ CUI-弹层与选择控件-设计方案.md  弹层管理器 + Select/Menu 状态与命中路由
 │  ├─ CUI-TextArea-设计方案.md  动态文本/增量布局/IME 代理/滚动设计
 │  ├─ CUI-导航菜单-设计方案.md  多级导航/溢出分页/无滚动弹层/选中路径
+│  ├─ CUI-分页-设计方案.md  行内分页：页码窗口/宽度退化/保持首条位置
 │  ├─ CUI-日期选择-设计方案.md  DatePicker 四模式/双联动范围/时间列/键入校验
 │  ├─ CUI-网络层-设计方案.md  IOCP+SChannel/自研 DNS/APC 归位/定时器/验证判据
 │  └─ CUI-图片-设计方案.md   UiImage：WIC 解码/URL-文件-内存/GPU loading/失效
@@ -76,6 +77,7 @@ CUI/
 │  ├─ overlays.c          Select/Menu + Dialog/ConfirmDialog（含 TextArea 测试）
 │  ├─ textarea.c          多行文本：软换行/滚动/选择/IME/readonly
 │  ├─ datepicker.c        DatePicker 四模式 + ±30 天边界演示
+│  ├─ pagination.c        行内分页：数字/紧凑/极简三态 + 每页条数 + 键盘
 │  ├─ net.c               网络层：HTTP(S) / WebSocket(wss) / UiTimer
 │  ├─ ws_server.c         WebSocket 服务端：ws/wss / 回显 / 广播 / 连接日志
 │  └─ image.c             图片：URL / 本地文件 / 内存 + GPU loading
@@ -125,6 +127,7 @@ CUI/
       ├─ ui_datetime.*     0CRT 日期数学：civil↔day-number/格式化/解析
       ├─ ui_menu.*         Menu / 右键上下文菜单（分隔/禁用/危险项）
       ├─ ui_nav.*          多级导航菜单：水平/垂直/rail、>> 溢出、无滚动分页
+      ├─ ui_pagination.*   行内分页：页码窗口/宽度退化/保持首条/键盘
       ├─ ui_tooltip.*      悬停延迟提示
       ├─ ui_theme.*       颜色/字体令牌（亮/暗 + 自定义 5 语义色）
       ├─ ui_paint.*       Ui_DrawSurface：填充/描边/光晕的统一外观
@@ -162,6 +165,7 @@ bin\cui_overlays.exe    REM Select/Menu + Dialog/ConfirmDialog（含 TextArea �
 bin\cui_textarea.exe    REM 多行文本：软换行 / 滚动 / 选择 / IME
 bin\cui_nav.exe         REM 导航菜单：水平/垂直/rail / >> 溢出 / 多级子菜单
 bin\cui_datepicker.exe  REM DatePicker：日期 / 日期+时间 / 范围 / 范围+时间
+bin\cui_pagination.exe  REM 分页：数字/紧凑/极简三态 + 每页条数 + 键盘翻页
 bin\cui_net.exe         REM 网络层：HTTP(S) / WS / WSS / UiTimer
 bin\cui_ws_server.exe   REM WebSocket 服务端：WS/WSS / 回显 / 广播
 bin\cui_net_test.exe    REM 网络层断言（CUI_NET_LIVE=1 跑实网，需先起 tests\net_server_*.ps1）
