@@ -183,6 +183,8 @@ void __stdcall startup(void)
 	double t0, t_parse, t_frame, t_frame2;
 
 	Log_Init();
+	/* union 重构后的行结构尺寸 (回归: 防止字段回涨) */
+	CHECK(UiMarkdown_DebugRowSize() <= 128);
 	SetEnvironmentVariableA("SCV2_ULW", "1");
 	CHECK(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED) >= 0);
 

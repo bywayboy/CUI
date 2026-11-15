@@ -1426,3 +1426,53 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md);
   `gfx_math_test` 20/0、`gfx_rich_test` 34/0、`net_test` 877/0；
   4K@200% 截图确认分式更紧凑、上下标比例/间隙、display 求和字号、
   根号顶钩与横线连接。
+
+### 内存布局优化：命名 union + tag 纪律（2026-11-14）
+
+- 实测尺寸（x64）：
+  | 结构 | 重构前 | 重构后 | 变化 |
+  |:--|--:|--:|--:|
+  | `MdBlock` | 216 B | 152 B | −64 B（−29.6%） |
+  | `MdRow`（行缓存） | 232 B | 128 B | −104 B（−44.8%） |
+  | `MdCell` | 64 B | 64 B | 未改 |
+  以 1 万叶块/行计，元数据约省 1.6 MB；正文 `text16`、`MdRun`、
+  URL 池与可见行 DWrite 布局仍是主要内存占用。
+- `MdBlock`：
+  - 类型独占标量 `u.code / u.image / u.math / u.box / u.table`；
+  - payload `p.text`（段落/标题/代码/图片 alt）、`p.kids`（引用/列表/
+    条目/容器）、`p.table`（表格对齐 + 单元格）；
+  - 公共字段（type/flags/level/src/hash/raw）保持独立。
+- `MdRow`：
+  - `p.text`（段落/标题/代码）、`p.image`、`p.table`、`p.math`；
+  - 公共字段（缩进/标记/间距/哈希/测量状态）保持独立。
+- 命名 union 而非匿名 union：所有访问显式写成 `b->u.image.urlOff`、
+  `b->p.text.imgs`、`r->p.table.cellRt`，用错标签在代码评审/grep 中可见，
+  也强制编译器报出所有旧访问点。
+- tag 纪律：
+  - `md_free_block`/`md_row_release` 改为按 type `switch`，每个分支只释放
+    本类型成员；
+  - 递归/哈希/行内 pass/count、测量/绘制/busy 循环都先用
+    `MD_BT_KIDS` / `MD_BT_TEXT` / `md_row_is_text` / 显式 type 判断；
+  - `MdRow` 增加创建时快照 `rowType`：旧行释放时 `blk` 可能已随文档
+    释放（SetText 先释放旧 MdDoc 再清行），按 `blk->type` 会 use-after-free；
+    本次由 `md_ui_test` 的“大文档 → 表格”切换实测暴露并修复。
+- 回归：`md_test` 416/0（含 `sizeof(MdBlock)<=152`）、`md_ui_test` 103/0
+  （含 `sizeof(MdRow)<=128` 与 SetText 复用）、`md_math_test` 96/0、
+  `gfx_math_test` 20/0、`gfx_rich_test` 34/0、`net_test` 935/0；
+  4K@200% 样例截图确认公式/图片/表格/容器渲染不变。
+- 后续可继续：`MdCell` 的 parse 中间态 `raw` 与 runs/links 互斥，可再省
+  ~16 B/单元格；正文/payload 数组才是下一步大头。
+
+### 样例：UiNet + HTTPS 远程图片（2026-11-14）
+
+- `samples/markdown.c` 在 `on_init` 用默认 `UiNetConfig` 创建 `UiNet`，
+  并传给 `UiMarkdown_Create(gfx, id, net)`；`on_shutdown` 先销毁 Markdown
+  （内部 `UiImage` 会 `UiHttp_Cancel`），再 `UiNet_Destroy`。
+- 文档加入 HTTPS 示例：
+  `![HTTPS 图片](https://httpbin.org/image/png "center"){width=200}`；
+  加载期间显示占位 + spinner，完成后按宽度等比显示；失败显示占位。
+- 链路：`md_image_load` 识别 `http://`/`https://` → `UiImage_LoadUrl` →
+  `UiHttp_Send`（https 走 SChannel TLS）→ 回调 WIC 解码；Markdown 无共享
+  HTTP 图片缓存，行被驱逐后回看会重新下载（后续可加 URL→解码位图 LRU）。
+- 验证：4K@200% 下 HTTPS 图片约 1–2 秒异步加载完成并居中显示；
+  关闭窗口后进程正常退出（先 md 后 net 的销毁顺序）。

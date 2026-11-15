@@ -76,6 +76,7 @@ static void db_puts(DynBuf *b, const char *s)
 
 typedef struct App {
 	UiMarkdown *md;
+	UiNet *net;            /* HTTPS 图片加载 */
 	UiTextArea src;        /* Markdown 源码编辑器 */
 	int appended;
 	int fromFile;
@@ -219,6 +220,10 @@ static void build_sample(App *a)
 	db_addf(&b, "### 行内图片与链接\n\n");
 	db_addf(&b, "行内图片跟随文字：这里是一张小图 ![小图](%s){width=24 height=24} ，后面继续正文。\n\n",
 		a->inlinePath);
+	db_puts(&b,
+		"### HTTPS 远程图片\n\n"
+		"通过 UiNet/UiHttp 异步下载（需要网络；失败时显示占位）：\n\n"
+		"![HTTPS 图片](https://httpbin.org/image/png \"center\"){width=200}\n\n");
 	db_puts(&b,
 		"链接交互：点击 [CUI Markdown 链接](https://example.com/markdown) 会触发回调。\n\n"
 		"### 容器\n\n"
@@ -518,7 +523,12 @@ static void on_init(UiApp *app, void *user)
 	App *a = (App *)user;
 	app->minW = 820.0f;
 	build_sample(a);
-	a->md = UiMarkdown_Create(app->gfx, Ui_Id("md.doc", 0, 0), NULL);
+	{
+		UiNetConfig cfg;
+		ZeroMemory(&cfg, sizeof(cfg));
+		a->net = UiNet_Create(&cfg);
+	}
+	a->md = UiMarkdown_Create(app->gfx, Ui_Id("md.doc", 0, 0), a->net);
 	if (a->md) {
 		UiMarkdown_SetLinkFn(a->md, on_link, a);
 		UiMarkdown_SetText(a->md, a->doc);
@@ -676,6 +686,10 @@ static void on_shutdown(UiApp *app, void *user)
 	if (a->md) {
 		UiMarkdown_Destroy(a->md);
 		a->md = NULL;
+	}
+	if (a->net) {
+		UiNet_Destroy(a->net);
+		a->net = NULL;
 	}
 	UiTextArea_Shutdown(&a->src);
 	db_free(&a->editBuf);

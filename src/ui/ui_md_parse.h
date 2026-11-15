@@ -115,6 +115,12 @@ typedef struct MdMathRef {
 	int srcOff, srcLen;
 } MdMathRef;
 
+/* 块类型谓词: union 成员必须按 type 标签访问 (违反会读到别的成员) */
+#define MD_BT_TEXT(t) ((t) == MD_BLOCK_PARAGRAPH || (t) == MD_BLOCK_HEADING || \
+	(t) == MD_BLOCK_CODE || (t) == MD_BLOCK_IMAGE)
+#define MD_BT_KIDS(t) ((t) == MD_BLOCK_QUOTE || (t) == MD_BLOCK_LIST || \
+	(t) == MD_BLOCK_ITEM || (t) == MD_BLOCK_CONTAINER)
+
 typedef struct MdBlock {
 	uint8_t type;
 	uint8_t flags;       /* MD_BF_* */
@@ -127,33 +133,45 @@ typedef struct MdBlock {
 	int srcOff, srcLen;  /* 源串区间 */
 	uint32_t hash;       /* 内容哈希 (用于增量 diff) */
 
-	int langOff, langLen;/* CODE: 信息串语言 (urls 池) */
-	int urlOff, urlLen;  /* IMAGE: URL (urls 池) */
-	uint8_t imgAlign;    /* IMAGE: MD_ALIGN_*; 255 = 用样式默认 */
-	int imgW, imgH;      /* IMAGE: 显式尺寸 (DIP); 0 = 未指定 */
-	int mathOff, mathLen;/* MATH: 公式源码 (urls 池, UTF-8) */
-	uint8_t boxKind;     /* CONTAINER: MD_BOX_* */
-	int titleOff, titleLen; /* CONTAINER: 标题 (urls 池, UTF-8) */
+	/* 类型独占标量: 必须按 type 访问 u.code / u.image / ... */
+	union {
+		struct { int langOff, langLen; } code;
+		struct {
+			int urlOff, urlLen;
+			int imgW, imgH;          /* 显式尺寸 (DIP); 0 = 未指定 */
+			uint8_t imgAlign;        /* MD_ALIGN_*; 255 = 默认 */
+		} image;
+		struct { int mathOff, mathLen; } math;
+		struct {
+			int boxKind;             /* MD_BOX_* */
+			int titleOff, titleLen;
+		} box;
+		struct { int cols, rows; } table;
+	} u;
 
-	wchar_t *text16;     /* 叶子展示文本 */
-	int len16;
-	MdRun *runs;
-	int runCount, runCap;
-	MdLink *links;
-	int linkCount, linkCap;
-
-	MdImgRef *imgs;      /* 行内图片 (段落/标题) */
-	int imgCount, imgCap;
-
-	MdMathRef *maths;    /* 行内公式 (段落/标题) */
-	int mathCount, mathCap;
-
-	struct MdBlock *children;  /* QUOTE/LIST/ITEM */
-	int childCount, childCap;
-
-	int cols, rows;      /* TABLE */
-	uint8_t *align;
-	MdCell *cells;       /* rows*cols, 行优先 */
+	/* 类型独占 payload: p.text / p.kids / p.table */
+	union {
+		struct {
+			wchar_t *text16;         /* 叶子展示文本 */
+			int len16;
+			MdRun *runs;
+			int runCount, runCap;
+			MdLink *links;
+			int linkCount, linkCap;
+			MdImgRef *imgs;          /* 行内图片 */
+			int imgCount, imgCap;
+			MdMathRef *maths;        /* 行内公式 */
+			int mathCount, mathCap;
+		} text;
+		struct {
+			struct MdBlock *children; /* QUOTE/LIST/ITEM/CONTAINER */
+			int childCount, childCap;
+		} kids;
+		struct {
+			uint8_t *align;          /* TABLE: 列对齐 */
+			MdCell *cells;           /* rows*cols, 行优先 */
+		} table;
+	} p;
 
 	char *raw;           /* 解析中间态, 完成后为 NULL */
 	int rawLen;

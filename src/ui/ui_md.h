@@ -99,6 +99,7 @@ int UiMarkdown_DebugMeasured(const UiMarkdown *md);
 int UiMarkdown_DebugMeasureCalls(const UiMarkdown *md);
 int UiMarkdown_DebugMathCache(const UiMarkdown *md);    /* 缓存的公式条目数 */
 int UiMarkdown_DebugMathMisses(const UiMarkdown *md);   /* 累计新建布局次数 */
+int UiMarkdown_DebugRowSize(void);                      /* sizeof(MdRow) */
 
 #ifdef __cplusplus
 }

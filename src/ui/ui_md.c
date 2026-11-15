@@ -48,6 +48,8 @@ enum {
 	MD_MK_TASK
 };
 
+/* 行 payload 按块类型互斥: 必须与 blk->type 标签一致.
+ * 公共字段: 缩进/标记/间距/哈希/测量状态. */
 typedef struct MdRow {
 	MdBlock *blk;
 	int indent;          /* DIP */
@@ -61,40 +63,50 @@ typedef struct MdRow {
 	uint32_t hash;
 	int measured;
 	float measuredW;
-	GfxRichText *rt;
-	float rtH;           /* 布局高度缓存: 命中预筛, 避免逐移动 DWrite 查询 */
-	GfxRect *codeRects;  /* 行内代码底色矩形 (布局局部坐标), 建 rt 时缓存 */
-	int codeN, codeCap;
+	uint8_t rowType;     /* 创建时快照: 旧行释放时 blk 可能已随文档释放 */
 
-	/* IMAGE */
-	UiImage *img;
-	float imgW, imgH;
-	int imgReady;
-	int imgStateSeen;
-
-	/* TABLE */
-	GfxRichText **cellRt;   /* rows*cols; 布局缓存 */
-	int cellN;
-	float *colW;
-	float *rowH;
-	float *cellW;        /* 单元格文本宽缓存 (对齐用) */
-	int tblCols, tblRows;
-	float tblH;
-
-	/* 行内图片 */
-	UiImage **inlImgs;
-	int *inlStates;
-	int inlN;
-
-	/* 行内公式: 每项对应 blk->maths[i]; NULL = 语法失败, 按源码回退 */
-	GfxMath **inlMath;
-	int mathN;
-
-	/* 块级公式 */
-	GfxMath *bm;
-	GfxRichText *bmFallback;   /* 语法失败时的源码文本 */
-	float bmW, bmH, bmD;
+	/* 按 rowType 访问 p.text / p.image / p.table / p.math */
+	union {
+		struct {
+			GfxRichText *rt;
+			float rtH;           /* 命中预筛, 避免逐移动 DWrite 查询 */
+			GfxRect *codeRects;  /* 行内代码底色矩形 (布局局部) */
+			int codeN, codeCap;
+			UiImage **inlImgs;   /* 行内图片 */
+			int *inlStates;
+			int inlN;
+			GfxMath **inlMath;   /* 行内公式 (blk->p.text.maths[i]) */
+			int mathN;
+		} text;                  /* PARAGRAPH / HEADING / CODE */
+		struct {
+			UiImage *img;
+			float imgW, imgH;
+			int imgReady;
+			int imgStateSeen;
+		} image;
+		struct {
+			GfxRichText **cellRt;   /* rows*cols; 布局缓存 */
+			int cellN;
+			float *colW;
+			float *rowH;
+			float *cellW;        /* 单元格文本宽缓存 (对齐用) */
+			int tblCols, tblRows;
+			float tblH;
+		} table;
+		struct {
+			GfxMath *bm;
+			GfxRichText *bmFallback;   /* 语法失败时的源码文本 */
+			float bmW, bmH, bmD;
+		} math;
+	} p;
 } MdRow;
+
+/* TEXT payload 行 (IMAGE 虽也是 text leaf, 但用 image payload) */
+static int md_row_is_text(int type)
+{
+	return type == MD_BLOCK_PARAGRAPH || type == MD_BLOCK_HEADING ||
+		type == MD_BLOCK_CODE;
+}
 
 typedef struct MdOldRow {
 	uint32_t hash;
@@ -559,68 +571,86 @@ static void md_math_cache_clear(UiMarkdown *md)
 	md->mmathCap = 0;
 }
 
+/* 按 blk->type 释放对应 payload; union 成员不可跨类型访问 */
 static void md_row_release(UiMarkdown *md, MdRow *r)
 {
-	int i;
+	int i, type;
+	if (!r) return;
 	if (md->hovRow >= 0 && md->hovRow < md->rowCount &&
 		&md->rows[md->hovRow] == r) {
 		md->hovRow = -1;
 		md->hovLink = -1;
 	}
-	if (r->rt) {
-		Gfx_RichDestroy(r->rt);
-		r->rt = NULL;
+	type = (int)r->rowType;
+	switch (type) {
+	case MD_BLOCK_PARAGRAPH:
+	case MD_BLOCK_HEADING:
+	case MD_BLOCK_CODE:
+		if (r->p.text.rt) {
+			Gfx_RichDestroy(r->p.text.rt);
+			r->p.text.rt = NULL;
+		}
+		r->p.text.rtH = 0.0f;
+		md_free_(r->p.text.codeRects);
+		r->p.text.codeRects = NULL;
+		r->p.text.codeN = r->p.text.codeCap = 0;
+		if (r->p.text.inlImgs) {
+			for (i = 0; i < r->p.text.inlN; i++)
+				if (r->p.text.inlImgs[i]) UiImage_Destroy(r->p.text.inlImgs[i]);
+			md_free_(r->p.text.inlImgs);
+			r->p.text.inlImgs = NULL;
+		}
+		md_free_(r->p.text.inlStates);
+		r->p.text.inlStates = NULL;
+		r->p.text.inlN = 0;
+		if (r->p.text.inlMath) {
+			for (i = 0; i < r->p.text.mathN; i++)
+				if (r->p.text.inlMath[i]) md_math_cache_put(md, r->p.text.inlMath[i]);
+			md_free_(r->p.text.inlMath);
+			r->p.text.inlMath = NULL;
+		}
+		r->p.text.mathN = 0;
+		break;
+	case MD_BLOCK_IMAGE:
+		if (r->p.image.img) {
+			UiImage_Destroy(r->p.image.img);
+			r->p.image.img = NULL;
+		}
+		r->p.image.imgW = r->p.image.imgH = 0.0f;
+		r->p.image.imgReady = 0;
+		r->p.image.imgStateSeen = 0;
+		break;
+	case MD_BLOCK_TABLE:
+		if (r->p.table.cellRt) {
+			for (i = 0; i < r->p.table.cellN; i++)
+				if (r->p.table.cellRt[i]) Gfx_RichDestroy(r->p.table.cellRt[i]);
+			md_free_(r->p.table.cellRt);
+			r->p.table.cellRt = NULL;
+		}
+		md_free_(r->p.table.colW);
+		r->p.table.colW = NULL;
+		md_free_(r->p.table.rowH);
+		r->p.table.rowH = NULL;
+		md_free_(r->p.table.cellW);
+		r->p.table.cellW = NULL;
+		r->p.table.cellN = 0;
+		r->p.table.tblCols = r->p.table.tblRows = 0;
+		r->p.table.tblH = 0.0f;
+		break;
+	case MD_BLOCK_MATH:
+		if (r->p.math.bm) {
+			md_math_cache_put(md, r->p.math.bm);
+			r->p.math.bm = NULL;
+		}
+		if (r->p.math.bmFallback) {
+			Gfx_RichDestroy(r->p.math.bmFallback);
+			r->p.math.bmFallback = NULL;
+		}
+		r->p.math.bmW = r->p.math.bmH = r->p.math.bmD = 0.0f;
+		break;
+	default:
+		break;
 	}
-	md_free_(r->codeRects);
-	r->codeRects = NULL;
-	r->codeN = r->codeCap = 0;
-	if (r->cellRt) {
-		for (i = 0; i < r->cellN; i++)
-			if (r->cellRt[i]) Gfx_RichDestroy(r->cellRt[i]);
-		md_free_(r->cellRt);
-		r->cellRt = NULL;
-	}
-	md_free_(r->colW);
-	r->colW = NULL;
-	md_free_(r->rowH);
-	r->rowH = NULL;
-	md_free_(r->cellW);
-	r->cellW = NULL;
-	if (r->img) {
-		UiImage_Destroy(r->img);
-		r->img = NULL;
-	}
-	if (r->inlImgs) {
-		for (i = 0; i < r->inlN; i++)
-			if (r->inlImgs[i]) UiImage_Destroy(r->inlImgs[i]);
-		md_free_(r->inlImgs);
-		r->inlImgs = NULL;
-	}
-	md_free_(r->inlStates);
-	r->inlStates = NULL;
-	r->inlN = 0;
-	if (r->inlMath) {
-		for (i = 0; i < r->mathN; i++)
-			if (r->inlMath[i]) md_math_cache_put(md, r->inlMath[i]);
-		md_free_(r->inlMath);
-		r->inlMath = NULL;
-	}
-	r->mathN = 0;
-	if (r->bm) {
-		md_math_cache_put(md, r->bm);
-		r->bm = NULL;
-	}
-	if (r->bmFallback) {
-		Gfx_RichDestroy(r->bmFallback);
-		r->bmFallback = NULL;
-	}
-	r->bmW = r->bmH = r->bmD = 0.0f;
-	r->cellN = 0;
-	r->tblCols = r->tblRows = 0;
-	r->tblH = 0.0f;
-	r->rtH = 0.0f;
-	r->imgReady = 0;
-	r->imgW = r->imgH = 0.0f;
 }
 
 static void md_live_reset(UiMarkdown *md)
@@ -696,6 +726,7 @@ static MdRow *md_row_push(UiMarkdown *md, MdBlock *blk, int indent, int qd,
 	r->task = task;
 	r->markerW = mk != MD_MK_NONE ? MD_MARKER_W : 0.0f;
 	r->hash = blk->hash;
+	r->rowType = blk->type;
 	return r;
 }
 
@@ -706,8 +737,8 @@ static int md_flatten(UiMarkdown *md, MdBlock *b, int indent, int qd,
 	if (!b) return 0;
 	switch (b->type) {
 	case MD_BLOCK_QUOTE:
-		for (i = 0; i < b->childCount; i++) {
-			int r = md_flatten(md, &b->children[i],
+		for (i = 0; i < b->p.kids.childCount; i++) {
+			int r = md_flatten(md, &b->p.kids.children[i],
 				indent + (int)md->quoteIndent, qd + 1,
 				added ? MD_MK_NONE : mk,
 				added ? 0 : no, added ? MD_TASK_NONE : task);
@@ -723,10 +754,10 @@ static int md_flatten(UiMarkdown *md, MdBlock *b, int indent, int qd,
 		if (bi <= 0) bi = 16;
 		/* 先占位再展开: 外盒必须先于内盒绘制, 否则内层底色被外层覆盖 */
 		boxAt = md->boxCount;
-		md_box_push(md, b->boxKind, first, first, indent,
-			bi > 0 ? indent / bi : 0, b->titleOff, b->titleLen);
-		for (i = 0; i < b->childCount; i++) {
-			int r = md_flatten(md, &b->children[i], indent + bi, qd,
+		md_box_push(md, b->u.box.boxKind, first, first, indent,
+			bi > 0 ? indent / bi : 0, b->u.box.titleOff, b->u.box.titleLen);
+		for (i = 0; i < b->p.kids.childCount; i++) {
+			int r = md_flatten(md, &b->p.kids.children[i], indent + bi, qd,
 				added ? MD_MK_NONE : mk,
 				added ? 0 : no, added ? MD_TASK_NONE : task);
 			if (r) added = 1;
@@ -743,8 +774,8 @@ static int md_flatten(UiMarkdown *md, MdBlock *b, int indent, int qd,
 		return added;
 	}
 	case MD_BLOCK_LIST:
-		for (i = 0; i < b->childCount; i++) {
-			MdBlock *item = &b->children[i];
+		for (i = 0; i < b->p.kids.childCount; i++) {
+			MdBlock *item = &b->p.kids.children[i];
 			int mk2 = item->task ? MD_MK_TASK
 				: (b->ordered ? MD_MK_ORDERED : MD_MK_BULLET);
 			int no2 = b->ordered ? b->startNo + i : 0;
@@ -754,15 +785,15 @@ static int md_flatten(UiMarkdown *md, MdBlock *b, int indent, int qd,
 		}
 		return added;
 	case MD_BLOCK_ITEM:
-		for (i = 0; i < b->childCount; i++) {
-			int r = md_flatten(md, &b->children[i], indent, qd,
+		for (i = 0; i < b->p.kids.childCount; i++) {
+			int r = md_flatten(md, &b->p.kids.children[i], indent, qd,
 				added ? MD_MK_NONE : mk,
 				added ? 0 : no, added ? MD_TASK_NONE : task);
 			if (r) added = 1;
 		}
 		return added;
 	default:
-		if (b->linkCount > 0) md->hasLinks = 1;
+		if (MD_BT_TEXT(b->type) && b->p.text.linkCount > 0) md->hasLinks = 1;
 		return md_row_push(md, b, indent, qd, mk, no, task) ? 1 : 0;
 	}
 }
@@ -859,16 +890,16 @@ static float md_row_estimate(const UiMarkdown *md, const MdRow *r)
 	case MD_BLOCK_IMAGE:
 		return md->imagePlaceholderH + top + bottom;
 	case MD_BLOCK_TABLE:
-		h = (float)(r->blk->rows > 0 ? r->blk->rows : 1) * 22.0f + 12.0f;
+		h = (float)(r->blk->u.table.rows > 0 ? r->blk->u.table.rows : 1) * 22.0f + 12.0f;
 		return h + top + bottom;
 	case MD_BLOCK_CODE:
-		h = md_est_text(r->blk->text16, r->blk->len16, wrapW, size,
+		h = md_est_text(r->blk->p.text.text16, r->blk->p.text.len16, wrapW, size,
 			md->lineSpacing);
 		return h + top + bottom;
 	case MD_BLOCK_MATH:
 		return 52.0f + top + bottom;
 	default:
-		h = md_est_text(r->blk->text16, r->blk->len16, wrapW, size,
+		h = md_est_text(r->blk->p.text.text16, r->blk->p.text.len16, wrapW, size,
 			md->lineSpacing);
 		return h + top + bottom;
 	}
@@ -977,8 +1008,8 @@ static int md_wordch(wchar_t c)
 
 static void md_highlight_builtin(UiMarkdown *md, GfxRichText *rt, const MdBlock *b)
 {
-	const wchar_t *t = b->text16;
-	int n = b->len16, i = 0;
+	const wchar_t *t = b->p.text.text16;
+	int n = b->p.text.len16, i = 0;
 	while (i < n) {
 		wchar_t c = t[i];
 		if (c == L'/' && i + 1 < n && t[i + 1] == L'/') {
@@ -1039,8 +1070,8 @@ static void md_highlight(UiMarkdown *md, GfxRichText *rt, const MdBlock *b)
 		int cap = 512, n, i;
 		UiMdSpan *sp = (UiMdSpan *)md_alloc_(cap * (int)sizeof(UiMdSpan));
 		if (!sp) return;
-		n = md->tokFn(md->tokUser, MdDoc_Url(&md->doc, b->langOff),
-			b->text16, b->len16, sp, cap);
+		n = md->tokFn(md->tokUser, MdDoc_Url(&md->doc, b->u.code.langOff),
+			b->p.text.text16, b->p.text.len16, sp, cap);
 		if (n > cap) n = cap;
 		for (i = 0; i < n; i++) {
 			UiColor c = 0;
@@ -1061,20 +1092,20 @@ static void md_inl_ensure(UiMarkdown *md, int index)
 	MdRow *r = &md->rows[index];
 	MdBlock *b = r->blk;
 	int i;
-	if (!b || b->imgCount <= 0 || !md->gfx) return;
-	if (r->inlImgs) return;
-	r->inlImgs = (UiImage **)md_alloc_(b->imgCount * (int)sizeof(UiImage *));
-	r->inlStates = (int *)md_alloc_(b->imgCount * (int)sizeof(int));
-	if (!r->inlImgs || !r->inlStates) return;
-	r->inlN = b->imgCount;
-	for (i = 0; i < b->imgCount; i++) {
+	if (!b || b->p.text.imgCount <= 0 || !md->gfx) return;
+	if (r->p.text.inlImgs) return;
+	r->p.text.inlImgs = (UiImage **)md_alloc_(b->p.text.imgCount * (int)sizeof(UiImage *));
+	r->p.text.inlStates = (int *)md_alloc_(b->p.text.imgCount * (int)sizeof(int));
+	if (!r->p.text.inlImgs || !r->p.text.inlStates) return;
+	r->p.text.inlN = b->p.text.imgCount;
+	for (i = 0; i < b->p.text.imgCount; i++) {
 		UiImage *im = UiImage_Create(md->gfx, md->net);
 		if (!im) continue;
 		if (md->ui) UiImage_SetContext(im, md->ui);
 		UiImage_SetFit(im, UI_IMG_FIT_CONTAIN);
-		md_image_load(md, im, MdDoc_Url(&md->doc, b->imgs[i].urlOff));
-		r->inlImgs[i] = im;
-		r->inlStates[i] = UiImage_State(im);
+		md_image_load(md, im, MdDoc_Url(&md->doc, b->p.text.imgs[i].urlOff));
+		r->p.text.inlImgs[i] = im;
+		r->p.text.inlStates[i] = UiImage_State(im);
 	}
 	md_live_push(md, index);
 }
@@ -1083,9 +1114,9 @@ static int md_inl_changed(UiMarkdown *md, int index)
 {
 	MdRow *r = &md->rows[index];
 	int i;
-	for (i = 0; i < r->inlN; i++) {
-		if (!r->inlImgs[i]) continue;
-		if (UiImage_State(r->inlImgs[i]) != r->inlStates[i]) return 1;
+	for (i = 0; i < r->p.text.inlN; i++) {
+		if (!r->p.text.inlImgs[i]) continue;
+		if (UiImage_State(r->p.text.inlImgs[i]) != r->p.text.inlStates[i]) return 1;
 	}
 	return 0;
 }
@@ -1128,8 +1159,8 @@ static void md_apply_inline_images(UiMarkdown *md, int index, GfxRichText *rt,
 	float scale = (md->ui && md->ui->scale > 0.0f) ? md->ui->scale : 1.0f;
 	int i;
 	md_inl_ensure(md, index);
-	for (i = 0; i < r->inlN; i++) {
-		UiImage *im = r->inlImgs[i];
+	for (i = 0; i < r->p.text.inlN; i++) {
+		UiImage *im = r->p.text.inlImgs[i];
 		GfxBitmap *bmp;
 		int pw, ph;
 		float w, h;
@@ -1140,10 +1171,10 @@ static void md_apply_inline_images(UiMarkdown *md, int index, GfxRichText *rt,
 		if (!bmp || pw <= 0 || ph <= 0) continue;
 		w = (float)pw / scale;
 		h = (float)ph / scale;
-		md_img_size(w, h, b->imgs[i].w, b->imgs[i].h, wrapW,
+		md_img_size(w, h, b->p.text.imgs[i].w, b->p.text.imgs[i].h, wrapW,
 			md->imageMaxH, &w, &h);
-		Gfx_RichInlineImage(rt, b->imgs[i].start, b->imgs[i].len, bmp, w, h);
-		r->inlStates[i] = UI_IMG_READY;
+		Gfx_RichInlineImage(rt, b->p.text.imgs[i].start, b->p.text.imgs[i].len, bmp, w, h);
+		r->p.text.inlStates[i] = UI_IMG_READY;
 	}
 }
 
@@ -1164,17 +1195,17 @@ static void md_inl_math_ensure(UiMarkdown *md, int index, float maxW)
 	GfxFont *font;
 	float size;
 	int i;
-	if (!b || b->mathCount <= 0 || !md->gfx) return;
-	if (r->inlMath) return;
-	r->inlMath = (GfxMath **)md_alloc_(
-		b->mathCount * (int)sizeof(GfxMath *));
-	if (!r->inlMath) return;
-	r->mathN = b->mathCount;
+	if (!b || b->p.text.mathCount <= 0 || !md->gfx) return;
+	if (r->p.text.inlMath) return;
+	r->p.text.inlMath = (GfxMath **)md_alloc_(
+		b->p.text.mathCount * (int)sizeof(GfxMath *));
+	if (!r->p.text.inlMath) return;
+	r->p.text.mathN = b->p.text.mathCount;
 	font = md_row_font(md, r);
 	size = md_row_font_size(md, r);
-	for (i = 0; i < b->mathCount; i++) {
-		const char *src = MdDoc_Url(&md->doc, b->maths[i].srcOff);
-		int len = b->maths[i].srcLen;
+	for (i = 0; i < b->p.text.mathCount; i++) {
+		const char *src = MdDoc_Url(&md->doc, b->p.text.maths[i].srcOff);
+		int len = b->p.text.maths[i].srcLen;
 		float sz = size;
 		int tries = 0;
 		for (;;) {
@@ -1183,7 +1214,7 @@ static void md_inl_math_ensure(UiMarkdown *md, int index, float maxW)
 			if (!gm) break;
 			w = Gfx_MathWidth(gm);
 			if (maxW < 1.0f || w <= maxW || w <= 1.0f) {
-				r->inlMath[i] = gm;
+				r->p.text.inlMath[i] = gm;
 				break;
 			}
 			{
@@ -1191,7 +1222,7 @@ static void md_inl_math_ensure(UiMarkdown *md, int index, float maxW)
 				if (ns < 8.0f) ns = 8.0f;
 				md_math_cache_put(md, gm);
 				if (++tries >= 3 || ns >= sz - 0.01f) {
-					r->inlMath[i] = md_math_cache_get(md, src, len, ns,
+					r->p.text.inlMath[i] = md_math_cache_get(md, src, len, ns,
 						font, 0);
 					break;
 				}
@@ -1207,11 +1238,11 @@ static void md_apply_inline_math(UiMarkdown *md, int index, GfxRichText *rt,
 	MdRow *r = &md->rows[index];
 	MdBlock *b = r->blk;
 	int i;
-	if (!rt || !b || b->mathCount <= 0) return;
+	if (!rt || !b || b->p.text.mathCount <= 0) return;
 	md_inl_math_ensure(md, index, maxW);
-	for (i = 0; i < b->mathCount; i++) {
-		const MdMathRef *m = &b->maths[i];
-		GfxMath *gm = r->inlMath ? r->inlMath[i] : NULL;
+	for (i = 0; i < b->p.text.mathCount; i++) {
+		const MdMathRef *m = &b->p.text.maths[i];
+		GfxMath *gm = r->p.text.inlMath ? r->p.text.inlMath[i] : NULL;
 		if (!gm) {
 			Gfx_RichColor(rt, m->start, m->len, md->cInlineCodeText);
 			if (md->fCode)
@@ -1228,12 +1259,12 @@ static void md_link_chars(const MdBlock *b, int li, int *start, int *len)
 {
 	*start = 0;
 	*len = 0;
-	if (!b || li < 0 || li >= b->linkCount) return;
+	if (!b || li < 0 || li >= b->p.text.linkCount) return;
 	{
-		const MdLink *l = &b->links[li];
-		if (l->start < 0 || l->end <= l->start || l->end > b->runCount) return;
-		*start = b->runs[l->start].start;
-		*len = b->runs[l->end - 1].start + b->runs[l->end - 1].len - *start;
+		const MdLink *l = &b->p.text.links[li];
+		if (l->start < 0 || l->end <= l->start || l->end > b->p.text.runCount) return;
+		*start = b->p.text.runs[l->start].start;
+		*len = b->p.text.runs[l->end - 1].start + b->p.text.runs[l->end - 1].len - *start;
 	}
 }
 
@@ -1250,16 +1281,17 @@ static int md_hit_links_at(UiMarkdown *md, UiRect content, int first, int last,
 		int pos;
 		if (i < 0 || i >= md->rowCount) continue;
 		r = &md->rows[i];
-		if (!r->rt || r->blk->linkCount <= 0) continue;
+		if (!md_row_is_text(r->blk->type)) continue;
+		if (!r->p.text.rt || r->blk->p.text.linkCount <= 0) continue;
 		md_row_pads(md, r, &top, &bottom);
 		tx = content.x + (float)r->indent + r->markerW;
 		ty = content.y + UiScrollLayout_ItemY(&md->layout, i) + top;
 		lx = mx - tx;
 		ly = my - ty;
 		if (lx < 0.0f || ly < 0.0f) continue;
-		if (r->rtH > 0.0f && ly >= r->rtH) continue;   /* 行内快速预筛 */
-		if (!Gfx_RichHitTest(r->rt, lx, ly, &pos)) continue;
-		for (li = 0; li < r->blk->linkCount; li++) {
+		if (r->p.text.rtH > 0.0f && ly >= r->p.text.rtH) continue;   /* 行内快速预筛 */
+		if (!Gfx_RichHitTest(r->p.text.rt, lx, ly, &pos)) continue;
+		for (li = 0; li < r->blk->p.text.linkCount; li++) {
 			int start, len;
 			md_link_chars(r->blk, li, &start, &len);
 			if (len > 0 && pos >= start && pos < start + len) {
@@ -1347,19 +1379,19 @@ static void md_hover_set(UiMarkdown *md, int row, int link)
 	if (md->hovRow == row && md->hovLink == link) return;
 	if (md->hovRow >= 0 && md->hovRow < md->rowCount) {
 		MdRow *pr = &md->rows[md->hovRow];
-		if (pr->rt && md->hovLink >= 0 && md->hovLink < pr->blk->linkCount) {
+		if (pr->p.text.rt && md->hovLink >= 0 && md->hovLink < pr->blk->p.text.linkCount) {
 			md_link_chars(pr->blk, md->hovLink, &start, &len);
-			if (len > 0) Gfx_RichColor(pr->rt, start, len, md->cLink);
+			if (len > 0) Gfx_RichColor(pr->p.text.rt, start, len, md->cLink);
 		}
 	}
 	md->hovRow = -1;
 	md->hovLink = -1;
 	if (row >= 0 && row < md->rowCount) {
 		MdRow *nr = &md->rows[row];
-		if (nr->rt && link >= 0 && link < nr->blk->linkCount) {
+		if (nr->p.text.rt && link >= 0 && link < nr->blk->p.text.linkCount) {
 			md_link_chars(nr->blk, link, &start, &len);
 			if (len > 0) {
-				Gfx_RichColor(nr->rt, start, len, md->cLinkHover);
+				Gfx_RichColor(nr->p.text.rt, start, len, md->cLinkHover);
 				md->hovRow = row;
 				md->hovLink = link;
 			}
@@ -1373,46 +1405,46 @@ static void md_code_cache_build(UiMarkdown *md, int index)
 {
 	MdRow *r = &md->rows[index];
 	int i, k;
-	md_free_(r->codeRects);
-	r->codeRects = NULL;
-	r->codeN = r->codeCap = 0;
-	if (!r->rt || !r->blk->runs) return;
-	for (i = 0; i < r->blk->runCount; i++) {
-		const MdRun *run = &r->blk->runs[i];
+	md_free_(r->p.text.codeRects);
+	r->p.text.codeRects = NULL;
+	r->p.text.codeN = r->p.text.codeCap = 0;
+	if (!r->p.text.rt || !r->blk->p.text.runs) return;
+	for (i = 0; i < r->blk->p.text.runCount; i++) {
+		const MdRun *run = &r->blk->p.text.runs[i];
 		GfxRect tmp[16];
 		int n;
 		if (!(run->style & MD_R_CODE) || run->len <= 0) continue;
-		n = Gfx_RichRangeRects(r->rt, run->start, run->len, tmp, 16);
+		n = Gfx_RichRangeRects(r->p.text.rt, run->start, run->len, tmp, 16);
 		for (k = 0; k < n; k++) {
-			if (r->codeN >= r->codeCap) {
-				int nc = r->codeCap ? r->codeCap * 2 : 8;
-				GfxRect *np = (GfxRect *)md_realloc_(r->codeRects,
+			if (r->p.text.codeN >= r->p.text.codeCap) {
+				int nc = r->p.text.codeCap ? r->p.text.codeCap * 2 : 8;
+				GfxRect *np = (GfxRect *)md_realloc_(r->p.text.codeRects,
 					(SIZE_T)nc * sizeof(GfxRect));
 				if (!np) return;
-				r->codeRects = np;
-				r->codeCap = nc;
+				r->p.text.codeRects = np;
+				r->p.text.codeCap = nc;
 			}
-			r->codeRects[r->codeN++] = tmp[k];
+			r->p.text.codeRects[r->p.text.codeN++] = tmp[k];
 		}
 	}
 	/* 语法失败的公式按源码回退: 与行内代码一致给底色 */
-	if (r->blk->mathCount > 0 && r->inlMath) {
-		for (i = 0; i < r->blk->mathCount; i++) {
-			const MdMathRef *m = &r->blk->maths[i];
+	if (r->blk->p.text.mathCount > 0 && r->p.text.inlMath) {
+		for (i = 0; i < r->blk->p.text.mathCount; i++) {
+			const MdMathRef *m = &r->blk->p.text.maths[i];
 			GfxRect tmp[16];
 			int n, k;
-			if (r->inlMath[i]) continue;
-			n = Gfx_RichRangeRects(r->rt, m->start, m->len, tmp, 16);
+			if (r->p.text.inlMath[i]) continue;
+			n = Gfx_RichRangeRects(r->p.text.rt, m->start, m->len, tmp, 16);
 			for (k = 0; k < n; k++) {
-				if (r->codeN >= r->codeCap) {
-					int nc = r->codeCap ? r->codeCap * 2 : 8;
-					GfxRect *np = (GfxRect *)md_realloc_(r->codeRects,
+				if (r->p.text.codeN >= r->p.text.codeCap) {
+					int nc = r->p.text.codeCap ? r->p.text.codeCap * 2 : 8;
+					GfxRect *np = (GfxRect *)md_realloc_(r->p.text.codeRects,
 						(SIZE_T)nc * sizeof(GfxRect));
 					if (!np) return;
-					r->codeRects = np;
-					r->codeCap = nc;
+					r->p.text.codeRects = np;
+					r->p.text.codeCap = nc;
 				}
-				r->codeRects[r->codeN++] = tmp[k];
+				r->p.text.codeRects[r->p.text.codeN++] = tmp[k];
 			}
 		}
 	}
@@ -1424,7 +1456,7 @@ static GfxRichText *md_row_make_rt(UiMarkdown *md, int index)
 	float wrapW;
 	GfxFont *font;
 	float ls;
-	if (r->rt) return r->rt;
+	if (r->p.text.rt) return r->p.text.rt;
 	if (r->blk->type == MD_BLOCK_HR ||
 		r->blk->type == MD_BLOCK_IMAGE ||
 		r->blk->type == MD_BLOCK_TABLE ||
@@ -1433,26 +1465,26 @@ static GfxRichText *md_row_make_rt(UiMarkdown *md, int index)
 	wrapW = md->contentW - (float)r->indent - r->markerW;
 	if (wrapW < 1.0f) wrapW = 1.0f;
 	font = md_row_font(md, r);
-	if (!font || !r->blk->text16) return NULL;
+	if (!font || !r->blk->p.text.text16) return NULL;
 	/* 含行内对象时用自然行距: UNIFORM 固定行高会压扁/裁掉行内对象 */
-	ls = (r->blk->imgCount > 0 || r->blk->mathCount > 0)
+	ls = (r->blk->p.text.imgCount > 0 || r->blk->p.text.mathCount > 0)
 		? 0.0f : md->lineSpacing;
-	r->rt = Gfx_RichCreate(md->gfx, r->blk->text16, r->blk->len16,
+	r->p.text.rt = Gfx_RichCreate(md->gfx, r->blk->p.text.text16, r->blk->p.text.len16,
 		font, wrapW, ls, GFX_RICH_WRAP);
-	if (r->rt) {
-		md_apply_runs(md, r->rt, r->blk->runs, r->blk->runCount,
+	if (r->p.text.rt) {
+		md_apply_runs(md, r->p.text.rt, r->blk->p.text.runs, r->blk->p.text.runCount,
 			r->blk->type == MD_BLOCK_CODE);
 		if (r->blk->type == MD_BLOCK_CODE)
-			md_highlight(md, r->rt, r->blk);
+			md_highlight(md, r->p.text.rt, r->blk);
 		else {
-			md_apply_inline_images(md, index, r->rt, wrapW);
-			md_apply_inline_math(md, index, r->rt, wrapW);
+			md_apply_inline_images(md, index, r->p.text.rt, wrapW);
+			md_apply_inline_math(md, index, r->p.text.rt, wrapW);
 			md_code_cache_build(md, index);
 		}
-		r->rtH = Gfx_RichHeight(r->rt);
+		r->p.text.rtH = Gfx_RichHeight(r->p.text.rt);
 		md_live_push(md, index);
 	}
-	return r->rt;
+	return r->p.text.rt;
 }
 
 /* ── 图片 ──────────────────────────────────────────────────────────── */
@@ -1475,46 +1507,46 @@ static void md_math_block_build(UiMarkdown *md, MdRow *r, float avail)
 	const char *src;
 	float size = 16.0f;
 	int tries = 0;
-	if (r->bm || r->bmFallback) return;
+	if (r->p.math.bm || r->p.math.bmFallback) return;
 	if (!md->gfx || !r->blk) return;
 	if (avail < 1.0f) avail = 1.0f;
-	src = MdDoc_Url(&md->doc, r->blk->mathOff);
+	src = MdDoc_Url(&md->doc, r->blk->u.math.mathOff);
 	for (;;) {
 		float w;
-		r->bm = md_math_cache_get(md, src, r->blk->mathLen, size,
+		r->p.math.bm = md_math_cache_get(md, src, r->blk->u.math.mathLen, size,
 			md->fBody, 1);
-		if (!r->bm) break;
-		w = Gfx_MathWidth(r->bm);
+		if (!r->p.math.bm) break;
+		w = Gfx_MathWidth(r->p.math.bm);
 		if (w <= avail || w <= 1.0f) break;
 		size *= avail / w * 0.98f;
 		if (size < 8.0f) size = 8.0f;
-		md_math_cache_put(md, r->bm);
-		r->bm = NULL;
+		md_math_cache_put(md, r->p.math.bm);
+		r->p.math.bm = NULL;
 		if (++tries >= 3 || size <= 8.0f) {
-			r->bm = md_math_cache_get(md, src, r->blk->mathLen, size,
+			r->p.math.bm = md_math_cache_get(md, src, r->blk->u.math.mathLen, size,
 				md->fBody, 1);
 			break;
 		}
 	}
-	if (r->bm) {
-		r->bmW = Gfx_MathWidth(r->bm);
-		r->bmH = Gfx_MathHeight(r->bm);
-		r->bmD = Gfx_MathDepth(r->bm);
+	if (r->p.math.bm) {
+		r->p.math.bmW = Gfx_MathWidth(r->p.math.bm);
+		r->p.math.bmH = Gfx_MathHeight(r->p.math.bm);
+		r->p.math.bmD = Gfx_MathDepth(r->p.math.bm);
 		return;
 	}
 	{
-		int cap = r->blk->mathLen + 1, got;
+		int cap = r->blk->u.math.mathLen + 1, got;
 		wchar_t *tmp = (wchar_t *)md_alloc_(
 			cap * (int)sizeof(wchar_t));
 		if (!tmp) return;
-		got = MultiByteToWideChar(CP_UTF8, 0, src, r->blk->mathLen,
+		got = MultiByteToWideChar(CP_UTF8, 0, src, r->blk->u.math.mathLen,
 			tmp, cap);
 		if (got > 0) {
-			r->bmFallback = Gfx_RichCreate(md->gfx, tmp, got,
+			r->p.math.bmFallback = Gfx_RichCreate(md->gfx, tmp, got,
 				md->fCode ? md->fCode : md->fBody, avail,
 				md->lineSpacing, GFX_RICH_WRAP);
-			if (r->bmFallback)
-				Gfx_RichColor(r->bmFallback, 0, got, md->cCodeText);
+			if (r->p.math.bmFallback)
+				Gfx_RichColor(r->p.math.bmFallback, 0, got, md->cCodeText);
 		}
 		md_free_(tmp);
 	}
@@ -1562,13 +1594,13 @@ static void md_image_load(UiMarkdown *md, UiImage *img, const char *url)
 static void md_image_ensure(UiMarkdown *md, int index)
 {
 	MdRow *r = &md->rows[index];
-	if (r->img) return;
+	if (r->p.image.img) return;
 	if (!md->gfx) return;
-	r->img = UiImage_Create(md->gfx, md->net);
-	if (!r->img) return;
-	if (md->ui) UiImage_SetContext(r->img, md->ui);
-	UiImage_SetFit(r->img, UI_IMG_FIT_CONTAIN);
-	md_image_load(md, r->img, MdDoc_Url(&md->doc, r->blk->urlOff));
+	r->p.image.img = UiImage_Create(md->gfx, md->net);
+	if (!r->p.image.img) return;
+	if (md->ui) UiImage_SetContext(r->p.image.img, md->ui);
+	UiImage_SetFit(r->p.image.img, UI_IMG_FIT_CONTAIN);
+	md_image_load(md, r->p.image.img, MdDoc_Url(&md->doc, r->blk->u.image.urlOff));
 	md_live_push(md, index);
 }
 
@@ -1579,28 +1611,28 @@ static void md_image_measure(UiMarkdown *md, MdRow *r, float avail)
 	if (avail < 1.0f) avail = 1.0f;
 	/* 宽高都给定时按精确盒子拉伸 (与 HTML/img 语义一致); 只给一个时
 	 * 仍等比, 用 CONTAIN 留白. */
-	if (r->img)
-		UiImage_SetFit(r->img,
-			(r->blk->imgW > 0 && r->blk->imgH > 0)
+	if (r->p.image.img)
+		UiImage_SetFit(r->p.image.img,
+			(r->blk->u.image.imgW > 0 && r->blk->u.image.imgH > 0)
 				? UI_IMG_FIT_STRETCH : UI_IMG_FIT_CONTAIN);
-	if (r->img && UiImage_State(r->img) == UI_IMG_READY) {
-		pw = UiImage_PixelWidth(r->img);
-		ph = UiImage_PixelHeight(r->img);
+	if (r->p.image.img && UiImage_State(r->p.image.img) == UI_IMG_READY) {
+		pw = UiImage_PixelWidth(r->p.image.img);
+		ph = UiImage_PixelHeight(r->p.image.img);
 		scale = (md->ui && md->ui->scale > 0.0f) ? md->ui->scale : 1.0f;
 		if (pw > 0 && ph > 0) {
 			nw = (float)pw / scale;
 			nh = (float)ph / scale;
-			md_img_size(nw, nh, r->blk->imgW, r->blk->imgH, avail,
+			md_img_size(nw, nh, r->blk->u.image.imgW, r->blk->u.image.imgH, avail,
 				md->imageMaxH, &dw, &dh);
-			r->imgReady = 1;
-			r->imgW = dw;
-			r->imgH = dh;
+			r->p.image.imgReady = 1;
+			r->p.image.imgW = dw;
+			r->p.image.imgH = dh;
 			return;
 		}
 	}
-	r->imgReady = 0;
-	r->imgW = avail;
-	r->imgH = md->imagePlaceholderH;
+	r->p.image.imgReady = 0;
+	r->p.image.imgW = avail;
+	r->p.image.imgH = md->imagePlaceholderH;
 }
 
 /* ── 表格 ──────────────────────────────────────────────────────────── */
@@ -1623,12 +1655,12 @@ static int md_table_build(UiMarkdown *md, int index)
 {
 	MdRow *r = &md->rows[index];
 	MdBlock *b = r->blk;
-	int cols = b->cols, rows = b->rows, c, rr, sample;
+	int cols = b->u.table.cols, rows = b->u.table.rows, c, rr, sample;
 	float avail, padX, padY, minW, total;
-	MdCell *cells = b->cells;
+	MdCell *cells = b->p.table.cells;
 	float *nat;
 
-	if (r->cellRt) return 1;
+	if (r->p.table.cellRt) return 1;
 	if (cols <= 0 || rows <= 0 || !cells) return 0;
 	avail = md->contentW - (float)r->indent - r->markerW;
 	if (avail < 7.0f * cols) avail = 7.0f * cols;
@@ -1652,23 +1684,23 @@ static int md_table_build(UiMarkdown *md, int index)
 	total = 0.0f;
 	for (c = 0; c < cols; c++) total += nat[c];
 
-	r->colW = (float *)md_alloc_(cols * (int)sizeof(float));
-	r->cellRt = (GfxRichText **)md_alloc_(rows * cols * (int)sizeof(GfxRichText *));
-	r->rowH = (float *)md_alloc_(rows * (int)sizeof(float));
-	r->cellW = (float *)md_alloc_(rows * cols * (int)sizeof(float));
-	if (!r->colW || !r->cellRt || !r->rowH || !r->cellW) {
+	r->p.table.colW = (float *)md_alloc_(cols * (int)sizeof(float));
+	r->p.table.cellRt = (GfxRichText **)md_alloc_(rows * cols * (int)sizeof(GfxRichText *));
+	r->p.table.rowH = (float *)md_alloc_(rows * (int)sizeof(float));
+	r->p.table.cellW = (float *)md_alloc_(rows * cols * (int)sizeof(float));
+	if (!r->p.table.colW || !r->p.table.cellRt || !r->p.table.rowH || !r->p.table.cellW) {
 		md_free_(nat);
 		md_row_release(md, r);
 		return 0;
 	}
-	r->cellN = rows * cols;
-	r->tblCols = cols;
-	r->tblRows = rows;
+	r->p.table.cellN = rows * cols;
+	r->p.table.tblCols = cols;
+	r->p.table.tblRows = rows;
 	if (total <= avail) {
-		for (c = 0; c < cols; c++) r->colW[c] = nat[c];
+		for (c = 0; c < cols; c++) r->p.table.colW[c] = nat[c];
 	} else if (minW * cols >= avail) {
 		float eq = avail / cols;
-		for (c = 0; c < cols; c++) r->colW[c] = eq;
+		for (c = 0; c < cols; c++) r->p.table.colW[c] = eq;
 	} else {
 		float extra = avail - minW * cols;
 		float sumExtra = 0.0f;
@@ -1678,34 +1710,34 @@ static int md_table_build(UiMarkdown *md, int index)
 		}
 		for (c = 0; c < cols; c++) {
 			float e = nat[c] > minW ? nat[c] - minW : 0.0f;
-			r->colW[c] = minW + (sumExtra > 0.0f
+			r->p.table.colW[c] = minW + (sumExtra > 0.0f
 				? extra * e / sumExtra : extra / cols);
 		}
 	}
-	for (rr = 0; rr < rows; rr++) r->rowH[rr] = 0.0f;
+	for (rr = 0; rr < rows; rr++) r->p.table.rowH[rr] = 0.0f;
 	for (rr = 0; rr < rows; rr++) {
 		for (c = 0; c < cols; c++) {
 			MdCell *cell = &cells[rr * cols + c];
-			float wrapW = r->colW[c] - padX * 2.0f;
+			float wrapW = r->p.table.colW[c] - padX * 2.0f;
 			float h = 0.0f;
 			if (wrapW < 1.0f) wrapW = 1.0f;
 			if (cell->text16 && cell->len16 > 0) {
 				GfxRichText *rt = Gfx_RichCreate(md->gfx, cell->text16,
 					cell->len16, md->fBody, wrapW, md->lineSpacing,
 					GFX_RICH_WRAP);
-				r->cellRt[rr * cols + c] = rt;
+				r->p.table.cellRt[rr * cols + c] = rt;
 				if (rt) {
 					md_apply_runs(md, rt, cell->runs, cell->runCount, 0);
-					r->cellW[rr * cols + c] = Gfx_RichWidth(rt);
+					r->p.table.cellW[rr * cols + c] = Gfx_RichWidth(rt);
 					h = Gfx_RichHeight(rt);
 				}
 			}
 			h += padY * 2.0f;
-			if (h > r->rowH[rr]) r->rowH[rr] = h;
+			if (h > r->p.table.rowH[rr]) r->p.table.rowH[rr] = h;
 		}
 	}
-	r->tblH = 0.0f;
-	for (rr = 0; rr < rows; rr++) r->tblH += r->rowH[rr];
+	r->p.table.tblH = 0.0f;
+	for (rr = 0; rr < rows; rr++) r->p.table.tblH += r->p.table.rowH[rr];
 	md_free_(nat);
 	md_live_push(md, index);
 	return 1;
@@ -1724,22 +1756,22 @@ static void md_measure_row(UiMarkdown *md, int index)
 		float avail = md->contentW - (float)r->indent - r->markerW;
 		md_image_ensure(md, index);
 		md_image_measure(md, r, avail);
-		r->imgStateSeen = r->img ? UiImage_State(r->img) : UI_IMG_IDLE;
-		h = r->imgH + top + bottom;
+		r->p.image.imgStateSeen = r->p.image.img ? UiImage_State(r->p.image.img) : UI_IMG_IDLE;
+		h = r->p.image.imgH + top + bottom;
 		break;
 	}
 	case MD_BLOCK_TABLE:
 		if (!md_table_build(md, index))
 			h = md_row_estimate(md, r);
 		else
-			h = r->tblH + top + bottom;
+			h = r->p.table.tblH + top + bottom;
 		break;
 	case MD_BLOCK_MATH: {
 		float avail = md->contentW - (float)r->indent - r->markerW;
 		md_math_block_build(md, r, avail);
-		if (r->bm) h = r->bmH + r->bmD + top + bottom;
-		else if (r->bmFallback)
-			h = Gfx_RichHeight(r->bmFallback) + top + bottom;
+		if (r->p.math.bm) h = r->p.math.bmH + r->p.math.bmD + top + bottom;
+		else if (r->p.math.bmFallback)
+			h = Gfx_RichHeight(r->p.math.bmFallback) + top + bottom;
 		else
 			h = md_row_estimate(md, r);
 		break;
@@ -1769,19 +1801,20 @@ static void md_measure_visible(UiMarkdown *md, int first, int last)
 		if (!r->measured) {
 			md_measure_row(md, i);
 		} else if (r->blk->type == MD_BLOCK_IMAGE) {
-			int st = r->img ? UiImage_State(r->img) : UI_IMG_IDLE;
-			if (!r->img || st != r->imgStateSeen)
+			int st = r->p.image.img ? UiImage_State(r->p.image.img) : UI_IMG_IDLE;
+			if (!r->p.image.img || st != r->p.image.imgStateSeen)
 				md_measure_row(md, i);
 		} else if (r->blk->type == MD_BLOCK_TABLE) {
-			if (!r->cellRt) md_measure_row(md, i);
+			if (!r->p.table.cellRt) md_measure_row(md, i);
 		} else if (r->blk->type == MD_BLOCK_MATH) {
 			/* 块级公式对象被驱逐后 (measured 仍为 1) 回到视口需重建 */
-			if (!r->bm && !r->bmFallback) md_measure_row(md, i);
-		} else if (r->blk->imgCount > 0 && md_inl_changed(md, i)) {
-			if (r->rt) { Gfx_RichDestroy(r->rt); r->rt = NULL; }
+			if (!r->p.math.bm && !r->p.math.bmFallback) md_measure_row(md, i);
+		} else if (md_row_is_text(r->blk->type) && r->blk->p.text.imgCount > 0 &&
+			md_inl_changed(md, i)) {
+			if (r->p.text.rt) { Gfx_RichDestroy(r->p.text.rt); r->p.text.rt = NULL; }
 			r->measured = 0;
 			md_measure_row(md, i);
-		} else if (r->blk->type != MD_BLOCK_HR && !r->rt) {
+		} else if (md_row_is_text(r->blk->type) && !r->p.text.rt) {
 			md_row_make_rt(md, i);
 		}
 	}
@@ -1937,26 +1970,26 @@ static void md_draw_table(UiMarkdown *md, int index, float x, float y)
 	float yy = y, totalW = 0.0f, padX = md->tableCellPadX;
 	float padY = md->tableCellPadY;
 
-	if (!r->cellRt && !md_table_build(md, index)) return;
-	if (!r->cellRt || !r->colW || !r->rowH) return;
-	for (c = 0; c < r->tblCols; c++) totalW += r->colW[c];
+	if (!r->p.table.cellRt && !md_table_build(md, index)) return;
+	if (!r->p.table.cellRt || !r->p.table.colW || !r->p.table.rowH) return;
+	for (c = 0; c < r->p.table.tblCols; c++) totalW += r->p.table.colW[c];
 
-	Gfx_FillRect(md->gfx, Ui_Rect(x, y, totalW, r->rowH[0]), md->cTableHeader);
-	for (rr = 0; rr < r->tblRows; rr++) {
+	Gfx_FillRect(md->gfx, Ui_Rect(x, y, totalW, r->p.table.rowH[0]), md->cTableHeader);
+	for (rr = 0; rr < r->p.table.tblRows; rr++) {
 		float xx = x;
-		float rh = r->rowH[rr];
-		for (c = 0; c < r->tblCols; c++) {
-			GfxRichText *rt = r->cellRt[rr * r->tblCols + c];
+		float rh = r->p.table.rowH[rr];
+		for (c = 0; c < r->p.table.tblCols; c++) {
+			GfxRichText *rt = r->p.table.cellRt[rr * r->p.table.tblCols + c];
 			if (rt) {
-				MdCell *cell = &r->blk->cells[rr * r->tblCols + c];
-				float tw = r->cellW ? r->cellW[rr * r->tblCols + c] : 0.0f;
+				MdCell *cell = &r->blk->p.table.cells[rr * r->p.table.tblCols + c];
+				float tw = r->p.table.cellW ? r->p.table.cellW[rr * r->p.table.tblCols + c] : 0.0f;
 				float tx;
-				int al = (cell && r->blk->align) ? r->blk->align[c]
+				int al = (cell && r->blk->p.table.align) ? r->blk->p.table.align[c]
 					: MD_ALIGN_LEFT;
 				if (al == MD_ALIGN_CENTER)
-					tx = xx + (r->colW[c] - tw) * 0.5f;
+					tx = xx + (r->p.table.colW[c] - tw) * 0.5f;
 				else if (al == MD_ALIGN_RIGHT)
-					tx = xx + r->colW[c] - tw - padX;
+					tx = xx + r->p.table.colW[c] - tw - padX;
 				else
 					tx = xx + padX;
 				if (tx < xx + padX) tx = xx + padX;
@@ -1983,7 +2016,7 @@ static void md_draw_table(UiMarkdown *md, int index, float x, float y)
 			if (c > 0)
 				Gfx_FillRect(md->gfx, Ui_Rect(xx, yy, 1.0f, rh),
 					md->cTableBorder);
-			xx += r->colW[c];
+			xx += r->p.table.colW[c];
 		}
 		Gfx_FillRect(md->gfx, Ui_Rect(x, yy, totalW, 1.0f), md->cTableBorder);
 		yy += rh;
@@ -2068,16 +2101,16 @@ static void md_draw_row(UiMarkdown *md, UiContext *ui, int index,
 			wrapW, md->ruleH), md->cRule);
 		break;
 	case MD_BLOCK_IMAGE: {
-		int align = r->blk->imgAlign != 255 ? (int)r->blk->imgAlign : md->imageAlign;
-		float dw = r->imgW > 1.0f ? r->imgW : wrapW;
-		float dh = r->imgH > 1.0f ? r->imgH : md->imagePlaceholderH;
+		int align = r->blk->u.image.imgAlign != 255 ? (int)r->blk->u.image.imgAlign : md->imageAlign;
+		float dw = r->p.image.imgW > 1.0f ? r->p.image.imgW : wrapW;
+		float dh = r->p.image.imgH > 1.0f ? r->p.image.imgH : md->imagePlaceholderH;
 		float ox = align == MD_ALIGN_CENTER ? (wrapW - dw) * 0.5f
 			: (align == MD_ALIGN_RIGHT ? wrapW - dw : 0.0f);
 		UiRect ir = Ui_Rect(x + ox, y + top, dw, dh);
-		if (r->img) {
-			UiImage_SetRect(r->img, ir);
-			UiImage_Draw(r->img, ui->theme);
-			r->imgStateSeen = UiImage_State(r->img);
+		if (r->p.image.img) {
+			UiImage_SetRect(r->p.image.img, ir);
+			UiImage_Draw(r->p.image.img, ui->theme);
+			r->p.image.imgStateSeen = UiImage_State(r->p.image.img);
 		} else {
 			Gfx_FillRoundRect(md->gfx, ir, 6.0f, md->cCodeBg);
 			Gfx_Text(md->gfx, md->fSmall, "\xE5\x9B\xBE\xE7\x89\x87",
@@ -2089,12 +2122,12 @@ static void md_draw_row(UiMarkdown *md, UiContext *ui, int index,
 		md_draw_table(md, index, x, y + top);
 		break;
 	case MD_BLOCK_MATH: {
-		if (r->bm) {
-			float bx = x + (wrapW - r->bmW) * 0.5f;
+		if (r->p.math.bm) {
+			float bx = x + (wrapW - r->p.math.bmW) * 0.5f;
 			if (bx < x) bx = x;
-			Gfx_MathDraw(r->bm, md->gfx, bx, y + top + r->bmH, md->cText);
-		} else if (r->bmFallback) {
-			Gfx_RichDraw(r->bmFallback, md->gfx, x, y + top,
+			Gfx_MathDraw(r->p.math.bm, md->gfx, bx, y + top + r->p.math.bmH, md->cText);
+		} else if (r->p.math.bmFallback) {
+			Gfx_RichDraw(r->p.math.bmFallback, md->gfx, x, y + top,
 				md->cCodeText);
 		}
 		break;
@@ -2104,19 +2137,19 @@ static void md_draw_row(UiMarkdown *md, UiContext *ui, int index,
 		 * 卡内上下内边距均为 codePadY */
 		Gfx_FillRoundRect(md->gfx, Ui_Rect(x, y, wrapW,
 			h - md->blockGap), md->codeRadius, md->cCodeBg);
-		if (r->rt) Gfx_RichDraw(r->rt, md->gfx, x + md->codePadX,
+		if (r->p.text.rt) Gfx_RichDraw(r->p.text.rt, md->gfx, x + md->codePadX,
 			y + top, md->cCodeText);
 		break;
 	default: {
 		int k;
-		if (r->rt) {
-			for (k = 0; k < r->codeN; k++)
+		if (r->p.text.rt) {
+			for (k = 0; k < r->p.text.codeN; k++)
 				Gfx_FillRoundRect(md->gfx,
-					Ui_Rect(x + r->codeRects[k].x - 1.0f,
-						y + top + r->codeRects[k].y,
-						r->codeRects[k].w + 2.0f, r->codeRects[k].h),
+					Ui_Rect(x + r->p.text.codeRects[k].x - 1.0f,
+						y + top + r->p.text.codeRects[k].y,
+						r->p.text.codeRects[k].w + 2.0f, r->p.text.codeRects[k].h),
 					3.0f, md->cInlineCodeBg);
-			Gfx_RichDraw(r->rt, md->gfx, x, y + top, md->cText);
+			Gfx_RichDraw(r->p.text.rt, md->gfx, x, y + top, md->cText);
 		}
 		break;
 	}
@@ -2367,6 +2400,11 @@ int UiMarkdown_DebugMathMisses(const UiMarkdown *md)
 	return md ? md->mmathMisses : 0;
 }
 
+int UiMarkdown_DebugRowSize(void)
+{
+	return (int)sizeof(MdRow);
+}
+
 int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 {
 	float contentW, viewH, oldContentH, anchorDelta = 0.0f;
@@ -2495,7 +2533,7 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 			if (ui->clicked == md->id && md->pressActive && hr >= 0 &&
 				hr == md->downRow && hl == md->downLink) {
 				MdRow *lr = &md->rows[hr];
-				MdLink *ll = &lr->blk->links[hl];
+				MdLink *ll = &lr->blk->p.text.links[hl];
 				md->clickedUrl = MdDoc_Url(&md->doc, ll->urlOff);
 				if (md->linkFn) md->linkFn(md->linkUser, md->clickedUrl);
 				event = 1;
@@ -2507,10 +2545,14 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 			MdRow *r2 = &md->rows[i];
 			int k;
 			md_draw_row(md, ui, i, content);
-			if (r2->img && UiImage_Busy(r2->img)) md->imgBusy = 1;
-			for (k = 0; k < r2->inlN; k++) {
-				if (r2->inlImgs[k] && UiImage_Busy(r2->inlImgs[k]))
-					md->imgBusy = 1;
+			if (r2->blk->type == MD_BLOCK_IMAGE && r2->p.image.img &&
+				UiImage_Busy(r2->p.image.img))
+				md->imgBusy = 1;
+			if (md_row_is_text(r2->blk->type)) {
+				for (k = 0; k < r2->p.text.inlN; k++) {
+					if (r2->p.text.inlImgs[k] && UiImage_Busy(r2->p.text.inlImgs[k]))
+						md->imgBusy = 1;
+				}
 			}
 		}
 		UiScrollView_End(&md->sv, ui);

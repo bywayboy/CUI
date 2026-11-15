@@ -1252,9 +1252,9 @@ static void inl_to_leaf(MdInl *b, wchar_t **outT, int *outLen,
 /* 行内图片记录随叶子块转移 (段落/标题) */
 static void md_take_imgs(MdBlock *blk, MdInl *ib)
 {
-	blk->imgs = ib->imgs;
-	blk->imgCount = ib->imgCount;
-	blk->imgCap = ib->imgCap;
+	blk->p.text.imgs = ib->imgs;
+	blk->p.text.imgCount = ib->imgCount;
+	blk->p.text.imgCap = ib->imgCap;
 	ib->imgs = NULL;
 	ib->imgCount = 0;
 	ib->imgCap = 0;
@@ -1263,9 +1263,9 @@ static void md_take_imgs(MdBlock *blk, MdInl *ib)
 /* 行内公式记录随叶子块转移 */
 static void md_take_maths(MdBlock *blk, MdInl *ib)
 {
-	blk->maths = ib->maths;
-	blk->mathCount = ib->mathCount;
-	blk->mathCap = ib->mathCap;
+	blk->p.text.maths = ib->maths;
+	blk->p.text.mathCount = ib->mathCount;
+	blk->p.text.mathCap = ib->mathCap;
 	ib->maths = NULL;
 	ib->mathCount = 0;
 	ib->mathCap = 0;
@@ -1278,9 +1278,9 @@ static MdBlock *md_add_block(MdDoc *d, MdBlock *parent)
 	MdBlock *arr, *b;
 	int *cnt, *cap;
 	if (parent) {
-		arr = parent->children;
-		cnt = &parent->childCount;
-		cap = &parent->childCap;
+		arr = parent->p.kids.children;
+		cnt = &parent->p.kids.childCount;
+		cap = &parent->p.kids.childCap;
 	} else {
 		arr = d->blocks;
 		cnt = &d->count;
@@ -1288,13 +1288,12 @@ static MdBlock *md_add_block(MdDoc *d, MdBlock *parent)
 	}
 	if (!md_grow((void **)&arr, cap, *cnt + 1, (int)sizeof(MdBlock)))
 		return NULL;
-	if (parent) parent->children = arr;
+	if (parent) parent->p.kids.children = arr;
 	else d->blocks = arr;
 	b = &arr[(*cnt)++];
 	ZeroMemory(b, sizeof(*b));
 	b->task = MD_TASK_NONE;
 	b->tight = 1;
-	b->imgAlign = 255;
 	return b;
 }
 
@@ -1464,8 +1463,8 @@ static int md_box_title_set(MdDoc *d, MdBlock *b, const char *p, int len,
 		off = md_url_put(d, t, tl, 0, &n);
 	}
 	if (off < 0) return 0;
-	b->titleOff = off;
-	b->titleLen = n;
+	b->u.box.titleOff = off;
+	b->u.box.titleLen = n;
 	return 1;
 }
 
@@ -1835,10 +1834,10 @@ static int md_table_try(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent)
 	b = md_add_block(d, parent);
 	if (!b) { md_free(align); md_free(hc); md_free(dc); return 0; }
 	b->type = MD_BLOCK_TABLE;
-	b->cols = cols;
-	b->align = align;
+	b->u.table.cols = cols;
+	b->p.table.align = align;
 	cells = (MdCell *)md_alloc(cols * (int)sizeof(MdCell));
-	if (!cells) { b->cols = 0; md_free(hc); md_free(dc); return 0; }
+	if (!cells) { b->u.table.cols = 0; md_free(hc); md_free(dc); return 0; }
 
 	/* 表头行 */
 	for (c = 0; c < cols; c++) {
@@ -1955,8 +1954,8 @@ static int md_table_try(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent)
 		rows++;
 		j++;
 	}
-	b->rows = rows;
-	b->cells = cells;
+	b->u.table.rows = rows;
+	b->p.table.cells = cells;
 	md_set_span(b, ls, *ip, j);
 	*ip = j;
 	md_free(hc);
@@ -2067,8 +2066,8 @@ static int md_math_block_try(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent)
 	b = md_add_block(d, parent);
 	if (!b) return 0;
 	b->type = MD_BLOCK_MATH;
-	b->mathOff = srcOff;
-	b->mathLen = e - s;
+	b->u.math.mathOff = srcOff;
+	b->u.math.mathLen = e - s;
 	md_set_span(b, ls, *ip, j);
 	*ip = j;
 	return 1;
@@ -2116,8 +2115,8 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 					ln->p[infoOff + wordLen] != ' ' &&
 					ln->p[infoOff + wordLen] != '\t')
 					wordLen++;
-				b->langOff = md_url_put(d, ln->p + infoOff, wordLen, 0, NULL);
-				b->langLen = wordLen;
+				b->u.code.langOff = md_url_put(d, ln->p + infoOff, wordLen, 0, NULL);
+				b->u.code.langLen = wordLen;
 			}
 			inl_init(&ib, d);
 			j = i + 1;
@@ -2140,8 +2139,9 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 				}
 			}
 			if (closed) b->flags |= MD_BF_FENCE_CLOSED;
-			inl_to_leaf(&ib, &b->text16, &b->len16, &b->runs, &b->runCount,
-				&b->links, &b->linkCount);
+			inl_to_leaf(&ib, &b->p.text.text16, &b->p.text.len16,
+				&b->p.text.runs, &b->p.text.runCount, &b->p.text.links,
+				&b->p.text.linkCount);
 			inl_free(&ib);
 			md_set_span(b, ls, i, j);
 			i = j;
@@ -2179,7 +2179,7 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 						}
 					}
 					b->type = MD_BLOCK_CONTAINER;
-					b->boxKind = (uint8_t)kind;
+					b->u.box.boxKind = (uint8_t)kind;
 					md_box_title_set(d, b, NULL, 0, kind);
 					if (onlySpace) {
 						if (sub.n > 1) {
@@ -2240,7 +2240,7 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 							ln->p[we] == '\t')) we++;
 						md_box_title_set(d, b, ln->p + we, e - we, kind);
 					}
-					b->boxKind = (uint8_t)kind;
+					b->u.box.boxKind = (uint8_t)kind;
 					ZeroMemory(&sub, sizeof(sub));
 					for (k = i + 1; k < closed; k++)
 						lines_add(&sub, ls->v[k].p, ls->v[k].len,
@@ -2271,8 +2271,8 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 				}
 				inl_init(&ib, d);
 				inl_parse(&ib, ln->p + cOff, cLen, 1);
-				inl_to_leaf(&ib, &b->text16, &b->len16, &b->runs,
-					&b->runCount, &b->links, &b->linkCount);
+				inl_to_leaf(&ib, &b->p.text.text16, &b->p.text.len16, &b->p.text.runs,
+					&b->p.text.runCount, &b->p.text.links, &b->p.text.linkCount);
 				md_take_imgs(b, &ib);
 				md_take_maths(b, &ib);
 				inl_free(&ib);
@@ -2323,8 +2323,9 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 			while (sub.n > 0 && md_blank(&sub.v[sub.n - 1])) sub.n--;
 			inl_init(&ib, d);
 			if (sub.n > 0) md_code_build(&ib, &sub, first, 0);
-			inl_to_leaf(&ib, &b->text16, &b->len16, &b->runs, &b->runCount,
-				&b->links, &b->linkCount);
+			inl_to_leaf(&ib, &b->p.text.text16, &b->p.text.len16,
+				&b->p.text.runs, &b->p.text.runCount, &b->p.text.links,
+				&b->p.text.linkCount);
 			inl_free(&ib);
 			md_free(sub.v);
 			md_set_span(b, ls, i, j);
@@ -2382,8 +2383,8 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 				MdInl ib;
 				inl_init(&ib, d);
 				inl_parse(&ib, b->raw, b->rawLen, 1);
-				inl_to_leaf(&ib, &b->text16, &b->len16, &b->runs,
-					&b->runCount, &b->links, &b->linkCount);
+				inl_to_leaf(&ib, &b->p.text.text16, &b->p.text.len16, &b->p.text.runs,
+					&b->p.text.runCount, &b->p.text.links, &b->p.text.linkCount);
 				md_take_imgs(b, &ib);
 				md_take_maths(b, &ib);
 				inl_free(&ib);
@@ -2450,18 +2451,19 @@ static int md_image_block(MdDoc *d, MdBlock *b)
 		if (!md_ref_lookup(d, p + altOff, altLen, &urlOff, &urlLen)) return 0;
 		end = after;
 	}
-	end = md_parse_img_attrs(p, len, end, &b->imgW, &b->imgH);
+	end = md_parse_img_attrs(p, len, end, &b->u.image.imgW, &b->u.image.imgH);
 	while (end < len && (p[end] == ' ' || p[end] == '\t')) end++;
 	if (end != len) return 0;
 
 	b->type = MD_BLOCK_IMAGE;
-	b->urlOff = urlOff;
-	b->urlLen = urlLen;
-	b->imgAlign = (uint8_t)(tOff >= 0 ? md_title_align(p + tOff, tLen) : 255);
+	b->u.image.urlOff = urlOff;
+	b->u.image.urlLen = urlLen;
+	b->u.image.imgAlign = (uint8_t)(tOff >= 0 ? md_title_align(p + tOff, tLen) : 255);
 	inl_init(&ib, d);
 	inl_parse(&ib, p + altOff, altLen, 0);
-	inl_to_leaf(&ib, &b->text16, &b->len16, &b->runs, &b->runCount,
-		&b->links, &b->linkCount);
+	inl_to_leaf(&ib, &b->p.text.text16, &b->p.text.len16,
+		&b->p.text.runs, &b->p.text.runCount, &b->p.text.links,
+		&b->p.text.linkCount);
 	inl_free(&ib);
 	return 1;
 }
@@ -2483,8 +2485,10 @@ static void md_inline_cell(MdDoc *d, MdCell *c)
 static void md_inline_pass(MdDoc *d, MdBlock *b)
 {
 	int i;
-	for (i = 0; i < b->childCount; i++)
-		md_inline_pass(d, &b->children[i]);
+	if (MD_BT_KIDS(b->type)) {
+		for (i = 0; i < b->p.kids.childCount; i++)
+			md_inline_pass(d, &b->p.kids.children[i]);
+	}
 
 	switch (b->type) {
 	case MD_BLOCK_PARAGRAPH:
@@ -2496,8 +2500,8 @@ static void md_inline_pass(MdDoc *d, MdBlock *b)
 			MdInl ib;
 			inl_init(&ib, d);
 			inl_parse(&ib, b->raw, b->rawLen, 1);
-			inl_to_leaf(&ib, &b->text16, &b->len16, &b->runs,
-				&b->runCount, &b->links, &b->linkCount);
+			inl_to_leaf(&ib, &b->p.text.text16, &b->p.text.len16, &b->p.text.runs,
+				&b->p.text.runCount, &b->p.text.links, &b->p.text.linkCount);
 			md_take_imgs(b, &ib);
 			md_take_maths(b, &ib);
 			inl_free(&ib);
@@ -2507,9 +2511,10 @@ static void md_inline_pass(MdDoc *d, MdBlock *b)
 		}
 		break;
 	case MD_BLOCK_TABLE:
-		if (b->cells) {
-			int n = b->rows * b->cols;
-			for (i = 0; i < n; i++) md_inline_cell(d, &b->cells[i]);
+		if (b->p.table.cells) {
+			int n = b->u.table.rows * b->u.table.cols;
+			for (i = 0; i < n; i++)
+				md_inline_cell(d, &b->p.table.cells[i]);
 		}
 		break;
 	default:
@@ -2549,88 +2554,122 @@ static uint32_t md_hash_block(MdDoc *d, MdBlock *b)
 			h *= MD_FNV_PRIME;
 		}
 	}
-	if (b->type == MD_BLOCK_IMAGE && b->urlOff >= 0 && b->urlOff < d->urlsLen) {
-		const char *u = d->urls + b->urlOff;
-		h = md_hash_u32(h, (uint32_t)b->imgW);
-		h = md_hash_u32(h, (uint32_t)b->imgH);
-		while (*u) {
-			h ^= (uint32_t)(unsigned char)*u++;
-			h *= MD_FNV_PRIME;
-		}
-	}
-	for (i = 0; i < b->imgCount; i++) {
-		const char *u = d->urls + b->imgs[i].urlOff;
-		h = md_hash_u32(h, (uint32_t)b->imgs[i].w);
-		h = md_hash_u32(h, (uint32_t)b->imgs[i].h);
-		while (*u) {
-			h ^= (uint32_t)(unsigned char)*u++;
-			h *= MD_FNV_PRIME;
-		}
-	}
-	if (b->type == MD_BLOCK_MATH) {
-		const char *u = d->urls + (b->mathOff >= 0 ? b->mathOff : 0);
-		h = md_hash_u32(h, (uint32_t)b->mathLen);
-		while (*u) {
-			h ^= (uint32_t)(unsigned char)*u++;
-			h *= MD_FNV_PRIME;
-		}
-	}
-	for (i = 0; i < b->mathCount; i++) {
-		const char *u = d->urls + b->maths[i].srcOff;
-		while (*u) {
-			h ^= (uint32_t)(unsigned char)*u++;
-			h *= MD_FNV_PRIME;
-		}
-	}
-	if (b->type == MD_BLOCK_TABLE) {
-		h = md_hash_u32(h, (uint32_t)b->cols);
-		h = md_hash_u32(h, (uint32_t)b->rows);
-		for (i = 0; i < b->cols; i++) h = md_hash_u32(h, b->align[i]);
-	}
-	if (b->type == MD_BLOCK_CONTAINER) {
-		const char *u;
-		h = md_hash_u32(h, b->boxKind);
-		h = md_hash_u32(h, (uint32_t)b->titleLen);
-		if (b->titleOff >= 0 && b->titleOff < d->urlsLen) {
-			u = d->urls + b->titleOff;
+	if (b->type == MD_BLOCK_IMAGE) {
+		if (b->u.image.urlOff >= 0 && b->u.image.urlOff < d->urlsLen) {
+			const char *u = d->urls + b->u.image.urlOff;
+			h = md_hash_u32(h, (uint32_t)b->u.image.imgW);
+			h = md_hash_u32(h, (uint32_t)b->u.image.imgH);
 			while (*u) {
 				h ^= (uint32_t)(unsigned char)*u++;
 				h *= MD_FNV_PRIME;
 			}
 		}
 	}
-	for (i = 0; i < b->childCount; i++) {
-		uint32_t ch = md_hash_block(d, &b->children[i]);
-		h = md_hash_u32(h, ch);
+	if (b->type == MD_BLOCK_PARAGRAPH || b->type == MD_BLOCK_HEADING) {
+		for (i = 0; i < b->p.text.imgCount; i++) {
+			const char *u = d->urls + b->p.text.imgs[i].urlOff;
+			h = md_hash_u32(h, (uint32_t)b->p.text.imgs[i].w);
+			h = md_hash_u32(h, (uint32_t)b->p.text.imgs[i].h);
+			while (*u) {
+				h ^= (uint32_t)(unsigned char)*u++;
+				h *= MD_FNV_PRIME;
+			}
+		}
+	}
+	if (b->type == MD_BLOCK_MATH) {
+		const char *u = d->urls +
+			(b->u.math.mathOff >= 0 ? b->u.math.mathOff : 0);
+		h = md_hash_u32(h, (uint32_t)b->u.math.mathLen);
+		while (*u) {
+			h ^= (uint32_t)(unsigned char)*u++;
+			h *= MD_FNV_PRIME;
+		}
+	}
+	if (b->type == MD_BLOCK_PARAGRAPH || b->type == MD_BLOCK_HEADING) {
+		for (i = 0; i < b->p.text.mathCount; i++) {
+			const char *u = d->urls + b->p.text.maths[i].srcOff;
+			while (*u) {
+				h ^= (uint32_t)(unsigned char)*u++;
+				h *= MD_FNV_PRIME;
+			}
+		}
+	}
+	if (b->type == MD_BLOCK_TABLE) {
+		h = md_hash_u32(h, (uint32_t)b->u.table.cols);
+		h = md_hash_u32(h, (uint32_t)b->u.table.rows);
+		for (i = 0; i < b->u.table.cols; i++)
+			h = md_hash_u32(h, b->p.table.align[i]);
+	}
+	if (b->type == MD_BLOCK_CONTAINER) {
+		const char *u;
+		h = md_hash_u32(h, b->u.box.boxKind);
+		h = md_hash_u32(h, (uint32_t)b->u.box.titleLen);
+		if (b->u.box.titleOff >= 0 && b->u.box.titleOff < d->urlsLen) {
+			u = d->urls + b->u.box.titleOff;
+			while (*u) {
+				h ^= (uint32_t)(unsigned char)*u++;
+				h *= MD_FNV_PRIME;
+			}
+		}
+	}
+	if (MD_BT_KIDS(b->type)) {
+		for (i = 0; i < b->p.kids.childCount; i++) {
+			uint32_t ch = md_hash_block(d, &b->p.kids.children[i]);
+			h = md_hash_u32(h, ch);
+		}
 	}
 	b->hash = h;
 	return h;
 }
 
+/* union 成员按 type 标签释放: 每个分支只碰该类型有效的成员 */
 static void md_free_block(MdBlock *b)
 {
 	int i;
-	if (b->children) {
-		for (i = 0; i < b->childCount; i++) md_free_block(&b->children[i]);
-		md_free(b->children);
-	}
-	if (b->type == MD_BLOCK_TABLE && b->cells) {
-		int n = b->rows * b->cols;
-		for (i = 0; i < n; i++) {
-			MdCell *c = &b->cells[i];
-			md_free(c->text16);
-			md_free(c->runs);
-			md_free(c->links);
-			md_free(c->raw);
+	switch (b->type) {
+	case MD_BLOCK_QUOTE:
+	case MD_BLOCK_LIST:
+	case MD_BLOCK_ITEM:
+	case MD_BLOCK_CONTAINER:
+		if (b->p.kids.children) {
+			for (i = 0; i < b->p.kids.childCount; i++)
+				md_free_block(&b->p.kids.children[i]);
+			md_free(b->p.kids.children);
 		}
-		md_free(b->cells);
+		break;
+	case MD_BLOCK_TABLE:
+		if (b->p.table.cells) {
+			int n = b->u.table.rows * b->u.table.cols;
+			for (i = 0; i < n; i++) {
+				MdCell *c = &b->p.table.cells[i];
+				md_free(c->text16);
+				md_free(c->runs);
+				md_free(c->links);
+				md_free(c->raw);
+			}
+			md_free(b->p.table.cells);
+		}
+		md_free(b->p.table.align);
+		break;
+	case MD_BLOCK_PARAGRAPH:
+	case MD_BLOCK_HEADING:
+		md_free(b->p.text.text16);
+		md_free(b->p.text.runs);
+		md_free(b->p.text.links);
+		md_free(b->p.text.imgs);
+		md_free(b->p.text.maths);
+		break;
+	case MD_BLOCK_CODE:
+	case MD_BLOCK_IMAGE:
+		md_free(b->p.text.text16);
+		md_free(b->p.text.runs);
+		md_free(b->p.text.links);
+		break;
+	case MD_BLOCK_MATH:
+	case MD_BLOCK_HR:
+	default:
+		break;
 	}
-	md_free(b->align);
-	md_free(b->text16);
-	md_free(b->runs);
-	md_free(b->links);
-	md_free(b->imgs);
-	md_free(b->maths);
 	md_free(b->raw);
 	ZeroMemory(b, sizeof(*b));
 }
@@ -2721,8 +2760,10 @@ static int md_count_type_block(const MdBlock *b, int type)
 {
 	int n = 0, i;
 	if (b->type == type) n++;
-	for (i = 0; i < b->childCount; i++)
-		n += md_count_type_block(&b->children[i], type);
+	if (MD_BT_KIDS(b->type)) {
+		for (i = 0; i < b->p.kids.childCount; i++)
+			n += md_count_type_block(&b->p.kids.children[i], type);
+	}
 	return n;
 }
 
