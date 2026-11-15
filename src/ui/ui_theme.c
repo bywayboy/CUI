@@ -99,6 +99,11 @@ static void theme_bind_roles(UiTheme *t)
 	t->neutral.border = t->btnBorder;
 }
 
+void UiTheme_DeriveRoles(UiTheme *t)
+{
+	if (t) theme_bind_roles(t);
+}
+
 /* 自定义角色 -> 旧 token, 保证老组件一起换肤. */
 static void theme_write_primary(UiTheme *t)
 {

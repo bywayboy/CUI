@@ -5,7 +5,7 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
 平滑 + 转场补间"的轻动画内核，以及支持中文输入法（IMM32）的单行编辑框
 `UiEdit` 与多行 `UiTextArea`（动态容量）。
 
-工程包含十一个样例，公共代码在 `src/ui`：
+工程包含多个样例，公共代码在 `src/ui`：
 
 - `src/demo.c`：**标准样例（约 340 行）**。基于 `UiApp` 壳 + `UiInput` 表单 +
   `UiButton/Panel/ProgressBar` + `UITheme` + 合成器 `UiToast`（`GfxLayer`），
@@ -39,6 +39,14 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
 - `samples/nav.c`：多级导航菜单样例。水平/垂直切换、图标 rail、水平尾部
   `>>` 收起、垂直高度不足时的底部 `>>`、多级子菜单、选中路径面包屑；
   子菜单超高时用"更多 >>"续页，不出现滚动条。
+- `samples/theme_editor.c`：主题编辑器（CUI Theme Studio）。基础/高级两档令牌
+  列表（15 个常用项带中文短名，可一键展开全量 73 项）；点选右侧预览元素即可
+  定位令牌（悬停显示令牌名，点到高级令牌自动切高级视图）；Light/Dark 双模式
+  全量 68 色 + 5 圆角编辑，HSV/透明度拾取、HEX 键入、对比度提示、另一模式
+  对照色块；右侧组件预览实时换肤；**抽卡**一键生成 3 套候选配色（同种子驱动
+  Light/Dark、模板受控变换、对比度自动校验），可分别锁定主色/中性色/语义色
+  后重抽，单步撤销；工程自动保存到 exe 旁 `theme_editor.palette`，一键生成
+  可回贴 `ui_theme.c` 的 `theme_apply_preset()` 并保存/复制。
 
 > 来源：RMControl `installer/src`（提交 `1bc6929` 时的实现）。
 > 安装器目前仍保留自己的副本；CUI 是**独立可复用**版本，后续可让安装器切到它。
@@ -64,7 +72,8 @@ CUI/
 │  ├─ CUI-分页-设计方案.md  行内分页：页码窗口/宽度退化/保持首条位置
 │  ├─ CUI-日期选择-设计方案.md  DatePicker 四模式/双联动范围/时间列/键入校验
 │  ├─ CUI-网络层-设计方案.md  IOCP+SChannel/自研 DNS/APC 归位/定时器/验证判据
-│  └─ CUI-图片-设计方案.md   UiImage：WIC 解码/URL-文件-内存/GPU loading/失效
+│  ├─ CUI-图片-设计方案.md   UiImage：WIC 解码/URL-文件-内存/GPU loading/失效
+│  └─ CUI-主题编辑器-设计方案.md  令牌快照/双模式编辑/拾取器/代码生成/持久化
 ├─ samples/
 │  ├─ minimal.c           最小接入样例
 │  ├─ advanced.c          高级样例（overlay/Toast/IME 全细节）
@@ -80,9 +89,11 @@ CUI/
 │  ├─ pagination.c        行内分页：数字/紧凑/极简三态 + 每页条数 + 键盘
 │  ├─ net.c               网络层：HTTP(S) / WebSocket(wss) / UiTimer
 │  ├─ ws_server.c         WebSocket 服务端：ws/wss / 回显 / 广播 / 连接日志
-│  └─ image.c             图片：URL / 本地文件 / 内存 + GPU loading
+│  ├─ image.c             图片：URL / 本地文件 / 内存 + GPU loading
+│  └─ theme_editor.c      主题编辑器：双模式 68 色 + 5 圆角 / 预览 / 导出预设
 ├─ tests/
 │  ├─ net_test.c          headless + 实网断言（CUI_NET_LIVE=1）
+│  ├─ ui_theme_edit_test.c 主题令牌/工程文件/导出/HEX/对比度断言
 │  ├─ net_server_http.ps1 本机 HTTP 测试服务器（18080，含 keep-alive）
 │  ├─ net_server_ws.ps1   本机 WS 回显（18081）
 │  ├─ net_server_wss.ps1  本机 WSS 回显（18082，自签证书）
@@ -130,6 +141,7 @@ CUI/
       ├─ ui_pagination.*   行内分页：页码窗口/宽度退化/保持首条/键盘
       ├─ ui_tooltip.*      悬停延迟提示
       ├─ ui_theme.*       颜色/字体令牌（亮/暗 + 自定义 5 语义色）
+      ├─ ui_theme_edit.*  令牌表/工程文件/HEX/对比度/预设代码生成
       ├─ ui_paint.*       Ui_DrawSurface：填充/描边/光晕的统一外观
       ├─ ui_anim.*        动画内核（指数平滑 + 显式补间，固定池零分配）
       ├─ ui_frame.*       vsync 对齐的帧时钟（合成器时钟 / 高精度定时器）
@@ -170,6 +182,8 @@ bin\cui_net.exe         REM 网络层：HTTP(S) / WS / WSS / UiTimer
 bin\cui_ws_server.exe   REM WebSocket 服务端：WS/WSS / 回显 / 广播
 bin\cui_net_test.exe    REM 网络层断言（CUI_NET_LIVE=1 跑实网，需先起 tests\net_server_*.ps1）
 bin\cui_image.exe       REM 图片：URL / 文件 / 内存 + GPU loading 动画
+bin\cui_theme_editor.exe  REM 主题编辑器：基础/高级令牌 / 预览点选 / 导出预设
+bin\cui_theme_edit_test.exe REM 主题令牌与代码生成断言
 ```
 
 构建是 **增量** 的：`build.cmd` 生成头文件清单后调用 `nmake`，只重编比
@@ -580,5 +594,15 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   状态行显示版权）、`%TEMP%` BMP 文件、内存字节三源；留白/剪裁/拉伸/原始
   四模式与 9 个取景锚点逐项截图（留白余量与裁剪方向随锚点变化），重载/清除正常；
   `on_init` 首帧前加载走延迟解码不误报失败；`cui_image.exe` 与 15 个 exe 0CRT。
+- 主题编辑器回归：`cui_theme_edit_test.exe` 7574 断言全过（令牌表唯一性/偏移、
+  读写往返、工程文件容错与截断、导出结构与 136 条色值逐项匹配、HEX 6/8 位、
+  对比度、字段修改判定、内置预设可原样复现、基础视图 15 项映射与中文标签、
+  抽卡生成器确定性/可复现/锁组/双模式色相联动/语义色分离/200 种子对比度下限）；
+  `cui_theme_editor.exe` 在 3840×2160 @200% 下逐帧截图验证基础/高级视图、
+  预览悬停提示与点选定位（含点到高级令牌自动展开）、Light/Dark、搜索过滤、
+  圆角编辑、HSV/透明度拖动、HEX 键入、另一模式对照、滚轮/滚动条拖动、组件
+  预览换肤、抽卡面板（3 卡 Light/Dark 缩略图、锁组重抽、使用/撤销/关闭）、
+  导出对话框与回贴文件（`theme_apply_preset()`，两模式颜色/圆角各一份）；
+  工程文件自动保存/恢复；全量 28 个 exe 0CRT。
 - 无桌面环境（SSH/Session 0）不能目视验证，但编译与链接判据（0CRT/无未解析符号）
   可在 CI 里跑。

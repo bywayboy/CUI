@@ -156,6 +156,17 @@
 >    非客户区不占像素、标题栏继续自绘；动画由 DWM 原生接管，壳零动画代码、
 >    过渡期间应用 0 CPU。见
 >    [CUI-窗口最小化还原-设计方案.md](CUI-窗口最小化还原-设计方案.md)。
+> 44. 新增主题编辑器 `cui_theme_editor.exe`（8.23）：全量 68 色令牌 + 5 圆角
+>    可视化编辑，Light/Dark 独立调色与对照色块，HSV 取色板 + HEX/滑块 +
+>    搜索过滤，实时预览；基础视图默认只列 15 个常用令牌并配中文短名，可切
+>    高级视图看全量，点选右侧预览元素即可定位令牌（高级令牌自动展开）。
+>    新增"抽卡"随机配色：3 套候选各带 Light/Dark 缩略图与 seed，可按主色/
+>    中性色/语义色分组锁定后重抽，使用后支持单步撤销；生成器为模板受控变换，
+>    自动校验对比度。启动恢复 `theme_editor.palette`，导出完整
+>    `theme_apply_preset()` 函数体（8 位十六进制、两模式各自圆角）写回
+>    `ui_theme.c`；新增 `src/ui/ui_theme_edit.*` 与 `ui_theme_edit_test`
+>    （7574 断言）。见
+>    [CUI-主题编辑器-设计方案.md](CUI-主题编辑器-设计方案.md)。
 
 ---
 
@@ -182,6 +193,9 @@
    - [8.18 Dialog / ConfirmDialog](#818-dialog--confirmdialog)
    - [8.19 DatePicker 日期选择](#819-datepicker-日期选择)
    - [8.20 Image 图片](#820-image-图片)
+   - [8.21 NavBar 多级导航](#821-navbar-多级导航)
+   - [8.22 UiPagination 行内分页](#822-uipagination-行内分页)
+   - [8.23 主题编辑器与令牌工具](#823-主题编辑器与令牌工具)
 9. [UiAnim 动画内核](#9-uianim-动画内核)
 10. [网络层与定时器](#10-网络层与定时器uinet--uihttp--uiws--uiwsserver--uitimer)
 11. [UiFrame 帧时钟](#11-uiframe-帧时钟)
@@ -271,7 +285,7 @@ CUI 的取舍是：**只做安装器/工具类窗口需要的那一层**。体�
 | 多级导航 | ✅ | `UiNavBar` 水平/垂直/rail、溢出收进 `>>`、无滚动续页（8.21） |
 | 行内分页 | ✅ | `UiPagination` 页码窗口/自动紧凑退化/保持首条/键盘（8.22） |
 | 原生文件对话框 | 由应用调用 | 注意动作延后，避免渲染重入 |
-| 多主题/换肤 | 自行扩展 | `UiTheme` 是一组令牌 |
+| 多主题/换肤 | ✅ | 内置 Light/Dark 全量令牌；`cui_theme_editor.exe` 可视化编辑、抽卡生成候选并导出预设（8.23） |
 | 托盘/通知 | ❌ | 不属于 UI 层 |
 
 ---
@@ -375,6 +389,11 @@ bin\cui_demo.exe
 
 demo 还演示了：窗口进场淡入、按钮悬停光晕、进度条平滑、状态文字上滑淡入、
 编辑框光标 530 ms 闪烁、DPI 缩放。
+
+需要调整配色时运行 `bin\cui_theme_editor.exe`：默认基础视图列 15 个常用
+令牌（带中文短名），也可切高级视图看全量；点右侧预览里的组件可直接定位
+对应令牌；没有思路时点"抽卡"生成 3 套候选，锁定喜欢的主色/中性色后重抽，
+实时预览并导出可替换 `theme_apply_preset()` 的代码（8.23）。
 
 ### 3.4 五分钟接入清单
 
@@ -1400,6 +1419,8 @@ UiTheme_SetColors(&theme, UI_THEME_LIGHT, &brand);  /* 深色外壳传 DARK */
   `themeRev` 判断重建 overlay，`UiToast` 用它判断重画 layer。任意换肤都不需要手动销毁。
 - 只想要某个窗口的完整自定义（页面/卡片/文字也改）时：直接改该 `UiTheme` 字段，
   再调用 `UiTheme_Touch(&theme)`；这是实例级操作，不会广播到其它窗口。
+  如果改的是派生角色的源令牌（`blue/orange/green/danger/btnBg`），先调用
+  `UiTheme_DeriveRoles(&theme)` 重算 `primary/warning/success/error/neutral`。
 - 字体字号属于主题初始化的一部分；换字体需要自行重建 `UiTheme` 或另行管理
   `Gfx_CreateFont`。
 - demo 的按钮按 浅色 → 品牌色 → 深色 循环，品牌色就是上面这段代码。
@@ -2910,6 +2931,115 @@ if (UiPagination_Key(&pg, &ui, vk)) { /* ←/→ Home/End PgUp/PgDn */ }
 - **悬停**：页码/箭头与行内文字按钮共用 `neutral.hover/press` 实色，亮色主题
   下是 `#E4E9F8/#D5DDF0`，在白色卡片上可辨识（`primary.soft` 色差太小）。
 
+### 8.23 主题编辑器与令牌工具
+
+> 设计细节：[CUI-主题编辑器-设计方案.md](CUI-主题编辑器-设计方案.md)；样例
+> [samples/theme_editor.c](../samples/theme_editor.c)（`bin\cui_theme_editor.exe`）；
+> 令牌工具 `src/ui/ui_theme_edit.*`；headless 断言
+> `tests/ui_theme_edit_test.c`（`bin\cui_theme_edit_test.exe`，7574 项）。
+
+`ui_theme_edit` 把 `UiTheme` 的 68 个颜色令牌和 5 个圆角令牌抽成一张带
+`offsetof` 的表，编辑器与测试共用；它不参与运行时渲染，只做"快照 ↔ 工程文件 ↔
+C 代码"的转换。
+
+```c
+UiThemeSet light, dark;                    /* 68 色 + 5 圆角 */
+UiThemeSet_Read(&light, &theme);           /* 从 UiTheme 实例读快照 */
+UiThemeSet_Apply(&theme, UI_THEME_LIGHT, &light);   /* 写回并派生语义角色 */
+
+char buf[16384];
+UiThemeSet_Save(&light, &dark, buf, sizeof(buf));   /* cui-theme 1 工程文本 */
+UiThemeSet_Load(&light, &dark, buf);                /* 容忍未知键/缺行 */
+UiThemeSet_Codegen(&light, &dark, buf, sizeof(buf), "2026-11-15 12:00");
+```
+
+生成物是一段完整的预设函数，直接替换 `ui_theme.c` 里的同名函数：
+
+```c
+static void theme_apply_preset(UiTheme *t, UiThemeId id)
+{
+	t->themeId = id;
+
+	if (id == UI_THEME_DARK) {
+		t->page = 0xFF121722;
+		/* … 68 色 … */
+		t->windowRadius = 14.0f;
+		/* … 5 圆角 … */
+		return;
+	}
+
+	t->page = 0xFFF7F9FF;
+	/* … 68 色 … */
+	t->windowRadius = 14.0f;
+}
+```
+
+- **颜色一律 8 位** `0x%08X`：6 位常量会把 alpha 补成 `00`；只有 100% 不透明
+  的色块在界面里用 6 位 HEX 展示。
+- **两模式各自输出圆角**：`UiThemeSet` 的圆角是独立的，生成器不能在分支外
+  只写一份 Dark 值（曾经丢过 Light 的修改，已有断言兜住）。
+- **工程文件是纯文本**：`cui-theme 1` + `[light]/[dark]`，键值来自令牌表；
+  解析不认识的行直接跳过，缺行保留当前值，首行不匹配返回 0。
+- **HEX**：接受 `RRGGBB` / `AARRGGBB`，可带 `0x` 与首尾空白；编辑器键入
+  非法值显示"无效颜色"且不写入。
+- **对比度**：`UiTheme_Contrast(fg, bg)` 先把半透明前景合成到背景，再按
+  sRGB 亮度算比值；编辑器对卡片/窗口底色各显示一份，提示文字可读性。
+- **0CRT**：`wvsprintfA` 不支持 `%f`，圆角/对比度用整数定点手写格式化；
+  文件对话框用 `comdlg32!GetSaveFileNameW`，剪贴板用 `CF_UNICODETEXT`。
+
+随机配色（抽卡）也由令牌工具提供，不依赖窗口，可 headless 复现：
+
+```c
+UiThemeGenOpts opts = {0};
+opts.seed = 0xC0B63447u;                 /* 同 seed 必得同结果 */
+opts.locks = UI_THEME_LOCK_NEUTRAL;      /* 锁住中性色组 */
+opts.templateLight = &builtinLight;      /* 变换模板 */
+opts.templateDark  = &builtinDark;
+opts.keepLight = &currentLight;          /* 锁组与圆角的来源 */
+opts.keepDark  = &currentDark;
+UiThemeSet light, dark;
+unsigned used = UiThemeGen_Palette(&light, &dark, &opts);
+/* used != 0 表示成功；失败时输出保持不变 */
+```
+
+- 不是逐令牌随机：中性/主色/强调/语义/主按钮文字按族做受控变换，一个 seed
+  同时生成 Light/Dark；圆角不随机，始终取 `keep*`。
+- 配色方案在相近/互补/三角/分裂互补中随机，并避开语义色相；语义色只做
+  微小色相扰动，保持红/橙/绿的识别。
+- 生成结果自动按 12 组前景/背景配对校验对比度，不达标换 seed 重试（最多
+  6 次），全部失败返回 0；被锁组完全覆盖的配对跳过。
+- 锁组：`UI_THEME_LOCK_PRIMARY/NEUTRAL/SEMANTIC`，从 `keep*` 原样拷贝；
+  `keep* = NULL` 时回退模板。
+
+编辑器的交互约定：
+
+- 左侧列表默认是**基础视图**：只列 15 个最常用令牌（窗口/卡片/边框/三级
+  文字/主色/次级按钮/选中行/输入框/主按钮/主按钮文字 + 3 个圆角），每行
+  显示中文短名 + key，组头按"外观/文字/交互/几何"归类；右上"基础/高级"
+  分段按钮切到全量 73 项。搜索或"仅显示已改"生效时自动显示匹配的高级令牌。
+- **预览即编辑器**：鼠标悬停预览组件时描出蓝色轮廓，并在"组件预览"标题旁
+  显示"中文短名 · key"；点击后直接把对应令牌设为当前项、列表立即滚到该行。
+  若该令牌不在基础视图（如 Toast 底），自动切到高级视图并给出状态提示。
+  预览命中按"最小包围矩形优先"排序，所以按钮内层、输入框内层能准确落到
+  `btnPrimary`/`inputBg` 等内层令牌，外层才能落到 border。
+- 顶部 Light/Dark 切换当前编辑模式；左侧列表显示当前模式色块 + 另一模式
+  对照色块 + "已修改"圆点，支持按 key/分组/中文描述搜索和"仅显示已改"。
+- 中间是 HSV 方块、色相条、透明度条、HEX 输入与对比度；拾取器拖动实时
+  写回令牌并触发整窗预览（编辑器本身也用当前配色绘制）。标题会显示
+  "分组 · 中文短名"，与列表和预览悬停保持一致。
+- 列表与预览各自是 `UiScrollView`，每帧 `UiScrollView_Tick` + `Busy`
+  驱动滚轮/惯性/滚动条淡入；遗漏 Tick 时滚轮只改 target 不移动，属易踩坑。
+  点选预览/切换视图的定位用 `ScrollTo(..., 0)` 立即落位，不陪滚动动画等待。
+- 右侧预览覆盖文本层级、四种按钮、开关/复选/滑杆、输入框、进度、Toast、
+  列表行、分页和 5 个语义角色色卡，用于检查派生角色在真实组件上的效果。
+- **抽卡**：头部按钮打开模态面板，一次给 3 套候选（A/B/C），每张卡带
+  Light/Dark 缩略预览与可复现 seed。顶部"主色/中性色/语义色"三枚 chip 可
+  分别锁定，锁住的组不参与重抽；底部"重抽"换一批，"使用这套"应用并关闭，
+  "撤销上次抽卡"回退到抽卡前的工程（单步）。快捷键：Esc 关闭、R 重抽、
+  U 撤销、1/2/3 应用对应方案。
+- 工程自动保存到 exe 同目录的 `theme_editor.palette`（启动时恢复，损坏则
+  回退内置预设）；"导出代码"用系统保存对话框，"复制代码"进剪贴板。
+
 ## 9. UiAnim 动画内核
 
 ### 9.1 两种运动模型
@@ -4238,7 +4368,7 @@ UiButtonGroup_Draw / UiButtonGroup_Key
 ```c
 Ui_DrawSurface
 UiTheme_Init / UiTheme_Shutdown
-UiTheme_SetTheme / UiTheme_SetColors / UiTheme_Touch
+UiTheme_SetTheme / UiTheme_SetColors / UiTheme_Touch / UiTheme_DeriveRoles
 ```
 
 **Gfx 每角几何**

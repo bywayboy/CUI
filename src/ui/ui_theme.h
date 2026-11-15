@@ -156,4 +156,8 @@ void UiTheme_SetColors(UiTheme *t, UiThemeId base, const UiThemeColors *colors);
  * 不广播到其它窗口; 全局换肤请用 SetTheme/SetColors. */
 void UiTheme_Touch(UiTheme *t);
 
+/* 改完原始令牌后重算 5 个语义角色 (与预设同一套派生规则).
+ * 只写角色字段, 不动 themeRev/通知; 需要刷新窗口时再调用 UiTheme_Touch. */
+void UiTheme_DeriveRoles(UiTheme *t);
+
 #endif /* SCV2_UI_THEME_H */
