@@ -17,6 +17,7 @@
 #include "ui/ui_image.h"
 #include "ui/ui_scroll.h"
 #include "ui/ui_frame.h"
+#include "ui/ui_layout.h"
 #include "gfx/gfx_rich.h"
 #include "gfx/gfx_math.h"
 
@@ -1665,6 +1666,55 @@ static float md_cell_natural_w(UiMarkdown *md, MdCell *c)
 	return w;
 }
 
+typedef struct MdColFit {
+	float minW;
+	float prefW;
+} MdColFit;
+
+static void md_col_fit_measure(void *user, UiMeasure *m)
+{
+	const MdColFit *c = (const MdColFit *)user;
+	m->minW = c->minW;
+	m->prefW = c->prefW;
+}
+
+/* 总宽超出可用宽但每列硬下限仍放得下时, 用 measure 协议按 nat-min 容量
+ * 等比压缩. 失败 (OOM) 返回 0, 由调用方走手工兜底. */
+static int md_table_fit_cols(float *colW, const float *nat, int cols,
+	float minW, float avail)
+{
+	MdColFit *fit = (MdColFit *)md_alloc_(cols * (int)sizeof(MdColFit));
+	UiMeasureItem *items = (UiMeasureItem *)md_alloc_(
+		cols * (int)sizeof(UiMeasureItem));
+	UiRect *rects = (UiRect *)md_alloc_(cols * (int)sizeof(UiRect));
+	int i, ok = 0;
+	if (fit && items && rects) {
+		for (i = 0; i < cols; i++) {
+			fit[i].minW = minW;
+			fit[i].prefW = nat[i];
+			items[i].user = &fit[i];
+			items[i].measure = md_col_fit_measure;
+			items[i].grow = 0.0f;
+			items[i].minSize = 0.0f;
+			items[i].maxSize = 0.0f;
+			items[i].minCross = 0.0f;
+			items[i].maxCross = 0.0f;
+			items[i].crossSize = 0.0f;
+			items[i].stretch = 1;
+			items[i].align = UI_ALIGN_START;
+		}
+		if (Ui_FlexLayout(Ui_Rect(0.0f, 0.0f, avail, 1.0f), UI_ROW, 0.0f,
+				items, cols, rects)) {
+			for (i = 0; i < cols; i++) colW[i] = rects[i].w;
+			ok = 1;
+		}
+	}
+	md_free_(fit);
+	md_free_(items);
+	md_free_(rects);
+	return ok;
+}
+
 static int md_table_build(UiMarkdown *md, int index)
 {
 	MdRow *r = &md->rows[index];
@@ -1715,7 +1765,7 @@ static int md_table_build(UiMarkdown *md, int index)
 	} else if (minW * cols >= avail) {
 		float eq = avail / cols;
 		for (c = 0; c < cols; c++) r->p.table.colW[c] = eq;
-	} else {
+	} else if (!md_table_fit_cols(r->p.table.colW, nat, cols, minW, avail)) {
 		float extra = avail - minW * cols;
 		float sumExtra = 0.0f;
 		for (c = 0; c < cols; c++) {
@@ -2607,6 +2657,20 @@ int UiMarkdown_DebugImagesReused(const UiMarkdown *md)
 int UiMarkdown_DebugImagesRetained(const UiMarkdown *md)
 {
 	return md ? md->imgRetained : 0;
+}
+
+int UiMarkdown_DebugTableCols(const UiMarkdown *md, int index, float *out, int cap)
+{
+	const MdRow *r;
+	int i, n;
+	if (!md || !out || cap <= 0 || index < 0 || index >= md->rowCount)
+		return -1;
+	r = &md->rows[index];
+	if (r->rowType != MD_BLOCK_TABLE || !r->p.table.colW) return -1;
+	n = r->p.table.tblCols;
+	if (n <= 0) return -1;
+	for (i = 0; i < n && i < cap; i++) out[i] = r->p.table.colW[i];
+	return n;
 }
 
 int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)

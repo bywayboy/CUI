@@ -178,13 +178,11 @@ static void win_draw_dialog(MWin *w)
 		line2, t->hint, GFX_TEXT_VCENTER);
 
 	{
-		UiFlexItem items[4] = {
-			{ 110, 0, 0, 0 },
-			{ 90,  0, 0, 0 },
-			{ 90,  0, 0, 0 },
-			{ 0,   1, 0, 0 }
-		};
-		if (!Ui_FlexRow(rowRc, 12.0f, items, 4, buttons)) {
+		UiFixedSize fx[4] = { { 110, 0 }, { 90, 0 }, { 90, 0 }, { 0, 0 } };
+		UiMeasureItem items[4] = {
+			Ui_FixedItem(&fx[0], 0.0f), Ui_FixedItem(&fx[1], 0.0f),
+			Ui_FixedItem(&fx[2], 0.0f), Ui_FixedItem(&fx[3], 1.0f) };
+		if (!Ui_FlexLayout(rowRc, UI_ROW, 12.0f, items, 4, buttons)) {
 			for (int i = 0; i < 4; i++) buttons[i] = Ui_Rect(0, 0, 0, 0);
 		}
 	}
@@ -263,15 +261,14 @@ static void win_draw(MWin *w)
 		line2, t->hint, GFX_TEXT_VCENTER);
 
 	if (w->id == 0) {
-		UiFlexItem items[6] = {
-			{ 100, 0, 0, 0 },
-			{ 100, 0, 0, 0 },
-			{ 100, 0, 0, 0 },
-			{ 80,  0, 0, 0 },
-			{ 0,   1, 0, 0 },
-			{ 70,  0, 0, 0 }
-		};
-		if (!Ui_FlexRow(rowRc, 12.0f, items, 6, buttons)) {
+		UiFixedSize fx[6] = {
+			{ 100, 0 }, { 100, 0 }, { 100, 0 },
+			{ 80, 0 }, { 0, 0 }, { 70, 0 } };
+		UiMeasureItem items[6] = {
+			Ui_FixedItem(&fx[0], 0.0f), Ui_FixedItem(&fx[1], 0.0f),
+			Ui_FixedItem(&fx[2], 0.0f), Ui_FixedItem(&fx[3], 0.0f),
+			Ui_FixedItem(&fx[4], 1.0f), Ui_FixedItem(&fx[5], 0.0f) };
+		if (!Ui_FlexLayout(rowRc, UI_ROW, 12.0f, items, 6, buttons)) {
 			for (int i = 0; i < 6; i++) buttons[i] = Ui_Rect(0, 0, 0, 0);
 		}
 		if (Ui_Button(ui, Ui_Id("mw.second", 0, 0), buttons[0],
@@ -291,13 +288,11 @@ static void win_draw(MWin *w)
 				"退出", UI_BTN_DANGER, 1))
 			w->pending = 3;
 	} else {
-		UiFlexItem items[4] = {
-			{ 110, 0, 0, 0 },
-			{ 90,  0, 0, 0 },
-			{ 0,   1, 0, 0 },
-			{ 80,  0, 0, 0 }
-		};
-		if (!Ui_FlexRow(rowRc, 12.0f, items, 4, buttons)) {
+		UiFixedSize fx[4] = { { 110, 0 }, { 90, 0 }, { 0, 0 }, { 80, 0 } };
+		UiMeasureItem items[4] = {
+			Ui_FixedItem(&fx[0], 0.0f), Ui_FixedItem(&fx[1], 0.0f),
+			Ui_FixedItem(&fx[2], 1.0f), Ui_FixedItem(&fx[3], 0.0f) };
+		if (!Ui_FlexLayout(rowRc, UI_ROW, 12.0f, items, 4, buttons)) {
 			for (int i = 0; i < 4; i++) buttons[i] = Ui_Rect(0, 0, 0, 0);
 		}
 		if (Ui_Button(ui, Ui_Id("mw.theme", 1, 0), buttons[0],

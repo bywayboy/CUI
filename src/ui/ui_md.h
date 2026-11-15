@@ -103,6 +103,7 @@ int UiMarkdown_DebugRowSize(void);                      /* sizeof(MdRow) */
 int UiMarkdown_DebugRowsReused(const UiMarkdown *md);   /* 上次重建复用的行数 */
 int UiMarkdown_DebugImagesReused(const UiMarkdown *md); /* 其中复用的图片行数 */
 int UiMarkdown_DebugImagesRetained(const UiMarkdown *md); /* 宽度失效时保留的图片数 */
+int UiMarkdown_DebugTableCols(const UiMarkdown *md, int index, float *out, int cap);
 
 #ifdef __cplusplus
 }

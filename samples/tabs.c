@@ -64,7 +64,10 @@ static void draw_page_overview(TabsDemo *d, UiContext *ui, Gfx *g, UiRect rc)
 	UiRect icons = Ui_Rect(rc.x, rc.y + 146.0f, rc.w, 50.0f);
 	UiRect note = Ui_Rect(rc.x, rc.y + 208.0f, rc.w, rc.h - 208.0f);
 	UiRect m[3];
-	UiFlexItem items[3] = { { 0, 1, 0, 0 }, { 0, 1, 0, 0 }, { 0, 1, 0, 0 } };
+	UiFixedSize fx[3] = { { 0, 0 }, { 0, 0 }, { 0, 0 } };
+	UiMeasureItem items[3] = {
+		Ui_FixedItem(&fx[0], 1.0f), Ui_FixedItem(&fx[1], 1.0f),
+		Ui_FixedItem(&fx[2], 1.0f) };
 	UiButtonStyle pri = UiButtonStyle_Make(UI_BTYPE_PRIMARY,
 		UI_BAPPEAR_SOLID, UI_BSHAPE_RECT, 0);
 	static const uint32_t iconCodes[5] = {
@@ -78,7 +81,7 @@ static void draw_page_overview(TabsDemo *d, UiContext *ui, Gfx *g, UiRect rc)
 
 	Gfx_Text(g, t->fBig, "ScrollView · TabBar · Pager", title,
 		t->text, GFX_TEXT_VCENTER);
-	if (!Ui_FlexRow(metrics, 12.0f, items, 3, m)) {
+	if (!Ui_FlexLayout(metrics, UI_ROW, 12.0f, items, 3, m)) {
 		m[0] = Ui_Rect(metrics.x, metrics.y, 180, 92);
 		m[1] = Ui_Rect(metrics.x + 192, metrics.y, 180, 92);
 		m[2] = Ui_Rect(metrics.x + 384, metrics.y, 180, 92);

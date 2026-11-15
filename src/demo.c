@@ -138,14 +138,18 @@ static void on_frame(UiApp *app, void *user)
 
 	/* 按钮行: UiFlex 固定项 + grow 空白项, 主题按钮靠右 */
 	{
-		UiFlexItem items[5] = {
-			{ 110.0f, 0.0f, 0.0f, 0.0f },   /* 提交 */
-			{ 90.0f, 0.0f, 0.0f, 0.0f },    /* 重置 */
-			{ 110.0f, 0.0f, 0.0f, 0.0f },   /* 动画 */
-			{ 0.0f, 1.0f, 0.0f, 0.0f },     /* spacer */
-			{ 110.0f, 0.0f, 0.0f, 0.0f }    /* 主题 */
+		UiFixedSize fx[5] = {
+			{ 110.0f, 0.0f },   /* 提交 */
+			{ 90.0f, 0.0f },    /* 重置 */
+			{ 110.0f, 0.0f },   /* 动画 */
+			{ 0.0f, 0.0f },     /* spacer */
+			{ 110.0f, 0.0f }    /* 主题 */
 		};
-		if (!Ui_FlexRow(rowRc, 12.0f, items, 5, buttons))
+		UiMeasureItem items[5] = {
+			Ui_FixedItem(&fx[0], 0.0f), Ui_FixedItem(&fx[1], 0.0f),
+			Ui_FixedItem(&fx[2], 0.0f), Ui_FixedItem(&fx[3], 1.0f),
+			Ui_FixedItem(&fx[4], 0.0f) };
+		if (!Ui_FlexLayout(rowRc, UI_ROW, 12.0f, items, 5, buttons))
 			buttons[0] = buttons[1] = buttons[2] = buttons[3] = buttons[4] =
 				Ui_Rect(0, 0, 0, 0);
 	}

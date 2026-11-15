@@ -165,17 +165,20 @@ static void on_frame(UiApp *app, void *user)
 	Gfx_Text(gfx, t->fLabel, "按钮样式（solid / plain / text / dashed / round / disabled）",
 		labelStyles, t->text2, GFX_TEXT_VCENTER);
 	{
-		UiFlexItem items[6] = {
-			{ 0, 1, 0, 0 }, { 0, 1, 0, 0 }, { 0, 1, 0, 0 },
-			{ 0, 1, 0, 0 }, { 0, 1, 0, 0 }, { 0, 1, 0, 0 }
-		};
+		UiFixedSize fx[6] = {
+			{ 0, 0 }, { 0, 0 }, { 0, 0 },
+			{ 0, 0 }, { 0, 0 }, { 0, 0 } };
+		UiMeasureItem items[6] = {
+			Ui_FixedItem(&fx[0], 1.0f), Ui_FixedItem(&fx[1], 1.0f),
+			Ui_FixedItem(&fx[2], 1.0f), Ui_FixedItem(&fx[3], 1.0f),
+			Ui_FixedItem(&fx[4], 1.0f), Ui_FixedItem(&fx[5], 1.0f) };
 		UiButtonStyle s0 = UiButtonStyle_Make(UI_BTYPE_PRIMARY, UI_BAPPEAR_SOLID, UI_BSHAPE_RECT, 0);
 		UiButtonStyle s1 = UiButtonStyle_Make(UI_BTYPE_SUCCESS, UI_BAPPEAR_PLAIN, UI_BSHAPE_RECT, 0);
 		UiButtonStyle s2 = UiButtonStyle_Make(UI_BTYPE_WARNING, UI_BAPPEAR_TEXT, UI_BSHAPE_RECT, 0);
 		UiButtonStyle s3 = UiButtonStyle_Make(UI_BTYPE_ERROR, UI_BAPPEAR_PLAIN, UI_BSHAPE_RECT, UI_BFLAG_DASHED);
 		UiButtonStyle s4 = UiButtonStyle_Make(UI_BTYPE_DEFAULT, UI_BAPPEAR_SOLID, UI_BSHAPE_ROUND, 0);
 		UiButtonStyle s5 = UiButtonStyle_Make(UI_BTYPE_PRIMARY, UI_BAPPEAR_SOLID, UI_BSHAPE_RECT, 0);
-		if (!Ui_FlexRow(stylesRc, 8.0f, items, 6, styleButtons)) {
+		if (!Ui_FlexLayout(stylesRc, UI_ROW, 8.0f, items, 6, styleButtons)) {
 			for (int i = 0; i < 6; i++) styleButtons[i] = Ui_Rect(0, 0, 0, 0);
 		}
 		Ui_ButtonEx(ui, Ui_Id("style.solid", 0, 0), styleButtons[0], "Solid", &s0, 1);

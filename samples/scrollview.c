@@ -253,7 +253,8 @@ static void on_frame(UiApp *app, void *user)
 	Gfx *g = app->gfx;
 	UiContext *ui = &app->ui;
 	UiRect inner, cards[2], cardView, viewport;
-	UiFlexItem items[2];
+	UiFixedSize fx[2] = { { 0, 0 }, { 0, 0 } };
+	UiMeasureItem items[2];
 	float innerW;
 	UiStack foot;
 
@@ -264,10 +265,9 @@ static void on_frame(UiApp *app, void *user)
 	draw_header(d, ui, g);
 
 	inner = Ui_Rect(22, 82, app->w - 44, app->h - 130);
-	items[0].basis = 0; items[0].grow = 3.0f;
-	items[0].minSize = 300.0f; items[0].maxSize = 0;
-	items[1] = items[0]; items[1].grow = 2.0f; items[1].minSize = 260.0f;
-	if (!Ui_FlexRow(inner, 16.0f, items, 2, cards)) {
+	items[0] = Ui_FixedItem(&fx[0], 3.0f); items[0].minSize = 300.0f;
+	items[1] = Ui_FixedItem(&fx[1], 2.0f); items[1].minSize = 260.0f;
+	if (!Ui_FlexLayout(inner, UI_ROW, 16.0f, items, 2, cards)) {
 		cards[0] = Ui_Rect(inner.x, inner.y, inner.w * 0.6f, inner.h);
 		cards[1] = Ui_Rect(inner.x + inner.w * 0.6f + 16.0f, inner.y,
 			inner.w * 0.4f - 16.0f, inner.h);

@@ -88,7 +88,9 @@ static void on_frame(UiApp *app, void *user)
 	UiRect card, row, editRc, roRc, disRc;
 	UiRect out[2];
 	UiStack col;
-	UiFlexItem pair[2] = { { 0, 1, 0, 0 }, { 0, 1, 0, 0 } };
+	UiFixedSize fx[2] = { { 0, 0 }, { 0, 0 } };
+	UiMeasureItem pair[2] = {
+		Ui_FixedItem(&fx[0], 1.0f), Ui_FixedItem(&fx[1], 1.0f) };
 	int changed;
 
 	Gfx_FillRoundRectGradV(g, Ui_Rect(0, 0, app->w, app->h), t->windowRadius,
@@ -121,7 +123,7 @@ static void on_frame(UiApp *app, void *user)
 		Ui_StackTake(&col, 18), t->text2, GFX_TEXT_VCENTER);
 	Ui_StackSkip(&col, 8);
 	row = Ui_StackTake(&col, 92);
-	if (!Ui_FlexRow(row, 16, pair, 2, out)) {
+	if (!Ui_FlexLayout(row, UI_ROW, 16, pair, 2, out)) {
 		out[0] = Ui_Rect(row.x, row.y, (row.w - 16.0f) * 0.5f, row.h);
 		out[1] = Ui_Rect(out[0].x + out[0].w + 16.0f, row.y,
 			out[0].w, row.h);

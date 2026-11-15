@@ -123,7 +123,8 @@ CUI/
    └─ ui/
       ├─ ui_types.h       矩形/颜色/稳定 ID（FNV）
       ├─ ui_context.*     即时模式上下文：注册/命中/z-index/拖动/单帧事件
-      ├─ ui_layout.*      UiStack / UiFlex 布局：只算矩形，零分配
+      ├─ ui_layout.*      UiStack / measure 协议（UiFlex 兼容）：矩形、min/pref 尺寸与两遍求解
+      ├─ ui_grid.*        Grid 布局：fixed/auto/fr、minmax、span、隐式轨道、dense
       ├─ ui_button_group.* 融合按钮组管理器（NORMAL/SINGLE/MULTI + 键盘）
       ├─ ui_scroll.*       滚动容器 + 高度 measure 缓存/可见区间/滚动条
       ├─ ui_tab.*          TabBar（LINE/PILL/CARD）+ TabPager 转场
@@ -172,6 +173,7 @@ bin\cui_mvvm.exe        REM ButtonGroup + MVVM-lite
 bin\cui_scroll.exe      REM ScrollView（10k 行 / 变高卡片 / 惯性/回弹）
 bin\cui_tabs.exe        REM TabBar + TabPager（LINE/PILL/CARD / 四向转场）
 bin\cui_icons.exe       REM 按钮 / Toast / TabBar 图标（MDL2 glyph）
+bin\cui_grid.exe        REM Grid + ScrollView：20 卡片仪表盘 / span / dense / 展开
 bin\cui_controls.exe    REM Checkbox / Radio / Switch / Slider / Tooltip
 bin\cui_overlays.exe    REM Select/Menu + Dialog/ConfirmDialog（含 TextArea 测试）
 bin\cui_textarea.exe    REM 多行文本：软换行 / 滚动 / 选择 / IME
@@ -205,6 +207,7 @@ printf（flags/宽度/精度/length）和分配器；`mem_avx2.c` 单独 `/arch:
    ▼
 ui_paint / ui_theme        控件表面与设计令牌
 ui_context / ui_anim      交互状态机 + 动画
+ui_layout / ui_grid       measure 协议 / Flex / Grid 矩形求解
 ui_scroll                 视口 / measure 缓存 / 滚动物理 / el-scrollbar
 ui_ime + edit             编辑控件与输入法
    ▼
@@ -300,6 +303,11 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | | `Gfx_SetFrameEffects` `Gfx_EffectSetColorMatrix` | 整帧后处理（颜色矩阵/无障碍）；只覆盖主窗 uiTarget |
 | `UiLayout` | `Ui_StackBegin/Take/TakeFill/TakeRight/TakeAligned` | 游标布局：padding/gap、固定+Fill |
 | | `Ui_FlexRow/Ui_FlexCol` | basis+grow 权重、min/max；零分配 |
+| | `UiMeasure` + `Ui_MeasureNormalize` | 控件按 `maxW` 报告 `minW/prefW/minH/prefH/baseline`；宽度受限时 `prefH` 为换行后高度 |
+| | `Ui_FlexMeasure` | 自然尺寸：行 = min/pref 宽度之和 + gap，列 = 高度之和 + gap；交叉轴夹 `minCross/maxCross` |
+| | `Ui_FlexLayout` | 两遍求解：`min~pref` 等比压缩、富余按 grow 扩张、低于 min 允许溢出；行支持基线对齐；≤32 项零堆分配 |
+| | `Ui_GridMeasure` `Ui_GridLayout` | 显式/隐式轨道、fixed/auto/fr、minmax、span、dense；fr 以内容 min 为基再分配富余；≤24 轨道/项、512 格零堆分配 |
+| | `UiFixedSize` + `Ui_MeasureFixed/Ui_FixedItem` | 固定/弹簧项适配器：固定宽 `{w,0}`、弹簧 `{0,0}+grow`；交叉轴默认铺满 |
 | `UiContext` | `Ui_BeginFrame/EndFrame` | 一帧的注册周期；EndFrame 清单帧事件 |
 | | `Ui_State` `Ui_StateInstant` `Ui_DrawSurface` | 平滑交互状态 / 列表项瞬时状态 / 统一表面 |
 | | `Ui_PushLayer/Ui_PopLayer` | z-index 注册层；命中取最高 z |
@@ -436,7 +444,8 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
 
 ## 9. 已知限制
 
-- 布局只有矩形层：`UiStack/UiFlex` 不提供网格、百分比、自动换行；滚动由
+- 布局只有矩形层：`UiStack/UiFlex` 不提供网格、百分比或容器内换行；measure
+  协议只负责控件的 min/pref 尺寸与主轴伸缩，文本换行仍由控件自身完成，滚动由
   `UiScrollView` 承担。
 - `UiEdit` 是单行；`UiTextArea` 是纯文本多行（无撤销栈/富文本）。
   菜单无子菜单；Select 已支持搜索/多选（≤32 项，无拼音匹配/自由输入值）。
@@ -486,9 +495,22 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   本机 Win10 19045 无 `IDCompositionVisual3`，透明度自动走
   `IDCompositionEffectGroup`。`SCV2_ULW=1` 自动回退主窗渐变 + 进度让位。
 - 布局回归：`UiStack` 的 padding/gap/固定/Fill/Right/对齐与 `UiFlex`
-  的 basis+grow/min-max 通过纯矩形数学测试；demo 表单改用 `UiStack`、按钮行
-  改用 `UiFlex`（主题按钮右对齐），100%/200% DPI、Toast/进度 overlay
-  均正常，布局零堆分配。
+  的 basis+grow/min-max 通过纯矩形数学测试；新增 measure 协议与
+  `Ui_FlexLayout` 的宽度/高度扫描黄金测试（`cui_layout_test` 4239 断言：
+  min 溢出、min~pref 压缩、grow 扩张、gap、交叉轴对齐与 min/max、
+  基线对齐）；demo 表单改用 `UiStack`，
+  按钮行及所有样例的横向 flex 行改用 `Ui_FlexLayout`（固定项 `Ui_FixedItem`，
+  主题按钮右对齐）；Markdown 表格列宽在总宽超出时按 `nat-min` 容量走协议压缩
+  （`md_ui_test` 142 断言覆盖自然宽/压缩/极窄等分）；100%/200% DPI、Toast/进度
+  overlay 均正常，≤32 项布局零堆分配。
+- Grid 回归：`cui_grid.exe` 是 Grid + ScrollView 的 20 卡片仪表盘，200% DPI 下
+  fixed 112 / auto(min 150/max 260) / 1fr(min 200) 三列、跨 3 列标题、
+  rowSpan=2 高卡与 colSpan=2 宽卡、6 条隐式 auto 行均正确；`Ui_GridMeasure`
+  的 prefH 作为 ScrollView 内容高，滚动/裁剪后 dense 回填空洞、sparse 保留空洞，
+  切换 dense、间距 12/6、明暗主题后无残留或文字裁剪；点击卡片展开使
+  contentH 从 894 增至 946（tall +96），滚动上限同步变化，状态栏可见项数随之更新；
+  `cui_grid_test` 74 断言覆盖黄金矩形、minmax、fr 权重与 min 基、span、隐式行列、
+  dense/sparse、压缩溢出、measure 换行与堆回退路径。
 - ButtonGroup/MVVM 回归：`cui_mvvm.exe` 普通/单选/多选三组按钮融合显示；单选组
   点击切全局主题，多选组 mask 状态更新，普通组命令提交/重置/退出；Tab/方向键/
   Space 导航正常；selected/mask/focus 全部在 `FormVM`，无隐藏状态；样式条

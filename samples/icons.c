@@ -138,8 +138,10 @@ static void draw_button_demo(IconsDemo *d, UiContext *ui, UiRect row)
 {
 	UiTheme *t = &d->app->theme;
 	UiRect b[4];
-	UiFlexItem items[4] = { { 0, 1, 0, 0 }, { 0, 1, 0, 0 },
-		{ 0, 1, 0, 0 }, { 0, 1, 0, 0 } };
+	UiFixedSize fx[4] = { { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 } };
+	UiMeasureItem items[4] = {
+		Ui_FixedItem(&fx[0], 1.0f), Ui_FixedItem(&fx[1], 1.0f),
+		Ui_FixedItem(&fx[2], 1.0f), Ui_FixedItem(&fx[3], 1.0f) };
 	UiButtonStyle primary = UiButtonStyle_Make(UI_BTYPE_PRIMARY,
 		UI_BAPPEAR_SOLID, UI_BSHAPE_RECT, 0);
 	UiButtonStyle def = UiButtonStyle_Make(UI_BTYPE_DEFAULT,
@@ -151,7 +153,7 @@ static void draw_button_demo(IconsDemo *d, UiContext *ui, UiRect row)
 	UiIcon trash = UiIcon_Glyph(t->fIcon, 0xE74Du);
 	UiIcon disabled = UiIcon_Glyph(t->fIcon, 0xE713u);
 
-	if (!Ui_FlexRow(row, 10.0f, items, 4, b)) return;
+	if (!Ui_FlexLayout(row, UI_ROW, 10.0f, items, 4, b)) return;
 	if (Ui_ButtonExIcon(ui, Ui_Id("icons.save", 0, 0), b[0], &save,
 		"保存", &primary, 1))
 		show_toast(d, UI_TOAST_SUCCESS, "保存成功（图标来自 MDL2）");
@@ -169,7 +171,10 @@ static void draw_toast_demo(IconsDemo *d, UiContext *ui, UiRect row)
 {
 	UiTheme *t = &d->app->theme;
 	UiRect b[3];
-	UiFlexItem items[3] = { { 0, 1, 0, 0 }, { 0, 1, 0, 0 }, { 0, 1, 0, 0 } };
+	UiFixedSize fx[3] = { { 0, 0 }, { 0, 0 }, { 0, 0 } };
+	UiMeasureItem items[3] = {
+		Ui_FixedItem(&fx[0], 1.0f), Ui_FixedItem(&fx[1], 1.0f),
+		Ui_FixedItem(&fx[2], 1.0f) };
 	UiButtonStyle info = UiButtonStyle_Make(UI_BTYPE_DEFAULT,
 		UI_BAPPEAR_PLAIN, UI_BSHAPE_RECT, 0);
 	UiButtonStyle ok = UiButtonStyle_Make(UI_BTYPE_SUCCESS,
@@ -180,7 +185,7 @@ static void draw_toast_demo(IconsDemo *d, UiContext *ui, UiRect row)
 	UiIcon okIcon = UiIcon_Glyph(t->fIcon, 0xE73Eu);
 	UiIcon errIcon = UiIcon_Glyph(t->fIcon, 0xE783u);
 
-	if (!Ui_FlexRow(row, 10.0f, items, 3, b)) return;
+	if (!Ui_FlexLayout(row, UI_ROW, 10.0f, items, 3, b)) return;
 	if (Ui_ButtonExIcon(ui, Ui_Id("icons.toast.info", 0, 0), b[0],
 		&infoIcon, "信息 Toast", &info, 1))
 		show_toast(d, UI_TOAST_INFO, "这是一条信息提示");

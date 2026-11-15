@@ -180,7 +180,7 @@
 6. [Gfx 渲染层](#6-gfx-渲染层)
 7. [UiContext 交互层](#7-uicontext-交互层)
 8. [UiPaint 与 UiTheme](#8-uipaint-与-uitheme)
-   - [8.8 布局：UiStack / UiFlex](#88-布局uistack--uiflex)
+   - [8.8 布局：UiStack / UiFlex / UiGrid](#88-布局uistack--uiflex--uigrid)
    - [8.9 ButtonGroup 与键盘导航](#89-buttongroup-与键盘导航)
    - [8.10 MVVM-lite](#810-mvvm-lite)
    - [8.11 按钮样式与每角圆角](#811-按钮样式与每角圆角)
@@ -221,9 +221,10 @@ CUI 是一套 **纯 C/C++、零 CRT、即时模式（Immediate Mode）** 的 Win
 2. **需要轻量交互动画**：hover / press / focus / glow 指数平滑，转场补间，帧率无关。
 3. **自绘控件也要能输入中文**：IMM32 组合串、候选窗定位、密码框禁用输入法。
 
-它提供**可选**的 rect-only 布局（`UiStack` 游标 / `UiFlex` basis+grow），但**不提供**
-保留式布局树、控件对象树、数据绑定、MVVM 引擎或样式表解析。界面就是每帧按顺序
-“算矩形 → 画 + 注册”，交互状态从稳定 ID 读取。
+它提供**可选**的 rect-only 布局（`UiStack` 游标 / `UiFlex` basis+grow /
+`UiGrid` 轨道网格 / 控件 `UiMeasureFn` 内在尺寸协议），但**不提供**保留式布局树、控件对象树、数据绑定、
+MVVM 引擎或样式表解析。界面就是每帧按顺序“算矩形 → 画 + 注册”，交互状态从
+稳定 ID 读取。
 
 | 维度 | 说明 |
 |---|---|
@@ -237,7 +238,7 @@ CUI 是一套 **纯 C/C++、零 CRT、即时模式（Immediate Mode）** 的 Win
 | 交互 | 即时模式，稳定 `UiId`，单帧事件 |
 | 动画 | 固定池：64 条目 × 16 通道，零分配 |
 | 输入法 | IMM32，组合串就地绘制，候选窗跟随插入点 |
-| 产物 | `cui_demo` / `cui_minimal` / `cui_advanced` / `cui_multi` / `cui_mvvm` / `cui_scroll` / `cui_tabs` / `cui_icons` / `cui_controls` / `cui_overlays` / `cui_textarea` / `cui_datepicker` |
+| 产物 | `cui_demo` / `cui_minimal` / `cui_advanced` / `cui_multi` / `cui_mvvm` / `cui_scroll` / `cui_tabs` / `cui_icons` / `cui_grid` / `cui_controls` / `cui_overlays` / `cui_textarea` / `cui_datepicker` |
 
 ---
 
@@ -259,7 +260,9 @@ CUI 的取舍是：**只做安装器/工具类窗口需要的那一层**。体�
 - 不是通用桌面 UI 框架，不追求覆盖所有控件。
 - 不是声明式框架，没有“改状态 → 自动 diff → 更新 DOM”的机制。
 - 不是跨平台库，只支持 Windows。
-- 布局是薄封装：`UiStack/UiFlex` 只算矩形；没有 grid、换行、滚动容器或自动内容测量。
+- 布局是薄封装：`UiStack/UiFlex/UiGrid` 只算矩形；measure 协议用回调报告
+  min/pref 尺寸，`Ui_FlexLayout`/`Ui_GridLayout` 据此求解；没有容器内换行或
+  保留式布局树。
 
 ### 2.3 能力矩阵
 
@@ -276,7 +279,7 @@ CUI 的取舍是：**只做安装器/工具类窗口需要的那一层**。体�
 | 中文输入法 | ✅ | 组合串、候选窗、上屏 |
 | 密码框禁用 IME | ✅ | `Edit_SetImeEnabled` + `ImmAssociateContext` |
 | 多行文本 | ✅ | `UiTextArea`：软换行/滚动/选择/IME（8.17）；无富文本/撤销栈 |
-| 布局系统 | ✅ | `UiStack` 固定+Fill；`UiFlex` basis+grow；无 grid/wrap |
+| 布局系统 | ✅ | `UiStack` 固定+Fill；`UiFlex` basis+grow；`UiGrid` fixed/auto/fr/minmax/span/隐式轨道；measure 协议 min/pref 两遍求解；无容器内换行 |
 | 滚动容器 | ✅ | `UiScrollView`：视口裁剪/高度缓存/惯性/回弹（8.12） |
 | 撤销/重做 | ❌ | 编辑框无撤销栈 |
 | 窗内 Dialog / ConfirmDialog | ✅ | 开合动画、Tab 焦点循环、嵌套 Popup、输入 scope 隔离；body 仅布局（8.18） |
@@ -445,7 +448,8 @@ Direct2D / DirectWrite / D3D11 / DirectComposition
 | `src/ui/ui_types.h` | 矩形/颜色/稳定 ID | `UiId` 必须跨帧稳定 |
 | `src/ui/ui_context.*` | 注册、命中、拖动、单帧事件 | 每帧 Begin/End |
 | `src/ui/ui_dialog.*` | 窗内 Dialog / ConfirmDialog、动画、焦点循环 | body 仅布局；inputOwner/inputScope 隔离；每窗口一个 |
-| `src/ui/ui_layout.*` | UiStack / UiFlex 布局 | 只算矩形；padding/gap；固定+Fill / basis+grow |
+| `src/ui/ui_layout.*` | UiStack / UiFlex / measure 协议布局 | 只算矩形；padding/gap；固定+Fill / basis+grow / min-pref 两遍求解 |
+| `src/ui/ui_grid.*` | Grid 布局：显式/隐式轨道、fixed/auto/fr、minmax、span、dense | 只算矩形；fr 以内容 min 为基分配富余；非固定轨道可压到 min，fixed 允许溢出 |
 | `src/ui/ui_button_group.*` | 融合按钮组管理器 | NORMAL/SINGLE/MULTI、selected/mask/focus、键盘 |
 | `src/ui/ui_theme.*` | 字体/颜色令牌 | 亮暗预设 + 5 语义色自定义；`themeRev` 通知重建 |
 | `src/ui/ui_paint.*` | 统一交互表面 | 填充/描边/光晕/渐变叠加 |
@@ -1472,7 +1476,9 @@ Ui_ProgressBar(&ui, barRc, progress, drawFill);
 - `Ui_ProgressBar` 画 `progressTrack` + 可选填充
   `progressFill -> progressFill2`；`drawFill=0` 时只画轨道，填充交给
   `GfxOverlay`（demo 就是这么做的）。
-- 组件自身不持有布局：矩形由应用或 `UiStack/UiFlex` 计算；组件内部没有自动换行/流式布局。
+- 组件自身不持有布局：矩形由应用或 `UiStack/UiFlex/UiGrid` 计算；需要
+  内在尺寸时控件通过 `UiMeasureFn` 报告 min/pref（文本行数随 `maxW` 变化），
+  组件内部仍没有自动流式布局。
 - 组件只读 `ui->theme`，不写死颜色；换主题下一帧生效。
 - 组件身份仍是调用方的 `UiId`；同一帧内必须唯一。
 
@@ -1580,7 +1586,7 @@ UiToast_Shutdown(&toast);
 - 实测：前台 1440×1120@60Hz，Toast 淡入/停留/淡出期间应用进程 CPU **0.00%**；
   Toast 下进度条持续移动；点击遮罩/Esc 关闭、resize/重复显示均正常。
 
-### 8.8 布局：UiStack / UiFlex
+### 8.8 布局：UiStack / UiFlex / UiGrid
 
 布局只计算矩形，不绘制、不注册控件、不持有控件状态。组件仍按 `UiRect` 工作，
 因此布局是**可选**的：Toast/进度 overlay 继续绝对定位。
@@ -1628,6 +1634,59 @@ Ui_FlexRow(rowRc, 12, items, 5, out);
 - 交叉轴默认铺满；百分比固定宽由应用自己算 `basis = pct * inner.w/h`。
 - `Ui_FlexRow/Col` 纯函数、零分配，`out` 由调用方提供。
 
+**Measure 协议与 Ui_FlexLayout（内容自适应）**
+
+```c
+typedef struct {
+    float maxW;                     /* 输入: <0 = 不限宽 */
+    float minW, prefW, minH, prefH; /* 输出 */
+    float baseline;                 /* 首行文字基线到顶边; 0 = 未知 */
+} UiMeasure;
+typedef void (*UiMeasureFn)(void *user, UiMeasure *m);
+
+typedef struct { float w, h; } UiFixedSize;
+void Ui_MeasureFixed(void *user, UiMeasure *m);
+UiMeasureItem Ui_FixedItem(UiFixedSize *s, float grow); /* 头文件内联 */
+
+void Ui_MeasureNormalize(UiMeasure *m);
+void Ui_FlexMeasure(int dir, float gap,
+                    const UiMeasureItem *items, int count, UiMeasure *out);
+int  Ui_FlexLayout(UiRect inner, int dir, float gap,
+                   const UiMeasureItem *items, int count, UiRect *out);
+```
+
+- 回调只报告尺寸，不绘制。`maxW<0` 取自然尺寸；`maxW>=0` 时 `prefH` 是
+  换行后的高度。`minW` 是最长不可断内容的宽度，必须满足
+  `0 <= minW <= prefW`、`0 <= minH <= prefH`（`Ui_MeasureNormalize` 兜底）。
+- `UiMeasureItem` 在测量值上叠加主轴硬限制 `minSize/maxSize`、剩余空间权重
+  `grow`，以及交叉轴 `minCross/maxCross/crossSize/stretch/align`。交叉轴限制
+  同样先夹取再参与自然尺寸与摆放，`maxCross < minCross` 时以 `minCross` 为准。
+- `align = UI_ALIGN_BASELINE` 仅用于行布局：按各项首行文字基线对齐，`baseline`
+  为 0 的项退回起点对齐；列布局忽略基线。
+- `Ui_FlexMeasure` 输出容器自然尺寸（行 = 各 min/pref 宽之和 + gap，交叉轴取最大
+  高度；列相反），可交给父级继续测量。
+- `Ui_FlexLayout` 两遍求解：先按自然 min/pref 分配主轴——空间不足按可压缩量
+  等比压缩到硬下限（仍不足则保持 min 并溢出），富余按 `grow` 分配到硬上限；
+  再以最终主轴尺寸重测交叉轴并摆放。
+- 行项先按自然宽测量，最终宽确定后再次测量得到换行高度；列项始终在容器宽下
+  测量。协议是“测量 → 摆放”两次回调，控件可缓存内部排版避免重复开销。
+- ≤32 项使用栈内临时数组，更多项一次 `HeapAlloc` 并在函数返回前释放；没有
+  逐项分配。布局结果仍是纯矩形，不注册控件也不持有状态。
+- 固定/弹簧项可用 `UiFixedSize + Ui_FixedItem`：`w=固定宽, grow=0` 为固定项，
+  `w=0, grow>0` 为弹簧项（需要硬下限时再设 `minSize`）。所有样例的横向按钮/
+  卡片行已改用 `Ui_FlexLayout`；Markdown 表格列宽在总宽超出、列硬下限仍放得下
+  时调用协议按 `nat-min` 容量压缩，极窄窗口保留等分兜底。
+
+```c
+UiMeasureItem items[2] = {
+    { &title, text_measure, 1, 80, 0, 0, 0, 0, 0, UI_ALIGN_START },
+    { &btn,   text_measure, 0, 90, 90, 0, 0, 0, 1, UI_ALIGN_CENTER }
+};
+UiRect out[2];
+Ui_FlexLayout(rowRc, UI_ROW, 12, items, 2, out);
+/* title 至少 80 宽并吸收剩余空间; btn 固定 90 宽并铺满行高 */
+```
+
 **规则总结**
 
 | 项 | 规则 |
@@ -1638,12 +1697,88 @@ Ui_FlexRow(rowRc, 12, items, 5, out);
 | 固定尺寸 | `Ui_StackTake` / `basis` |
 | 剩余空间 | `TakeFill` / `grow` 权重 |
 | 百分比 | 不作为独立模式；需要就换算成 basis |
-| 溢出 | 不压缩，调用方处理 |
-| 分配 | 栈上结构/调用方数组，无堆分配 |
+| 溢出 | `UiFlex` 不压缩；`Ui_FlexLayout` 先压到硬下限，仍不足才溢出 |
+| 分配 | 栈上结构/调用方数组；`Ui_FlexLayout` ≤32 项零堆分配，更多项一次堆分配 |
 
-demo 的卡片表单已改为 `UiStack` 纵向排布，按钮行用 `UiFlex`（中间 grow 弹簧，
-主题按钮靠右）；窗口可拖边缩放，600×480 到 1000×700 之间布局自动重算，最小
-尺寸在 demo 初始化为 600×480（再小按钮行会按“无 shrink”规则溢出）。
+demo 的卡片表单已改为 `UiStack` 纵向排布，按钮行用 `Ui_FlexLayout`
+（`Ui_FixedItem` 固定项 + grow 弹簧，主题按钮靠右）；窗口可拖边缩放，
+600×480 到 1000×700 之间布局自动重算，最小尺寸在 demo 初始化为 600×480
+（再小按钮行会按“压到硬下限后溢出”的规则处理）。
+
+**Grid 布局（Ui_GridMeasure / Ui_GridLayout）**
+
+```c
+enum { UI_GRID_FIXED, UI_GRID_AUTO, UI_GRID_FR };
+typedef struct UiGridTrack {
+    int kind;
+    float value;      /* FIXED = DIP; FR = 权重 (<=0 视为 1); AUTO 忽略 */
+    float minSize;    /* minmax 下限; 0 = 内容/0 */
+    float maxSize;    /* minmax 上限; 0 = 内容/不限 */
+} UiGridTrack;
+typedef struct UiGridItem {
+    void *user;
+    UiMeasureFn measure;
+    int row, col;     /* -1 = 自动 */
+    int rowSpan, colSpan;
+    int stretch;      /* 1 = 填满单元格 */
+    int align;        /* 未拉伸时 UI_ALIGN_START/CENTER/END */
+} UiGridItem;
+typedef struct UiGrid {
+    int rows, cols;   /* 显式轨道数; 0 = 隐式 */
+    float rowGap, colGap;
+    int dense;
+} UiGrid;
+
+void Ui_GridMeasure(const UiGrid *g, const UiGridTrack *colTracks,
+                    const UiGridTrack *rowTracks,
+                    const UiGridItem *items, int count, UiMeasure *out);
+int  Ui_GridLayout(UiRect inner, const UiGrid *g, const UiGridTrack *colTracks,
+                   const UiGridTrack *rowTracks, const UiGridItem *items,
+                   int count, UiRect *out);
+```
+
+- 显式 `row/col` 同时给出的项先占位；只给行或列时在另一轴找空位；都未给时
+  按行优先自动放置。`dense=1` 每项从 `(0,0)` 找最早空位，`dense=0` 用游标
+  前进并保留空洞。`rowSpan/colSpan` 参与占位，超出显式轨道的项创建隐式 auto
+  行/列（列数由 `g.cols` 或显式列项推断）。
+- 列先测：按内容求每列 min/pref，`minmax` 夹取；有界布局下 `fr` 以内容 min
+  （或 `minSize`）为基，再把剩余空间按权重分配，触到 `maxSize` 的冻结后余量
+  最多再分 4 轮。行高在最终列宽下重测，因此跨列项能正确换行。
+- 空间不足时先压缩非固定轨道（auto/fr）到各自 min；仍不足则保留 min 并溢出，
+  固定轨道不压缩。`Ui_GridMeasure` 在 `maxW<0` 时报告自然尺寸，`maxW>=0` 时
+  按约束求解并返回换行后的高度。
+- 单元格默认 `stretch=1` 填满；否则按 measure 的 pref 尺寸放入并按 `align`
+  在单元格内对齐。`Ui_GridLayout` 的 `out` 由调用方提供，纯矩形、不注册控件。
+- ≤24 条轨道、≤24 项、≤512 单元格使用栈内暂存，超过后按需一次 `HeapAlloc`；
+  行数上界 `显式行 + 项数 × 最大 rowSpan + 2`，超过 1,000,000 直接失败。
+
+```c
+UiGridTrack cols[3] = {
+    { UI_GRID_FIXED, 112,   0,   0 },
+    { UI_GRID_AUTO,    0, 150, 260 },
+    { UI_GRID_FR,      1, 200,   0 }
+};
+UiGridItem items[3] = {
+    { &header, measure, 0, 0, 1, 3, 1, UI_ALIGN_START },
+    { &tall,   measure, 1, 2, 2, 1, 1, UI_ALIGN_START },
+    { &wide,   measure, 2, 0, 1, 2, 1, UI_ALIGN_START }
+};
+UiGrid g = { 1, 3, 12, 12, 1 };   /* 1 条显式行 + 隐式 auto 行 */
+UiRect rc[3];
+Ui_GridLayout(inner, &g, cols, NULL, items, 3, rc);
+```
+
+完整样例：[samples/grid.c](../samples/grid.c)（`bin\cui_grid.exe`，20 卡片仪表盘：
+dense/sparse、间距 12/6、明暗主题、跨 3 列标题、rowSpan=2 高卡、colSpan=2 宽卡、
+卡片点击展开，整页放在 ScrollView 内滚动）；断言见
+[tests/ui_grid_test.c](../tests/ui_grid_test.c)。
+
+Grid 与 ScrollView 组合时按“先测高、再布格、后裁剪”三步走：用
+`UiScrollView_ContentWidth` 作为 `Ui_GridMeasure` 的 `maxW`，得到换行后的
+`prefH` 作为内容高传给 `UiScrollView_Begin`；`UiScrollView_ContentRect` 返回的
+虚拟画布交给 `Ui_GridLayout`，每个项先经 `UiScrollView_Cull` 再绘制和注册命中。
+这样行高、滚动范围与可见项数始终来自同一份布局结果，展开卡片等改变内容高的
+交互也会同步更新滚动上限。
 
 ### 8.9 ButtonGroup 与键盘导航
 
@@ -4144,8 +4279,9 @@ README 第 10 节给出了路线。核心步骤：
 
 ## 18. 已知限制与设计取舍
 
-1. **布局是可选薄层**：`UiStack/UiFlex` 只算矩形；没有 grid、自动换行、滚动容器、
-   内容测量或保留式布局树。复杂页面仍可由应用自己算坐标。
+1. **布局是可选薄层**：`UiStack/UiFlex/UiGrid` 只算矩形；文本换行由控件
+   measure 处理，滚动由 `UiScrollView/UiScrollLayout` 处理；没有保留式布局树。
+   复杂页面仍可由应用自己算坐标。
 2. **编辑框单行**：无多行、自动折行、垂直滚动、撤销栈、右键菜单。
 3. **内置亮/暗两套主题**：更多主题需扩展 `UiTheme_SetTheme`；切换不重建字体。
 4. **控件表 256 项**：超出静默丢弃。大列表用虚拟化/分页。
@@ -4579,6 +4715,7 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 | Grain 着色器 | [src/gfx/grain.hlsl](../src/gfx/grain.hlsl) |
 | demo overlay 接线 | [src/demo.c:122](../src/demo.c#L122) |
 | 布局 UiStack/UiFlex | [src/ui/ui_layout.c](../src/ui/ui_layout.c) |
+| Grid 布局 | [src/ui/ui_grid.c](../src/ui/ui_grid.c) / [samples/grid.c](../samples/grid.c) |
 | 全局主题同步 | [src/ui/ui_theme.c](../src/ui/ui_theme.c) |
 | 多窗口/模态样例 | [samples/multiwindow.c](../samples/multiwindow.c) |
 | ScrollView 容器 | [src/ui/ui_scroll.c](../src/ui/ui_scroll.c) |
@@ -4656,9 +4793,21 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
   8192/10000 字节、字符串、malloc/calloc/realloc/qsort/bsearch，退出码 0；
   五份 exe 在新 crtstub 下均正常启动/输入/关闭；新增 `cui_scroll` 同样通过。
 - **布局回归**：纯矩形自测覆盖 `UiStack` padding/gap/固定/Fill/Right/对齐、
-  `UiFlex` basis+grow（50:80）、max 夹取重分、无 shrink 溢出；demo 表单
-  迁移为 `UiStack`，按钮行用 `UiFlex` 弹簧把主题按钮推到右侧；200% DPI、
-  Toast/进度 overlay 正常，布局零堆分配。
+  `UiFlex` basis+grow（50:80）、max 夹取重分、无 shrink 溢出；新增
+  `Ui_FlexMeasure/Ui_FlexLayout` 的行/列黄金分配与宽度/高度扫描（`cui_layout_test`
+  4239 断言：min 溢出、min~pref 压缩、grow 扩张、gap、交叉轴对齐与
+  min/max、基线对齐、>32 项堆路径）；
+  demo 表单迁移为 `UiStack`，按钮行及所有样例横向 flex 行改用 `Ui_FlexLayout`
+  弹簧把主题按钮推到右侧；Markdown 表格列宽在总宽超出时按 `nat-min` 容量走协议
+  压缩（`md_ui_test` 142 断言覆盖自然宽/压缩/极窄等分）；200% DPI、Toast/进度
+  overlay 正常，≤32 项布局零堆分配。
+- **Grid 回归**：`cui_grid_test` 74 断言覆盖黄金矩形、fixed/auto/fr、minmax、
+  fr 权重与内容 min 基、span、隐式行/列、dense/sparse、压缩与 fixed 溢出、
+  measure 换行、边界与 >24 项/单元格堆路径；`cui_grid.exe` 是 Grid + ScrollView
+  的 20 卡片仪表盘，200% DPI 下 fixed 112 / auto(min 150/max 260) / 1fr(min 200)
+  三列、跨 3 列标题、rowSpan=2 高卡、colSpan=2 宽卡、隐式行均正确，滚动/裁剪后
+  dense 回填空洞、sparse 保留空洞；切换 dense、间距 12/6、明暗主题无残留或
+  文字裁剪；点击卡片展开使 contentH 894 → 946、滚动上限同步变化。
 - **ButtonGroup/MVVM 回归**：`cui_mvvm.exe` 的普通/单选/多选三组按钮融合显示；
   单选组切换全局主题，多选组更新 mask，普通组命令提交/重置/退出；Tab/方向键/
   Space 键盘导航正常；selected/mask/focus 全部在 `FormVM`，无隐藏状态。

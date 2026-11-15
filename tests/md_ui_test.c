@@ -352,6 +352,50 @@ void __stdcall startup(void)
 	CHECK(UiMarkdown_ContentHeight(md) > 40.0f);
 	CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
 
+	/* 表格列宽走 measure 协议: 自然宽 / 压缩到列硬下限 / 极窄等分 */
+	{
+		float cw[4] = { 0, 0, 0, 0 };
+		float sum;
+		int n = UiMarkdown_DebugTableCols(md, 0, cw, 4);
+		CHECK(n == 2);
+		CHECK(cw[0] > 0.0f && cw[1] > 0.0f);
+		CHECK(cw[0] + cw[1] < area.w);
+
+		UiMarkdown_SetText(md,
+			"| 第一列很长的内容用来撑宽第一列很长的内容 | 短 | 第三列中等长度内容第三列中等长度内容 |\n"
+			"|---|---|---|\n"
+			"| 第一列很长的内容用来撑宽第一列很长的内容 | 短 | 第三列中等长度内容第三列中等长度内容 |\n");
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		n = UiMarkdown_DebugTableCols(md, 0, cw, 4);
+		CHECK(n == 3);
+		sum = cw[0] + cw[1] + cw[2];
+		/* 视口左右各 18 DIP 内边距, 表格可用宽 = area.w - 36 */
+		CHECK(sum <= area.w - 35.0f && sum > area.w - 37.0f);
+		CHECK(cw[1] >= 47.5f);          /* 硬下限 */
+		CHECK(cw[0] > cw[2] && cw[2] > cw[1]);
+
+		area.w = 100.0f;
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		n = UiMarkdown_DebugTableCols(md, 0, cw, 4);
+		CHECK(n == 3);
+		CHECK(cw[0] < 48.0f && cw[1] < 48.0f && cw[2] < 48.0f);
+		CHECK(cw[0] - cw[1] < 0.6f && cw[0] - cw[1] > -0.6f);
+		CHECK(cw[2] - cw[1] < 0.6f && cw[2] - cw[1] > -0.6f);
+		area.w = 320.0f;
+	}
+
 	/* 真实图片: 本地 BMP, 解码后按像素比例回填高度 */
 	{
 		char path[MAX_PATH];

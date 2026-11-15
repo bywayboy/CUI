@@ -219,7 +219,9 @@ static void on_frame(UiApp *app, void *user)
 	UiIcon sun = UiIcon_Glyph(t->fIcon, 0xE706u);
 	UiRect card, row, r1, r2, info;
 	UiStack col;
-	UiFlexItem half[2] = { { 0, 1, 0, 0 }, { 0, 1, 0, 0 } };
+	UiFixedSize fx[2] = { { 0, 0 }, { 0, 0 } };
+	UiMeasureItem half[2] = {
+		Ui_FixedItem(&fx[0], 1.0f), Ui_FixedItem(&fx[1], 1.0f) };
 	char line[220];
 
 	UiPopupManager_BeginFrame(&d->pm, ui);
@@ -251,7 +253,7 @@ static void on_frame(UiApp *app, void *user)
 	row = Ui_StackTake(&col, 38);
 	{
 		UiRect pair[2];
-		if (!Ui_FlexRow(row, 16, half, 2, pair)) {
+		if (!Ui_FlexLayout(row, UI_ROW, 16, half, 2, pair)) {
 			pair[0] = Ui_Rect(row.x, row.y,
 				(row.w - 16.0f) * 0.5f, row.h);
 			pair[1] = Ui_Rect(pair[0].x + pair[0].w + 16.0f, row.y,

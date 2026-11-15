@@ -89,7 +89,9 @@ static void on_frame(UiApp *app, void *user)
 	UiRect card, row, footer;
 	UiStack col;
 	UiRect checks[3];
-	UiFlexItem two[3] = { { 0, 1, 0, 0 }, { 0, 1, 0, 0 }, { 0, 1, 0, 0 } };
+	UiFixedSize fx[3] = { { 0, 0 }, { 0, 0 }, { 0, 0 } };
+	UiMeasureItem two[3];
+	int i;
 	UiButtonStyle iconStyle = UiButtonStyle_Make(UI_BTYPE_DEFAULT,
 		UI_BAPPEAR_SOLID, UI_BSHAPE_RECT, 0);
 	UiIcon sun = UiIcon_Glyph(t->fIcon, 0xE706u);
@@ -123,7 +125,8 @@ static void on_frame(UiApp *app, void *user)
 		t->text2, GFX_TEXT_VCENTER);
 	Ui_StackSkip(&col, 8);
 	row = Ui_StackTake(&col, 28);
-	if (!Ui_FlexRow(row, 20, two, 3, checks)) {
+	for (i = 0; i < 3; i++) two[i] = Ui_FixedItem(&fx[i], 1.0f);
+	if (!Ui_FlexLayout(row, UI_ROW, 20, two, 3, checks)) {
 		checks[0] = Ui_Rect(row.x, row.y, row.w / 3.0f, row.h);
 		checks[1] = Ui_Rect(row.x + row.w / 3.0f, row.y, row.w / 3.0f, row.h);
 		checks[2] = Ui_Rect(row.x + row.w * 2.0f / 3.0f, row.y,
