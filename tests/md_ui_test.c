@@ -287,6 +287,50 @@ void __stdcall startup(void)
 	CHECK(UiMarkdown_ContentHeight(md) > 1000.0f);
 	CHECK(UiMarkdown_DebugMeasured(md) < 80);
 
+	/* 增量复用: Append 只新增尾部行, 旧行全部复用 */
+	{
+		int r0 = UiMarkdown_DebugRows(md);
+		int c0 = UiMarkdown_DebugMeasureCalls(md);
+		UiMarkdown_Append(md, "新增尾部段落\n\n");
+		CHECK(UiMarkdown_DebugRows(md) == r0 + 1);
+		CHECK(UiMarkdown_DebugRowsReused(md) >= r0);
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		CHECK(UiMarkdown_DebugMeasureCalls(md) - c0 <= 2);
+	}
+
+	/* 增量复用: 三行文档改中间一段, 其余两行保留 rt/高度 */
+	{
+		int c0;
+		UiMarkdown_SetText(md, "第一段\n\n第二段\n\n第三段\n");
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		CHECK(UiMarkdown_DebugRows(md) == 3);
+		CHECK(UiMarkdown_DebugMeasured(md) == 3);
+		c0 = UiMarkdown_DebugMeasureCalls(md);
+		UiMarkdown_SetText(md, "第一段\n\n第二段改\n\n第三段\n");
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		CHECK(UiMarkdown_DebugRowsReused(md) == 2);
+		CHECK(UiMarkdown_DebugMeasureCalls(md) - c0 <= 2);
+		CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
+	}
+
 	/* 真实表格: 1 个块, 高度由单元格布局决定 */
 	{
 		DynBuf tb;
@@ -335,6 +379,27 @@ void __stdcall startup(void)
 		CHECK(UiMarkdown_DebugMeasured(md) == 1);
 		CHECK(UiMarkdown_ContentHeight(md) > 35.0f);
 		CHECK(UiMarkdown_ContentHeight(md) < 80.0f);
+
+		/* 编辑其它段落时, 未变的图片行复用 UiImage (不重新加载) */
+		{
+			DynBuf ib;
+			int c0 = UiMarkdown_DebugMeasureCalls(md);
+			ZeroMemory(&ib, sizeof(ib));
+			db_addf(&ib, "![a](%s \"center\")\n\n新增段落\n", path);
+			UiMarkdown_SetText(md, ib.p);
+			db_free(&ib);
+			CHECK(UiMarkdown_DebugRows(md) == 2);
+			CHECK(UiMarkdown_DebugRowsReused(md) >= 1);
+			CHECK(UiMarkdown_DebugImagesReused(md) == 1);
+			Ui_BeginFrame(&g_ctx);
+			Ui_EndFrame(&g_ctx);
+			Gfx_Begin(g);
+			Ui_BeginFrame(&g_ctx);
+			Ui_Markdown(md, &g_ctx, area);
+			Ui_EndFrame(&g_ctx);
+			CHECK(Gfx_End(g) == 1);
+			CHECK(UiMarkdown_DebugMeasureCalls(md) - c0 <= 2);
+		}
 
 		/* 行内图片: 段落行高应被图片撑高 */
 		{

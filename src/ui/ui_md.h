@@ -100,6 +100,8 @@ int UiMarkdown_DebugMeasureCalls(const UiMarkdown *md);
 int UiMarkdown_DebugMathCache(const UiMarkdown *md);    /* 缓存的公式条目数 */
 int UiMarkdown_DebugMathMisses(const UiMarkdown *md);   /* 累计新建布局次数 */
 int UiMarkdown_DebugRowSize(void);                      /* sizeof(MdRow) */
+int UiMarkdown_DebugRowsReused(const UiMarkdown *md);   /* 上次重建复用的行数 */
+int UiMarkdown_DebugImagesReused(const UiMarkdown *md); /* 其中复用的图片行数 */
 
 #ifdef __cplusplus
 }

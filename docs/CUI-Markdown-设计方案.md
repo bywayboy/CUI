@@ -1476,3 +1476,39 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md);
   HTTP 图片缓存，行被驱逐后回看会重新下载（后续可加 URL→解码位图 LRU）。
 - 验证：4K@200% 下 HTTPS 图片约 1–2 秒异步加载完成并居中显示；
   关闭窗口后进程正常退出（先 md 后 net 的销毁顺序）。
+
+### 增量重建：行级 payload 复用（2026-11-14）
+
+- 问题：`SetText`/`Append` 全量重解析后 `md_rows_clear` 释放所有行，
+  RichText 布局、UiImage（含已下载的 HTTPS 图）、表格缓存全部销毁重建。
+- 方案（解析仍全量，行资源增量复用）：
+  1. 解析前 `md_rows_detach`：把旧 `MdRow` 数组与 `items` 数组整体摘出
+     （行数组置空），保留每行 payload 与旧高度；
+  2. 全量 `Md_Parse` + flatten 生成新行（未测量）；
+  3. `md_rows_merge` 按 `(content hash, rowType)` 匹配：
+     - 公共前缀/后缀 O(n)；
+     - 中段用开放寻址桶（重复内容按顺序取桶链）处理替换/移动；
+     - 匹配且 `indent/markerW` 一致：`p = old.p` 直接搬 payload
+       （rt/codeRects/UiImage/inlMath/cellRt/bm），旧行 payload 清零；
+     - 旧行已测且 `measuredW == contentW`：沿用高度并 `SetItemHeight`，
+       同时加入 live 列表；否则保留资源、按需重新测量；
+     - 上下文不一致/未匹配的行只释放 payload；
+  4. `Append` 天然命中公共前缀：只新增尾部行，旧行不重建。
+- 安全点：
+  - 旧行的 `blk` 在解析后已悬空，释放只按 `rowType` 快照（不读 blk）；
+  - `md_row_release` 拆为 `md_row_payload_release`（纯 payload）+ 悬停清理，
+    便于摘除/移交；
+  - 匹配高度额外校验 `indent/markerW/measuredW`，避免缩进变化复用了
+    旧换行宽度；
+  - OOM/解析失败路径重新 `UiScrollLayout_Init(NULL)`，避免布局指向已释放
+    的旧 items。
+- 测试（md_ui_test）：
+  - 4000 行文档 Append 一段：`DebugRowsReused >= 旧行数`，测量调用增量 ≤2；
+  - 三行文档改中间一段：复用 2 行，测量增量 ≤2；
+  - 图片文档在别处新增段落：复用图片行且 `DebugImagesReused == 1`，
+    图片不重新加载；
+  - 4K@200% 原生：HTTPS 图片加载完成后点“追加 50 行”，图片保持显示、
+    无 spinner、滚动位置稳定。
+- 验证：md_test 416/0、md_ui_test 119/0、md_math_test 96/0、
+  gfx_math_test 20/0、gfx_rich_test 34/0、net_test 935/0。
+- 仍待做：URL→解码位图 LRU（解决滚动/驱逐后的重复下载与同 URL 共享）。

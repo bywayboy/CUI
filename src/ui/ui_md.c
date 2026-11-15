@@ -108,11 +108,6 @@ static int md_row_is_text(int type)
 		type == MD_BLOCK_CODE;
 }
 
-typedef struct MdOldRow {
-	uint32_t hash;
-	float height;
-	int measured;
-} MdOldRow;
 
 /* 容器盒子: 由 flatten 生成, 渲染时按行区间绘制背景/色条/标题 */
 typedef struct MdBox {
@@ -198,6 +193,8 @@ struct UiMarkdown {
 	int liveCount, liveCap;
 
 	int measureCalls;
+	int reuseRows;      /* 上次 SetText/Append 复用的行数 */
+	int reuseImages;    /* 其中复用的图片行数 */
 	int imgBusy;
 	const char *clickedUrl;
 	int hoverRow, hoverLink;
@@ -572,15 +569,11 @@ static void md_math_cache_clear(UiMarkdown *md)
 }
 
 /* 按 blk->type 释放对应 payload; union 成员不可跨类型访问 */
-static void md_row_release(UiMarkdown *md, MdRow *r)
+/* 只释放行 payload (不动行数组/悬停状态), 供增量重建复用旧行 */
+static void md_row_payload_release(UiMarkdown *md, MdRow *r)
 {
 	int i, type;
 	if (!r) return;
-	if (md->hovRow >= 0 && md->hovRow < md->rowCount &&
-		&md->rows[md->hovRow] == r) {
-		md->hovRow = -1;
-		md->hovLink = -1;
-	}
 	type = (int)r->rowType;
 	switch (type) {
 	case MD_BLOCK_PARAGRAPH:
@@ -653,15 +646,15 @@ static void md_row_release(UiMarkdown *md, MdRow *r)
 	}
 }
 
-static void md_live_reset(UiMarkdown *md)
+static void md_row_release(UiMarkdown *md, MdRow *r)
 {
-	int i;
-	for (i = 0; i < md->liveCount; i++) {
-		int idx = md->live[i];
-		if (idx >= 0 && idx < md->rowCount)
-			md_row_release(md, &md->rows[idx]);
+	if (!r) return;
+	if (md->hovRow >= 0 && md->hovRow < md->rowCount &&
+		&md->rows[md->hovRow] == r) {
+		md->hovRow = -1;
+		md->hovLink = -1;
 	}
-	md->liveCount = 0;
+	md_row_payload_release(md, r);
 }
 
 static int md_live_push(UiMarkdown *md, int idx)
@@ -1881,55 +1874,185 @@ static void md_rows_clear(UiMarkdown *md, int keep_rt)
 	md->boxCount = 0;
 }
 
-/* 迁移旧行高度: prefix + suffix 按 hash 匹配 (不迁移 rt, 按需重建) */
-static void md_rebuild_rows(UiMarkdown *md, MdOldRow *old, int oldN)
+/* 摘出当前行数组: 旧 payload 交给增量匹配, 避免解析后整批销毁 */
+static void md_rows_detach(UiMarkdown *md, MdRow **outRows, int *outN,
+	UiScrollItem **outItems)
 {
-	int i, oi, ni, n;
-	md_rows_clear(md, 0);
+	*outRows = md->rows;
+	*outN = md->rowCount;
+	*outItems = md->items;
+	md->rows = NULL;
+	md->rowCount = 0;
+	md->rowCap = 0;
+	md->items = NULL;
+	md->itemCap = 0;
+	md->liveCount = 0;
+	md->boxCount = 0;
+	md->hovRow = -1;
+	md->hovLink = -1;
+	md->downRow = -1;
+	md->downLink = -1;
+	md->pressActive = 0;
+}
+
+static int md_row_key_eq(const MdRow *a, const MdRow *b)
+{
+	return a->hash == b->hash && a->rowType == b->rowType;
+}
+
+/* 增量复用: 公共前缀/后缀 + 中段 (hash,type) 桶匹配.
+ * 匹配行直接搬移 payload (rt/图片/表格/公式都保留), 只对新增/变化行懒测量. */
+static void md_rows_merge(UiMarkdown *md, MdRow *oldRows, int oldN,
+	UiScrollItem *oldItems)
+{
+	int n = md->rowCount, i, p = 0, os, ns;
+	int *map = NULL;       /* new index -> old index */
+	int *moved = NULL;     /* old: 2 = payload 已搬走 */
+	int *next = NULL, *head = NULL, cap = 0;
+
+	md->reuseRows = 0;
+	md->reuseImages = 0;
+	if (oldN > 0) {
+		map = (int *)md_alloc_(n * (int)sizeof(int));
+		moved = (int *)md_alloc_(oldN * (int)sizeof(int));
+		if (!map || !moved) {
+			md_free_(map);
+			md_free_(moved);
+			map = NULL;
+			moved = NULL;
+		}
+	}
+	if (map) {
+		for (i = 0; i < n; i++) map[i] = -1;
+		for (i = 0; i < oldN; i++) moved[i] = 0;
+		while (p < n && p < oldN && md_row_key_eq(&oldRows[p], &md->rows[p])) {
+			map[p] = p;
+			p++;
+		}
+		os = oldN - 1;
+		ns = n - 1;
+		while (os >= p && ns >= p && md_row_key_eq(&oldRows[os], &md->rows[ns])) {
+			map[ns] = os;
+			os--;
+			ns--;
+		}
+		if (os >= p && ns >= p) {
+			int mc = os - p + 1;
+			cap = 8;
+			while (cap < mc * 2) cap *= 2;
+			head = (int *)md_alloc_(cap * (int)sizeof(int));
+			next = (int *)md_alloc_(oldN * (int)sizeof(int));
+			if (head && next) {
+				int k;
+				for (i = 0; i < cap; i++) head[i] = -1;
+				for (i = 0; i < oldN; i++) next[i] = -1;
+				for (k = p; k <= os; k++) {
+					unsigned slot = (oldRows[k].hash ^
+						((unsigned)oldRows[k].rowType * 2654435761u)) &
+						(unsigned)(cap - 1);
+					next[k] = head[slot];
+					head[slot] = k;
+				}
+				for (i = p; i <= ns; i++) {
+					unsigned slot = (md->rows[i].hash ^
+						((unsigned)md->rows[i].rowType * 2654435761u)) &
+						(unsigned)(cap - 1);
+					int prev = -1, cur = head[slot];
+					while (cur >= 0 &&
+						!(moved[cur] == 0 &&
+							md_row_key_eq(&oldRows[cur], &md->rows[i]))) {
+						prev = cur;
+						cur = next[cur];
+					}
+					if (cur >= 0) {
+						map[i] = cur;
+						if (prev < 0) head[slot] = next[cur];
+						else next[prev] = next[cur];
+					}
+				}
+			}
+			md_free_(head);
+			md_free_(next);
+		}
+	}
+	/* 搬 payload; 上下文 (缩进/标记宽) 一致才复用, 否则按新行重建 */
+	for (i = 0; i < n; i++) {
+		int k = map ? map[i] : -1;
+		if (k < 0) continue;
+		if (oldRows[k].indent != md->rows[i].indent ||
+			oldRows[k].markerW != md->rows[i].markerW)
+			continue;
+		{
+			int was = oldRows[k].measured;
+			float h = 0.0f, mw = 0.0f;
+			if (was && oldItems) {
+				h = oldItems[k].height;
+				mw = oldItems[k].measuredW;
+			}
+			md->rows[i].p = oldRows[k].p;
+			ZeroMemory(&oldRows[k].p, sizeof(oldRows[k].p));
+			moved[k] = 2;
+			md->rows[i].rowType = oldRows[k].rowType;
+			if (was && mw == md->contentW) {
+				md->rows[i].measured = 1;
+				md->rows[i].measuredW = md->contentW;
+				UiScrollLayout_SetItemHeight(&md->layout, i,
+					md->rows[i].hash, h);
+				md_live_push(md, i);
+			}
+			md->reuseRows++;
+			if (md->rows[i].rowType == MD_BLOCK_IMAGE &&
+				md->rows[i].p.image.img)
+				md->reuseImages++;
+		}
+	}
+	/* 未搬走的旧 payload 全部释放 */
+	for (i = 0; i < oldN; i++) {
+		if (!moved || moved[i] != 2)
+			md_row_payload_release(md, &oldRows[i]);
+	}
+	md_free_(map);
+	md_free_(moved);
+}
+
+static void md_rebuild_rows_incremental(UiMarkdown *md, MdRow *oldRows,
+	int oldN, UiScrollItem *oldItems)
+{
+	int i;
 	md->hasLinks = 0;
 	for (i = 0; i < md->doc.count; i++)
 		md_flatten(md, &md->doc.blocks[i], 0, 0, MD_MK_NONE, 0, MD_TASK_NONE);
-	if (!md_rebuild_items(md)) return;
+	if (!md_rebuild_items(md)) {
+		md_rows_clear(md, 0);
+		for (i = 0; i < oldN; i++) md_row_payload_release(md, &oldRows[i]);
+		UiScrollLayout_Init(&md->layout, NULL, 0);
+		return;
+	}
 	/* 先同步宽度: SetItemHeight 记录 measuredW, 否则下一帧 SetWidth 会把
-	 * 迁移来的实测项再次失效 (行已标记 measured, 估算又会跳过它们)。 */
+	 * 复用的实测项再次失效 (行已标记 measured, 估算又会跳过它们)。 */
 	UiScrollLayout_SetWidth(&md->layout, md->contentW);
-
-	n = md->rowCount < oldN ? md->rowCount : oldN;
-	for (i = 0; i < n; i++) {
-		if (old[i].hash != md->rows[i].hash) break;
-		md->rows[i].measured = old[i].measured;
-		md->rows[i].measuredW = md->contentW;
-		if (old[i].measured) {
-			UiScrollLayout_SetItemHeight(&md->layout, i, md->rows[i].hash,
-				old[i].height);
-		}
-	}
-	oi = oldN - 1;
-	ni = md->rowCount - 1;
-	while (oi >= i && ni >= i) {
-		if (old[oi].hash != md->rows[ni].hash) break;
-		md->rows[ni].measured = old[oi].measured;
-		md->rows[ni].measuredW = md->contentW;
-		if (old[oi].measured) {
-			UiScrollLayout_SetItemHeight(&md->layout, ni, md->rows[ni].hash,
-				old[oi].height);
-		}
-		oi--;
-		ni--;
-	}
+	md_rows_merge(md, oldRows, oldN, oldItems);
 	md->needEstimate = 1;
 }
 
-static int md_parse_current(UiMarkdown *md, MdOldRow *old, int oldN)
+static int md_parse_current(UiMarkdown *md)
 {
-	int rc;
-	md_live_reset(md);
+	MdRow *oldRows = NULL;
+	UiScrollItem *oldItems = NULL;
+	int oldN = 0, rc, i;
+	md_rows_detach(md, &oldRows, &oldN, &oldItems);
 	rc = Md_Parse(&md->doc, md->text, md->textLen);
 	if (rc != 0) {
 		md_rows_clear(md, 0);
+		for (i = 0; i < oldN; i++) md_row_payload_release(md, &oldRows[i]);
+		md_free_(oldRows);
+		md_free_(oldItems);
+		UiScrollLayout_Init(&md->layout, NULL, 0);
 		return 0;
 	}
-	md_rebuild_rows(md, old, oldN);
+	md_rebuild_rows_incremental(md, oldRows, oldN, oldItems);
+	md_free_(oldRows);
+	md_free_(oldItems);
 	return 1;
 }
 
@@ -2213,58 +2336,25 @@ void UiMarkdown_Destroy(UiMarkdown *md)
 
 void UiMarkdown_SetText(UiMarkdown *md, const char *utf8)
 {
-	MdOldRow *old = NULL;
-	int oldN = 0, i;
 	if (!md) return;
-	if (md->rowCount > 0) {
-		old = (MdOldRow *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
-			(SIZE_T)md->rowCount * sizeof(MdOldRow));
-		if (old) {
-			oldN = md->rowCount;
-			for (i = 0; i < oldN; i++) {
-				old[i].hash = md->rows[i].hash;
-				old[i].height = md->layout.items ? md->layout.items[i].height : 0.0f;
-				old[i].measured = md->layout.items ? md->layout.items[i].measured : 0;
-			}
-		}
-	}
-	if (!md_text_set(md, utf8, utf8 ? (int)lstrlenA(utf8) : 0)) {
-		md_free_(old);
-		return;
-	}
-	md_parse_current(md, old, oldN);
-	md_free_(old);
+	if (!md_text_set(md, utf8, utf8 ? (int)lstrlenA(utf8) : 0)) return;
+	md_parse_current(md);
 	md->pendingTop = 1;
 }
 
 void UiMarkdown_Append(UiMarkdown *md, const char *utf8)
 {
-	MdOldRow *old = NULL;
-	int oldN = 0, i, add;
+	int i, add;
 	if (!md || !utf8) return;
-	if (md->rowCount > 0) {
-		old = (MdOldRow *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
-			(SIZE_T)md->rowCount * sizeof(MdOldRow));
-		if (old) {
-			oldN = md->rowCount;
-			for (i = 0; i < oldN; i++) {
-				old[i].hash = md->rows[i].hash;
-				old[i].height = md->layout.items ? md->layout.items[i].height : 0.0f;
-				old[i].measured = md->layout.items ? md->layout.items[i].measured : 0;
-			}
-		}
-	}
 	add = (int)lstrlenA(utf8);
-	if (!md_text_set(md, md->text, md->textLen)) { md_free_(old); return; }
 	{
 		int need = md->textLen + add + 1;
 		if (need > md->textCap) {
 			int nc = md->textCap ? md->textCap : 256;
 			char *np;
 			while (nc < need) nc *= 2;
-			np = (char *)md_realloc_(md->text,
-				(SIZE_T)nc);
-			if (!np) { md_free_(old); return; }
+			np = (char *)md_realloc_(md->text, (SIZE_T)nc);
+			if (!np) return;
 			md->text = np;
 			md->textCap = nc;
 		}
@@ -2272,8 +2362,7 @@ void UiMarkdown_Append(UiMarkdown *md, const char *utf8)
 		md->textLen += add;
 		md->text[md->textLen] = 0;
 	}
-	md_parse_current(md, old, oldN);
-	md_free_(old);
+	md_parse_current(md);
 }
 
 void UiMarkdown_SetStyle(UiMarkdown *md, const UiMarkdownStyle *st)
@@ -2403,6 +2492,16 @@ int UiMarkdown_DebugMathMisses(const UiMarkdown *md)
 int UiMarkdown_DebugRowSize(void)
 {
 	return (int)sizeof(MdRow);
+}
+
+int UiMarkdown_DebugRowsReused(const UiMarkdown *md)
+{
+	return md ? md->reuseRows : 0;
+}
+
+int UiMarkdown_DebugImagesReused(const UiMarkdown *md)
+{
+	return md ? md->reuseImages : 0;
 }
 
 int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
