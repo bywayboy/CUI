@@ -405,6 +405,16 @@ void __stdcall startup(void)
 			CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
 		}
 
+		/* ULW 表面 resize: 复用 DC RT, 设备代际不变 (位图不失效/不解码) */
+		{
+			int d0 = Gfx_DeviceGeneration(g);
+			CHECK(Gfx_Resize(g, 700, 720, 1.0f) == 1);
+			CHECK(Gfx_DeviceGeneration(g) == d0);
+			CHECK(Gfx_Resize(g, 760, 720, 1.0f) == 1);
+			CHECK(Gfx_DeviceGeneration(g) == d0);
+			Ui_SetViewport(&g_ctx, 760.0f, 720.0f, 1.0f);
+		}
+
 		/* 编辑其它段落时, 未变的图片行复用 UiImage (不重新加载) */
 		{
 			DynBuf ib;

@@ -335,18 +335,30 @@ static void ReleaseBrushes(Gfx *g)
 	g->brushClock = 0;
 }
 
+/* ULW 表面: resize 时优先复用同一个 DCRenderTarget, 只重绑新 DIB。
+ * D2D 位图资源属于该 RT, 复用 RT 可避免位图失效 (无需重新解码)。 */
 static int CreateSurface(Gfx *g)
 {
+	HDC oldDC;
+	HBITMAP oldDib;
+	void *oldBits;
+	BITMAPINFO bi;
+	D2D1_RENDER_TARGET_PROPERTIES props;
+	RECT rc;
+	HRESULT hr;
+
 	if (!g || !g->d2d || g->pw <= 0 || g->ph <= 0) return 0;
 	ReleaseBrushes(g);
 	ReleaseGradients(g);
-	SAFE_RELEASE(g->dcRt);
 	g->rt = NULL;
-	if (g->dib) { DeleteObject(g->dib); g->dib = NULL; }
-	if (g->memDC) { DeleteDC(g->memDC); g->memDC = NULL; }
+
+	oldDC = g->memDC;
+	oldDib = g->dib;
+	oldBits = g->bits;
+	g->memDC = NULL;
+	g->dib = NULL;
 	g->bits = NULL;
 
-	BITMAPINFO bi;
 	ZeroMemory(&bi, sizeof(bi));
 	bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
 	bi.bmiHeader.biWidth = g->pw;
@@ -355,12 +367,32 @@ static int CreateSurface(Gfx *g)
 	bi.bmiHeader.biBitCount = 32;
 	bi.bmiHeader.biCompression = BI_RGB;
 	g->memDC = CreateCompatibleDC(NULL);
-	if (!g->memDC) return 0;
+	if (!g->memDC) goto restore;
 	g->dib = CreateDIBSection(g->memDC, &bi, DIB_RGB_COLORS, &g->bits, NULL, 0);
-	if (!g->dib) return 0;
+	if (!g->dib) goto fail_new;
 	SelectObject(g->memDC, g->dib);
+	rc.left = 0; rc.top = 0; rc.right = g->pw; rc.bottom = g->ph;
 
-	D2D1_RENDER_TARGET_PROPERTIES props;
+	/* 快速路径: 复用已有 DC 渲染目标, 只 rebind */
+	if (g->dcRt) {
+		hr = g->dcRt->BindDC(g->memDC, &rc);
+		if (SUCCEEDED(hr)) {
+			if (oldDC) DeleteDC(oldDC);
+			if (oldDib) DeleteObject(oldDib);
+			g->rt = g->dcRt;
+			g->rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+			g->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+			g->forceFull = 1;
+			g->dirtyFull = 1;
+			g->dirtyClip = 0;
+			g->generation++;
+			Log_Write("[gfx] surface rebind %dx%d scale=%d/1000 gen=%d",
+				g->pw, g->ph, (int)(g->scale * 1000.0f), g->generation);
+			return 1;
+		}
+		SAFE_RELEASE(g->dcRt);   /* 失败: 走完整重建, 位图域失效 */
+	}
+
 	ZeroMemory(&props, sizeof(props));
 	props.type = D2D1_RENDER_TARGET_TYPE_DEFAULT;
 	props.pixelFormat.format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -369,11 +401,12 @@ static int CreateSurface(Gfx *g)
 	props.dpiY = 96.0f;
 	props.usage = D2D1_RENDER_TARGET_USAGE_NONE;
 	props.minLevel = D2D1_FEATURE_LEVEL_DEFAULT;
-	HRESULT hr = g->d2d->CreateDCRenderTarget(&props, &g->dcRt);
-	if (FAILED(hr) || !g->dcRt) { SAFE_RELEASE(g->dcRt); return 0; }
-	RECT rc = { 0, 0, g->pw, g->ph };
+	hr = g->d2d->CreateDCRenderTarget(&props, &g->dcRt);
+	if (FAILED(hr) || !g->dcRt) { SAFE_RELEASE(g->dcRt); goto fail_new; }
 	hr = g->dcRt->BindDC(g->memDC, &rc);
-	if (FAILED(hr)) { SAFE_RELEASE(g->dcRt); return 0; }
+	if (FAILED(hr)) { SAFE_RELEASE(g->dcRt); goto fail_new; }
+	if (oldDC) DeleteDC(oldDC);
+	if (oldDib) DeleteObject(oldDib);
 	g->rt = g->dcRt;
 	g->rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 	g->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
@@ -381,10 +414,20 @@ static int CreateSurface(Gfx *g)
 	g->dirtyFull = 1;
 	g->dirtyClip = 0;
 	g->generation++;
-	g->deviceGen++;   /* ULW: DC 渲染目标域重建, 位图随之失效 */
+	g->deviceGen++;   /* 新建 DC 渲染目标: 位图域失效 */
 	Log_Write("[gfx] surface %dx%d scale=%d/1000 gen=%d", g->pw, g->ph,
 		(int)(g->scale * 1000.0f), g->generation);
 	return 1;
+
+fail_new:
+	if (g->dib) { DeleteObject(g->dib); g->dib = NULL; }
+	if (g->memDC) { DeleteDC(g->memDC); g->memDC = NULL; }
+	g->bits = NULL;
+restore:
+	g->memDC = oldDC;
+	g->dib = oldDib;
+	g->bits = oldBits;
+	return 0;
 }
 
 static int EnvOn(const char *name)

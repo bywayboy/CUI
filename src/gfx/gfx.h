@@ -62,8 +62,9 @@ int  Gfx_Init(Gfx **out, HWND hwnd);
 void Gfx_Shutdown(Gfx *g);
 int  Gfx_Resize(Gfx *g, int pixelW, int pixelH, float scale);
 int  Gfx_Generation(Gfx *g);   /* 每次重建绘制表面 +1，供表面相关缓存失效 */
-/* 设备级资源代际: 仅 D3D/D2D 设备相关资源失效时 +1 (ULW 的 DC RT 重建也算);
- * DComp 仅 ResizeBuffers 不改变它。位图/解码缓存应以它为准。 */
+/* 设备级资源代际: 仅设备级位图资源失效时 +1 (D3D 新设备 / ULW DC RT 完整重建);
+ * DComp ResizeBuffers 与 ULW 复用 DC RT 仅重绑 DIB 都不改变它。
+ * 位图/解码缓存应以它为准。 */
 int  Gfx_DeviceGeneration(Gfx *g);
 int  Gfx_Ready(Gfx *g);        /* 绘制表面已就绪 (首帧前为 0) */
 int  Gfx_GradientCreates(Gfx *g);  /* 取走累计的渐变画刷新建次数 (诊断用) */
