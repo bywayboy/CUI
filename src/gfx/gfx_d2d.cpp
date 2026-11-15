@@ -392,6 +392,9 @@ static int CreateSurface(Gfx *g)
 		}
 		SAFE_RELEASE(g->dcRt);   /* 失败: 走完整重建, 位图域失效 */
 	}
+	/* 图层属于旧 RT, 不能挂到新 RT 上; 下次 PushAlpha 会按需重建 */
+	SAFE_RELEASE(g->alphaLayer);
+	g->alphaDepth = 0;
 
 	ZeroMemory(&props, sizeof(props));
 	props.type = D2D1_RENDER_TARGET_TYPE_DEFAULT;
@@ -427,6 +430,8 @@ restore:
 	g->memDC = oldDC;
 	g->dib = oldDib;
 	g->bits = oldBits;
+	/* DC 创建失败时旧 dcRt/旧表面原样可用, 必须把 rt 接回去 */
+	if (g->dcRt) g->rt = g->dcRt;
 	return 0;
 }
 
@@ -470,9 +475,9 @@ static void ReleaseDcompTargets(Gfx *g, int releaseSwap)
 
 static void ReleaseDcomp(Gfx *g)
 {
+	if (!g) return;
 	SAFE_RELEASE(g->alphaLayer);
 	g->alphaDepth = 0;
-	if (!g) return;
 	ReleaseBrushes(g);
 	ReleaseGradients(g);
 	/* overlay/layer 的 visual/surface 必须在 compDevice/compVisual 之前释放 */
