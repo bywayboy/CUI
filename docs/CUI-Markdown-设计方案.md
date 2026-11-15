@@ -1529,10 +1529,19 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md);
     **保留图片对象**；行内公式因宽度拟合会重建，图片/公式缓存各自负责；
   - 保留的图片行加入 live 列表，首帧 `md_evict` 回收视口外图片，避免
     resize 后整篇图片常驻。
-- 效果：resize、展开/收起编辑器时，视口内图片直接复用已解码位图，
-  无 spinner/重新请求。
-- 边界：滚动驱逐仍按原策略销毁 UiImage，滚回会重新加载；若需要跨驱逐
-  复用，后续再加图片行不驱逐或 UiImageCache 预算缓存。
+- 表面 vs 设备：`Gfx` 拆出 `Gfx_DeviceGeneration`（仅 D3D/D2D 设备级资源
+  失效，ULW 的 DC RT 重建也计入；DComp `ResizeBuffers` 不改变它），
+  `Gfx_Generation` 继续表示“绘制表面重建”。UiImage 只用 device generation
+  判断位图是否失效，窗口 resize 不再重新解码。
+- 解码尺寸：UiImage 按**原图像素尺寸**解码，绘制时由 D2D 缩放到目标矩形，
+  因此 UIImage 自身显示尺寸变化不会导致位图过小，也无需重新解码。若未来
+  改为按渲染尺寸生成位图，则矩形尺寸变化时必须从保留的 `src` 重新解码/
+  生成，而不是放大旧位图。
+- 效果：窗口 resize、容器/编辑器宽度变化时，视口内图片直接复用已解码
+  位图，无 spinner/重新请求，也不做 CPU 重新解码（DComp 路径）。
+- 边界：滚动驱逐仍按原策略销毁 UiImage，滚回会重新加载；ULW 的 DC RT
+  重建会 bump device generation，从而从保留 `src` 重解码（不重新联网）。
 - 测试：图片文档宽度 320→300→320 后 `DebugImagesRetained > 0` 且内容
-  高度正常；4K@200% 原生展开/收起编辑器，HTTPS 图片立即显示、无重新加载。
-- 验证：md_ui_test 124/0，其余套件全通过。
+  高度正常；`Gfx_DeviceGeneration > 0`；4K@200% 原生展开/收起编辑器与
+  窗口缩放，HTTPS 图片立即显示、无重新加载。
+- 验证：md_ui_test 125/0，其余套件全通过。

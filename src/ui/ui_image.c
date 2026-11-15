@@ -31,7 +31,7 @@ struct UiImage {
 
 	GfxBitmap *bmp;
 	int bw, bh;
-	int gfxGen;
+	int gfxGen;              /* 设备级代际 (surface resize 不触发重建) */
 
 	unsigned char *src;      /* 编码字节 (设备丢失时重建) */
 	int srcLen;
@@ -177,7 +177,7 @@ static int img_decode_(UiImage *img, int rebuild)
 	img->bmp = bmp;
 	img->bw = (int)w;
 	img->bh = (int)h;
-	img->gfxGen = Gfx_Generation(img->gfx);
+	img->gfxGen = Gfx_DeviceGeneration(img->gfx);
 	img->state = UI_IMG_READY;
 	img->error = 0;
 	img->needDecode = 0;
@@ -529,7 +529,7 @@ void UiImage_Draw(UiImage *img, const UiTheme *t)
 
 	if (img->state == UI_IMG_READY) {
 		/* 设备丢失: 用保留的编码字节就地重建 */
-		if (img->gfxGen != Gfx_Generation(img->gfx)) {
+		if (img->gfxGen != Gfx_DeviceGeneration(img->gfx)) {
 			if (img->bmp) {
 				Gfx_DestroyBitmap(img->gfx, img->bmp);
 				img->bmp = NULL;

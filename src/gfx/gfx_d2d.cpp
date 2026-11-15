@@ -122,6 +122,7 @@ struct Gfx {
 	int pw, ph;
 	float scale;
 	int generation;
+	int deviceGen;
 	int inFrame;
 	int clipDepth;
 	int xformDepth;
@@ -380,6 +381,7 @@ static int CreateSurface(Gfx *g)
 	g->dirtyFull = 1;
 	g->dirtyClip = 0;
 	g->generation++;
+	g->deviceGen++;   /* ULW: DC 渲染目标域重建, 位图随之失效 */
 	Log_Write("[gfx] surface %dx%d scale=%d/1000 gen=%d", g->pw, g->ph,
 		(int)(g->scale * 1000.0f), g->generation);
 	return 1;
@@ -507,6 +509,7 @@ static int InitDcomp(Gfx *g)
 		Log_Write("[gfx] D3D warp hr=%x", (unsigned)hr);
 	}
 	if (FAILED(hr) || !g->d3d) { ReleaseDcomp(g); return 0; }
+	g->deviceGen++;   /* 新设备: 位图/设备资源代际失效 */
 
 	IDXGIDevice *dxgiDev = NULL;
 	hr = g->d3d->QueryInterface(IID_PPV_ARGS(&dxgiDev));
@@ -1820,6 +1823,7 @@ int Gfx_Resize(Gfx *g, int pixelW, int pixelH, float scale)
 }
 
 int Gfx_Generation(Gfx *g) { return g ? g->generation : 0; }
+int Gfx_DeviceGeneration(Gfx *g) { return g ? g->deviceGen : 0; }
 int Gfx_Ready(Gfx *g) { return g && g->rt != NULL; }
 
 int Gfx_GradientCreates(Gfx *g)

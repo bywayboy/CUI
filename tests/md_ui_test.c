@@ -203,6 +203,7 @@ void __stdcall startup(void)
 	CHECK(Gfx_Init(&g, hwnd) == 1);
 	if (!g) goto done;
 	CHECK(Gfx_Resize(g, 760, 720, 1.0f) == 1);
+	CHECK(Gfx_DeviceGeneration(g) > 0);
 	UiTheme_Init(&g_theme, g);
 	Ui_ContextInit(&g_ctx, hwnd, g, &g_theme);
 	Ui_SetViewport(&g_ctx, 760.0f, 720.0f, 1.0f);
