@@ -1512,3 +1512,27 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md);
 - 验证：md_test 416/0、md_ui_test 119/0、md_math_test 96/0、
   gfx_math_test 20/0、gfx_rich_test 34/0、net_test 935/0。
 - 仍待做：URL→解码位图 LRU（解决滚动/驱逐后的重复下载与同 URL 共享）。
+
+### 图片复用：UiImage 自带缓存 + 宽度失效保留对象（2026-11-14）
+
+- 问题：窗口 resize、源码编辑器展开/收起都会改变预览宽度，触发
+  `md_invalidate_width` 释放所有行，图片行随之销毁并重新下载。
+- 设计（不引入 Markdown 级 URL 缓存）：
+  - 缓存就是 UiImage 自己：已加载的 `src` 编码字节 + 解码位图保留在
+    UiImage 实例内，随 UiImage 一起销毁；
+  - `UiImage_LoadUrl` 增加同源短路：`source` 相同且状态为 LOADING/READY
+    时直接返回，不 reset、不重新请求/解码；ERROR 仍允许重试；
+  - 本地文件也统一经 `UiImage_LoadUrl`（内部再 LoadFile），成功后把
+    UTF-8 URL 写回 `source`，保证同源比较成立；
+  - `md_invalidate_width` 改为 `md_row_relayout_release`：只销毁/重建与
+    宽度相关的布局（RichText、codeRects、表格列/行宽、块级公式拟合），
+    **保留图片对象**；行内公式因宽度拟合会重建，图片/公式缓存各自负责；
+  - 保留的图片行加入 live 列表，首帧 `md_evict` 回收视口外图片，避免
+    resize 后整篇图片常驻。
+- 效果：resize、展开/收起编辑器时，视口内图片直接复用已解码位图，
+  无 spinner/重新请求。
+- 边界：滚动驱逐仍按原策略销毁 UiImage，滚回会重新加载；若需要跨驱逐
+  复用，后续再加图片行不驱逐或 UiImageCache 预算缓存。
+- 测试：图片文档宽度 320→300→320 后 `DebugImagesRetained > 0` 且内容
+  高度正常；4K@200% 原生展开/收起编辑器，HTTPS 图片立即显示、无重新加载。
+- 验证：md_ui_test 124/0，其余套件全通过。

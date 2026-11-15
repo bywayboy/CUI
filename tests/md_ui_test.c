@@ -380,6 +380,30 @@ void __stdcall startup(void)
 		CHECK(UiMarkdown_ContentHeight(md) > 35.0f);
 		CHECK(UiMarkdown_ContentHeight(md) < 80.0f);
 
+		/* 宽度变化 (resize/展开收起) 只重建布局, 图片对象保留 */
+		{
+			int keep0 = UiMarkdown_DebugImagesRetained(md);
+			area.w = 300.0f;
+			Ui_BeginFrame(&g_ctx);
+			Ui_EndFrame(&g_ctx);
+			Gfx_Begin(g);
+			Ui_BeginFrame(&g_ctx);
+			Ui_Markdown(md, &g_ctx, area);
+			Ui_EndFrame(&g_ctx);
+			CHECK(Gfx_End(g) == 1);
+			area.w = 320.0f;
+			Ui_BeginFrame(&g_ctx);
+			Ui_EndFrame(&g_ctx);
+			Gfx_Begin(g);
+			Ui_BeginFrame(&g_ctx);
+			Ui_Markdown(md, &g_ctx, area);
+			Ui_EndFrame(&g_ctx);
+			CHECK(Gfx_End(g) == 1);
+			CHECK(UiMarkdown_DebugImagesRetained(md) > keep0);
+			CHECK(UiMarkdown_ContentHeight(md) > 35.0f);
+			CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
+		}
+
 		/* 编辑其它段落时, 未变的图片行复用 UiImage (不重新加载) */
 		{
 			DynBuf ib;

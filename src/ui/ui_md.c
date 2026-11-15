@@ -195,6 +195,7 @@ struct UiMarkdown {
 	int measureCalls;
 	int reuseRows;      /* 上次 SetText/Append 复用的行数 */
 	int reuseImages;    /* 其中复用的图片行数 */
+	int imgRetained;    /* 宽度失效时保留下来的图片对象数 */
 	int imgBusy;
 	const char *clickedUrl;
 	int hoverRow, hoverLink;
@@ -939,6 +940,8 @@ static void md_estimate_all(UiMarkdown *md)
 /* ── 行内样式 / 图片 / 高亮 / 链接 ─────────────────────────────────── */
 
 static void md_image_load(UiMarkdown *md, UiImage *img, const char *url);
+static const char *md_image_key(UiMarkdown *md, const char *url, char *buf,
+	int cap);
 
 /* codeBlock: 代码块整体 run 使用 codeText; 行内代码用琥珀色 + 等宽 */
 static void md_apply_runs(UiMarkdown *md, GfxRichText *rt, const MdRun *runs,
@@ -1086,7 +1089,10 @@ static void md_inl_ensure(UiMarkdown *md, int index)
 	MdBlock *b = r->blk;
 	int i;
 	if (!b || b->p.text.imgCount <= 0 || !md->gfx) return;
-	if (r->p.text.inlImgs) return;
+	if (r->p.text.inlImgs) {
+		md_live_push(md, index);   /* 宽度重建: 已保留的图片继续受 evict 管理 */
+		return;
+	}
 	r->p.text.inlImgs = (UiImage **)md_alloc_(b->p.text.imgCount * (int)sizeof(UiImage *));
 	r->p.text.inlStates = (int *)md_alloc_(b->p.text.imgCount * (int)sizeof(int));
 	if (!r->p.text.inlImgs || !r->p.text.inlStates) return;
@@ -1096,7 +1102,8 @@ static void md_inl_ensure(UiMarkdown *md, int index)
 		if (!im) continue;
 		if (md->ui) UiImage_SetContext(im, md->ui);
 		UiImage_SetFit(im, UI_IMG_FIT_CONTAIN);
-		md_image_load(md, im, MdDoc_Url(&md->doc, b->p.text.imgs[i].urlOff));
+		md_image_load(md, im,
+			MdDoc_Url(&md->doc, b->p.text.imgs[i].urlOff));
 		r->p.text.inlImgs[i] = im;
 		r->p.text.inlStates[i] = UiImage_State(im);
 	}
@@ -1558,42 +1565,56 @@ static int md_starts_i(const char *s, const char *pre)
 	return 1;
 }
 
+/* 图片缓存键/加载路径: 远程 URL 原样; 相对路径按 basePath 拼成 UTF-8 完整路径.
+ * 返回 url 本身或写入 buf. */
+static const char *md_image_key(UiMarkdown *md, const char *url, char *buf,
+	int cap)
+{
+	int n, ul, i;
+	if (!url) return "";
+	if (!url[0]) return url;
+	if (md_starts_i(url, "http://") || md_starts_i(url, "https://"))
+		return url;
+	if (url[0] == '/' || url[0] == '\\' || (url[0] && url[1] == ':'))
+		return url;
+	if (!md->basePath || cap < 8) return url;
+	n = WideCharToMultiByte(CP_UTF8, 0, md->basePath, -1, buf, cap, NULL, NULL);
+	if (n <= 0) return url;
+	n--;   /* 去掉结尾 NUL */
+	if (n > 0 && buf[n - 1] != '/' && buf[n - 1] != '\\') {
+		if (n + 1 >= cap) return url;
+		buf[n++] = '\\';
+	}
+	ul = lstrlenA(url);
+	if (n + ul >= cap) return url;
+	for (i = 0; i < ul; i++) buf[n + i] = url[i];
+	buf[n + ul] = 0;
+	return buf;
+}
+
 static void md_image_load(UiMarkdown *md, UiImage *img, const char *url)
 {
-	wchar_t path[1024];
-	int n = 0, i = 0, absolute = 0;
+	char buf[2048];
+	const char *key;
 	if (!url || !url[0]) return;
-	if (md_starts_i(url, "http://") || md_starts_i(url, "https://")) {
-		UiImage_LoadUrl(img, url);
-		return;
-	}
-	if (url[0] == '/' || url[0] == '\\' ||
-		(url[0] && url[1] == ':'))
-		absolute = 1;
-	if (!absolute && md->basePath) {
-		while (md->basePath[n] && n < 1000) { path[n] = md->basePath[n]; n++; }
-		if (n > 0 && path[n - 1] != '/' && path[n - 1] != '\\')
-			path[n++] = L'\\';
-	}
-	while (url[i] && n < 1000) {
-		char c = url[i++];
-		if (c == '/') c = '\\';
-		path[n++] = (wchar_t)(unsigned char)c;
-	}
-	path[n] = 0;
-	UiImage_LoadFile(img, path);
+	key = md_image_key(md, url, buf, (int)sizeof(buf));
+	UiImage_LoadUrl(img, key);
 }
 
 static void md_image_ensure(UiMarkdown *md, int index)
 {
 	MdRow *r = &md->rows[index];
-	if (r->p.image.img) return;
+	if (r->p.image.img) {
+		md_live_push(md, index);
+		return;
+	}
 	if (!md->gfx) return;
 	r->p.image.img = UiImage_Create(md->gfx, md->net);
 	if (!r->p.image.img) return;
 	if (md->ui) UiImage_SetContext(r->p.image.img, md->ui);
 	UiImage_SetFit(r->p.image.img, UI_IMG_FIT_CONTAIN);
-	md_image_load(md, r->p.image.img, MdDoc_Url(&md->doc, r->blk->u.image.urlOff));
+	md_image_load(md, r->p.image.img,
+		MdDoc_Url(&md->doc, r->blk->u.image.urlOff));
 	md_live_push(md, index);
 }
 
@@ -1828,14 +1849,93 @@ static void md_evict(UiMarkdown *md, int first, int last)
 	}
 }
 
+/* 宽度变化: 只丢弃与宽度相关的布局, 保留图片对象 (UiImage 自带 src/位图) */
+static void md_row_relayout_release(UiMarkdown *md, MdRow *r)
+{
+	int i, type = r ? (int)r->rowType : -1;
+	if (!r) return;
+	switch (type) {
+	case MD_BLOCK_PARAGRAPH:
+	case MD_BLOCK_HEADING:
+	case MD_BLOCK_CODE:
+		if (r->p.text.rt) {
+			Gfx_RichDestroy(r->p.text.rt);
+			r->p.text.rt = NULL;
+		}
+		r->p.text.rtH = 0.0f;
+		md_free_(r->p.text.codeRects);
+		r->p.text.codeRects = NULL;
+		r->p.text.codeN = r->p.text.codeCap = 0;
+		/* 行内图片保留; 行内公式按新宽度重新拟合 */
+		if (r->p.text.inlMath) {
+			for (i = 0; i < r->p.text.mathN; i++)
+				if (r->p.text.inlMath[i])
+					md_math_cache_put(md, r->p.text.inlMath[i]);
+			md_free_(r->p.text.inlMath);
+			r->p.text.inlMath = NULL;
+		}
+		r->p.text.mathN = 0;
+		break;
+	case MD_BLOCK_IMAGE:
+		/* 保留 img/src/解码位图, 尺寸在 measure 时重算 */
+		r->p.image.imgReady = 0;
+		break;
+	case MD_BLOCK_TABLE:
+		if (r->p.table.cellRt) {
+			for (i = 0; i < r->p.table.cellN; i++)
+				if (r->p.table.cellRt[i]) Gfx_RichDestroy(r->p.table.cellRt[i]);
+			md_free_(r->p.table.cellRt);
+			r->p.table.cellRt = NULL;
+		}
+		md_free_(r->p.table.colW);
+		r->p.table.colW = NULL;
+		md_free_(r->p.table.rowH);
+		r->p.table.rowH = NULL;
+		md_free_(r->p.table.cellW);
+		r->p.table.cellW = NULL;
+		r->p.table.cellN = 0;
+		r->p.table.tblCols = r->p.table.tblRows = 0;
+		r->p.table.tblH = 0.0f;
+		break;
+	case MD_BLOCK_MATH:
+		if (r->p.math.bm) {
+			md_math_cache_put(md, r->p.math.bm);
+			r->p.math.bm = NULL;
+		}
+		if (r->p.math.bmFallback) {
+			Gfx_RichDestroy(r->p.math.bmFallback);
+			r->p.math.bmFallback = NULL;
+		}
+		r->p.math.bmW = r->p.math.bmH = r->p.math.bmD = 0.0f;
+		break;
+	default:
+		break;
+	}
+}
+
 static void md_invalidate_width(UiMarkdown *md)
 {
 	int i;
-	for (i = 0; i < md->rowCount; i++) {
-		md_row_release(md, &md->rows[i]);
-		md->rows[i].measured = 0;
-	}
+	md->hovRow = -1;
+	md->hovLink = -1;
+	md->downRow = -1;
+	md->downLink = -1;
+	md->pressActive = 0;
 	md->liveCount = 0;
+	for (i = 0; i < md->rowCount; i++) {
+		MdRow *r = &md->rows[i];
+		md_row_relayout_release(md, r);
+		r->measured = 0;
+		/* 保留的图片进入 live, 首帧 evict 回收视口外的 */
+		if (r->rowType == MD_BLOCK_IMAGE && r->p.image.img) {
+			md->imgRetained++;
+			md_live_push(md, i);
+		} else if (md_row_is_text(r->rowType) &&
+			r->p.text.inlImgs && r->p.text.inlN > 0) {
+			md->imgRetained += r->p.text.inlN;
+			md_live_push(md, i);
+		}
+	}
 	md->needEstimate = 1;
 }
 
@@ -2502,6 +2602,11 @@ int UiMarkdown_DebugRowsReused(const UiMarkdown *md)
 int UiMarkdown_DebugImagesReused(const UiMarkdown *md)
 {
 	return md ? md->reuseImages : 0;
+}
+
+int UiMarkdown_DebugImagesRetained(const UiMarkdown *md)
+{
+	return md ? md->imgRetained : 0;
 }
 
 int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)

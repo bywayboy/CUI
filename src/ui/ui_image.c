@@ -57,6 +57,14 @@ static char *dupstr_(const char *s)
 	return p;
 }
 
+static int img_streq_(const char *a, const char *b)
+{
+	int i = 0;
+	if (!a || !b) return a == b;
+	while (a[i] && a[i] == b[i]) i++;
+	return a[i] == b[i];
+}
+
 static int starts_with_i_(const char *s, const char *prefix)
 {
 	int i;
@@ -261,6 +269,11 @@ static void img_http_cb_(void *user, const UiHttpResponse *r)
 int UiImage_LoadUrl(UiImage *img, const char *url)
 {
 	if (!img || !url || !url[0]) return 0;
+	/* 同源且已加载/加载中: 保留现有 src/位图, 不重新请求/解码 */
+	if (img->source && img->source[0] &&
+		(img->state == UI_IMG_READY || img->state == UI_IMG_LOADING) &&
+		img_streq_(img->source, url))
+		return 1;
 	img_reset_(img);
 	img->source = dupstr_(url);
 	img->state = UI_IMG_LOADING;
@@ -307,8 +320,11 @@ int UiImage_LoadUrl(UiImage *img, const char *url)
 	{
 		WCHAR wpath[MAX_PATH];
 		int n = MultiByteToWideChar(CP_UTF8, 0, url, -1, wpath, MAX_PATH);
+		int r;
 		if (n <= 0) { img_set_error_(img, UI_IMG_E_PARAM); return 0; }
-		return UiImage_LoadFile(img, wpath);
+		r = UiImage_LoadFile(img, wpath);   /* reset 会清掉 source */
+		if (!img->source) img->source = dupstr_(url);
+		return r;
 	}
 }
 
