@@ -53,6 +53,10 @@ typedef struct UiAppCallbacks {
 	void (*timer)(UiApp *app, void *user);
 	/* x/y 是客户区物理像素; 返回 1 表示 *hit 有效 */
 	int  (*nchittest)(UiApp *app, int x, int y, LRESULT *hit, void *user);
+	/* 文件拖放 (WM_DROPFILES): path 是 UTF-16 绝对路径, 每次一个文件,
+	 * 拖入多个时按顺序回调. 返回 1 = 已处理, 后续文件不再回调.
+	 * 设置了本回调才会向系统注册窗口接受拖放. */
+	int  (*dropfiles)(UiApp *app, const wchar_t *path, void *user);
 } UiAppCallbacks;
 
 struct UiApp {
