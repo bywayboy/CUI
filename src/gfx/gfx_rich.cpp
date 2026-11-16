@@ -230,6 +230,17 @@ int Gfx_RichFontFamily(GfxRichText *rt, int start, int len, GfxFont *font)
 		rich_range(start, len))) ? 1 : 0;
 }
 
+void Gfx_RichSetAlign(GfxRichText *rt, int align)
+{
+	if (!rt || !rt->layout) return;
+	if (align == GFX_RICH_ALIGN_CENTER)
+		rt->layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+	else if (align == GFX_RICH_ALIGN_RIGHT)
+		rt->layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+	else
+		rt->layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+}
+
 void Gfx_RichUnderline(GfxRichText *rt, int start, int len, int on)
 {
 	if (!rt || !rt->layout) return;

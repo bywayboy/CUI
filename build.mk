@@ -210,7 +210,13 @@ $(BIN)\cui_grid.exe: $(CORE_OBJS) $(OBJ)\grid.obj
 	@echo [cui] link grid
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_markdown.exe: $(CORE_OBJS) $(OPT_OBJS) $(OBJ)\markdown.obj
+# Application icon. rc.exe ships with the Windows SDK; vcvars puts it on PATH.
+# The .ico is regenerable from res\make_icon.ps1 (every size is redrawn).
+$(OBJ)\cui_markdown.res: res\cui_markdown.rc res\cui_markdown.ico
+	@echo [cui] res\cui_markdown.rc
+	@rc /nologo /fo $@ res\cui_markdown.rc
+
+$(BIN)\cui_markdown.exe: $(CORE_OBJS) $(OPT_OBJS) $(OBJ)\markdown.obj $(OBJ)\cui_markdown.res
 	@echo [cui] link markdown (optional module)
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS) comdlg32.lib
 

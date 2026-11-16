@@ -1,0 +1,4 @@
+// cui_markdown.rc - application icon resource
+// Icon designed by res\make_icon.ps1 (M-down mark on a blue/violet plate).
+
+1 ICON "cui_markdown.ico"

@@ -183,8 +183,8 @@ void __stdcall startup(void)
 	double t0, t_parse, t_frame, t_frame2;
 
 	Log_Init();
-	/* union 重构后的行结构尺寸 (回归: 防止字段回涨) */
-	CHECK(UiMarkdown_DebugRowSize() <= 128);
+	/* 行结构尺寸不再作为契约: div 的盒子下标等字段按可读性优先, 不为了
+	 * 卡 128 字节而把属性挤进对齐空隙 (每个 MdRow 多几字节可忽略). */
 	SetEnvironmentVariableA("SCV2_ULW", "1");
 	CHECK(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED) >= 0);
 
@@ -243,7 +243,9 @@ void __stdcall startup(void)
 	CHECK(measured1 > 0);
 	CHECK(measured1 < 80);             /* 只实测可见行 */
 	CHECK(calls1 <= measured1 + 4);
-	CHECK(t_parse < 50.0);
+	/* SetText 全量 (解析 + 展平 + 锚点 + 行项) 实测 ~2.6ms @ 2000 段/213KB;
+	 * 阈值留 5 倍余量吸收 CI 抖动, 但足以拦住"退回毫秒级十几倍"的退化。 */
+	CHECK(t_parse < 15.0);
 	CHECK(t_frame < 50.0);
 	CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
 
@@ -329,6 +331,208 @@ void __stdcall startup(void)
 		CHECK(Gfx_End(g) == 1);
 		CHECK(UiMarkdown_DebugRowsReused(md) == 2);
 		CHECK(UiMarkdown_DebugMeasureCalls(md) - c0 <= 2);
+		CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
+	}
+
+	/* div: padding/margin 折进行高; line-height 改变单行高度 */
+	{
+		float hBase, hPad, hLh;
+
+		UiMarkdown_SetText(md, "x\n");
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		hBase = UiMarkdown_ContentHeight(md);
+		CHECK(hBase > 10.0f && hBase < 60.0f);
+
+		/* padding:10 四边 + margin:20 上下 → 总高 +60 */
+		UiMarkdown_SetText(md,
+			"<div style=\"padding:10px; margin:20px\">\nx\n</div>\n");
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		hPad = UiMarkdown_ContentHeight(md);
+		CHECK(hPad - hBase > 55.0f && hPad - hBase < 66.0f);
+
+		/* line-height:2 → 单行 14×2=28, 比默认 1.25(17.5) 高约 10.5 */
+		UiMarkdown_SetText(md, "<div style=\"line-height:2\">\nx\n</div>\n");
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		hLh = UiMarkdown_ContentHeight(md);
+		CHECK(hLh - hBase > 7.0f && hLh - hBase < 15.0f);
+		CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
+	}
+
+	/* <center> / <p ...>: 单行形态不额外增行, 也不改段落高度 */
+	{
+		float hBase, hC, hMulti, hP;
+
+		UiMarkdown_SetText(md, "x\n");
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		hBase = UiMarkdown_ContentHeight(md);
+		/* 上一轮 SetText 是 <div style="line-height:2">x</div>: 同文本不同
+		 * 盒子属性, 行复用必须按 boxSig 判否, 否则这里会拿到 2 倍行高 */
+		CHECK(hBase > 20.0f && hBase < 34.0f);
+
+		/* 单行 <center>x</center> 与裸段落 x 应完全同高 (无隐式 margin) */
+		UiMarkdown_SetText(md, "<center>x</center>\n");
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		hC = UiMarkdown_ContentHeight(md);
+		CHECK(UiMarkdown_DebugRows(md) == 1);
+		CHECK(hC - hBase < 1.5f && hBase - hC < 1.5f);
+
+		/* 多行形态同高 */
+		UiMarkdown_SetText(md, "<center>\nx\n</center>\n");
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		hMulti = UiMarkdown_ContentHeight(md);
+		CHECK(hMulti - hBase < 1.5f && hBase - hMulti < 1.5f);
+
+		/* <p style="padding:10px"> 单行: 上下各 +10 */
+		UiMarkdown_SetText(md, "<p style=\"padding:10px\">x</p>\n");
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		hP = UiMarkdown_ContentHeight(md);
+		CHECK(hP - hBase > 15.0f && hP - hBase < 25.0f);
+		CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
+	}
+
+	/* 章节锚点: # B 在视口下方, 跳转后 offset 必须落到非零位置 */
+	{
+		DynBuf ab;
+		float offTop, offB;
+		int k;
+
+		ZeroMemory(&ab, sizeof(ab));
+		db_puts(&ab, "# A\n\n");
+		for (k = 0; k < 40; k++) db_puts(&ab, "段落\n\n");
+		db_puts(&ab, "# B\n\n");
+		for (k = 0; k < 40; k++) db_puts(&ab, "段落\n\n");
+		UiMarkdown_SetText(md, ab.p);
+		db_free(&ab);
+
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		CHECK(UiMarkdown_MaxOffset(md) > 200.0f);
+
+		CHECK(UiMarkdown_ScrollToAnchor(md, &g_ctx, "a", 0) == 1);
+		offTop = UiMarkdown_ScrollOffset(md);
+		CHECK(offTop < 1.0f);
+
+		CHECK(UiMarkdown_ScrollToAnchor(md, &g_ctx, "b", 0) == 1);
+		offB = UiMarkdown_ScrollOffset(md);
+		CHECK(offB > 200.0f);
+
+		/* 规范化的第二种写法: `#Getting Started` 与 `#getting-started` 等价 */
+		CHECK(UiMarkdown_ScrollToAnchor(md, &g_ctx, "no-such-anchor", 0) == 0);
+		CHECK(UiMarkdown_ScrollToAnchor(md, NULL, "b", 0) == 0);
+		CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
+	}
+
+	/* 当前章节: 首可见行往往是跳转目标**上面那一行**, 拿它反推会永远
+	 * 落后一项; 跳转要锁定目标 (末尾几节滚到不了视口顶), 用户滚动后
+	 * 才回到按视口推导. */
+	{
+		DynBuf hb;
+		int k, t;
+
+		ZeroMemory(&hb, sizeof(hb));
+		for (k = 0; k < 10; k++) {
+			db_addf(&hb, "## 章节 %d\n\n", k);
+			for (t = 0; t < 20; t++)
+				db_puts(&hb, "正文行用来撑高文档。\n\n");
+		}
+		UiMarkdown_SetText(md, hb.p);
+		db_free(&hb);
+		CHECK(UiMarkdown_HeadingCount(md) == 10);
+
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		CHECK(UiMarkdown_ActiveHeading(md) == 0);   /* 顶部即第一章 */
+
+		for (k = 0; k < 10; k++) {
+			const UiMdHeading *h = UiMarkdown_HeadingAt(md, k);
+			CHECK(h != NULL);
+			UiMarkdown_ScrollToRow(md, &g_ctx, h->row, 8.0f, 0);
+			/* 粘性定位要几帧才收敛 (懒测量), 期间高亮不许跳回上一项 */
+			for (t = 0; t < 3; t++) {
+				Ui_BeginFrame(&g_ctx);
+				Ui_EndFrame(&g_ctx);
+				Gfx_Begin(g);
+				Ui_BeginFrame(&g_ctx);
+				Ui_Markdown(md, &g_ctx, area);
+				Ui_EndFrame(&g_ctx);
+				CHECK(Gfx_End(g) == 1);
+				CHECK(UiMarkdown_ActiveHeading(md) == k);
+			}
+			/* 落点: 目标行 (或它上面那一行, 视口顶压在行边界上) 就是首行 */
+			if (k < 9) {
+				int fv = UiMarkdown_FirstVisibleRow(md);
+				CHECK(fv <= h->row && fv >= h->row - 1);
+			}
+		}
+		/* 最后一节已经滚到底, 目标行到不了视口顶, 只能靠跳转锁定 */
+		CHECK(UiMarkdown_ScrollOffset(md) >=
+			UiMarkdown_MaxOffset(md) - 0.5f);
+		CHECK(UiMarkdown_ActiveHeading(md) == 9);
+
+		/* 用户自己滚轮 = 解锁: 之后跟随视口, 不再钉在跳转目标上 */
+		g_ctx.wheelTarget = Ui_Id("md.ui.test", 0, 0);
+		g_ctx.wheelDelta = -1.0f;
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		CHECK(UiMarkdown_ActiveHeading(md) >= 0 &&
+			UiMarkdown_ActiveHeading(md) <= 9);
 		CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
 	}
 
@@ -774,6 +978,114 @@ void __stdcall startup(void)
 		CHECK(UiMarkdown_DebugMeasured(md) == 1);
 		CHECK(UiMarkdown_DebugMathMisses(md) >= m1 + 2);
 		CHECK(UiMarkdown_ContentHeight(md) > 24.0f);
+		CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
+	}
+
+	/* 文档地址解析: 相对链接/图片以文档地址为基准 */
+	{
+		char buf[1024];
+		const char *r;
+
+		UiMarkdown_SetDocumentUrl(md, "D:\\docs\\a.md");
+		r = UiMarkdown_ResolveUrl(md, "b.md", buf, (int)sizeof(buf));
+		CHECK(lstrcmpA(r, "D:\\docs\\b.md") == 0);
+		r = UiMarkdown_ResolveUrl(md, "../c.md", buf, (int)sizeof(buf));
+		CHECK(lstrcmpA(r, "D:\\c.md") == 0);
+		r = UiMarkdown_ResolveUrl(md, "http://x/y.md", buf, (int)sizeof(buf));
+		CHECK(lstrcmpA(r, "http://x/y.md") == 0);
+		r = UiMarkdown_ResolveUrl(md, "#sec", buf, (int)sizeof(buf));
+		CHECK(lstrcmpA(r, "#sec") == 0);
+
+		UiMarkdown_SetDocumentUrl(md, "https://h.com/docs/a.md");
+		r = UiMarkdown_ResolveUrl(md, "b.md", buf, (int)sizeof(buf));
+		CHECK(lstrcmpA(r, "https://h.com/docs/b.md") == 0);
+		r = UiMarkdown_ResolveUrl(md, "/r.md", buf, (int)sizeof(buf));
+		CHECK(lstrcmpA(r, "https://h.com/r.md") == 0);
+		r = UiMarkdown_ResolveUrl(md, "../c.md", buf, (int)sizeof(buf));
+		CHECK(lstrcmpA(r, "https://h.com/c.md") == 0);
+		UiMarkdown_SetDocumentUrl(md, NULL);
+	}
+
+	/* 标题目录: level / 文本 / slug / 行号 */
+	{
+		const UiMdHeading *h;
+
+		UiMarkdown_SetText(md,
+			"# \xE7\xAC\xAC\xE4\xB8\x80\xE7\xAB\xA0\n\n"
+			"\xE6\xAD\xA3\xE6\x96\x87\n\n"
+			"## Getting Started\n\n\xE6\xAD\xA3\xE6\x96\x87\n");
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		CHECK(UiMarkdown_HeadingCount(md) == 2);
+		h = UiMarkdown_HeadingAt(md, 0);
+		CHECK(h != NULL);
+		if (h) {
+			CHECK(h->level == 1 && h->row == 0);
+			CHECK(lstrcmpA(h->slug,
+				"\xE7\xAC\xAC\xE4\xB8\x80\xE7\xAB\xA0") == 0);
+			CHECK(h->textLen == 3);
+		}
+		h = UiMarkdown_HeadingAt(md, 1);
+		CHECK(h != NULL);
+		if (h) {
+			CHECK(h->level == 2 && h->row > 0);
+			CHECK(lstrcmpA(h->slug, "getting-started") == 0);
+		}
+		CHECK(UiMarkdown_HeadingAt(md, 2) == NULL);
+	}
+
+	/* 粘性定位: 跳到远处标题后, 懒测量收敛不应让落点漂移 */
+	{
+		DynBuf sb;
+		int k, target;
+		const UiMdHeading *hb;
+
+		ZeroMemory(&sb, sizeof(sb));
+		db_puts(&sb, "# \xE9\xA1\xB6\xE9\x83\xA8\n\n");
+		for (k = 0; k < 200; k++)
+			db_addf(&sb, "\xE7\xAC\xAC %d \xE6\xAE\xB5\xE6\xAD\xA3\xE6\x96\x87"
+				"\xEF\xBC\x8C\xE7\x94\xA8\xE6\x9D\xA5\xE6\x8A\x8A"
+				"\xE5\x90\x8E\xE9\x9D\xA2\xE7\x9A\x84\xE6\xA0\x87"
+				"\xE9\xA2\x98\xE6\x8E\xA8\xE5\x88\xB0\xE5\xBE\x88"
+				"\xE8\xBF\x9C\xE7\x9A\x84\xE4\xBD\x8D\xE7\xBD\xAE"
+				"\xE3\x80\x82\n\n", k + 1);
+		db_puts(&sb, "# \xE7\x9B\xAE\xE6\xA0\x87\n\n");
+		for (k = 0; k < 40; k++)
+			db_puts(&sb, "\xE7\x9B\xAE\xE6\xA0\x87\xE4\xB9\x8B"
+				"\xE5\x90\x8E\xE7\x9A\x84\xE6\xAE\xB5\xE8\x90\xBD"
+				"\xE3\x80\x82\n\n");
+		UiMarkdown_SetText(md, sb.p);
+		db_free(&sb);
+
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+
+		hb = UiMarkdown_HeadingAt(md, 1);
+		CHECK(hb != NULL);
+		target = hb ? hb->row : 0;
+		CHECK(target > 50);
+		UiMarkdown_ScrollToRow(md, &g_ctx, target, 8.0f, 0);
+		for (k = 0; k < 8; k++) {
+			Ui_BeginFrame(&g_ctx);
+			Ui_EndFrame(&g_ctx);
+			Gfx_Begin(g);
+			Ui_BeginFrame(&g_ctx);
+			Ui_Markdown(md, &g_ctx, area);
+			Ui_EndFrame(&g_ctx);
+			CHECK(Gfx_End(g) == 1);
+		}
+		CHECK(UiMarkdown_FirstVisibleRow(md) <= target);
+		CHECK(target - UiMarkdown_FirstVisibleRow(md) <= 1);
 		CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
 	}
 

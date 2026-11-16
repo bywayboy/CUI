@@ -1,8 +1,9 @@
 # CUI Markdown 渲染组件 UiMarkdown 设计方案
 
-> 状态：阶段 1–3 已实现（2026-11-13），并已补齐真实图片（块级 + 行内）、
-> 真实表格、链接点击与内置语法高亮；剩余：全文选区/复制、代码复制按钮、
-> 流式解析优化与文档收尾
+> 状态：主体已实现（2026-11-16）。已完成解析器、行模型与懒测量、图片（块级 +
+> 行内）、表格、`:::` 容器与 GitHub 警报、数学公式、语法高亮、链接点击与章节
+> 锚点、HTML 排版容器（`<div>` / `<p>` / `<center>`）、增量复用与解析热路径优化。
+> 剩余：全文选区 / Ctrl+C 复制、代码块复制按钮。
 > 关联：`src/ui/ui_md_parse.*`（新增，纯解析器）、`src/ui/ui_md.*`（新增，组件）、
 > `src/gfx/gfx_rich.h` + `src/gfx/gfx_rich.cpp` + `src/gfx/gfx_internal.h`
 > （新增，可选富文本模块；`gfx.h` 核心不变）、
@@ -38,6 +39,7 @@
 | 块 | 缩进代码（4 空格）、水平线 `---` `***` `___` |
 | 块 | 引用 `>`（可嵌套）、无序列表 `- * +`、有序列表 `1.`/`1)`（可嵌套） |
 | 块 | GFM 任务列表 `- [ ]` / `- [x]`（v1 只读展示）、GFM 管道表格（列对齐） |
+| 块 | 块级 HTML 容器 `<div>` / `<p>` / `<center>`：单行闭合与多行两种形态，内部继续解析 Markdown；支持 `align` 与 `text-align` / `padding` / `margin` / `line-height`（见 §16） |
 | 块 | 块级图片 `![alt](url "title")`（独占一行；title 为 `left`/`center`/`right` 时作为对齐提示） |
 | 行内 | 强调 `*em*` `**strong**` `_em_` `__strong__`、GFM 删除线 `~~del~~` |
 | 行内 | 行内代码 `` `code` ``、反斜杠转义、硬换行（行尾两空格或 `\`） |
@@ -235,7 +237,12 @@ flanking 状态记录下界），病态输入（成千上万个 `*`/`_`）仍为
 | 项 | v1 行为 |
 | --- | --- |
 | Lazy continuation | 不支持；引用内续行必须带 `>` |
-| 行内 HTML / HTML 块 | 按转义纯文本显示 |
+| 行内 HTML / 其它 HTML 块 | 按转义纯文本显示；**块级 `<div>` / `<p>` / `<center>` 是例外**（见 §16） |
+| 容器内的 Markdown | **继续解析**。CommonMark 规定 HTML 块内不解析，这里刻意偏离 —— 否则这些标签只能包纯文本，失去意义 |
+| 单行 `<p align="center">x</p>` | 支持（内容按一段处理）。多行形态则要求开/闭标签各自独占一行 |
+| 容器标签的配对 | 只按**容器深度**配对，不校验标签名（`<div>…</p>` 也算闭合）；闭标签必须独占一行（`</p>` 跟在正文行尾不闭合） |
+| 未知的容器属性 / 声明 | 静默忽略，不影响其它已识别项 |
+| `text-align` 作用域 | 只影响段落/标题；图片作为默认对齐、表格保持列对齐、代码块保持左对齐 |
 | 列表项内多块 | 支持（容器树），但块间距统一按 loose 处理 |
 | 强调嵌套的极端情形 | 按分隔符栈主流实现；与规范在罕见重叠场景可能有差异 |
 | 裸 URL 自动链接（GFM 扩展） | 不支持，需用 `<...>` 或 `[...](...)` |
@@ -604,6 +611,42 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md);
 
 框架不变量照旧：`WM_PAINT` 内不调 `InvalidateRect`；逐帧动画只登记动画脏区；
 设备丢失按 `Gfx_Generation` 重建。
+
+### 8.1 解析热路径（实测基准与不可回退的约束）
+
+基准文档：2000 段 × 2 行（每段一个 `##` 标题 + 一段中文正文）＝ 4000 块 /
+8000 行 / **213 KB**，`SetText` 全长与纯 `Md_Parse` 分别计时（/O1，本机）：
+
+| 阶段 | 优化前 | 现在 | 手段 |
+| --- | --- | --- | --- |
+| 源文本归一化 | 285 μs | **65 μs** | 无 CR/无 NUL 时整段 `memcpy`；检测用 8 字节 SWAR 一次扫两个值 |
+| 行切分 | 355 μs | **145 μs** | `\n` 定位改 SWAR 查找 + 行数组按平均行长预留 |
+| 块扫描（含标题行内解析） | 1545 μs | **~620 μs** | 行首字符 `c0` 一次算出、就地短路 8 个探测函数；删掉 ATX 分支里"分配→拷贝→立刻释放"的 raw 副本 |
+| 段落行内扫描 | 2105 μs | **~600 μs** | `inl_reserve` 按字节长一次预留；ASCII 与 3 字节 UTF-8 批量解码直写；t/st/lk/rm 四数组跨块复用 |
+| 块哈希 | 310 μs | **175 μs** | 8 字节一批的 FNV 变体（位置信息由乘法扩散，字节交换不撞） |
+| 块清理 | ~300 μs | **~175 μs** | `text16/runs` 改走 arena 整链释放；`md_free_block` 不再逐块 `ZeroMemory` |
+| **纯解析合计** | **4980 μs** | **~1800 μs** | 约 119 MB/s |
+| 展平 + 锚点 + 行项 | ~1000 μs | **~650 μs** | 锚点 slug 直接从 UTF-16 生成（省一条临时 UTF-8 串）、slug 存字符池、哈希表按标题数一次建够 |
+| **`SetText` 全长** | **~6000 μs** | **~2600 μs** | 单次全量，UI 线程一次可接受 |
+
+以下六条是实现层约束，**改这些地方等于把上面的数字退回去**，改动时请对照：
+
+1. **源文本归一化必须有快路径**：逐字节 `\r`→`\n` 转换对 200KB 要 285 μs，
+   而绝大多数文档根本没有 CR。检测用 `md_find_byte2`（SWAR），命中才走慢路径。
+2. **行内扫描的特殊字符集必须与分支一一对应**：批量路径只放行"没有专属分支"的
+   字符，`$ \ ` ! [ < & * _ ~ \n` 一律落回慢路径。漏掉一个字符就会改变语义。
+3. **`inl_reserve` 的初值取 `len + 1`**（UTF-16 长度不超过 UTF-8 字节数）。
+   改回 32 起步会让每个段落多 3 次 realloc × 4 个数组。
+4. **行内缓冲池按 `busy` 标记租借**，因为 `inl_link` / `inl_image` / 代码段都会
+   嵌套调用 `inl_parse`（同时存在两个活动 `MdInl`）。不要改成"单例 scratch"。
+5. **`text16`/`runs` 归 arena 管，`md_free_block` 不许再 free 它们**；arena 只在
+   `md_clear` 里整链释放。新增块类型若要持有长文本，也必须走 `md_chunk_alloc`。
+6. **块扫描里新增/修改探测函数时，同步更新主循环的 `c0` 守卫**。守卫只在"肯定
+   不命中"时短路，`c0 == ' '`（缩进 ≥3）的情形要按需放行列表与缩进代码块。
+   漏放行会造成合法的列表/缩进代码块被当成段落。
+
+`md_test`（525 条）与 `md_ui_test`（167 条）覆盖上述路径；`md_ui_test` 把
+`SetText` 全长锁在 15 ms 以内（实测 2.6 ms，留 5 倍余量吸收 CI 抖动）。
 
 ## 9. 构建接入（可选模块隔离）
 
@@ -1549,3 +1592,194 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md);
   设备代际不变；4K@200% 原生（DComp 与 SCV2_ULW=1）展开/收起编辑器与
   窗口缩放，HTTPS 图片立即显示、无重新加载。
 - 验证：md_ui_test 129/0，其余套件全通过。
+
+## 16. HTML 排版容器与章节锚点（设计 + 实现，2026-11-16）
+
+### 16.1 需求与取舍
+
+1. 块级 `<div align="center" style="...">`、`<p align="..." style="...">`、
+   `<center>`，支持 `text-align` / `padding` / `margin` / `line-height`；
+2. `[文字](#章节)` 点击后平滑滚动到对应标题。
+
+两条硬约束决定了实现形态：
+
+- **文本行居中必须靠 DWrite**。`Gfx_RichCreate` 最初写死
+  `DWRITE_TEXT_ALIGNMENT_LEADING`，自己算 x 偏移只能整体平移布局，多行
+  各自居中做不到。→ 新增 `Gfx_RichSetAlign`（`gfx_rich.h`，约 10 行）。
+- **`MdRow` 不再有尺寸契约**。原 `md_ui_test` 断言 `sizeof(MdRow) <= 128`，
+  为把 div 属性塞进对齐空隙会牺牲可读性。→ 断言删除，属性统一挂 `MdBox`，
+  行里只放一个 `int boxIdx`。
+
+### 16.2 语法与属性
+
+```markdown
+<center>单行居中</center>
+
+<p align="center">单行段落，支持 **行内样式**</p>
+
+<p style="text-align:right">
+多行形态：开闭标签各占一行，中间按 Markdown 解析。
+</p>
+
+<div align="center" style="padding: 16px 24px; margin: 8px 0; line-height: 1.8">
+## 居中标题
+
+正文也居中。
+</div>
+```
+
+三种标签共用同一个渲染路径（都落成 `MD_BLOCK_DIV` + `MD_BOX_DIV`）：
+
+| 标签 | 语义 |
+| --- | --- |
+| `<div ...>` | 通用块容器，属性全部来自 `align` / `style` |
+| `<p ...>` | 同上。不额外加段落外边距 —— 它内部的段落本来就有块间距，再加会出现双倍留白 |
+| `<center>` | 布尔标签，等价 `align="center"`；显式 `style="text-align:..."` 仍可覆盖 |
+
+**解析器不需要知道是哪一个**：`<div>` 与 `<p>` 的处理完全相同，标签名只用于两件事——
+识别"这是容器"，以及判断"是不是 `<center>`"（它没有属性，居中只能靠名字隐含）。
+所以内部只有一个 `isCenter` 布尔参与决策，没有标签种类枚举。
+
+- **两种形态**：单行 `<p align="center">x</p>`，与"开/闭标签各自独占一行"。
+  单行形态的内容当作一个段落块处理，与多行形态走完全相同的 flatten 逻辑；
+- 开标签必须有闭合的 `>`，否则按普通文本处理（`<p 缺少结尾` 不会吞掉后续内容）；
+- 标签名大小写不敏感（HTML 规则）；前缀更长的标签不会被误判（`<pre>` 不是
+  `<p>`、`<centered>` 不是 `<center>`）；
+- **配对只按容器深度，不校验名字**：`<div>` 里套 `<center>`、甚至 `<div>…</p>`
+  都算闭合。这是刻意的宽松 —— 名字对渲染没有区别，为一个笔误把后面整篇文档
+  吞进容器更糟。闭标签仍须独占一行，`</p>` 跟在正文行尾不算闭合（此时整体
+  回退为段落，字面显示）；
+- `padding` / `margin` 支持 1~4 值 CSS 简写（top/right/bottom/left）；
+- `line-height` 支持倍率（`1.8`）与绝对像素（`24px`）；px 在渲染时按该行
+  字号换算成倍率，因为 `gfx_rich` 的行距参数是倍率（`lh = size * ls`）；
+- 数值单位只认 `px`（`em`/`%` 按纯数值处理，宁可近似不让整条声明失效）；
+- 未知属性/未知声明静默忽略。
+
+### 16.3 数据结构（量化编码，`MdBlock.u.div`）
+
+```c
+struct {
+    int16_t padL, padT, padR, padB;  /* 0.25 DIP 量化 */
+    int16_t marginT, marginB;
+    int16_t lineSpacing;             /* >0 倍率×100; <0 = -绝对DIP×4; 0 继承 */
+    uint8_t align;                   /* MD_ALIGN_*; MD_DIV_ALIGN_INHERIT = 继承 */
+} div;
+```
+
+全部塞进 `MdBlock` 已有 union，**不增大结构体**（与 image 成员同为 16 字节）。
+行距用"正数=倍率、负数=绝对 DIP"的单字段编码，避免再加一个 float。
+
+### 16.4 布局映射
+
+`md_flatten` 遇到 `MD_BLOCK_DIV` 时：
+
+| 属性 | 落到哪里 |
+| --- | --- |
+| `padding-left` | 子行 `indent`（与容器缩进同一机制） |
+| `padding-top/bottom` + `margin-top/bottom` | 首行 `extraTop` / 末行 `extraBottom` |
+| `padding-right` | `MdBox.padR`，由 `md_row_wrap_w` 从行宽扣掉 |
+| `line-height` | `MdBox.lineSpacing`，建 RichText 时替换全局行距 |
+| `text-align` | `MdBox.align`，建 RichText 后调 `Gfx_RichSetAlign` |
+
+行通过 `boxIdx` 查所属盒子；嵌套时内层后写，自然覆盖外层（行归属最内层）。
+`div` 是**纯布局盒子**（`MD_BOX_DIV = 255`），`md_draw_boxes` 直接跳过，
+不画色条/标题/底色。含行内图片/公式的行仍守自然行距，不被 `line-height`
+压扁。
+
+**行宽必须只算一处**：原来 `contentW - indent - markerW` 散布在测量、公式、
+表格、绘制共 6 处，加 `padR` 后漏一处就会出现"测 3 行画 4 行"。统一收进
+`md_row_wrap_w(md, r)`，且固定用 `md->contentW`（不用绘制时的 `content.w`）。
+
+### 16.5 章节锚点
+
+- **slug 规则**（GitHub 近似）：ASCII 小写、空白转 `-`、丢弃 ASCII 标点、
+  保留非 ASCII 字节（中文/emoji 原样）；重名追加 `-1`/`-2`；
+- **表结构**：`MdAnchor {slug, row}` + 开放寻址哈希（值 = 下标 + 1），
+  每次行重建后重算；
+- **匹配**：先精确，再对输入做一次 slug 规范化后比较 —— 所以
+  `#Getting Started` 与 `#getting-started` 等价；
+- **点击**：`clickedUrl[0] == '#'` 时滚动到 `ItemY(row) - 8`，同时**照常**
+  置 `clickedUrl` 并回调 `linkFn`，应用可自行拦截；跳转会清 `followTail`，
+  避免被"跟随尾部"拉回底部；
+- **API**：`UiMarkdown_ScrollToAnchor(md, ui, name, animate)`，目录/大纲可直接用；
+- 不做 percent 解码（`%E7%AC%AC...`），登记为已知限制。
+
+#### 16.5.1 当前章节不能用首可见行反推（目录高亮"落后一项"）
+
+首版目录高亮是 `toc[i].row <= UiMarkdown_FirstVisibleRow()`。跳转后目标行顶
+距视口顶只有一个 `padTop`（8px），`UiScrollLayout_VisibleRange` 返回的首行
+**是与视口相交的第一行**，通常还是目标**上面那一行** —— 于是高亮稳定落后
+一项（点"代码"高亮"特性"）。滚到底时目标行再也到不了视口顶，所有标题都
+不满足条件，末尾几节点了没有反应。
+
+改为按"标题行顶与 `offset` 的距离"判定，并把显式跳转当一等状态：
+
+```c
+#define MD_ACTIVE_TOL 12.0f          /* 覆盖 padTop 与行边界取整 */
+
+if (md->activeAnchor >= 0) {         /* 跳转锁定: 点击/锚点优先 */
+    md->activeHeading = md->activeAnchor;
+    return;
+}
+for (i = 0; i < anchorCount; i++)
+    if (ItemY(anchors[i].row) - offset <= MD_ACTIVE_TOL) act = i;
+if (offset >= maxOffset - 0.5f)      /* 到底: 末尾几节永远到不了顶部 */
+    for (i = 0; i < anchorCount; i++)
+        if (ItemY(anchors[i].row) - offset < viewH) act = i;
+```
+
+- **锁定**：`md_scroll_to_row` 反查目标行是否为标题，是则记 `activeAnchor`
+  （`ScrollToRow` 落在标题上 / `ScrollToAnchor` / 点 `#锚点` 都走这条）；
+- **解锁**：用户滚轮（`wheelTarget` 命中本站且 `wheelDelta != 0`）或拖 thumb
+  （`draggingThumb`）才清锁，回到视口推导；程序化滚动（sticky 校正、平滑动画）
+  不算用户滚动；
+- **失效**：`SetText` 重建行后行号无意义，`activeAnchor`/`activeHeading` 一并清 -1；
+- **API**：`UiMarkdown_ActiveHeading(md)`，返回 `UiMarkdown_HeadingAt` 的下标，
+  `-1` = 不在任何章节。宿主不要再用 `FirstVisibleRow` 反推。
+
+
+### 16.6 行复用必须带上盒子签名（加 `<p>`/`<center>` 时暴露的缺陷）
+
+行复用的 key 原来是 `(hash, rowType)`。但引入容器后，**同一段文本的行高还取决于
+所属盒子**：`<div style="line-height:2">x</div>` 里的 `x` 与裸段落 `x`，块内容和
+行类型完全一致，高度却不同 —— 于是复用会把 2 倍行高搬到裸段落上。
+
+复现：`SetText("<div style=\"line-height:2\">x</div>")` 之后立刻
+`SetText("x")`，第二份文档的 `ContentHeight` 是 38 而不是 27。
+
+修法：`MdBox.sig` 收录**会影响布局**的三个属性，flatten 时抄进行里
+（`MdRow.boxSig`，内层 div 后写覆盖外层），`md_row_key_eq` 一并比较：
+
+```c
+static uint32_t md_box_sig(const MdBox *b)
+{
+    uint32_t s = 2166136261u;
+    s = (s ^ (uint32_t)b->align) * 16777619u;
+    s = (s ^ (uint32_t)(int32_t)(b->lineSpacing * 100.0f)) * 16777619u;
+    s = (s ^ (uint32_t)(int32_t)(b->padR * 4.0f)) * 16777619u;
+    return s;
+}
+```
+
+`indent` / `markerW` 原来只在"匹配成功之后"二次确认，现在 `boxSig` 直接进
+`md_row_key_eq` —— 哈希桶里同 key 不同签名的行会被判为不匹配，走重测。
+`md_ui_test` 里把"上一轮是 line-height:2 的 div、这一轮是裸段落"固定成断言。
+
+### 16.7 实现中修掉的两个既有问题
+
+1. **`md_row_pads` 覆盖 `extraTop/extraBottom`**（P1，容器早就受影响）：
+   `HEADING`/`CODE`/`HR`/`MATH` 分支原来直接赋值，把容器的标题区高度吃掉 ——
+   `::: note` 首行若是标题，标题会顶到卡片上缘。改为"基础间距 + extra"叠加。
+2. **锚点是 O(M²)**：首版用线性查找，性能文档（2000 段 × 每段一个 `##`）
+   实测 `SetText` 从预期 <50ms 变成 **361ms**。改开放寻址哈希后回到 **6ms**。
+   这条记在这里是因为它很容易被当成"机器慢"放过。
+
+### 16.8 验证
+
+| 项 | 结果 |
+| --- | --- |
+| 解析（`md_test`） | **525/0**：align/style 覆盖顺序、padding 1~4 值、margin 两值、line-height 倍率与 px 编码、内部 Markdown 解析、嵌套、未闭合回退、缺 `>` 非标签、空容器、未知属性、大写与单引号；`<center>`/`<p>` 的单行与多行形态、混用嵌套、按深度配对（含 `<div>…</p>` 错配）、`<pre>`/`<centered>` 不被误判 |
+| 渲染（`md_ui_test`） | **285/0**：`padding:10+margin:20` 总高 +60（±5）；`line-height:2` 单行高 +10.5；`<center>`/`<p>` 单行与多行同高、`<p style="padding:10">` 高出 20；锚点 `#A` 落 0、`#B` 落 >200、不存在返回 0、`ui=NULL` 返回 0；跨盒子的同文本行不复用旧高度；10 个标题逐个跳转 `ActiveHeading == k` 且首行落在目标行或它上一行、最后一节滚到底仍锁定目标、滚轮解锁后回到推导 |
+| `gfx_rich_test` | **34/0**（`SetAlign` 为纯新增） |
+| 性能 | 10k 行 `SetText` 2.6ms（见 §8.1）、首帧 15ms |
+| 内存 | 全程 `HeapValidate` 通过；`MdBlock` 结构尺寸未变（`MdRow` 去掉尺寸断言） |

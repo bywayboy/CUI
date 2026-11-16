@@ -313,6 +313,229 @@ static void test_containers(void)
 	MdDoc_Shutdown(&d);
 }
 
+static void test_div(void)
+{
+	MdDoc d;
+
+	/* 基础: 单个段落 + align 属性 */
+	CHECK(parse_(&d, "<div align=\"center\">\n\xE5\xB1\x85\xE4\xB8\xAD\n</div>"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_DIV);
+	CHECK(d.blocks[0].u.div.align == MD_ALIGN_CENTER);
+	CHECK(d.blocks[0].p.kids.childCount == 1);
+	CHECK(child(&d.blocks[0], 0)->type == MD_BLOCK_PARAGRAPH);
+	CHECK(wstr_eq(child(&d.blocks[0], 0)->p.text.text16, L"\x5C45\x4E2D"));
+	MdDoc_Shutdown(&d);
+
+	/* style 的 text-align 在 align 之后解析, 后写胜出 */
+	CHECK(parse_(&d,
+		"<div align=\"left\" style=\"text-align:right\">\nx\n</div>"));
+	CHECK(d.blocks[0].u.div.align == MD_ALIGN_RIGHT);
+	MdDoc_Shutdown(&d);
+
+	/* padding 四值 / margin 两值: 按 CSS 的 top/right/bottom/left 展开 */
+	CHECK(parse_(&d,
+		"<div style=\"padding:8px 16px 4px 2px; margin:12px 0\">\nx\n</div>"));
+	CHECK(d.blocks[0].u.div.padT == MD_Q4(8.0f));
+	CHECK(d.blocks[0].u.div.padR == MD_Q4(16.0f));
+	CHECK(d.blocks[0].u.div.padB == MD_Q4(4.0f));
+	CHECK(d.blocks[0].u.div.padL == MD_Q4(2.0f));
+	/* 两值简写: 上下取第一值, 左右取第二值 */
+	CHECK(d.blocks[0].u.div.marginT == MD_Q4(12.0f));
+	CHECK(d.blocks[0].u.div.marginB == MD_Q4(12.0f));
+	MdDoc_Shutdown(&d);
+
+	/* 单值简写铺满四边 */
+	CHECK(parse_(&d, "<div style=\"padding:6\">\nx\n</div>"));
+	CHECK(d.blocks[0].u.div.padT == MD_Q4(6.0f));
+	CHECK(d.blocks[0].u.div.padR == MD_Q4(6.0f));
+	CHECK(d.blocks[0].u.div.padB == MD_Q4(6.0f));
+	CHECK(d.blocks[0].u.div.padL == MD_Q4(6.0f));
+	MdDoc_Shutdown(&d);
+
+	/* line-height 倍率 → ×100 */
+	CHECK(parse_(&d, "<div style=\"line-height:1.8\">\nx\n</div>"));
+	CHECK(d.blocks[0].u.div.lineSpacing == 180);
+	MdDoc_Shutdown(&d);
+
+	/* line-height 绝对 px → 负数编码 (渲染时按行字号换算倍率) */
+	CHECK(parse_(&d, "<div style=\"line-height:24px\">\nx\n</div>"));
+	CHECK(d.blocks[0].u.div.lineSpacing == (int16_t)(-MD_Q4(24.0f)));
+	MdDoc_Shutdown(&d);
+
+	/* 内部继续按 Markdown 解析: 标题 + 列表 */
+	CHECK(parse_(&d, "<div>\n# T\n- a\n</div>"));
+	CHECK(d.blocks[0].type == MD_BLOCK_DIV);
+	CHECK(d.blocks[0].p.kids.childCount == 2);
+	CHECK(child(&d.blocks[0], 0)->type == MD_BLOCK_HEADING);
+	CHECK(child(&d.blocks[0], 1)->type == MD_BLOCK_LIST);
+	MdDoc_Shutdown(&d);
+
+	/* 嵌套: 内层属性独立 */
+	CHECK(parse_(&d,
+		"<div align=\"center\">\n<div align=\"right\">\nx\n</div>\n</div>"));
+	CHECK(d.blocks[0].type == MD_BLOCK_DIV);
+	CHECK(d.blocks[0].u.div.align == MD_ALIGN_CENTER);
+	CHECK(child(&d.blocks[0], 0)->type == MD_BLOCK_DIV);
+	CHECK(child(&d.blocks[0], 0)->u.div.align == MD_ALIGN_RIGHT);
+	MdDoc_Shutdown(&d);
+
+	/* 未闭合: 回退为普通段落, 不能吃掉后面的内容 */
+	CHECK(parse_(&d, "<div>\nx"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_PARAGRAPH);
+	MdDoc_Shutdown(&d);
+
+	/* 缺少 '>' 的不是标签 */
+	CHECK(parse_(&d, "<div class\nx"));
+	CHECK(d.count >= 1 && d.blocks[0].type == MD_BLOCK_PARAGRAPH);
+	MdDoc_Shutdown(&d);
+
+	/* 两行的空 div: 合法但无子块 */
+	CHECK(parse_(&d, "<div>\n</div>"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_DIV);
+	CHECK(d.blocks[0].p.kids.childCount == 0);
+	MdDoc_Shutdown(&d);
+
+	/* 未知属性/未知声明忽略, 不吞掉已知项 */
+	CHECK(parse_(&d,
+		"<div data-x=\"1\" style=\"color:red; padding:4px\">\nx\n</div>"));
+	CHECK(d.blocks[0].u.div.padT == MD_Q4(4.0f));
+	MdDoc_Shutdown(&d);
+
+	/* 属性里的大写与单引号 */
+	CHECK(parse_(&d, "<div ALIGN='center'>\nx\n</div>"));
+	CHECK(d.blocks[0].u.div.align == MD_ALIGN_CENTER);
+	MdDoc_Shutdown(&d);
+}
+
+/* <center> / <p ...> 与单行闭合形态 */
+static void test_html_containers(void)
+{
+	MdDoc d;
+
+	/* <center>: 布尔标签, 等价 align=center (多行形态) */
+	CHECK(parse_(&d, "<center>\nx\n</center>"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_DIV);
+	CHECK(d.blocks[0].u.div.align == MD_ALIGN_CENTER);
+	CHECK(d.blocks[0].p.kids.childCount == 1);
+	CHECK(child(&d.blocks[0], 0)->type == MD_BLOCK_PARAGRAPH);
+	MdDoc_Shutdown(&d);
+
+	/* <center> 单行闭合 */
+	CHECK(parse_(&d, "<center>x</center>"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_DIV);
+	CHECK(d.blocks[0].u.div.align == MD_ALIGN_CENTER);
+	CHECK(d.blocks[0].p.kids.childCount == 1);
+	CHECK(wstr_eq(child(&d.blocks[0], 0)->p.text.text16, L"x"));
+	MdDoc_Shutdown(&d);
+
+	/* <p align="..."> 单行: 三种对齐 */
+	CHECK(parse_(&d, "<p align=\"center\">x</p>"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_DIV);
+	CHECK(d.blocks[0].u.div.align == MD_ALIGN_CENTER);
+	CHECK(wstr_eq(child(&d.blocks[0], 0)->p.text.text16, L"x"));
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "<p align=\"right\">x</p>"));
+	CHECK(d.blocks[0].u.div.align == MD_ALIGN_RIGHT);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "<p align=\"left\">x</p>"));
+	CHECK(d.blocks[0].u.div.align == MD_ALIGN_LEFT);
+	MdDoc_Shutdown(&d);
+
+	/* <p style="...">: 多行形态 */
+	CHECK(parse_(&d, "<p style=\"text-align:center\">\nx\n</p>"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_DIV);
+	CHECK(d.blocks[0].u.div.align == MD_ALIGN_CENTER);
+	MdDoc_Shutdown(&d);
+
+	/* <p style="...">: 单行形态 + padding */
+	CHECK(parse_(&d, "<p style=\"padding:6px 8px\">x</p>"));
+	CHECK(d.blocks[0].u.div.padT == MD_Q4(6.0f));
+	CHECK(d.blocks[0].u.div.padR == MD_Q4(8.0f));
+	MdDoc_Shutdown(&d);
+
+	/* 无属性 <p>: 继承父级对齐 */
+	CHECK(parse_(&d, "<p>\nx\n</p>"));
+	CHECK(d.count == 1 && d.blocks[0].u.div.align == MD_DIV_ALIGN_INHERIT);
+	MdDoc_Shutdown(&d);
+
+	/* <p> 里的行内 Markdown 照常解析 (单行) */
+	CHECK(parse_(&d, "<p align=\"center\">**b**</p>"));
+	CHECK(d.blocks[0].p.kids.childCount == 1);
+	CHECK(wstr_eq(child(&d.blocks[0], 0)->p.text.text16, L"b"));
+	CHECK(child(&d.blocks[0], 0)->p.text.runCount == 1);
+	CHECK((child(&d.blocks[0], 0)->p.text.runs[0].style & MD_R_BOLD) != 0);
+	MdDoc_Shutdown(&d);
+
+	/* 空内容: 块还在, 但不产生子块 (渲染层会丢掉空盒子) */
+	CHECK(parse_(&d, "<p></p>"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_DIV);
+	CHECK(d.blocks[0].p.kids.childCount == 0);
+	MdDoc_Shutdown(&d);
+
+	/* 标签名与属性名大小写不敏感 (HTML 规则) */
+	CHECK(parse_(&d, "<CENTER>\nx\n</CENTER>"));
+	CHECK(d.blocks[0].u.div.align == MD_ALIGN_CENTER);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "<P ALIGN=\"center\">x</P>"));
+	CHECK(d.blocks[0].u.div.align == MD_ALIGN_CENTER);
+	MdDoc_Shutdown(&d);
+
+	/* <center> 的隐式居中可被显式 style 覆盖 */
+	CHECK(parse_(&d, "<center style=\"text-align:right\">\nx\n</center>"));
+	CHECK(d.blocks[0].u.div.align == MD_ALIGN_RIGHT);
+	MdDoc_Shutdown(&d);
+
+	/* 不同标签混用嵌套: 只按容器深度配对, 名字不参与 */
+	CHECK(parse_(&d, "<div align=\"right\">\n<center>\nx\n</center>\n</div>"));
+	CHECK(d.blocks[0].type == MD_BLOCK_DIV);
+	CHECK(d.blocks[0].u.div.align == MD_ALIGN_RIGHT);
+	CHECK(child(&d.blocks[0], 0)->type == MD_BLOCK_DIV);
+	CHECK(child(&d.blocks[0], 0)->u.div.align == MD_ALIGN_CENTER);
+	MdDoc_Shutdown(&d);
+
+	/* 同深度混用: div 里嵌一个多行 p */
+	CHECK(parse_(&d, "<div>\n<p>\nx\n</p>\n</div>"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_DIV);
+	CHECK(d.blocks[0].p.kids.childCount == 1);
+	CHECK(child(&d.blocks[0], 0)->type == MD_BLOCK_DIV);
+	MdDoc_Shutdown(&d);
+
+	/* 错配关闭也算闭合 (只看深度): <div>...</p> 仍是完整容器 */
+	CHECK(parse_(&d, "<div>\nx\n</p>"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_DIV);
+	CHECK(child(&d.blocks[0], 0)->type == MD_BLOCK_PARAGRAPH);
+	MdDoc_Shutdown(&d);
+
+	/* 单行形态里嵌一个多行 <div>: 内层自成一体, 不干扰外层计数 */
+	CHECK(parse_(&d, "<p align=\"center\">a</p>\nb"));
+	CHECK(d.count == 2);
+	CHECK(d.blocks[0].type == MD_BLOCK_DIV);
+	CHECK(d.blocks[1].type == MD_BLOCK_PARAGRAPH);
+	MdDoc_Shutdown(&d);
+
+	/* 未闭合的 <p>: 回退为普通段落, 字面显示 */
+	CHECK(parse_(&d, "<p align=\"center\">\nx"));
+	CHECK(d.count >= 1 && d.blocks[0].type == MD_BLOCK_PARAGRAPH);
+	MdDoc_Shutdown(&d);
+
+	/* 前缀相同的其它标签不能被误判: <pre> 不是 <p>, <centered> 不是 <center> */
+	CHECK(parse_(&d, "<pre>\nx\n</pre>"));
+	CHECK(d.blocks[0].type == MD_BLOCK_PARAGRAPH);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "<centered>\nx\n</centered>"));
+	CHECK(d.blocks[0].type == MD_BLOCK_PARAGRAPH);
+	MdDoc_Shutdown(&d);
+
+	/* 缺少 '>' 的不是标签 */
+	CHECK(parse_(&d, "<p align=\"center\"\nx"));
+	CHECK(d.blocks[0].type == MD_BLOCK_PARAGRAPH);
+	MdDoc_Shutdown(&d);
+}
+
 static void test_lists(void)
 {
 	MdDoc d;
@@ -873,6 +1096,8 @@ void __stdcall startup(void)
 	test_code();
 	test_quote();
 	test_containers();
+	test_div();
+	test_html_containers();
 	test_lists();
 	test_tables();
 	test_inline();

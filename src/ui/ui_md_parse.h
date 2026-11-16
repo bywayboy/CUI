@@ -37,8 +37,18 @@ enum {
 	MD_BLOCK_LIST,
 	MD_BLOCK_ITEM,
 	MD_BLOCK_CONTAINER,
-	MD_BLOCK_MATH
+	MD_BLOCK_MATH,
+	MD_BLOCK_DIV          /* 块级 HTML 容器 (div/p/center 等价), 内部继续按
+	                       * Markdown 解析; 标签名只影响"是否隐含居中" */
 };
+
+/* div 的 align 取 MD_ALIGN_*, 继承用该哨兵 */
+#define MD_DIV_ALIGN_INHERIT 255
+
+/* div 数值统一 0.25 DIP 量化 (int16 可表 ±8191.75 DIP), 以保持 MdBlock
+ * 的 union 不增大; 行距倍率 ×100 存 uint16. */
+#define MD_Q4(v)   ((int16_t)((v) * 4.0f))
+#define MD_UNQ4(q) ((float)(q) * 0.25f)
 
 /* 容器类型 (::: note/tip/warning/danger 与 GitHub > [!NOTE] 共用) */
 enum {
@@ -119,7 +129,7 @@ typedef struct MdMathRef {
 #define MD_BT_TEXT(t) ((t) == MD_BLOCK_PARAGRAPH || (t) == MD_BLOCK_HEADING || \
 	(t) == MD_BLOCK_CODE || (t) == MD_BLOCK_IMAGE)
 #define MD_BT_KIDS(t) ((t) == MD_BLOCK_QUOTE || (t) == MD_BLOCK_LIST || \
-	(t) == MD_BLOCK_ITEM || (t) == MD_BLOCK_CONTAINER)
+	(t) == MD_BLOCK_ITEM || (t) == MD_BLOCK_CONTAINER || (t) == MD_BLOCK_DIV)
 
 typedef struct MdBlock {
 	uint8_t type;
@@ -147,6 +157,12 @@ typedef struct MdBlock {
 			int titleOff, titleLen;
 		} box;
 		struct { int cols, rows; } table;
+		struct {
+			int16_t padL, padT, padR, padB;  /* 0.25 DIP 量化 (MD_Q4) */
+			int16_t marginT, marginB;
+			int16_t lineSpacing;             /* >0 = 倍率×100; <0 = -绝对DIP×4; 0 = 继承 */
+			uint8_t align;                   /* MD_ALIGN_*; 继承 = MD_DIV_ALIGN_INHERIT */
+		} div;
 	} u;
 
 	/* 类型独占 payload: p.text / p.kids / p.table */
@@ -194,6 +210,14 @@ typedef struct MdDoc {
 	int refCount, refsCap;
 	int *refSlots;       /* 开放寻址: 值 = refs 下标 + 1 */
 	int refCap;
+	/* 行内扫描缓冲池 (内部类型, 对调用方不透明): 段落/标题的行内解析
+	 * 逐块串行进行, 复用同一组 t/st/lk/rm 数组可省掉每块 4 次堆往返。
+	 * 跨 Md_Parse 保留, 只把占用标记清零。 */
+	void *inlPool;
+	int inlPoolN, inlPoolCap;
+	/* 块文本 arena: text16/runs 一次解析内只增不减, 用大块串联分配,
+	 * 省掉每块 2 次堆往返 (一次解析动辄上千块)。随 md_clear 整链释放。 */
+	void *chunkHead;
 } MdDoc;
 
 void MdDoc_Init(MdDoc *d);

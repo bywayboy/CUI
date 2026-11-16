@@ -3,7 +3,9 @@
 CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的独立工程：
 纯 C/C++、零 CRT、Direct2D + DirectComposition 渲染，自带一套"hover/press/focus
 平滑 + 转场补间"的轻动画内核，以及支持中文输入法（IMM32）的单行编辑框
-`UiEdit` 与多行 `UiTextArea`（动态容量）。
+`UiEdit` 与多行 `UiTextArea`（动态容量）；上层组件覆盖 Markdown 渲染
+（含 GFM、`:::` 容器、数学公式与多 run 富文本层）、滚动虚拟列表、Tab、
+弹层/菜单/对话框、日期选择、分页、导航、图片与网络（HTTP/WS/WSS，含服务端）。
 
 工程包含多个样例，公共代码在 `src/ui`：
 
@@ -22,6 +24,13 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
 - `samples/scrollview.c`：ScrollView 样例。10,000 行固定高度虚拟列表 +
   40 个变高卡片（measure 缓存/展开收起）；滚轮平滑、甩动惯性、触摸回弹、
   el-scrollbar 风格自动隐藏滚动条。
+- `samples/grid.c`：Grid + ScrollView 仪表盘。固定/auto/1fr 三列、跨行跨列、
+  隐式行、dense 回填空洞；点击卡片展开后内容高度与滚动范围即时更新。
+- `samples/markdown.c`：**Markdown 阅读器 + 编辑器**。分级标题目录（折叠/
+  跟随高亮）、前进后退、地址栏（本地文件与 http/https）、源码编辑实时预览、
+  亮暗切换、远程图片；自带一份覆盖 GFM 表格、代码块、任务列表、图片对齐、
+  `:::` 容器、数学公式（行内/行间/matrix/aligned/cases）与 `div/p/center`
+  排版标签的演示文档；无边框标题栏可拖动、双击最大化。
 - `samples/tabs.c`：TabBar + TabPager。LINE/PILL/CARD header、指示条滑动、
   横向/纵向/仅淡入转场、reverse、转场输入锁和键盘导航；概览页带
   Segoe MDL2 Assets glyph 图标示例。
@@ -73,6 +82,7 @@ CUI/
 │  ├─ CUI-日期选择-设计方案.md  DatePicker 四模式/双联动范围/时间列/键入校验
 │  ├─ CUI-网络层-设计方案.md  IOCP+SChannel/自研 DNS/APC 归位/定时器/验证判据
 │  ├─ CUI-图片-设计方案.md   UiImage：WIC 解码/URL-文件-内存/GPU loading/失效
+│  ├─ CUI-Markdown-设计方案.md  块/行模型/懒测量/富文本层/容器标签/锚点与性能
 │  └─ CUI-主题编辑器-设计方案.md  令牌快照/双模式编辑/拾取器/代码生成/持久化
 ├─ samples/
 │  ├─ minimal.c           最小接入样例
@@ -80,6 +90,8 @@ CUI/
 │  ├─ multiwindow.c       多窗口样例（全局主题/独立进度/模态对话框）
 │  ├─ mvvm.c              ButtonGroup + MVVM-lite 表单
 │  ├─ scrollview.c        ScrollView：10k 行 + 变高卡片 + 惯性/回弹/滚动条
+│  ├─ grid.c              Grid + ScrollView：20 卡片仪表盘 / span / dense / 展开
+│  ├─ markdown.c          Markdown 阅读器 + 编辑器：目录树/历史/本地与远程文档
 │  ├─ tabs.c              TabBar/TabPager：LINE/PILL/CARD + 四向转场 + 输入锁
 │  ├─ icons.c             按钮/Toast/TabBar 图标样例（MDL2 glyph）
 │  ├─ controls.c          Checkbox/Radio/Switch/Slider + Tooltip
@@ -94,6 +106,10 @@ CUI/
 ├─ tests/
 │  ├─ net_test.c          headless + 实网断言（CUI_NET_LIVE=1）
 │  ├─ ui_theme_edit_test.c 主题令牌/工程文件/导出/HEX/对比度断言
+│  ├─ md_test.c           解析器金样断言（块/行内/表格/容器/锚点/性能上限）
+│  ├─ md_ui_test.c        渲染断言（盒模型/高度收敛/跳转落点/当前章节）
+│  ├─ md_math_test.c      数学公式：LaTeX 子集排版与尺寸断言
+│  ├─ gfx_rich_test.c     多 run 富文本层（布局/颜色/装饰/命中/范围矩形）
 │  ├─ net_server_http.ps1 本机 HTTP 测试服务器（18080，含 keep-alive）
 │  ├─ net_server_ws.ps1   本机 WS 回显（18081）
 │  ├─ net_server_wss.ps1  本机 WSS 回显（18082，自签证书）
@@ -119,6 +135,7 @@ CUI/
    ├─ gfx/
    │  ├─ gfx.h            后端无关 2D 接口（DIP 坐标 / 0xAARRGGBB）
    │  ├─ gfx_d2d.cpp      Direct2D + DWrite + D3D11/DComp 实现（ULW 回退）
+   │  ├─ gfx_rich.cpp     多 run 富文本布局（颜色/粗斜体/下划线/字体/对齐/行距）
    │  └─ grain.hlsl       自定义 D2D 颗粒像素着色器（fxc 离线编译）
    └─ ui/
       ├─ ui_types.h       矩形/颜色/稳定 ID（FNV）
@@ -139,6 +156,9 @@ CUI/
       ├─ ui_datetime.*     0CRT 日期数学：civil↔day-number/格式化/解析
       ├─ ui_menu.*         Menu / 右键上下文菜单（分隔/禁用/危险项）
       ├─ ui_nav.*          多级导航菜单：水平/垂直/rail、>> 溢出、无滚动分页
+      ├─ ui_md_parse.*     Markdown 解析：块/行内/表格/容器标签/锚点索引
+      ├─ ui_md.*           渲染：块→行模型/懒测量/富文本 draw/滚动跳转与当前章节
+      ├─ md_math.*         数学公式排版（LaTeX 子集：分式/根式/矩阵/cases）
       ├─ ui_pagination.*   行内分页：页码窗口/宽度退化/保持首条/键盘
       ├─ ui_tooltip.*      悬停延迟提示
       ├─ ui_theme.*       颜色/字体令牌（亮/暗 + 自定义 5 语义色）
@@ -184,6 +204,11 @@ bin\cui_net.exe         REM 网络层：HTTP(S) / WS / WSS / UiTimer
 bin\cui_ws_server.exe   REM WebSocket 服务端：WS/WSS / 回显 / 广播
 bin\cui_net_test.exe    REM 网络层断言（CUI_NET_LIVE=1 跑实网，需先起 tests\net_server_*.ps1）
 bin\cui_image.exe       REM 图片：URL / 文件 / 内存 + GPU loading 动画
+bin\cui_markdown.exe    REM Markdown 阅读器 + 编辑器：目录树 / 历史 / 本地与远程
+bin\cui_md_test.exe     REM Markdown 解析器断言（金样 / 性能上限）
+bin\cui_md_ui_test.exe  REM Markdown 渲染断言（盒模型 / 跳转落点 / 当前章节）
+bin\cui_md_math_test.exe REM 数学公式排版断言
+bin\cui_gfx_rich_test.exe REM 多 run 富文本层断言
 bin\cui_theme_editor.exe  REM 主题编辑器：基础/高级令牌 / 预览点选 / 导出预设
 bin\cui_theme_edit_test.exe REM 主题令牌与代码生成断言
 ```
@@ -295,6 +320,8 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | | `Gfx_Corners/CornersAll` `Gfx_FillRoundRectCorners[GradV]` `Gfx_StrokeRoundRectCorners[Dashed]` | 每角独立圆角（0.25 DIP 几何缓存）+ 虚线描边 |
 | | `Gfx_DrawGlowRect` | 预烘焙柔光纹理 + 一次 DrawBitmap；按尺寸/圆角/颜色/DPI 缓存 |
 | | `Gfx_Text/TextWidth/TextHeight` | UTF-8 文本，DirectWrite 排版 |
+| | `Gfx_RichCreate/Destroy` `Gfx_RichColor/Bold/Italic/Underline/Strike/FontFamily` | 多 run 富文本（UTF-16 码元范围）：逐范围颜色/粗斜体/下划线/删除线/等宽字体；布局与设备无关 |
+| | `Gfx_RichSetAlign/Width/Height/Draw/HitTest/RangeRects` | 段落对齐、尺寸、绘制、点→码元偏移、范围矩形（选区/链接高亮）；`RichInlineImage/Custom` 挂行内对象 |
 | | `Gfx_CreateFont/Gfx_CreateFontFamily` | 字体创建；后者校验字体族，用于 MDL2 icon font |
 | | `Gfx_PushClip/PopClip` `Gfx_PushRotate/PopTransform` `Gfx_SetDirtyRect` `Gfx_IsVisible` `Gfx_PushAlpha/PopAlpha` | 裁剪/绕点旋转/脏区/可见性/整帧透明度 |
 | | `Gfx_CreateOverlay/OverlaySetReveal/OverlaySetRect/OverlaySetOpacity/OverlayAlive/OverlayDestroy` | 合成器动画 overlay（仅 DComp；ULW 返回 NULL） |
@@ -341,6 +368,10 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | `UiTextArea` | `Init/Shutdown/SetText/SetTextUtf8/SetCaret/TextUtf8/SetScrollSmoothing/Busy` | 多行动态缓冲、软换行、增量行布局、平滑滚动/选择/IME |
 | | `SetPlaceholder/SetReadonly/AttachIme` | placeholder / 只读 / 输入法接线 |
 | | `Ui_TextArea/Key/Char/OnIme/Blink` | 绘制、键盘、字符、IME、光标闪烁 |
+| `UiMarkdown` | `Create/Destroy/SetText/Append/SetStyle/SetDocumentUrl/SetLinkFn/SetCopyFn` | 块→行模型：一个叶子块 = 一个滚动项；懒测量只测可见行，单帧成本与文档规模解耦；文档地址用于相对链接/图片解析；`Append` 保留已实测高度 |
+| | `Ui_Markdown/ContentHeight/Busy` | 绘制（可见行 + 粘性行）、内容高度、平滑滚动中 |
+| | `HeadingCount/HeadingAt/ActiveHeading/FirstVisibleRow` | 分级标题（目录树）、当前章节（跳转锁定优先，滚到底取视口内最后一节）、上一帧首行 |
+| | `ScrollToRow/ScrollToAnchor/ScrollToTop/ScrollToOffset/ResolveUrl` | 粘性跳转：钉住目标行直到实测高度收敛；锚点（GitHub slug）跳转；相对地址解析 |
 | `UiDatePicker` | `Init/SetMode/SetValue/SetRange/SetBounds/SetDisabledFn` | 四模式：日期/日期+时间/范围/范围+时间；应用持有状态 |
 | | `SetFormat/SetWeekStart/SetShowSeconds/SetPlaceholder/AttachIme` | token `YYYY MM DD HH mm ss`；默认到分；键入段 IME |
 | | `Ui_DatePicker/DrawPopup/Key/Char/OnIme/Blink` | 触发器（可编辑键入+glyph）与帧末弹层分离；双联动范围+悬停预览；范围+时间每端点一套滚动列（复用 ScrollView） |
@@ -444,11 +475,15 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
 
 ## 9. 已知限制
 
-- 布局只有矩形层：`UiStack/UiFlex` 不提供网格、百分比或容器内换行；measure
-  协议只负责控件的 min/pref 尺寸与主轴伸缩，文本换行仍由控件自身完成，滚动由
+- 布局是矩形层：`UiStack/UiFlex` 管游标与弹性、`UiGrid` 管网格（fixed/auto/fr、
+  minmax、span、dense），但不提供百分比或容器内自动换行；measure 协议只负责
+  控件的 min/pref 尺寸与主轴伸缩，文本换行仍由控件自身完成，滚动由
   `UiScrollView` 承担。
 - `UiEdit` 是单行；`UiTextArea` 是纯文本多行（无撤销栈/富文本）。
   菜单无子菜单；Select 已支持搜索/多选（≤32 项，无拼音匹配/自由输入值）。
+- Markdown 只覆盖 GFM + 常用扩展：无 HTML 实体解码、无 percent 编码锚点
+  （`%E7%AC%AC…`）；数学公式是 LaTeX 子集（分式/根式/上下标/矩阵/aligned/
+  cases，无宏包与自动编号）；行内图片按行内对象排版，超宽时按可用宽缩小。
 - DatePicker 无农历/节假日/重复规则/时区；时间精度到分或秒；小窗上下都放不下
   时弹层夹取进视口、可能盖住触发器（内容仍完整可操作）。
 - TextArea 末尾追加 O(新增字符)，段落内编辑只重排当前段；插入/删除换行或
@@ -626,5 +661,13 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   预览换肤、抽卡面板（3 卡 Light/Dark 缩略图、锁组重抽、使用/撤销/关闭）、
   导出对话框与回贴文件（`theme_apply_preset()`，两模式颜色/圆角各一份）；
   工程文件自动保存/恢复；全量 28 个 exe 0CRT。
+- Markdown 回归：`cui_md_test.exe` 解析金样（块/行内/表格/容器标签/锚点 slug，
+  含 `<div/p/center>` 的 align/padding/margin/line-height 与嵌套深度上限）、
+  `cui_md_ui_test.exe` 渲染（盒模型高度、跨盒同文本行不复用旧高度、懒测量只测
+  可见行、逐标题跳转后「当前章节」锁定与首行落点、滚到底仍能高亮末节、滚轮解锁）、
+  `cui_md_math_test.exe` 公式排版、`cui_gfx_rich_test.exe` 多 run 富文本，
+  四套合计 1000+ 断言 0 失败；`cui_markdown.exe` 200% DPI 验证目录折叠/跟随
+  高亮、前进后退、本地与 http(s) 文档、`#锚点` 跳转、源码实时预览、亮暗切换、
+  远程图片异步加载；全仓 30 个 exe 0CRT。
 - 无桌面环境（SSH/Session 0）不能目视验证，但编译与链接判据（0CRT/无未解析符号）
   可在 CI 里跑。

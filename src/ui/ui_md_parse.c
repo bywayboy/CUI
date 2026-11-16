@@ -38,6 +38,48 @@ static void *md_realloc_arr(void *p, size_t bytes)
 	return HeapAlloc(GetProcessHeap(), 0, bytes);
 }
 
+/* ── 块文本 arena ─────────────────────────────────────────────────── */
+
+typedef struct MdChunk {
+	struct MdChunk *next;
+	int cap, used;
+} MdChunk;
+
+/* 从当前块取 n 字节 (8 字节对齐); 不足则新开一块挂到链头。
+ * 返回值与 MdDoc 同寿命, 直到下一次 md_clear —— 期间不单独释放。 */
+static void *md_chunk_alloc(MdDoc *d, int n)
+{
+	MdChunk *c = (MdChunk *)d->chunkHead;
+	char *p;
+
+	n = (n + 7) & ~7;
+	if (n <= 0) n = 8;
+	if (!c || c->cap - c->used < n) {
+		int want = 64 * 1024;
+		if (want < n + (int)sizeof(MdChunk)) want = n + (int)sizeof(MdChunk);
+		c = (MdChunk *)md_alloc(want);
+		if (!c) return NULL;
+		c->next = (MdChunk *)d->chunkHead;
+		c->cap = want - (int)sizeof(MdChunk);
+		c->used = 0;
+		d->chunkHead = c;
+	}
+	p = (char *)(c + 1) + c->used;
+	c->used += n;
+	return p;
+}
+
+static void md_chunk_free_all(MdDoc *d)
+{
+	MdChunk *c = (MdChunk *)d->chunkHead;
+	while (c) {
+		MdChunk *nx = c->next;
+		md_free(c);
+		c = nx;
+	}
+	d->chunkHead = NULL;
+}
+
 static int md_grow(void **arr, int *cap, int need, int elem)
 {
 	int nc;
@@ -183,6 +225,46 @@ static void md_strip_cols(const char *p, int len, int cols,
 	}
 	*out = p + i;
 	*outLen = len - i;
+}
+
+/* 在 [p, p+len) 内找 c1 或 c2 的首次出现; 返回偏移, -1 = 都没有。
+ * 以 8 字节为一组做 SWAR 预筛 (无 SSE 依赖, 0CRT 可用), 只在大段文本
+ * 上摊薄每字节的分支 —— 归一化、行切分都走这里。
+ * 注: x64 允许非对齐读取, 这里直读 8 字节而不是 memcpy —— 本工程用
+ * /Oi- 编译, memcpy 是函数调用, 反而比一次 mov 慢。 */
+static int md_find_byte2(const char *p, int len, char c1, char c2)
+{
+	const uint64_t ones = 0x0101010101010101ull;
+	const uint64_t highs = 0x8080808080808080ull;
+	uint64_t p1 = ones * (uint64_t)(unsigned char)c1;
+	uint64_t p2 = ones * (uint64_t)(unsigned char)c2;
+	int i = 0;
+
+	while (i + 8 <= len) {
+		uint64_t w = *(const uint64_t *)(const void *)(p + i);
+		uint64_t x1 = w ^ p1, x2 = w ^ p2;
+		uint64_t hit = ((x1 - ones) & ~x1 & highs) |
+			((x2 - ones) & ~x2 & highs);
+		if (hit != 0) {
+			int k;
+			for (k = 0; k < 8; k++) {
+				char ch = p[i + k];
+				if (ch == c1 || ch == c2) return i + k;
+			}
+		}
+		i += 8;
+	}
+	while (i < len) {
+		char ch = p[i];
+		if (ch == c1 || ch == c2) return i;
+		i++;
+	}
+	return -1;
+}
+
+static int md_find_byte(const char *p, int len, char c)
+{
+	return md_find_byte2(p, len, c, c);
 }
 
 /* ── UTF-16 / 文本缓冲 ────────────────────────────────────────────── */
@@ -413,6 +495,9 @@ typedef struct MdInl {
 	int *lk;
 	uint8_t *rm;
 	int n, cap;
+	int poolIdx;     /* ≥0 = t/st/lk/rm 来自 MdDoc 的池, inl_free 只归还 */
+	MdRun *rs;       /* run 装配的临时数组 (同样来自池) */
+	int rcap;
 	MdDelim *dl;
 	int dn, dcap;
 	MdLink *links;
@@ -423,18 +508,73 @@ typedef struct MdInl {
 	int mathCount, mathCap;
 } MdInl;
 
+/* 行内缓冲池的一个槽位: 4 个数组一起租出去, 归还后留给下一块复用。
+ * 段落与标题是串行解析的, 槽位只需覆盖嵌套深度 (通常 1~2 个)。 */
+typedef struct MdInlPool {
+	wchar_t *t;
+	uint16_t *st;
+	int *lk;
+	uint8_t *rm;
+	MdRun *rs;
+	int rcap;
+	int cap;
+	int busy;
+} MdInlPool;
+
 static void inl_init(MdInl *b, MdDoc *d)
 {
+	MdInlPool *pool = (MdInlPool *)d->inlPool;
+	int i;
+
 	ZeroMemory(b, sizeof(*b));
 	b->d = d;
+	b->poolIdx = -1;
+	for (i = 0; i < d->inlPoolN; i++) {
+		if (!pool[i].busy) {
+			b->poolIdx = i;
+			pool[i].busy = 1;
+			b->t = pool[i].t;
+			b->st = pool[i].st;
+			b->lk = pool[i].lk;
+			b->rm = pool[i].rm;
+			b->rs = pool[i].rs;
+			b->rcap = pool[i].rcap;
+			b->cap = pool[i].cap;
+			return;
+		}
+	}
+	if (md_grow(&d->inlPool, &d->inlPoolCap, d->inlPoolN + 1,
+		(int)sizeof(MdInlPool))) {
+		pool = (MdInlPool *)d->inlPool;
+		ZeroMemory(&pool[d->inlPoolN], sizeof(MdInlPool));
+		pool[d->inlPoolN].busy = 1;
+		b->poolIdx = d->inlPoolN++;
+	}
+	/* 池扩容失败: poolIdx 保持 -1, 各数组退回独立分配, 只是少了复用 */
 }
 
 static void inl_free(MdInl *b)
 {
-	md_free(b->t);
-	md_free(b->st);
-	md_free(b->lk);
-	md_free(b->rm);
+	if (b->poolIdx >= 0 && b->d && b->d->inlPool) {
+		MdInlPool *pool = (MdInlPool *)b->d->inlPool;
+		if (b->poolIdx < b->d->inlPoolN) {
+			MdInlPool *p = &pool[b->poolIdx];
+			p->t = b->t;
+			p->st = b->st;
+			p->lk = b->lk;
+			p->rm = b->rm;
+			p->rs = b->rs;
+			p->rcap = b->rcap;
+			p->cap = b->cap;
+			p->busy = 0;
+		}
+	} else {
+		md_free(b->t);
+		md_free(b->st);
+		md_free(b->lk);
+		md_free(b->rm);
+		md_free(b->rs);
+	}
 	md_free(b->dl);
 	md_free(b->links);
 	md_free(b->imgs);
@@ -1105,6 +1245,8 @@ static int inl_code_span(MdInl *b, const char *p, int len, int *ip)
 static void inl_parse(MdInl *b, const char *p, int len, int allowLinks)
 {
 	int i = 0;
+	/* UTF-16 长度不超过 UTF-8 字节数, 一次预留到位即可杜绝中途 realloc */
+	if (len > 0) inl_reserve(b, b->n + len + 1);
 	while (i < len) {
 		char c = p[i];
 		if (c == '$') {
@@ -1179,6 +1321,50 @@ static void inl_parse(MdInl *b, const char *p, int len, int allowLinks)
 			continue;
 		}
 		{
+			/* 快路径: 连续的普通字符批量搬入。ASCII 与 3 字节 UTF-8
+			 * (CJK 主力区段) 都直接解码写入, 避开逐字符 md_utf8_next
+			 * 与 inl_put_cp/inl_put_w 三层调用。特殊字符集必须与上面的
+			 * 分支逐一对应, 否则行为会漂移; 其余多字节序列交给下面的
+			 * 慢路径, 正确性由 md_utf8_next 兜底。 */
+			int s = i;
+			if (!inl_reserve(b, b->n + (len - i))) return;
+			while (i < len) {
+				unsigned char u = (unsigned char)p[i];
+				if (u < 0x80) {
+					if (u == '$' || u == '\\' || u == '`' || u == '!' ||
+						u == '[' || u == '<' || u == '&' || u == '*' ||
+						u == '_' || u == '~' || u == '\n')
+						break;
+					b->t[b->n] = (wchar_t)u;
+					b->st[b->n] = 0;
+					b->lk[b->n] = -1;
+					b->rm[b->n] = 0;
+					b->n++;
+					i++;
+					continue;
+				}
+				if (u >= 0xE0 && u <= 0xEF && i + 3 <= len) {
+					unsigned char u1 = (unsigned char)p[i + 1];
+					unsigned char u2 = (unsigned char)p[i + 2];
+					uint32_t cp;
+					if ((u1 & 0xC0) != 0x80 || (u2 & 0xC0) != 0x80) break;
+					cp = ((uint32_t)(u & 0x0F) << 12) |
+						((uint32_t)(u1 & 0x3F) << 6) | (uint32_t)(u2 & 0x3F);
+					/* overlong 与代理区交给慢路径统一判为 U+FFFD */
+					if (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF)) break;
+					b->t[b->n] = (wchar_t)cp;
+					b->st[b->n] = 0;
+					b->lk[b->n] = -1;
+					b->rm[b->n] = 0;
+					b->n++;
+					i += 3;
+					continue;
+				}
+				break;
+			}
+			if (i > s) continue;
+		}
+		{
 			uint32_t cp;
 			const char *nx = md_utf8_next(p + i, p + len, &cp);
 			if (cp == 0) cp = 0xFFFD;
@@ -1194,11 +1380,15 @@ static void inl_to_leaf(MdInl *b, wchar_t **outT, int *outLen,
 	MdRun **outR, int *outRN, MdLink **outL, int *outLN)
 {
 	wchar_t *t;
-	int n = 0, rn = 0, rcap = 0, i, k;
-	MdRun *runs = NULL;
+	/* run 先在池里的临时数组上装配 (跨块复用, 零分配), 定稿后按
+	 * 精确个数拷进 arena —— 避免"按字符数上限分配"造成的成倍浪费。 */
+	MdRun *runs = b->rs;
+	int rcap = b->rcap;
+	int n = 0, rn = 0, i, k;
+	MdRun *finalRuns = NULL;
 
 	inl_emph(b);
-	t = (wchar_t *)md_alloc((b->n + 1) * (int)sizeof(wchar_t));
+	t = (wchar_t *)md_chunk_alloc(b->d, (b->n + 1) * (int)sizeof(wchar_t));
 	if (!t) {
 		*outT = NULL; *outLen = 0; *outR = NULL; *outRN = 0;
 		*outL = NULL; *outLN = 0;
@@ -1227,6 +1417,14 @@ static void inl_to_leaf(MdInl *b, wchar_t **outT, int *outLen,
 		t[n++] = b->t[i];
 	}
 	t[n] = 0;
+	b->rs = runs;      /* md_grow 可能换过指针, 记回池 */
+	b->rcap = rcap;
+	if (rn > 0) {
+		finalRuns = (MdRun *)md_chunk_alloc(b->d, rn * (int)sizeof(MdRun));
+		if (finalRuns) {
+			for (k = 0; k < rn; k++) finalRuns[k] = runs[k];
+		}
+	}
 	for (k = 0; k < b->ln; k++) {
 		b->links[k].start = -1;
 		b->links[k].end = -1;
@@ -1240,8 +1438,8 @@ static void inl_to_leaf(MdInl *b, wchar_t **outT, int *outLen,
 	}
 	*outT = t;
 	*outLen = n;
-	*outR = runs;
-	*outRN = rn;
+	*outR = finalRuns;
+	*outRN = finalRuns ? rn : 0;
 	*outL = b->links;
 	*outLN = b->ln;
 	b->links = NULL;
@@ -1410,6 +1608,277 @@ static int md_quote(const MdLine *ln, int *contentOff)
 	if (i < ln->len && (ln->p[i] == ' ' || ln->p[i] == '\t')) i++;
 	*contentOff = i;
 	return 1;
+}
+
+/* ── 块级 HTML 容器: <div> / <p> / <center> 与内联 style ──────────────
+ * 两种形态都认:
+ *   a) 单行闭合: <p align="center">文字</p>
+ *   b) 开/闭标签各自独占一行, 中间内容继续按 Markdown 解析
+ * 标签名大小写不敏感; 只有带完整 `>` 的开标签才算, 免得把正文里的
+ * "<p 值" 之类当标签. 这偏离 CommonMark 的"HTML 块内不解析", 但符合
+ * 用它们做排版的实际用法, 已登记在设计的偏差表里.
+ * <center> 是布尔标签: 等价 <div align="center">, 显式 style 可覆盖. */
+
+static int md_word_eq(const char *p, int n, const char *w);  /* 定义见容器区块 */
+
+/* 容器标签名表. 解析器**不需要**知道是哪一个 —— <div> 与 <p> 的处理完全
+ * 相同, 唯一带语义的是 <center> (没有属性, 居中只能靠标签名隐含). 所以这里
+ * 只返回名字长度 + 一个"隐含居中"布尔. 加新标签往表里加一行即可. */
+static int md_html_name_len(const char *p, int avail, int *implicitCenter)
+{
+	static const struct { const char *name; int len; int center; } tags[] = {
+		{ "center", 6, 1 },
+		{ "div",    3, 0 },
+		{ "p",      1, 0 }
+	};
+	int i;
+
+	for (i = 0; i < (int)(sizeof(tags) / sizeof(tags[0])); i++) {
+		if (avail >= tags[i].len &&
+			md_word_eq(p, tags[i].len, tags[i].name)) {
+			if (implicitCenter) *implicitCenter = tags[i].center;
+			return tags[i].len;
+		}
+	}
+	return 0;
+}
+
+/* 行首容器开标签: 返回 1 = 命中. aOff/aLen 是属性区间 (不含名字与 '>'),
+ * tagEnd 是 '>' 之后的位置 (单行形态从这里取内容起点), isCenter 表示这是
+ * <center> —— 调用方只需把它的隐式居中标进块里, 别的什么都不用管. */
+static int md_html_open(const MdLine *ln, int *aOff, int *aLen, int *tagEnd,
+	int *isCenter)
+{
+	const char *p = ln->p;
+	int i = 0, n = ln->len, s, e, nl, center = 0;
+
+	if (isCenter) *isCenter = 0;
+	if (!p || n < 3) return 0;
+	while (i < 3 && i < n && p[i] == ' ') i++;
+	if (i >= n || p[i] != '<' || p[i + 1] == '/') return 0;
+	nl = md_html_name_len(p + i + 1, n - i - 1, &center);
+	if (nl <= 0) return 0;
+	/* 名字后面必须是空白或 '>': 挡住 <pre>/<centered> 这类前缀相同的标签 */
+	s = i + 1 + nl;
+	if (s < n && !md_is_space_char(p[s]) && p[s] != '>') return 0;
+	e = s;
+	while (e < n && p[e] != '>') e++;
+	if (e >= n) return 0;
+	if (aOff) *aOff = s;
+	if (aLen) *aLen = e - s;
+	if (tagEnd) *tagEnd = e + 1;
+	if (isCenter) *isCenter = center;
+	return 1;
+}
+
+/* 独占一行的容器闭标签, 尾部只允许空白. 刻意**不校验**与开标签同名:
+ * 配对只看容器深度, 所以 <div>...</p> 也算闭合 —— 宽松一点, 但不会因为
+ * 一个笔误就把后面整篇文档吞进容器里. */
+static int md_html_close(const MdLine *ln)
+{
+	const char *p = ln->p;
+	int i = 0, n = ln->len, e, nl;
+
+	if (!p || n < 4) return 0;
+	while (i < 3 && i < n && p[i] == ' ') i++;
+	if (i >= n || p[i] != '<' || p[i + 1] != '/') return 0;
+	nl = md_html_name_len(p + i + 2, n - i - 2, NULL);
+	if (nl <= 0 || i + 2 + nl >= n || p[i + 2 + nl] != '>') return 0;
+	for (e = i + 3 + nl; e < n; e++)
+		if (!md_is_space_char(p[e])) return 0;
+	return 1;
+}
+
+/* 同一行 [from, n) 内的容器闭标签; 返回起始偏移, -1 = 没有.
+ * 单行形态用它收尾, 不跨行. */
+static int md_html_close_inline(const MdLine *ln, int from)
+{
+	const char *p = ln->p;
+	int n = ln->len, nl;
+	int i = from;
+
+	while (i + 2 < n) {
+		if (p[i] == '<' && p[i + 1] == '/') {
+			nl = md_html_name_len(p + i + 2, n - i - 2, NULL);
+			if (nl > 0 && i + 2 + nl < n && p[i + 2 + nl] == '>')
+				return i;
+		}
+		i++;
+	}
+	return -1;
+}
+
+/* CSS 数值: "8" / "8px" / "1.8" / "-4px". 不支持 em/%/calc. */
+static int md_css_num(const char *p, int len, float *out)
+{
+	int i = 0, neg = 0, digits = 0;
+	float v = 0.0f, frac = 0.1f;
+
+	if (!p || len <= 0 || !out) return 0;
+	while (i < len && md_is_space_char(p[i])) i++;
+	if (i < len && (p[i] == '-' || p[i] == '+')) {
+		neg = p[i] == '-';
+		i++;
+	}
+	while (i < len && p[i] >= '0' && p[i] <= '9') {
+		v = v * 10.0f + (float)(p[i] - '0');
+		i++;
+		digits++;
+	}
+	if (i < len && p[i] == '.') {
+		i++;
+		while (i < len && p[i] >= '0' && p[i] <= '9') {
+			v += (float)(p[i] - '0') * frac;
+			frac *= 0.1f;
+			i++;
+			digits++;
+		}
+	}
+	if (!digits) return 0;
+	while (i < len && md_is_space_char(p[i])) i++;
+	if (i + 2 <= len && (p[i] | 0x20) == 'p' && (p[i + 1] | 0x20) == 'x')
+		i += 2;
+	/* 其它单位 (em/rem/%) 按纯数值处理: 宁可近似, 不要整条声明失效 */
+	*out = neg ? -v : v;
+	return 1;
+}
+
+/* padding/margin 的 1~4 值简写, 输出 top/right/bottom/left. */
+static void md_css_box(const char *p, int len, float v[4])
+{
+	float t[4];
+	int n = 0, i = 0;
+
+	v[0] = v[1] = v[2] = v[3] = 0.0f;
+	while (i < len && n < 4) {
+		int s;
+		float x;
+		while (i < len && md_is_space_char(p[i])) i++;
+		if (i >= len) break;
+		s = i;
+		while (i < len && !md_is_space_char(p[i])) i++;
+		if (md_css_num(p + s, i - s, &x)) t[n++] = x;
+	}
+	if (n == 1) v[0] = v[1] = v[2] = v[3] = t[0];
+	else if (n == 2) { v[0] = v[2] = t[0]; v[1] = v[3] = t[1]; }
+	else if (n == 3) { v[0] = t[0]; v[1] = v[2] = t[1]; v[3] = t[2]; }
+	else if (n == 4) { v[0] = t[0]; v[1] = t[1]; v[2] = t[2]; v[3] = t[3]; }
+}
+
+static void md_div_set_align(MdBlock *b, const char *p, int len)
+{
+	int s = 0, e = len;
+
+	while (s < e && md_is_space_char(p[s])) s++;
+	while (e > s && md_is_space_char(p[e - 1])) e--;
+	if (s < e && (p[s] == '"' || p[s] == '\'')) {
+		char q = p[s++];
+		if (e > s && p[e - 1] == q) e--;
+	}
+	if (s >= e) return;
+	if (md_word_eq(p + s, e - s, "center")) b->u.div.align = MD_ALIGN_CENTER;
+	else if (md_word_eq(p + s, e - s, "right")) b->u.div.align = MD_ALIGN_RIGHT;
+	else if (md_word_eq(p + s, e - s, "left")) b->u.div.align = MD_ALIGN_LEFT;
+}
+
+/* style="a:b; c:d": 只认 text-align / padding / margin / line-height。 */
+static void md_div_style(MdBlock *b, const char *p, int len)
+{
+	int i = 0;
+
+	while (i < len) {
+		int ks, ke, vs, ve;
+		while (i < len && (md_is_space_char(p[i]) || p[i] == ';')) i++;
+		if (i >= len) break;
+		ks = i;
+		while (i < len && p[i] != ':' && p[i] != ';') i++;
+		ke = i;
+		if (i >= len || p[i] == ';') {
+			if (i < len) i++;
+			continue;
+		}
+		i++;                     /* skip ':' */
+		vs = i;
+		while (i < len && p[i] != ';') i++;
+		ve = i;
+		while (ks < ke && md_is_space_char(p[ks])) ks++;
+		while (ke > ks && md_is_space_char(p[ke - 1])) ke--;
+		while (vs < ve && md_is_space_char(p[vs])) vs++;
+		while (ve > vs && md_is_space_char(p[ve - 1])) ve--;
+		if (ks >= ke || vs >= ve) continue;
+
+		if (md_word_eq(p + ks, ke - ks, "text-align")) {
+			md_div_set_align(b, p + vs, ve - vs);
+		} else if (md_word_eq(p + ks, ke - ks, "padding")) {
+			float v[4];
+			md_css_box(p + vs, ve - vs, v);
+			b->u.div.padT = MD_Q4(v[0]);
+			b->u.div.padR = MD_Q4(v[1]);
+			b->u.div.padB = MD_Q4(v[2]);
+			b->u.div.padL = MD_Q4(v[3]);
+		} else if (md_word_eq(p + ks, ke - ks, "margin")) {
+			float v[4];
+			md_css_box(p + vs, ve - vs, v);
+			b->u.div.marginT = MD_Q4(v[0]);
+			b->u.div.marginB = MD_Q4(v[2]);
+		} else if (md_word_eq(p + ks, ke - ks, "line-height")) {
+			float x = 0.0f;
+			int isPx;
+			if (!md_css_num(p + vs, ve - vs, &x)) continue;
+			isPx = 0;
+			{
+				int k = ve;
+				while (k > vs && md_is_space_char(p[k - 1])) k--;
+				if (k - vs >= 2 && (p[k - 2] | 0x20) == 'p' &&
+					(p[k - 1] | 0x20) == 'x')
+					isPx = 1;
+			}
+			if (isPx) {
+				/* 绝对行高: 负数编码 (×4, 与 padding 同量化) */
+				if (x > 0.25f)
+					b->u.div.lineSpacing = (int16_t)(-MD_Q4(x));
+			} else if (x > 0.0f && x < 10.0f) {
+				b->u.div.lineSpacing = (int16_t)(x * 100.0f + 0.5f);
+			}
+		}
+	}
+}
+
+/* 解析 `<div` 之后的属性串: align="..." 与 style="..." */
+static void md_div_attrs(MdBlock *b, const char *p, int len)
+{
+	int i = 0;
+
+	while (i < len) {
+		int ns, ne, vs = -1, ve = -1;
+
+		while (i < len && md_is_space_char(p[i])) i++;
+		if (i >= len) break;
+		ns = i;
+		while (i < len && p[i] != '=' && !md_is_space_char(p[i])) i++;
+		ne = i;
+		while (i < len && md_is_space_char(p[i])) i++;
+		if (i < len && p[i] == '=') {
+			i++;
+			while (i < len && md_is_space_char(p[i])) i++;
+			if (i < len && (p[i] == '"' || p[i] == '\'')) {
+				char q = p[i++];
+				vs = i;
+				while (i < len && p[i] != q) i++;
+				ve = i;
+				if (i < len) i++;
+			} else {
+				vs = i;
+				while (i < len && !md_is_space_char(p[i])) i++;
+				ve = i;
+			}
+		}
+		if (vs < 0 || ne <= ns) continue;
+		if (md_word_eq(p + ns, ne - ns, "align"))
+			md_div_set_align(b, p + vs, ve - vs);
+		else if (md_word_eq(p + ns, ne - ns, "style"))
+			md_div_style(b, p + vs, ve - vs);
+	}
 }
 
 /* ── 容器指令 (::: 与 GitHub > [!NOTE]) ─────────────────────────── */
@@ -2098,11 +2567,21 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 	int i = *ip;
 	while (i < ls->n) {
 		MdLine *ln = &ls->v[i];
-		char fch;
-		int flen, ind, infoOff, infoLen;
+		char fch, c0;
+		int flen, ind, infoOff, infoLen, i0;
 		if (md_blank(ln)) { i++; continue; }
 
-		if (md_fence_open(ln, &fch, &flen, &ind, &infoOff, &infoLen)) {
+		/* 行首预筛: 下面每个探测函数都是"跳过 ≤3 个空格后判首字符",
+		 * 这里只算一次 c0 就地短路, 免得同一行被反复扫行首。
+		 * 取法与各函数完全一致 (i < 3 就停), 所以缩进 ≥3 的行会得到
+		 * c0 == ' ', 这正是它们全部失配的地方 —— 只有列表/缩进代码/
+		 * 段落可能命中, 后面按需要单独放行 c0 == ' ' 的情形。 */
+		i0 = 0;
+		while (i0 < 3 && ln->p[i0] == ' ') i0++;
+		c0 = ln->p[i0];
+
+		if ((c0 == '`' || c0 == '~') &&
+			md_fence_open(ln, &fch, &flen, &ind, &infoOff, &infoLen)) {
 			MdBlock *b = md_add_block(d, parent);
 			int j, closed = 0;
 			MdInl ib;
@@ -2148,9 +2627,10 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 			continue;
 		}
 
-		if (md_math_block_try(d, ls, &i, parent)) continue;
+		if ((c0 == '$' || c0 == '\\') &&
+			md_math_block_try(d, ls, &i, parent)) continue;
 
-		if (depth < MD_MAX_DEPTH && md_quote(ln, &infoOff)) {
+		if (depth < MD_MAX_DEPTH && c0 == '>' && md_quote(ln, &infoOff)) {
 			MdBlock *b = md_add_block(d, parent);
 			MdLines sub;
 			int j = i, subi = 0, k;
@@ -2209,7 +2689,7 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 		}
 
 		/* ::: kind [标题] ... ::: 容器 (未闭合则回退为段落字面量) */
-		if (depth < MD_MAX_DEPTH) {
+		if (depth < MD_MAX_DEPTH && c0 == ':') {
 			int cn = 0, ioff = 0, ilen = 0;
 			if (md_colon_fence(ln, &cn, &ioff, &ilen)) {
 				int j = i + 1, closed = -1, k;
@@ -2254,7 +2734,61 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 			}
 		}
 
-		{
+		/* 块级 HTML 容器 (div / p / center): 内部继续按 Markdown 解析.
+		 * 单行闭合与"开闭各占一行"两种形态都支持; 多行形态只按容器深度
+		 * 配对, 不区分标签名; 未闭合则回退为普通段落 (字面文本). */
+		if (depth < MD_MAX_DEPTH && c0 == '<') {
+			int aoff = 0, alen = 0, tagEnd = 0, isCenter = 0;
+			if (md_html_open(ln, &aoff, &alen, &tagEnd, &isCenter)) {
+				MdLines sub;
+				int closed = -1, inlineEnd, subi = 0;
+
+				ZeroMemory(&sub, sizeof(sub));
+				inlineEnd = md_html_close_inline(ln, tagEnd);
+				if (inlineEnd >= 0) {
+					/* 单行形态: 内容就是本行开标签之后到闭标签之前 */
+					closed = i;
+					lines_add(&sub, ln->p + tagEnd, inlineEnd - tagEnd,
+						ln->srcOff + tagEnd, ln->srcLen - tagEnd);
+				} else {
+					int j = i + 1, nest = 1, k;
+					while (j < ls->n) {
+						int a2 = 0, l2 = 0, t2 = 0, c2 = 0;
+						if (md_html_open(&ls->v[j], &a2, &l2, &t2, &c2)) {
+							/* 同行闭合的开标签自成一体, 不增加嵌套层 */
+							if (md_html_close_inline(&ls->v[j], t2) < 0)
+								nest++;
+						} else if (md_html_close(&ls->v[j])) {
+							if (--nest == 0) { closed = j; break; }
+						}
+						j++;
+					}
+					if (closed >= 0) {
+						for (k = i + 1; k < closed; k++)
+							lines_add(&sub, ls->v[k].p, ls->v[k].len,
+								ls->v[k].srcOff, ls->v[k].srcLen);
+					}
+				}
+				if (closed >= 0) {
+					MdBlock *b = md_add_block(d, parent);
+					if (!b) { md_free(sub.v); break; }
+					b->type = MD_BLOCK_DIV;
+					b->u.div.align = MD_DIV_ALIGN_INHERIT;
+					/* <center> 是唯一带语义的标签: 先给居中, 显式属性再覆盖 */
+					if (isCenter)
+						b->u.div.align = MD_ALIGN_CENTER;
+					md_div_attrs(b, ln->p + aoff, alen);
+					md_parse_blocks(d, &sub, &subi, b, depth + 1);
+					md_free(sub.v);
+					md_set_span(b, ls, i, closed + 1);
+					i = closed + 1;
+					continue;
+				}
+				md_free(sub.v);
+			}
+		}
+
+		if (c0 == '#') {
 			int level, cOff, cLen;
 			if (md_atx(ln, &level, &cOff, &cLen)) {
 				MdBlock *b = md_add_block(d, parent);
@@ -2262,13 +2796,9 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 				if (!b) break;
 				b->type = MD_BLOCK_HEADING;
 				b->level = (uint8_t)level;
-				b->raw = (char *)md_alloc(cLen + 1);
-				if (b->raw) {
-					int k;
-					for (k = 0; k < cLen; k++) b->raw[k] = ln->p[cOff + k];
-					b->raw[cLen] = 0;
-					b->rawLen = cLen;
-				}
+				/* 不用留 raw: 行内解析就地完成, 增量复用靠 srcOff/srcLen
+				 * (md_hash_block 走 d->src)。曾在这里 malloc+拷贝+free 一份
+				 * 从未被读取的副本, 每个标题一次多余堆往返。 */
 				inl_init(&ib, d);
 				inl_parse(&ib, ln->p + cOff, cLen, 1);
 				inl_to_leaf(&ib, &b->p.text.text16, &b->p.text.len16, &b->p.text.runs,
@@ -2276,16 +2806,13 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 				md_take_imgs(b, &ib);
 				md_take_maths(b, &ib);
 				inl_free(&ib);
-				md_free(b->raw);
-				b->raw = NULL;
-				b->rawLen = 0;
 				md_set_span(b, ls, i, i + 1);
 				i++;
 				continue;
 			}
 		}
 
-		if (md_hr(ln)) {
+		if ((c0 == '*' || c0 == '-' || c0 == '_') && md_hr(ln)) {
 			MdBlock *b = md_add_block(d, parent);
 			if (!b) break;
 			b->type = MD_BLOCK_HR;
@@ -2296,13 +2823,17 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 
 		if (depth < MD_MAX_DEPTH) {
 			int o = 0, sno = 0, ml = 0, co = 0, cc = 0;
-			if (md_list_marker(ln, &o, &sno, &ml, &co, &cc)) {
+			/* 列表标记允许任意缩进 (会跳过全部空白), 所以 c0 == ' '
+			 * (缩进 ≥3) 时也必须放行 */
+			int maybe = (c0 == '-' || c0 == '+' || c0 == '*' ||
+				(c0 >= '0' && c0 <= '9') || c0 == ' ');
+			if (maybe && md_list_marker(ln, &o, &sno, &ml, &co, &cc)) {
 				md_parse_list(d, ls, &i, parent, depth);
 				continue;
 			}
 		}
 
-		if (md_indent(ln->p, ln->len) >= 4) {
+		if (c0 == ' ' && md_indent(ln->p, ln->len) >= 4) {
 			MdBlock *b = md_add_block(d, parent);
 			MdLines sub;
 			MdInl ib;
@@ -2333,9 +2864,10 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 			continue;
 		}
 
-		if (md_ref_def(d, ln)) { i++; continue; }
+		if (c0 == '[' && md_ref_def(d, ln)) { i++; continue; }
 
-		if (md_table_try(d, ls, &i, parent)) continue;
+		if (md_find_byte(ln->p, ln->len, '|') >= 0 &&
+			md_table_try(d, ls, &i, parent)) continue;
 
 		/* 段落 */
 		{
@@ -2534,6 +3066,29 @@ static uint32_t md_hash_u32(uint32_t h, uint32_t v)
 	return h;
 }
 
+/* 字节串增量哈希: FNV 风格, 但按 8 字节一批混合。
+ * 每个字节都在 word 里占独立位 (小端内射), 所以"字节交换"这类
+ * 系统性碰撞不会发生 —— 只要 8 字节内容不同, w 就不同, 低/高 32 位
+ * 至少一侧参与混合时也不同。语义与逐字节版一致: 确定性、无随机种。 */
+static uint32_t md_hash_more(uint32_t h, const char *p, int len)
+{
+	int i = 0;
+	while (i + 8 <= len) {
+		uint64_t w = *(const uint64_t *)(const void *)(p + i);
+		h ^= (uint32_t)w;
+		h *= MD_FNV_PRIME;
+		h ^= (uint32_t)(w >> 32);
+		h *= MD_FNV_PRIME;
+		i += 8;
+	}
+	while (i < len) {
+		h ^= (uint32_t)(unsigned char)p[i];
+		h *= MD_FNV_PRIME;
+		i++;
+	}
+	return h;
+}
+
 static uint32_t md_hash_block(MdDoc *d, MdBlock *b)
 {
 	uint32_t h = MD_FNV_OFFSET;
@@ -2549,10 +3104,7 @@ static uint32_t md_hash_block(MdDoc *d, MdBlock *b)
 	if (b->srcOff >= 0 && b->srcLen >= 0 &&
 		b->srcOff + b->srcLen <= d->srcLen) {
 		h = md_hash_u32(h, (uint32_t)b->srcLen);
-		for (i = 0; i < b->srcLen; i++) {
-			h ^= (uint32_t)(unsigned char)d->src[b->srcOff + i];
-			h *= MD_FNV_PRIME;
-		}
+		h = md_hash_more(h, d->src + b->srcOff, b->srcLen);
 	}
 	if (b->type == MD_BLOCK_IMAGE) {
 		if (b->u.image.urlOff >= 0 && b->u.image.urlOff < d->urlsLen) {
@@ -2612,6 +3164,16 @@ static uint32_t md_hash_block(MdDoc *d, MdBlock *b)
 			}
 		}
 	}
+	if (b->type == MD_BLOCK_DIV) {
+		h = md_hash_u32(h, (uint32_t)(uint16_t)b->u.div.align);
+		h = md_hash_u32(h, (uint32_t)(uint16_t)b->u.div.padL);
+		h = md_hash_u32(h, (uint32_t)(uint16_t)b->u.div.padT);
+		h = md_hash_u32(h, (uint32_t)(uint16_t)b->u.div.padR);
+		h = md_hash_u32(h, (uint32_t)(uint16_t)b->u.div.padB);
+		h = md_hash_u32(h, (uint32_t)(uint16_t)b->u.div.marginT);
+		h = md_hash_u32(h, (uint32_t)(uint16_t)b->u.div.marginB);
+		h = md_hash_u32(h, (uint32_t)(uint16_t)b->u.div.lineSpacing);
+	}
 	if (MD_BT_KIDS(b->type)) {
 		for (i = 0; i < b->p.kids.childCount; i++) {
 			uint32_t ch = md_hash_block(d, &b->p.kids.children[i]);
@@ -2631,6 +3193,7 @@ static void md_free_block(MdBlock *b)
 	case MD_BLOCK_LIST:
 	case MD_BLOCK_ITEM:
 	case MD_BLOCK_CONTAINER:
+	case MD_BLOCK_DIV:
 		if (b->p.kids.children) {
 			for (i = 0; i < b->p.kids.childCount; i++)
 				md_free_block(&b->p.kids.children[i]);
@@ -2642,8 +3205,7 @@ static void md_free_block(MdBlock *b)
 			int n = b->u.table.rows * b->u.table.cols;
 			for (i = 0; i < n; i++) {
 				MdCell *c = &b->p.table.cells[i];
-				md_free(c->text16);
-				md_free(c->runs);
+				/* text16/runs 来自 arena, 由 md_clear 整链释放 */
 				md_free(c->links);
 				md_free(c->raw);
 			}
@@ -2653,16 +3215,12 @@ static void md_free_block(MdBlock *b)
 		break;
 	case MD_BLOCK_PARAGRAPH:
 	case MD_BLOCK_HEADING:
-		md_free(b->p.text.text16);
-		md_free(b->p.text.runs);
 		md_free(b->p.text.links);
 		md_free(b->p.text.imgs);
 		md_free(b->p.text.maths);
 		break;
 	case MD_BLOCK_CODE:
 	case MD_BLOCK_IMAGE:
-		md_free(b->p.text.text16);
-		md_free(b->p.text.runs);
 		md_free(b->p.text.links);
 		break;
 	case MD_BLOCK_MATH:
@@ -2671,19 +3229,28 @@ static void md_free_block(MdBlock *b)
 		break;
 	}
 	md_free(b->raw);
-	ZeroMemory(b, sizeof(*b));
+	/* 不 ZeroMemory: 本函数只在 md_clear 与自身递归里调用, 调用方随后
+	 * 会整块释放块数组, 逐个块清 152 字节纯属白写。 */
 }
 
 static void md_clear(MdDoc *d)
 {
 	int i;
+	MdInlPool *pool = (MdInlPool *)d->inlPool;
+	int poolN = d->inlPoolN, poolCap = d->inlPoolCap;
 	for (i = 0; i < d->count; i++) md_free_block(&d->blocks[i]);
 	md_free(d->blocks);
+	md_chunk_free_all(d);      /* 块内 text16/runs 的宿主, 必须在块之后 */
 	md_free(d->src);
 	md_free(d->urls);
 	md_free(d->refs);
 	md_free(d->refSlots);
 	ZeroMemory(d, sizeof(*d));
+	/* 行内缓冲池跨次解析保留: 只把占用标记清零, 数组本身留着复用 */
+	for (i = 0; i < poolN; i++) pool[i].busy = 0;
+	d->inlPool = pool;
+	d->inlPoolN = poolN;
+	d->inlPoolCap = poolCap;
 }
 
 /* ── 公共 API ─────────────────────────────────────────────────────── */
@@ -2695,7 +3262,19 @@ void MdDoc_Init(MdDoc *d)
 
 void MdDoc_Shutdown(MdDoc *d)
 {
-	if (d) md_clear(d);
+	MdInlPool *pool;
+	int i;
+	if (!d) return;
+	md_clear(d);
+	pool = (MdInlPool *)d->inlPool;
+	for (i = 0; i < d->inlPoolN; i++) {
+		md_free(pool[i].t);
+		md_free(pool[i].st);
+		md_free(pool[i].lk);
+		md_free(pool[i].rm);
+	}
+	md_free(pool);
+	ZeroMemory(d, sizeof(*d));
 }
 
 int Md_Parse(MdDoc *d, const char *utf8, int len)
@@ -2711,15 +3290,21 @@ int Md_Parse(MdDoc *d, const char *utf8, int len)
 
 	src = (char *)md_alloc(len + 1);
 	if (!src) return -2;
-	for (i = 0; i < len; i++) {
-		char c = utf8[i];
-		if (c == '\r') {
-			if (i + 1 < len && utf8[i + 1] == '\n') i++;
-			src[n++] = '\n';
-		} else if (c == 0) {
-			src[n++] = ' ';
-		} else {
-			src[n++] = c;
+	/* 快速路径: 无 CR 也无 NUL 时整段拷贝 (绝大多数文档) */
+	if (md_find_byte2(utf8, len, '\r', 0) < 0) {
+		memcpy(src, utf8, (size_t)len);
+		n = len;
+	} else {
+		for (i = 0; i < len; i++) {
+			char c = utf8[i];
+			if (c == '\r') {
+				if (i + 1 < len && utf8[i + 1] == '\n') i++;
+				src[n++] = '\n';
+			} else if (c == 0) {
+				src[n++] = ' ';
+			} else {
+				src[n++] = c;
+			}
 		}
 	}
 	src[n] = 0;
@@ -2727,14 +3312,17 @@ int Md_Parse(MdDoc *d, const char *utf8, int len)
 	d->srcLen = n;
 
 	ZeroMemory(&lines, sizeof(lines));
+	/* 按平均行长预留, 省掉逐行翻倍扩容 (文档越长越划算) */
+	md_grow((void **)&lines.v, &lines.cap, n / 40 + 16, (int)sizeof(MdLine));
 	start = 0;
-	for (i = 0; i <= n; i++) {
-		if (i == n || src[i] == '\n') {
-			/* 末尾换行不产生额外空行 (避免代码块/段落多一个空行) */
-			if (i == n && start == n) break;
-			lines_add(&lines, src + start, i - start, start, i - start);
-			start = i + 1;
-		}
+	while (start <= n) {
+		int nl = md_find_byte(src + start, n - start, '\n');
+		int end = (nl < 0) ? n : start + nl;
+		/* 末尾换行不产生额外空行 (避免代码块/段落多一个空行) */
+		if (nl < 0 && start == n) break;
+		lines_add(&lines, src + start, end - start, start, end - start);
+		if (nl < 0) break;
+		start = end + 1;
 	}
 	md_parse_blocks(d, &lines, &li, NULL, 0);
 	md_free(lines.v);

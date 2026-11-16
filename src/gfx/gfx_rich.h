@@ -42,6 +42,16 @@ void Gfx_RichStrike(GfxRichText *rt, int start, int len, int on);
  * 用于行内代码等需要等宽字体的范围。返回 1 成功。 */
 int Gfx_RichFontFamily(GfxRichText *rt, int start, int len, GfxFont *font);
 
+/* 段落对齐: 控制每一行在 wrapW 内的水平位置 (多行各自居中, 不是整体平移).
+ * 创建时默认左对齐; 创建后调用会触发重排。 */
+enum {
+	GFX_RICH_ALIGN_LEFT = 0,
+	GFX_RICH_ALIGN_CENTER,
+	GFX_RICH_ALIGN_RIGHT
+};
+
+void Gfx_RichSetAlign(GfxRichText *rt, int align);
+
 /* 测量: 高度含换行; 宽度为最宽行 (含行尾空白)。 */
 float Gfx_RichWidth(const GfxRichText *rt);
 float Gfx_RichHeight(const GfxRichText *rt);

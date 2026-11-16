@@ -62,9 +62,14 @@ typedef struct MdRow {
 	float extraTop;      /* 容器首行: 标题区高度 */
 	float extraBottom;   /* 容器末行: 卡内底部内边距 */
 	uint32_t hash;
+	uint32_t boxSig;     /* 所属盒子的布局签名 (align/行距/padR);
+	                      * 同一段文本在 <div line-height> 里与裸段落的高度
+	                      * 不同, 行复用必须把它算进 key, 否则会搬错高度 */
 	int measured;
 	float measuredW;
 	uint8_t rowType;     /* 创建时快照: 旧行释放时 blk 可能已随文档释放 */
+	int boxIdx;          /* 所属盒子 (div/容器) 下标; -1 = 无. div 的
+	                      * align/lineSpacing/padR 都从这里查. */
 
 	/* 按 rowType 访问 p.text / p.image / p.table / p.math */
 	union {
@@ -111,12 +116,22 @@ static int md_row_is_text(int type)
 
 
 /* 容器盒子: 由 flatten 生成, 渲染时按行区间绘制背景/色条/标题 */
+/* div 是纯布局盒子: 只用 first/last/align/lineSpacing/padR, 不画色条/标题/底色.
+ * 值刻意避开 MD_BOX_* (0..MD_BOX_COUNT-1)。 */
+#define MD_BOX_DIV 255
+
 typedef struct MdBox {
-	int kind;
+	int kind;            /* MD_BOX_* 或 MD_BOX_DIV (div 不画色条/标题) */
 	int firstRow, lastRow;
 	int indent;
 	int depth;           /* 祖先容器数: 标题带下移 depth*boxTitleH */
 	int titleOff, titleLen;
+
+	/* div 专用属性 (容器为默认值, 不影响原行为) */
+	uint8_t align;       /* MD_ALIGN_*; 255 = 继承 */
+	float lineSpacing;   /* >0 = 倍率; <0 = 绝对 DIP (取负); 0 = 继承 */
+	float padR;          /* 右内边距 (DIP): wrapW 要扣掉 */
+	uint32_t sig;        /* 上面三者的摘要, 抄进行里做复用 key */
 } MdBox;
 
 /* 公式缓存条目: 同一 (源码, 字号, 字体) 只保留一棵盒子树与 DWrite 布局,
@@ -132,6 +147,13 @@ typedef struct MdMathCacheEnt {
 	int refs;
 	uint32_t lastUse;
 } MdMathCacheEnt;
+
+/* 章节锚点: 标题 -> 规范化 slug -> 行下标. 供 [x](#slug) 与目录跳转使用. */
+typedef struct MdAnchor {
+	int slugOff;     /* 在 md->anchorChars 内的偏移 (整段连续存放) */
+	int row;
+	UiMdHeading h;   /* 对外的标题目录项; h.slug 在字符池定稿后统一回填 */
+} MdAnchor;
 
 struct UiMarkdown {
 	UiId id;
@@ -151,6 +173,12 @@ struct UiMarkdown {
 	int rowCount, rowCap;
 	MdBox *boxes;
 	int boxCount, boxCap;
+	MdAnchor *anchors;
+	int anchorCount, anchorCap;
+	char *anchorChars;       /* slug 字符池: 一条标题一个 0 结尾片段, 追加存放 */
+	int anchorCharsLen, anchorCharsCap;
+	int *anchorSlots;        /* 开放寻址: 值 = anchors 下标 + 1, 0 = 空 */
+	int anchorSlotCap;
 
 	UiMarkdownStyle st;
 	int followTheme;
@@ -180,6 +208,17 @@ struct UiMarkdown {
 	int needEstimate;
 	int pendingTop, followTail;
 	int hasLinks;       /* 文档含可悬停链接: 指针移动需逐次重绘 */
+
+	/* 粘性定位: >=0 时每帧把该行顶到视口 (懒测量收敛前不松手) */
+	int stickRow;
+	float stickPad;
+	double stickUntil;
+	int stickSettle;
+	int stickAnim;      /* 1 = 平滑跟到目标, 0 = 直接落位 */
+	int firstVisible;   /* 上一帧视口首行, -1 = 未知/空文档 */
+	/* 当前章节: 显式跳转 (>0) 优先, 用户自己滚动后回到视口推导 */
+	int activeAnchor;   /* 锁定到某个标题 (跳转目标), -1 = 跟随视口 */
+	int activeHeading;  /* 上一帧激活的标题下标, -1 = 无 (目录高亮) */
 
 	MdMathCacheEnt *mmath;
 	int mmathN, mmathCap;
@@ -212,6 +251,7 @@ struct UiMarkdown {
 	UiMarkdownTokenizeFn tokFn;
 	void *tokUser;
 	wchar_t *basePath;
+	char *docUrl;       /* 当前文档地址 (UTF-8): 相对链接/图片的基准 */
 };
 
 /* ── 样式 ──────────────────────────────────────────────────────────── */
@@ -676,6 +716,18 @@ static int md_live_push(UiMarkdown *md, int idx)
 	return 1;
 }
 
+/* 盒子的布局签名: 只收会影响行高/断行的属性。行复用 key 必须带上它 ——
+ * 同一段文本在 <div style="line-height:2"> 里和在裸段落里高度不同,
+ * 只按 (hash, rowType) 匹配会把旧高度搬过去。 */
+static uint32_t md_box_sig(const MdBox *b)
+{
+	uint32_t s = 2166136261u;
+	s = (s ^ (uint32_t)b->align) * 16777619u;
+	s = (s ^ (uint32_t)(int32_t)(b->lineSpacing * 100.0f)) * 16777619u;
+	s = (s ^ (uint32_t)(int32_t)(b->padR * 4.0f)) * 16777619u;
+	return s;
+}
+
 static int md_box_push(UiMarkdown *md, int kind, int first, int last,
 	int indent, int depth, int titleOff, int titleLen)
 {
@@ -684,11 +736,11 @@ static int md_box_push(UiMarkdown *md, int kind, int first, int last,
 		int nc = md->boxCap ? md->boxCap * 2 : 16;
 		MdBox *np = (MdBox *)md_realloc_(md->boxes,
 			(SIZE_T)nc * sizeof(MdBox));
-		if (!np) return 0;
+		if (!np) return -1;
 		md->boxes = np;
 		md->boxCap = nc;
 	}
-	b = &md->boxes[md->boxCount++];
+	b = &md->boxes[md->boxCount];
 	b->kind = kind;
 	b->firstRow = first;
 	b->lastRow = last;
@@ -696,7 +748,21 @@ static int md_box_push(UiMarkdown *md, int kind, int first, int last,
 	b->depth = depth;
 	b->titleOff = titleOff;
 	b->titleLen = titleLen;
-	return 1;
+	b->align = (uint8_t)MD_DIV_ALIGN_INHERIT;   /* 未指定 = 继承全局左对齐 */
+	b->lineSpacing = 0.0f;
+	b->padR = 0.0f;
+	return md->boxCount++;      /* 返回新盒子下标; -1 = 失败 */
+}
+
+/* 行可用宽度: 测量与绘制共用一处, 避免两边算法漂移 (div 的 padR 要扣).
+ * 注意这里统一用 md->contentW, 不要用绘制时的 content.w —— 两者一旦不等,
+ * 就会出现"测出来 3 行、画出来 4 行". */
+static float md_row_wrap_w(const UiMarkdown *md, const MdRow *r)
+{
+	float w = md->contentW - (float)r->indent - r->markerW;
+	if (r->boxIdx >= 0 && r->boxIdx < md->boxCount)
+		w -= md->boxes[r->boxIdx].padR;
+	return w < 1.0f ? 1.0f : w;
 }
 
 static MdRow *md_row_push(UiMarkdown *md, MdBlock *blk, int indent, int qd,
@@ -722,6 +788,7 @@ static MdRow *md_row_push(UiMarkdown *md, MdBlock *blk, int indent, int qd,
 	r->markerW = mk != MD_MK_NONE ? MD_MARKER_W : 0.0f;
 	r->hash = blk->hash;
 	r->rowType = blk->type;
+	r->boxIdx = -1;
 	return r;
 }
 
@@ -765,6 +832,45 @@ static int md_flatten(UiMarkdown *md, MdBlock *b, int indent, int qd,
 				md->boxes[boxAt].lastRow = md->rowCount - 1;
 		} else if (boxAt >= 0 && boxAt < md->boxCount) {
 			md->boxCount--;
+		}
+		return added;
+	}
+	case MD_BLOCK_DIV: {
+		int first = md->rowCount, k;
+		MdBlock *dv = b;
+		float padL = MD_UNQ4(dv->u.div.padL);
+		float padT = MD_UNQ4(dv->u.div.padT);
+		float padR = MD_UNQ4(dv->u.div.padR);
+		float padB = MD_UNQ4(dv->u.div.padB);
+		float mT = MD_UNQ4(dv->u.div.marginT);
+		float mB = MD_UNQ4(dv->u.div.marginB);
+		int boxAt = md_box_push(md, MD_BOX_DIV, first, first,
+			indent, 0, 0, 0);
+		for (i = 0; i < dv->p.kids.childCount; i++) {
+			int r = md_flatten(md, &dv->p.kids.children[i],
+				indent + (int)(padL + 0.5f), qd,
+				added ? MD_MK_NONE : mk,
+				added ? 0 : no, added ? MD_TASK_NONE : task);
+			if (r) added = 1;
+		}
+		if (md->rowCount > first && boxAt >= 0 && boxAt < md->boxCount) {
+			MdBox *bx = &md->boxes[boxAt];
+			int q = dv->u.div.lineSpacing;
+			bx->align = dv->u.div.align;
+			if (q > 0) bx->lineSpacing = (float)q * 0.01f;      /* 倍率 */
+			else if (q < 0) bx->lineSpacing = (float)q * 0.25f; /* 负数 = -绝对 DIP */
+			bx->padR = padR;
+			bx->lastRow = md->rowCount - 1;
+			md->rows[first].extraTop += padT + mT;
+			md->rows[md->rowCount - 1].extraBottom += padB + mB;
+			/* 内层后写, 自然覆盖外层: 行归属最内层 div */
+			bx->sig = md_box_sig(bx);
+			for (k = first; k < md->rowCount; k++) {
+				md->rows[k].boxIdx = (int16_t)boxAt;
+				md->rows[k].boxSig = bx->sig;
+			}
+		} else if (boxAt >= 0 && boxAt < md->boxCount) {
+			md->boxCount--;      /* 空 div: 不占盒子 */
 		}
 		return added;
 	}
@@ -823,8 +929,11 @@ static GfxFont *md_row_font(const UiMarkdown *md, const MdRow *r)
 static void md_row_pads(const UiMarkdown *md, const MdRow *r,
 	float *top, float *bottom)
 {
-	*top = r->extraTop;
-	*bottom = md->blockGap + r->extraBottom;
+	/* 注意: 各类型的间距是"基础值", 容器/div 的 padding/margin 记在
+	 * extraTop/extraBottom 里, 必须叠加而不是覆盖 —— 否则 div 内首行是
+	 * 标题/代码块时, 卡片顶部内边距会整个丢掉, 内容顶到卡片上缘. */
+	*top = 0.0f;
+	*bottom = md->blockGap;
 	switch (r->blk->type) {
 	case MD_BLOCK_HEADING:
 		*top = md->headGapAbove;
@@ -839,12 +948,14 @@ static void md_row_pads(const UiMarkdown *md, const MdRow *r,
 		*bottom = md->ruleGap;
 		break;
 	case MD_BLOCK_MATH:
-		*top = 6.0f + r->extraTop;
-		*bottom = 6.0f + md->blockGap + r->extraBottom;
+		*top = 6.0f;
+		*bottom = 6.0f + md->blockGap;
 		break;
 	default:
 		break;
 	}
+	*top += r->extraTop;
+	*bottom += r->extraBottom;
 }
 
 static float md_est_text(const wchar_t *t, int n, float wrapW, float size,
@@ -876,7 +987,7 @@ static float md_est_text(const wchar_t *t, int n, float wrapW, float size,
 static float md_row_estimate(const UiMarkdown *md, const MdRow *r)
 {
 	float top, bottom, h;
-	float wrapW = md->contentW - (float)r->indent - r->markerW;
+	float wrapW = md_row_wrap_w(md, r);
 	float size = md_row_font_size(md, r);
 	md_row_pads(md, r, &top, &bottom);
 	switch (r->blk->type) {
@@ -1463,16 +1574,29 @@ static GfxRichText *md_row_make_rt(UiMarkdown *md, int index)
 		r->blk->type == MD_BLOCK_TABLE ||
 		r->blk->type == MD_BLOCK_MATH)
 		return NULL;
-	wrapW = md->contentW - (float)r->indent - r->markerW;
-	if (wrapW < 1.0f) wrapW = 1.0f;
+	wrapW = md_row_wrap_w(md, r);
 	font = md_row_font(md, r);
 	if (!font || !r->blk->p.text.text16) return NULL;
 	/* 含行内对象时用自然行距: UNIFORM 固定行高会压扁/裁掉行内对象 */
 	ls = (r->blk->p.text.imgCount > 0 || r->blk->p.text.mathCount > 0)
 		? 0.0f : md->lineSpacing;
+	/* div 的 line-height: 倍率直接用, 绝对 DIP 按该行字号换算 (gfx_rich
+	 * 的行距参数是倍率: lh = size * ls). 含行内对象时仍守自然行距. */
+	if (ls > 0.0f && r->boxIdx >= 0 && r->boxIdx < md->boxCount) {
+		float bl = md->boxes[r->boxIdx].lineSpacing;
+		if (bl > 0.0f) {
+			ls = bl;
+		} else if (bl < 0.0f) {
+			float fsz = md_row_font_size(md, r);
+			if (fsz > 0.0f) ls = (-bl) / fsz;
+		}
+	}
 	r->p.text.rt = Gfx_RichCreate(md->gfx, r->blk->p.text.text16, r->blk->p.text.len16,
 		font, wrapW, ls, GFX_RICH_WRAP);
 	if (r->p.text.rt) {
+		if (r->boxIdx >= 0 && r->boxIdx < md->boxCount &&
+			md->boxes[r->boxIdx].align != MD_DIV_ALIGN_INHERIT)
+			Gfx_RichSetAlign(r->p.text.rt, (int)md->boxes[r->boxIdx].align);
 		md_apply_runs(md, r->p.text.rt, r->blk->p.text.runs, r->blk->p.text.runCount,
 			r->blk->type == MD_BLOCK_CODE);
 		if (r->blk->type == MD_BLOCK_CODE)
@@ -1566,22 +1690,65 @@ static int md_starts_i(const char *s, const char *pre)
 	return 1;
 }
 
-/* 图片缓存键/加载路径: 远程 URL 原样; 相对路径按 basePath 拼成 UTF-8 完整路径.
- * 返回 url 本身或写入 buf. */
-static const char *md_image_key(UiMarkdown *md, const char *url, char *buf,
+/* ── 地址解析: 相对链接/图片 → 绝对 ───────────────────────────────── */
+
+/* 带 scheme 的地址 (http:/https:/file:/mailto:/data:/C:\ 都算).
+ * 注意: 开头的 '/' 是"站点根相对", 不是绝对地址 —— 对 URL 基准要拼接. */
+static int md_has_scheme(const char *u)
+{
+	int i = 0;
+	if (!u || !u[0]) return 0;
+	if (!((u[0] >= 'a' && u[0] <= 'z') || (u[0] >= 'A' && u[0] <= 'Z')))
+		return 0;
+	while (u[i] && u[i] != ':' && u[i] != '/' && u[i] != '\\' && i < 12) i++;
+	return u[i] == ':';
+}
+
+/* 折叠 "." 与 "a/../" 段; sep 是路径分隔符 (URL 用 '/', 本地用 '\\').
+ * 调用前保证 scheme://host 已被排除在 s 之外. */
+static void md_path_clean(char *s, char sep)
+{
+	int r = 0, w = 0;
+	int abs0 = (s[0] == sep);
+
+	while (s[r] == sep) s[w++] = s[r++];
+	while (s[r]) {
+		int seg = r, len, isDot, isDotDot, k;
+		while (s[r] && s[r] != sep) r++;
+		len = r - seg;
+		isDot = (len == 1 && s[seg] == '.');
+		isDotDot = (len == 2 && s[seg] == '.' && s[seg + 1] == '.');
+		if (isDot) {
+			/* 当前目录: 直接跳过 */
+		} else if (isDotDot) {
+			if (w > 0 && s[w - 1] == sep) w--;
+			while (w > 0 && s[w - 1] != sep) w--;
+			if (w > 0 && s[w - 1] == sep && s[w] == 0) w--;
+		} else if (len > 0) {
+			if (w > 0 && s[w - 1] != sep) s[w++] = (char)sep;
+			for (k = 0; k < len; k++) s[w++] = s[seg + k];
+		}
+		if (s[r] == sep) r++;
+	}
+	/* ".." 把绝对路径吃空 (如 D:\..\a) 时保留根分隔符 */
+	if (abs0 && w > 0 && s[0] != sep) {
+		int k;
+		for (k = w; k >= 0; k--) s[k + 1] = s[k];
+		s[0] = (char)sep;
+		w++;
+	}
+	s[w] = 0;
+}
+
+/* 旧的 basePath (目录, wchar) 拼接: 保持既有行为. */
+static const char *md_basepath_join(UiMarkdown *md, const char *url, char *buf,
 	int cap)
 {
 	int n, ul, i;
-	if (!url) return "";
-	if (!url[0]) return url;
-	if (md_starts_i(url, "http://") || md_starts_i(url, "https://"))
-		return url;
-	if (url[0] == '/' || url[0] == '\\' || (url[0] && url[1] == ':'))
-		return url;
 	if (!md->basePath || cap < 8) return url;
 	n = WideCharToMultiByte(CP_UTF8, 0, md->basePath, -1, buf, cap, NULL, NULL);
 	if (n <= 0) return url;
-	n--;   /* 去掉结尾 NUL */
+	n--;
 	if (n > 0 && buf[n - 1] != '/' && buf[n - 1] != '\\') {
 		if (n + 1 >= cap) return url;
 		buf[n++] = '\\';
@@ -1591,6 +1758,104 @@ static const char *md_image_key(UiMarkdown *md, const char *url, char *buf,
 	for (i = 0; i < ul; i++) buf[n + i] = url[i];
 	buf[n + ul] = 0;
 	return buf;
+}
+
+const char *UiMarkdown_ResolveUrl(const UiMarkdown *md, const char *url,
+	char *out, int cap)
+{
+	const char *base;
+	int isHttp, n, i, ul, cut;
+
+	if (!url) return "";
+	if (!url[0] || url[0] == '#') return url;
+	if (md_has_scheme(url)) return url;
+	if (!out || cap < 8) return url;
+	base = md ? md->docUrl : NULL;
+	if (!base || !base[0])
+		return md ? md_basepath_join((UiMarkdown *)md, url, out, cap) : url;
+
+	isHttp = md_starts_i(base, "http://") || md_starts_i(base, "https://");
+	if (!isHttp) {
+		/* 本地文档: 开头带分隔符是绝对路径 (含 UNC) */
+		if (url[0] == '/' || url[0] == '\\') return url;
+	}
+	if (isHttp) {
+		int org = 0;
+		while (base[org] && base[org] != ':') org++;
+		if (base[org] == ':') {
+			org++;
+			while (base[org] == '/') org++;
+			while (base[org] && base[org] != '/' && base[org] != '?' &&
+				base[org] != '#') org++;
+		}
+		if (url[0] == '/') {
+			/* 站点根相对: scheme://host + url */
+			if (org >= cap) return url;
+			for (i = 0; i < org; i++) out[i] = base[i];
+			n = org;
+		} else {
+			/* 文档所在目录: 取 host 之后最后一个 '/' */
+			cut = -1;
+			for (i = org; base[i]; i++)
+				if (base[i] == '/') cut = i;
+			if (cut < org) cut = org - 1;   /* 只有 host: 补一个 '/' */
+			if (cut + 1 >= cap) return url;
+			for (i = 0; i <= cut; i++) out[i] = base[i];
+			n = cut + 1;
+		}
+		ul = lstrlenA(url);
+		if (n + ul >= cap) return url;
+		for (i = 0; i < ul; i++) out[n + i] = url[i];
+		out[n + ul] = 0;
+		md_path_clean(out + org, '/');
+		return out;
+	}
+
+	/* 本地文档: 取目录 (去掉 file:// 前缀), 统一反斜杠 */
+	{
+		int off = 0;
+		if (md_starts_i(base, "file://")) {
+			off = 7;
+			if (base[off] == '/') off++;
+		}
+		cut = -1;
+		for (i = off; base[i]; i++)
+			if (base[i] == '/' || base[i] == '\\') cut = i;
+		if (cut < off) return md_basepath_join((UiMarkdown *)md, url, out, cap);
+		if (cut + 2 >= cap) return url;
+		for (i = off; i <= cut; i++) out[i - off] = base[i];
+		n = cut + 1 - off;
+		out[n++] = '\\';
+		ul = lstrlenA(url);
+		if (n + ul >= cap) return url;
+		for (i = 0; i < ul; i++)
+			out[n + i] = url[i] == '/' ? '\\' : url[i];
+		out[n + ul] = 0;
+		/* ".." 段: 盘符前缀不参与折叠 ("C:" 不能被当成一段) */
+		if (out[0] && out[1] == ':') {
+			char tail[900];
+			int k = 0;
+			for (i = 2; out[i] && k < (int)sizeof(tail) - 1; i++)
+				tail[k++] = out[i];
+			tail[k] = 0;
+			md_path_clean(tail, '\\');
+			out[2] = 0;
+			for (i = 0; tail[i] && 3 + i < cap; i++) out[2 + i] = tail[i];
+			out[2 + i] = 0;
+		} else {
+			md_path_clean(out, '\\');
+		}
+		return out;
+	}
+}
+
+/* 图片缓存键/加载路径: 远程 URL 原样; 相对路径按文档地址解析. */
+static const char *md_image_key(UiMarkdown *md, const char *url, char *buf,
+	int cap)
+{
+	if (!url) return "";
+	if (!url[0]) return url;
+	return UiMarkdown_ResolveUrl(md, url, buf, cap);
 }
 
 static void md_image_load(UiMarkdown *md, UiImage *img, const char *url)
@@ -1726,7 +1991,7 @@ static int md_table_build(UiMarkdown *md, int index)
 
 	if (r->p.table.cellRt) return 1;
 	if (cols <= 0 || rows <= 0 || !cells) return 0;
-	avail = md->contentW - (float)r->indent - r->markerW;
+	avail = md_row_wrap_w(md, r);
 	if (avail < 7.0f * cols) avail = 7.0f * cols;
 	if (avail < 1.0f) avail = 1.0f;
 	padX = md->tableCellPadX;
@@ -1817,7 +2082,7 @@ static void md_measure_row(UiMarkdown *md, int index)
 		h = md->ruleH + top + bottom;
 		break;
 	case MD_BLOCK_IMAGE: {
-		float avail = md->contentW - (float)r->indent - r->markerW;
+		float avail = md_row_wrap_w(md, r);
 		md_image_ensure(md, index);
 		md_image_measure(md, r, avail);
 		r->p.image.imgStateSeen = r->p.image.img ? UiImage_State(r->p.image.img) : UI_IMG_IDLE;
@@ -1831,7 +2096,7 @@ static void md_measure_row(UiMarkdown *md, int index)
 			h = r->p.table.tblH + top + bottom;
 		break;
 	case MD_BLOCK_MATH: {
-		float avail = md->contentW - (float)r->indent - r->markerW;
+		float avail = md_row_wrap_w(md, r);
 		md_math_block_build(md, r, avail);
 		if (r->p.math.bm) h = r->p.math.bmH + r->p.math.bmD + top + bottom;
 		else if (r->p.math.bmFallback)
@@ -2047,7 +2312,8 @@ static void md_rows_detach(UiMarkdown *md, MdRow **outRows, int *outN,
 
 static int md_row_key_eq(const MdRow *a, const MdRow *b)
 {
-	return a->hash == b->hash && a->rowType == b->rowType;
+	return a->hash == b->hash && a->rowType == b->rowType &&
+		a->boxSig == b->boxSig;
 }
 
 /* 增量复用: 公共前缀/后缀 + 中段 (hash,type) 桶匹配.
@@ -2165,6 +2431,337 @@ static void md_rows_merge(UiMarkdown *md, MdRow *oldRows, int oldN,
 	md_free_(moved);
 }
 
+/* ── 章节锚点 ─────────────────────────────────────────────────────── */
+
+/* GitHub 风格 slug: ASCII 小写、空白转 '-'、丢弃 ASCII 标点、保留其它
+ * UTF-8 字节 (中文/emoji 原样). 不做 percent 解码. */
+static void md_slug_of(const char *u8, char *out, int cap)
+{
+	int i = 0, o = 0;
+
+	if (!u8 || !out || cap <= 1) return;
+	while (u8[i] && o < cap - 1) {
+		unsigned char c = (unsigned char)u8[i];
+		if (c == ' ' || c == '\t') {
+			out[o++] = '-';
+			i++;
+		} else if (c >= 'A' && c <= 'Z') {
+			out[o++] = (char)(c - 'A' + 'a');
+			i++;
+		} else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+			c == '-' || c == '_') {
+			out[o++] = (char)c;
+			i++;
+		} else if (c >= 0x80) {
+			out[o++] = (char)c;
+			i++;
+		} else {
+			i++;                 /* 其它 ASCII 标点丢弃 */
+		}
+	}
+	out[o] = 0;
+}
+
+static void md_anchors_clear(UiMarkdown *md)
+{
+	int i;
+	(void)i;
+	/* slug 统一放在 anchorChars 里, 这里只丢引用, 容量留给下次复用 */
+	md->anchorCount = 0;
+	md->anchorCharsLen = 0;
+	if (md->anchorSlots && md->anchorSlotCap > 0)
+		ZeroMemory(md->anchorSlots,
+			(size_t)md->anchorSlotCap * sizeof(int));
+}
+
+static uint32_t md_slug_hash(const char *s)
+{
+	uint32_t h = 2166136261u;
+	while (s && *s) {
+		h ^= (uint32_t)(unsigned char)*s++;
+		h *= 16777619u;
+	}
+	return h;
+}
+
+/* 哈希桶: 2000 个标题时线性查找是 O(M²) (实测 361ms), 必须开放寻址. */
+static int md_anchor_rehash(UiMarkdown *md, int cap)
+{
+	int *slots;
+	int i;
+	uint32_t mask;
+
+	if (cap < 32) cap = 32;
+	slots = (int *)md_alloc_(cap * (int)sizeof(int));
+	if (!slots) return 0;
+	ZeroMemory(slots, (size_t)cap * sizeof(int));
+	mask = (uint32_t)(cap - 1);
+	for (i = 0; i < md->anchorCount; i++) {
+		uint32_t j = md_slug_hash(md->anchorChars + md->anchors[i].slugOff) & mask;
+		while (slots[j]) j = (j + 1) & mask;
+		slots[j] = i + 1;
+	}
+	md_free_(md->anchorSlots);
+	md->anchorSlots = slots;
+	md->anchorSlotCap = cap;
+	return 1;
+}
+
+static int md_anchor_find(const UiMarkdown *md, const char *slug)
+{
+	uint32_t mask, j;
+
+	if (!slug || !slug[0]) return -1;
+	if (!md->anchorSlots || md->anchorSlotCap <= 0) return -1;
+	mask = (uint32_t)(md->anchorSlotCap - 1);
+	j = md_slug_hash(slug) & mask;
+	while (md->anchorSlots[j]) {
+		int idx = md->anchorSlots[j] - 1;
+		if (md->anchorChars &&
+			lstrcmpA(md->anchorChars + md->anchors[idx].slugOff, slug) == 0)
+			return idx;
+		j = (j + 1) & mask;
+	}
+	return -1;
+}
+
+static int md_anchor_push(UiMarkdown *md, const char *slug, int row,
+	int level, const wchar_t *text, int textLen)
+{
+	MdAnchor *p;
+	int ncap, len, i;
+
+	if (md->anchorCount >= md->anchorCap) {
+		ncap = md->anchorCap ? md->anchorCap * 2 : 16;
+		p = (MdAnchor *)md_realloc_(md->anchors,
+			(size_t)ncap * sizeof(MdAnchor));
+		if (!p) return 0;
+		md->anchors = p;
+		md->anchorCap = ncap;
+	}
+	if (!md->anchorSlots || (md->anchorCount + 1) * 2 > md->anchorSlotCap) {
+		int need = md->anchorCount + 1;
+		int cap = 32;
+		while (cap < need * 2) cap *= 2;
+		if (!md_anchor_rehash(md, cap)) return 0;
+	}
+	len = (int)lstrlenA(slug) + 1;
+	if (md->anchorCharsLen + len > md->anchorCharsCap) {
+		int nc = md->anchorCharsCap ? md->anchorCharsCap : 256;
+		char *np;
+		while (nc < md->anchorCharsLen + len) nc *= 2;
+		np = (char *)md_realloc_(md->anchorChars, (size_t)nc);
+		if (!np) return 0;
+		md->anchorChars = np;
+		md->anchorCharsCap = nc;
+	}
+	for (i = 0; i < len; i++) md->anchorChars[md->anchorCharsLen + i] = slug[i];
+	md->anchors[md->anchorCount].slugOff = md->anchorCharsLen;
+	md->anchors[md->anchorCount].row = row;
+	md->anchors[md->anchorCount].h.level = level;
+	md->anchors[md->anchorCount].h.row = row;
+	md->anchors[md->anchorCount].h.text = text;
+	md->anchors[md->anchorCount].h.textLen = textLen;
+	md->anchors[md->anchorCount].h.slug = NULL;   /* 字符池定稿后回填 */
+	md->anchorCharsLen += len;
+	{
+		uint32_t mask = (uint32_t)(md->anchorSlotCap - 1);
+		uint32_t j = md_slug_hash(slug) & mask;
+		while (md->anchorSlots[j]) j = (j + 1) & mask;
+		md->anchorSlots[j] = md->anchorCount + 1;
+	}
+	md->anchorCount++;
+	return 1;
+}
+
+/* 每次行重建后重算: 标题按文档顺序生成 slug, 重名追加 -1/-2. */
+/* 直接从 UTF-16 生成 slug: 规则与 md_slug_of 等价,
+ * 但省掉每条标题一次"转 UTF-8 临时串 + 堆分配 + 释放"。
+ * 非 ASCII 码点仍按 UTF-8 写出, 和锚点 URL 的编码保持一致。 */
+static void md_slug_from_w16(const wchar_t *w, int n, char *out, int cap)
+{
+	int i = 0, o = 0;
+
+	if (!w || !out || cap <= 1) return;
+	while (i < n && o < cap - 1) {
+		uint32_t cp = (uint32_t)w[i];
+		if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < n) {
+			uint32_t lo = (uint32_t)w[i + 1];
+			if (lo >= 0xDC00 && lo <= 0xDFFF) {
+				cp = 0x10000u + ((cp - 0xD800u) << 10) + (lo - 0xDC00u);
+				i++;
+			}
+		}
+		i++;
+		if (cp == ' ' || cp == '\t') {
+			out[o++] = '-';
+		} else if (cp >= 'A' && cp <= 'Z') {
+			out[o++] = (char)(cp - 'A' + 'a');
+		} else if ((cp >= 'a' && cp <= 'z') || (cp >= '0' && cp <= '9') ||
+			cp == '-' || cp == '_') {
+			out[o++] = (char)cp;
+		} else if (cp >= 0x80) {
+			if (cp < 0x800) {
+				if (o + 2 > cap - 1) break;
+				out[o++] = (char)(0xC0 | (cp >> 6));
+				out[o++] = (char)(0x80 | (cp & 0x3F));
+			} else if (cp < 0x10000) {
+				if (o + 3 > cap - 1) break;
+				out[o++] = (char)(0xE0 | (cp >> 12));
+				out[o++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+				out[o++] = (char)(0x80 | (cp & 0x3F));
+			} else {
+				if (o + 4 > cap - 1) break;
+				out[o++] = (char)(0xF0 | (cp >> 18));
+				out[o++] = (char)(0x80 | ((cp >> 12) & 0x3F));
+				out[o++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+				out[o++] = (char)(0x80 | (cp & 0x3F));
+			}
+		}
+	}
+	out[o] = 0;
+}
+
+static void md_anchors_build(UiMarkdown *md)
+{
+	char slug[256];
+	int i, nHead = 0;
+
+	md_anchors_clear(md);
+	/* 先数出标题数并一次性建好哈希表: 否则每翻倍一次就要把所有已有
+	 * 锚点重新插入一遍, 长文档标题多时这笔重插比建表本身还贵。 */
+	for (i = 0; i < md->rowCount; i++)
+		if (md->rows[i].rowType == MD_BLOCK_HEADING) nHead++;
+	if (nHead > 0) {
+		int cap = 32;
+		while (cap < nHead * 2) cap *= 2;
+		md_anchor_rehash(md, cap);
+	}
+	for (i = 0; i < md->rowCount; i++) {
+		MdRow *r = &md->rows[i];
+		char uniq[280];
+		int dup = 0;
+
+		if (r->rowType != MD_BLOCK_HEADING || !r->blk) continue;
+		if (!r->blk->p.text.text16 || r->blk->p.text.len16 <= 0) continue;
+		md_slug_from_w16(r->blk->p.text.text16, r->blk->p.text.len16,
+			slug, (int)sizeof(slug));
+		if (!slug[0]) continue;
+		lstrcpynA(uniq, slug, (int)sizeof(uniq));
+		while (md_anchor_find(md, uniq) >= 0) {
+			dup++;
+			wsprintfA(uniq, "%s-%d", slug, dup);
+		}
+		md_anchor_push(md, uniq, i, (int)r->blk->level,
+			r->blk->p.text.text16, r->blk->p.text.len16);
+	}
+	/* 字符池可能在中途 realloc, slug 指针统一到最后回填 */
+	for (i = 0; i < md->anchorCount; i++)
+		md->anchors[i].h.slug = md->anchorChars + md->anchors[i].slugOff;
+}
+
+/* 先精确匹配, 再把输入规范化后比较 (`#Getting Started` 也能命中). */
+static int md_anchor_lookup(const UiMarkdown *md, const char *name)
+{
+	char norm[256];
+	int idx;
+
+	if (!name || !name[0]) return -1;
+	idx = md_anchor_find(md, name);
+	if (idx >= 0) return idx;
+	md_slug_of(name, norm, (int)sizeof(norm));
+	if (!norm[0]) return -1;
+	return md_anchor_find(md, norm);
+}
+
+/* 首可见行只是"与视口相交的第一行", 它常常是目标标题**上面那一行**
+ * (跳转后目标行顶距视口顶只有一个 padTop), 直接拿它反推章节会永远
+ * 落后一项, 滚到底时更是全都不满足. 所以章节判定改用标题行顶与视口
+ * 顶的距离, 并允许显式跳转锁定. */
+static int md_anchor_of_row(const UiMarkdown *md, int row)
+{
+	int i;
+	for (i = 0; i < md->anchorCount; i++)
+		if (md->anchors[i].row == row) return i;
+	return -1;
+}
+
+#define MD_ACTIVE_TOL 12.0f   /* 标题视作"已到达视口顶"的余量 (含 padTop) */
+
+/* 标题按文档顺序, ItemY 非递减 → 二分找最后一个满足条件的, 成本
+ * O(log M) 而不是每帧扫全表 (大文档下扫描会随标题数线性增长). */
+static int md_anchor_last_before(const UiMarkdown *md, float limit,
+	int exclusive)
+{
+	int lo = 0, hi = md->anchorCount - 1, act = -1;
+
+	while (lo <= hi) {
+		int mid = lo + (hi - lo) / 2;
+		float y = UiScrollLayout_ItemY(&md->layout, md->anchors[mid].row);
+		int hit = exclusive ? (y < limit) : (y <= limit);
+		if (hit) { act = mid; lo = mid + 1; }
+		else hi = mid - 1;
+	}
+	return act;
+}
+
+static void md_update_active(UiMarkdown *md, float viewH)
+{
+	float off, maxOff;
+
+	if (md->anchorCount <= 0) {
+		md->activeHeading = -1;
+		return;
+	}
+	if (md->activeAnchor >= 0 && md->activeAnchor < md->anchorCount) {
+		md->activeHeading = md->activeAnchor;
+		return;                 /* 点击/锚点跳转优先, 直到用户自己滚动 */
+	}
+	off = md->sv.offset;
+	md->activeHeading = md_anchor_last_before(md, off + MD_ACTIVE_TOL, 0);
+	maxOff = UiScrollView_MaxOffset(&md->sv);
+	if (maxOff > 0.5f && off >= maxOff - 0.5f) {
+		/* 到底: 末尾几节再也到不了视口顶, 取视口内最后一个标题 */
+		int last = md_anchor_last_before(md, off + viewH, 1);
+		if (last >= 0) md->activeHeading = last;
+	}
+}
+
+/* 跳转到行 + 粘性定位. 粘性很关键: ItemY 是"已实测高度 + 未测行估算"
+ * 的前缀和, 跳到远处时估算误差会累加, 落点可能偏几百像素; 钉住目标行
+ * 直到可见行实测收敛, 位置才是准的. */
+static void md_scroll_to_row(UiMarkdown *md, UiContext *ui, int row,
+	float padTop, int animate)
+{
+	float y;
+
+	if (!md || !ui || md->rowCount <= 0) return;
+	if (row < 0) row = 0;
+	if (row >= md->rowCount) row = md->rowCount - 1;
+	md->followTail = 0;      /* 跳转后不要被"跟随尾部"拉回底部 */
+	md->pendingTop = 0;
+	y = UiScrollLayout_ItemY(&md->layout, row) - padTop;
+	if (y < 0.0f) y = 0.0f;
+	md->stickRow = row;
+	md->stickPad = padTop;
+	md->stickSettle = 0;
+	md->stickAnim = animate ? 1 : 0;
+	md->stickUntil = UiFrame_Now() + 900.0;
+	/* 跳到标题上就把它记为当前章节: 底部几节滚不到视口顶, 只能靠这里 */
+	md->activeAnchor = md_anchor_of_row(md, row);
+	UiScrollView_ScrollTo(&md->sv, ui, y, animate);
+}
+
+static int md_scroll_to_anchor(UiMarkdown *md, UiContext *ui,
+	const char *name, int animate)
+{
+	int idx = md_anchor_lookup(md, name);
+
+	if (idx < 0 || !ui) return 0;
+	md_scroll_to_row(md, ui, md->anchors[idx].row, 8.0f, animate);
+	return 1;
+}
+
 static void md_rebuild_rows_incremental(UiMarkdown *md, MdRow *oldRows,
 	int oldN, UiScrollItem *oldItems)
 {
@@ -2172,8 +2769,10 @@ static void md_rebuild_rows_incremental(UiMarkdown *md, MdRow *oldRows,
 	md->hasLinks = 0;
 	for (i = 0; i < md->doc.count; i++)
 		md_flatten(md, &md->doc.blocks[i], 0, 0, MD_MK_NONE, 0, MD_TASK_NONE);
+	md_anchors_build(md);
 	if (!md_rebuild_items(md)) {
 		md_rows_clear(md, 0);
+		md_anchors_clear(md);
 		for (i = 0; i < oldN; i++) md_row_payload_release(md, &oldRows[i]);
 		UiScrollLayout_Init(&md->layout, NULL, 0);
 		return;
@@ -2308,6 +2907,7 @@ static void md_draw_boxes(UiMarkdown *md, UiRect content)
 		MdBox *b = &md->boxes[i];
 		float y0, y1, x, w, bh;
 		int kind = b->kind;
+		if (kind == MD_BOX_DIV) continue;   /* div: 纯布局, 不画色条/标题/底 */
 		if (b->firstRow < 0 || b->lastRow >= md->rowCount ||
 			b->lastRow < b->firstRow)
 			continue;
@@ -2365,7 +2965,7 @@ static void md_draw_row(UiMarkdown *md, UiContext *ui, int index,
 	if (r->markerKind != MD_MK_NONE) md_draw_marker(md, ui, r, x, y + top);
 
 	x += r->markerW;
-	wrapW = content.w - (float)r->indent - r->markerW;
+	wrapW = md_row_wrap_w(md, r);
 	if (wrapW < 1.0f) wrapW = 1.0f;
 
 	switch (r->blk->type) {
@@ -2443,6 +3043,10 @@ UiMarkdown *UiMarkdown_Create(Gfx *gfx, UiId id, UiNet *net)
 	md->followTheme = 1;
 	md->downRow = -1;
 	md->downLink = -1;
+	md->stickRow = -1;
+	md->firstVisible = -1;
+	md->activeAnchor = -1;
+	md->activeHeading = -1;
 	md->lineSpacing = 1.25f;
 	md->blockGap = 10.0f;
 	MdDoc_Init(&md->doc);
@@ -2472,7 +3076,11 @@ void UiMarkdown_Destroy(UiMarkdown *md)
 {
 	if (!md) return;
 	md_rows_clear(md, 0);
+	md_anchors_clear(md);
 	md_math_cache_clear(md);
+	md_free_(md->anchors);
+	md_free_(md->anchorChars);
+	md_free_(md->anchorSlots);
 	md_free_(md->rows);
 	md_free_(md->boxes);
 	md_free_(md->items);
@@ -2481,6 +3089,7 @@ void UiMarkdown_Destroy(UiMarkdown *md)
 	MdDoc_Shutdown(&md->doc);
 	md_free_fonts(md);
 	md_free_(md->basePath);
+	md_free_(md->docUrl);
 	HeapFree(GetProcessHeap(), 0, md);
 }
 
@@ -2490,6 +3099,10 @@ void UiMarkdown_SetText(UiMarkdown *md, const char *utf8)
 	if (!md_text_set(md, utf8, utf8 ? (int)lstrlenA(utf8) : 0)) return;
 	md_parse_current(md);
 	md->pendingTop = 1;
+	md->stickRow = -1;      /* 行下标在新文档里没有意义 */
+	md->firstVisible = -1;
+	md->activeAnchor = -1;
+	md->activeHeading = -1;
 }
 
 void UiMarkdown_Append(UiMarkdown *md, const char *utf8)
@@ -2551,6 +3164,24 @@ void UiMarkdown_SetBasePath(UiMarkdown *md, const wchar_t *dir)
 	lstrcpynW(md->basePath, dir, n + 1);
 }
 
+void UiMarkdown_SetDocumentUrl(UiMarkdown *md, const char *url)
+{
+	int n;
+	if (!md) return;
+	md_free_(md->docUrl);
+	md->docUrl = NULL;
+	if (!url || !url[0]) return;
+	n = lstrlenA(url);
+	md->docUrl = (char *)md_alloc_(n + 1);
+	if (!md->docUrl) return;
+	lstrcpyA(md->docUrl, url);
+}
+
+const char *UiMarkdown_DocumentUrl(const UiMarkdown *md)
+{
+	return md ? md->docUrl : NULL;
+}
+
 void UiMarkdown_SetLinkFn(UiMarkdown *md, UiMarkdownLinkFn fn, void *user)
 {
 	if (md) { md->linkFn = fn; md->linkUser = user; }
@@ -2577,9 +3208,20 @@ int UiMarkdown_Busy(const UiMarkdown *md)
 	return UiScrollView_Busy(&md->sv) || md->imgBusy;
 }
 
+int UiMarkdown_ScrollToAnchor(UiMarkdown *md, UiContext *ui,
+	const char *name, int animate)
+{
+	if (!md) return 0;
+	return md_scroll_to_anchor(md, ui, name, animate);
+}
+
 void UiMarkdown_ScrollToTop(UiMarkdown *md)
 {
-	if (md) md->pendingTop = 1;
+	if (md) {
+		md->pendingTop = 1;
+		md->stickRow = -1;
+		md->activeAnchor = -1;
+	}
 }
 
 void UiMarkdown_SetFollowTail(UiMarkdown *md, int on)
@@ -2607,7 +3249,36 @@ void UiMarkdown_ScrollToOffset(UiMarkdown *md, UiContext *ui,
 {
 	if (!md || !ui) return;
 	md->pendingTop = 0;
+	md->stickRow = -1;
+	md->activeAnchor = -1;
 	UiScrollView_ScrollTo(&md->sv, ui, offset, animate);
+}
+
+void UiMarkdown_ScrollToRow(UiMarkdown *md, UiContext *ui, int row,
+	float padTop, int animate)
+{
+	md_scroll_to_row(md, ui, row, padTop, animate);
+}
+
+int UiMarkdown_FirstVisibleRow(const UiMarkdown *md)
+{
+	return md ? md->firstVisible : -1;
+}
+
+int UiMarkdown_ActiveHeading(const UiMarkdown *md)
+{
+	return md ? md->activeHeading : -1;
+}
+
+int UiMarkdown_HeadingCount(const UiMarkdown *md)
+{
+	return md ? md->anchorCount : 0;
+}
+
+const UiMdHeading *UiMarkdown_HeadingAt(const UiMarkdown *md, int index)
+{
+	if (!md || index < 0 || index >= md->anchorCount) return NULL;
+	return &md->anchors[index].h;
 }
 
 int UiMarkdown_DebugRows(const UiMarkdown *md)
@@ -2751,6 +3422,8 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 			d > 0.5f || d < -0.5f || md->sv.velocity != 0.0f;
 		if (scrolling) anchorValid = 0;
 	}
+	/* 粘性定位期间由目标行决定位置, 首行校正会让位 */
+	if (md->stickRow >= 0) anchorValid = 0;
 
 	UiScrollView_Begin(&md->sv, ui, rc, contentW,
 		UiScrollLayout_ContentHeight(&md->layout));
@@ -2770,8 +3443,44 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 		UiScrollView_ScrollTo(&md->sv, ui, maxOff, 0);
 	}
 
+	/* 粘性定位: 目标行顶部钉住视口, 直到懒测量收敛 (连续 3 帧无需
+	 * 修正) / 超时 / 用户主动滚动. 直接改 target 而不是 ScrollTo,
+	 * 避免每帧把滚动条透明度与空闲计时重置. */
+	if (md->stickRow >= 0) {
+		int release = 0;
+		if (ui->wheelTarget == md->sv.id && ui->wheelDelta != 0.0f)
+			release = 1;                       /* 用户滚轮 */
+		if (md->sv.draggingThumb) release = 1;  /* 用户拖 thumb */
+		if (md->stickRow >= md->rowCount) release = 1;
+		if (!release) {
+			float y = UiScrollLayout_ItemY(&md->layout, md->stickRow)
+				- md->stickPad;
+			float maxOff = UiScrollView_MaxOffset(&md->sv);
+			if (y < 0.0f) y = 0.0f;
+			if (y > maxOff) y = maxOff;
+			if (y > md->sv.target + 0.5f || y < md->sv.target - 0.5f) {
+				md->sv.target = y;
+				/* 非平滑: 直接落位. 直接改 offset 是安全的 ——
+				 * 可见区间与绘制都在本块之后重新计算. */
+				if (!md->stickAnim) md->sv.offset = y;
+				md->sv.busy = 1;
+				md->stickSettle = 0;
+			} else if (md->sv.target == md->sv.offset) {
+				if (++md->stickSettle >= 3) release = 1;
+			}
+			if (now > md->stickUntil) release = 1;
+		}
+		if (release) md->stickRow = -1;
+	}
+
 	UiScrollLayout_VisibleRange(&md->layout, md->sv.offset, viewH,
 		&first, &last);
+	md->firstVisible = (first <= last && first < md->rowCount) ? first : -1;
+	/* 用户自己滚动就不再坚持跳转目标, 回到按视口推导 */
+	if ((ui->wheelTarget == md->sv.id && ui->wheelDelta != 0.0f) ||
+		md->sv.draggingThumb)
+		md->activeAnchor = -1;
+	md_update_active(md, viewH);
 	{
 		UiRect content = UiScrollView_ContentRect(&md->sv);
 		int i, event = 0, hr = -1, hl = -1;
@@ -2803,6 +3512,10 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 				MdRow *lr = &md->rows[hr];
 				MdLink *ll = &lr->blk->p.text.links[hl];
 				md->clickedUrl = MdDoc_Url(&md->doc, ll->urlOff);
+				/* #锚点: 内部平滑滚到对应标题; 仍然回调, 应用可自行拦截 */
+				if (md->clickedUrl && md->clickedUrl[0] == '#' &&
+					md->clickedUrl[1])
+					md_scroll_to_anchor(md, ui, md->clickedUrl + 1, 1);
 				if (md->linkFn) md->linkFn(md->linkUser, md->clickedUrl);
 				event = 1;
 			}

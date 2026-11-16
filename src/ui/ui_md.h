@@ -71,6 +71,20 @@ void UiMarkdown_Destroy(UiMarkdown *md);
 void UiMarkdown_SetText(UiMarkdown *md, const char *utf8);  /* 全量; NULL 清空 */
 void UiMarkdown_Append(UiMarkdown *md, const char *utf8);   /* 流式追加 */
 void UiMarkdown_SetStyle(UiMarkdown *md, const UiMarkdownStyle *st); /* NULL=跟随主题 */
+
+/* 当前文档地址 (UTF-8): 本地路径 `D:\docs\a.md` 或 `https://host/a.md`.
+ * 只用作相对链接/相对图片的基准 (取文档所在目录), 组件不读该地址.
+ * 优先级高于 SetBasePath; NULL 清空. */
+void UiMarkdown_SetDocumentUrl(UiMarkdown *md, const char *url);
+const char *UiMarkdown_DocumentUrl(const UiMarkdown *md);
+
+/* 相对 → 绝对: 基于文档地址解析. 返回 out (写入成功) 或 url 本身
+ * (绝对地址/无基准时原样返回). 以 '#' 开头的锚点原样返回.
+ * 图片解析内部走同一条路径, 宿主可用它把链接变成可加载地址. */
+const char *UiMarkdown_ResolveUrl(const UiMarkdown *md, const char *url,
+	char *out, int cap);
+
+/* 兼容旧接口: 目录 (wchar). 新代码用 SetDocumentUrl. */
 void UiMarkdown_SetBasePath(UiMarkdown *md, const wchar_t *dir);
 
 void UiMarkdown_SetLinkFn(UiMarkdown *md, UiMarkdownLinkFn fn, void *user);
@@ -92,6 +106,44 @@ float UiMarkdown_ScrollOffset(const UiMarkdown *md);
 float UiMarkdown_MaxOffset(const UiMarkdown *md);
 void UiMarkdown_ScrollToOffset(UiMarkdown *md, UiContext *ui,
 	float offset, int animate);
+
+/* 滚到指定行, 行顶距视口顶 padTop (DIP).
+ * 粘性定位: 跳转后目标行会被钉在视口顶部若干帧, 直到懒测量收敛或用户
+ * 主动滚动 (滚轮/拖 thumb). 估算高度累加误差导致的落点漂移靠它修正,
+ * 目录跳转与前进/后退恢复位置都应走这里, 而不是直接算 ItemY. */
+void UiMarkdown_ScrollToRow(UiMarkdown *md, UiContext *ui, int row,
+	float padTop, int animate);
+
+/* 上一帧视口首行; 文档为空/尚未绘制返回 -1. 注意它是"与视口相交的
+ * 第一行", 跳转后往往仍是被跳转标题的上一行, 不要拿它反推章节;
+ * 目录高亮用 UiMarkdown_ActiveHeading. */
+int UiMarkdown_FirstVisibleRow(const UiMarkdown *md);
+
+/* 当前章节: 标题在 UiMarkdown_HeadingAt 里的下标, -1 = 不在任何章节.
+ * 判定规则: 显式跳转 (ScrollToRow 落在标题上 / ScrollToAnchor / 点
+ * `#锚点`) 后锁定该标题, 直到用户自己滚轮或拖 thumb; 否则取标题行顶
+ * 不晚于视口顶 (含少量余量) 的最后一项, 滚到底时取视口内最后一个标题. */
+int UiMarkdown_ActiveHeading(const UiMarkdown *md);
+
+/* 章节跳转: name 是锚点名 (不含 '#'), 按 GitHub 风格 slug 匹配
+ * (`#Getting Started` 与 `#getting-started` 等价). 返回 1 = 找到并滚动.
+ * 文档里 [文字](#slug) 的点击会自动走这条路径, 也会照常触发 linkFn. */
+int UiMarkdown_ScrollToAnchor(UiMarkdown *md, UiContext *ui,
+	const char *name, int animate);
+
+/* 标题目录: 由当前文档的标题按文档顺序生成, 供左侧目录树使用.
+ * 返回的结构在下次 SetText/Append/SetStyle 之前有效 (文本为借用指针).
+ * 注意: 只有能生成非空 slug 的标题才会出现在这里 (与锚点表一致). */
+typedef struct UiMdHeading {
+	int level;              /* 1..6 */
+	int row;                /* 行下标, 可传给 ScrollToRow */
+	const char *slug;       /* UTF-8, 不含 '#' */
+	const wchar_t *text;    /* 借用: 去格式后的标题文本 */
+	int textLen;
+} UiMdHeading;
+
+int UiMarkdown_HeadingCount(const UiMarkdown *md);
+const UiMdHeading *UiMarkdown_HeadingAt(const UiMarkdown *md, int index);
 
 /* 测试访问器 (headless 验收懒测量/行数), 不产生任何输出. */
 int UiMarkdown_DebugRows(const UiMarkdown *md);

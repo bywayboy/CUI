@@ -209,8 +209,19 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 			float s = app->scale > 0.0f ? app->scale : 1.0f;
 			float mw = app->minW > 0.0f ? app->minW : 320.0f;
 			float mh = app->minH > 0.0f ? app->minH : 240.0f;
+			MONITORINFO mi;
 			mm->ptMinTrackSize.x = (LONG)(mw * s + 0.5f);
 			mm->ptMinTrackSize.y = (LONG)(mh * s + 0.5f);
+			/* NCCALCSIZE 返回 0 后最大化会铺满整个监视器 (连任务栏一起
+			 * 盖住); 显式按工作区给最大尺寸与位置. */
+			mi.cbSize = sizeof(mi);
+			if (GetMonitorInfoW(MonitorFromWindow(hwnd,
+				MONITOR_DEFAULTTONEAREST), &mi)) {
+				mm->ptMaxPosition.x = mi.rcWork.left - mi.rcMonitor.left;
+				mm->ptMaxPosition.y = mi.rcWork.top - mi.rcMonitor.top;
+				mm->ptMaxSize.x = mi.rcWork.right - mi.rcWork.left;
+				mm->ptMaxSize.y = mi.rcWork.bottom - mi.rcWork.top;
+			}
 		}
 		return 0;
 
@@ -431,13 +442,28 @@ int UiApp_Run(const wchar_t *title, int widthDip, int heightDip,
 	Log_Init();
 
 	if (!g_classReady) {
-		WNDCLASSW wc;
+		WNDCLASSEXW wc;
 		ZeroMemory(&wc, sizeof(wc));
+		wc.cbSize = sizeof(wc);
 		wc.lpfnWndProc = AppWndProc;
 		wc.hInstance = inst;
 		wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
 		wc.lpszClassName = L"CuiAppWnd";
-		if (!RegisterClassW(&wc)) {
+		/* 窗口类图标: 应用把图标放在 exe 的资源 ID 1 上即可, 任务栏/
+		 * Alt-Tab 拿的就是这一个 (运行时 WM_SETICON 也能改, 但没有
+		 * 类图标时窗口首次显示会先用系统默认图标). */
+		{
+			/* 变量别叫 small/big: rpcndr.h 把 small 定义成 char 宏 */
+			HICON icoBig = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1),
+				IMAGE_ICON, GetSystemMetrics(SM_CXICON),
+				GetSystemMetrics(SM_CYICON), LR_SHARED);
+			HICON icoSmall = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1),
+				IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
+				GetSystemMetrics(SM_CYSMICON), LR_SHARED);
+			wc.hIcon = icoBig ? icoBig : LoadIconW(NULL, IDI_APPLICATION);
+			wc.hIconSm = icoSmall ? icoSmall : wc.hIcon;
+		}
+		if (!RegisterClassExW(&wc)) {
 			Log_Write("[app] RegisterClass failed");
 			Log_Close();
 			CoUninitialize();
