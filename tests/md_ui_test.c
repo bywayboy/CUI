@@ -1039,6 +1039,62 @@ void __stdcall startup(void)
 		CHECK(UiMarkdown_HeadingAt(md, 2) == NULL);
 	}
 
+	/* 回归: div 容器后的标题必须进锚点表 (曾漏掉 </div> 后的第一个 ###) */
+	{
+		const UiMdHeading *h;
+
+		UiMarkdown_SetText(md,
+			"### Sec0\n\n"
+			"<div align=\"center\" style=\"padding:10px 16px;"
+			" margin:8px 0; line-height:1.8\">\n"
+			"#### InDiv\n\n"
+			"div body\n\n"
+			"- item in div\n"
+			"</div>\n"
+			"\n"
+			"### Box\n\n"
+			"::: tip\n"
+			"tip body\n"
+			":::\n"
+			"\n"
+			"::: warning\n"
+			"warn body\n"
+			":::\n"
+			"\n"
+			"> [!NOTE]\n"
+			"> note body\n"
+			"\n"
+			":::: danger 嵌套示例\n"
+			"::: tip\n"
+			"inner tip\n"
+			":::\n"
+			"::::\n"
+			"\n"
+			"### After\n\n"
+			"text\n");
+		Ui_BeginFrame(&g_ctx);
+		Ui_EndFrame(&g_ctx);
+		Gfx_Begin(g);
+		Ui_BeginFrame(&g_ctx);
+		Ui_Markdown(md, &g_ctx, area);
+		Ui_EndFrame(&g_ctx);
+		CHECK(Gfx_End(g) == 1);
+		CHECK(UiMarkdown_HeadingCount(md) == 4);
+		h = UiMarkdown_HeadingAt(md, 1);
+		CHECK(h != NULL);
+		if (h) CHECK(lstrcmpA(h->slug, "indiv") == 0);
+		h = UiMarkdown_HeadingAt(md, 2);
+		CHECK(h != NULL);
+		if (h) {
+			CHECK(h->level == 3);
+			CHECK(lstrcmpA(h->slug, "box") == 0);
+			CHECK(h->textLen == 3);
+		}
+		h = UiMarkdown_HeadingAt(md, 3);
+		CHECK(h != NULL);
+		if (h) CHECK(lstrcmpA(h->slug, "after") == 0);
+	}
+
 	/* 粘性定位: 跳到远处标题后, 懒测量收敛不应让落点漂移 */
 	{
 		DynBuf sb;

@@ -20,6 +20,7 @@
 #include "ui/ui_md.h"
 #include "ui/ui_scroll.h"
 #include "ui/ui_textarea.h"
+#include "ui/ui_tooltip.h"
 #include "ui/ui_widgets.h"
 
 int vsnprintf(char *buf, size_t cap, const char *fmt, va_list ap);
@@ -333,14 +334,25 @@ static int save_file_utf8(const wchar_t *path, const char *text, int len)
 /* ── 应用状态 ─────────────────────────────────────────────────────── */
 
 /* 工具栏布局常量与矩形: 绘制与 WM_NCHITTEST 共用, 定义在 App 之前
- * 是因为 App 要缓存一份 (nchittest 里不重复测量文字). */
+ * 是因为 App 要缓存一份 (nchittest 里不重复测量文字).
+ * 按钮统一 32x30 的方形图标位: 分组之间 12, 组内 4, 分隔线落在 12 的中间. */
 #define TB_TOP  10.0f
 #define TB_H    30.0f
 #define TB_GAP  8.0f
+#define TB_IW   32.0f
+#define TB_G4   4.0f
+#define TB_G12  12.0f
 
 typedef struct ToolbarRects {
 	UiRect title, back, fwd, open, save, bar, toc, edit, theme, close;
+	UiRect sep1, sep2;      /* 导航 | 文件 | 地址栏 的分组细线 */
 } ToolbarRects;
+
+/* 悬停提示槽位 (顺序即绘制顺序) */
+enum {
+	TIP_BACK, TIP_FWD, TIP_OPEN, TIP_SAVE,
+	TIP_TOC, TIP_EDIT, TIP_THEME, TIP_CLOSE, TIP_TOP, TIP_N
+};
 
 typedef struct HistEntry {
 	char *loc;      /* 文档地址, 可带 "#slug" */
@@ -395,6 +407,11 @@ typedef struct App {
 	int wantOpen;
 	int wantSave;
 	DynBuf editBuf;
+
+	/* 工具栏/浮层悬停提示 */
+	UiTooltip tips[TIP_N];
+	int tipsReady;
+	UiRect topRc;           /* "回到顶部" 按钮本帧矩形; 空 = 未显示 */
 
 	char imgPath[512];
 	char inlinePath[512];
@@ -1227,6 +1244,27 @@ static void open_markdown(UiApp *app, App *a)
 	HeapFree(GetProcessHeap(), 0, u8);
 }
 
+/* 文件拖放: 把 .md 丢进窗口就打开, 与「打开」对话框走同一条路径
+ * (本地加载 + 记一条历史). 多个文件时只处理第一个. */
+static int on_dropfiles(UiApp *app, const wchar_t *path, void *user)
+{
+	App *a = (App *)user;
+	char *u8;
+
+	(void)app;
+	if (!path || !path[0]) return 0;
+	u8 = wide_to_utf8(path);
+	if (!u8) return 0;
+	hist_touch(a);
+	if (app_load_local(a, u8, 0)) {
+		char full[1100];
+		lstrcpynA(full, u8, (int)sizeof(full));
+		hist_push(a, full, 0);
+	}
+	HeapFree(GetProcessHeap(), 0, u8);
+	return 1;
+}
+
 static void on_init(UiApp *app, void *user)
 {
 	App *a = (App *)user;
@@ -1260,7 +1298,14 @@ static void on_init(UiApp *app, void *user)
 	a->histPos = -1;
 	a->pendingRow = -1;
 	a->tocDirty = 1;   /* 首帧就建目录, 否则要等第一次换文档 */
-	lstrcpynA(a->status, "内置示例 ｜ 右上「打开」载入本地或输入 URL",
+	a->topRc = Ui_Rect(0, 0, 0, 0);
+	{
+		int i;
+		for (i = 0; i < TIP_N; i++)
+			UiTooltip_Init(&a->tips[i], Ui_Id("md.tip", i, 0));
+		a->tipsReady = 1;
+	}
+	lstrcpynA(a->status, "内置示例 ｜ 可拖放 .md 到窗口, 或点「打开」", 
 		(int)sizeof(a->status));
 	/* 窗口/任务栏图标来自 exe 的资源 ID 1 (res\cui_markdown.rc),
 	 * UiApp 注册窗口类时已载入, 这里不用再 WM_SETICON. */
@@ -1269,22 +1314,42 @@ static void on_init(UiApp *app, void *user)
 /* ── 工具栏布局 ───────────────────────────────────────────────────── */
 
 /* 唯一布局来源: 绘制与 WM_NCHITTEST (拖动/双击最大化) 共用同一组矩形,
- * 否则两边各自累加坐标迟早会漂移. 左侧是产品名, 右侧从关闭按钮往左排. */
+ * 否则两边各自累加坐标迟早会漂移. 左侧是产品名, 右侧从关闭按钮往左排.
+ * 左半: 标题 | 后退 前进 | 打开 保存 | 地址栏; 右半: 目录 编辑 主题 关闭. */
 static void toolbar_rects(float w, float titleW, ToolbarRects *r)
 {
-	float cx;
+	float cx, sx;
 
 	r->title = Ui_Rect(16.0f, TB_TOP, titleW, TB_H);
-	cx = r->title.x + titleW + (titleW > 0.0f ? 16.0f : 0.0f);
-	r->back = Ui_Rect(cx, TB_TOP, 32.0f, TB_H); cx += 36.0f;
-	r->fwd = Ui_Rect(cx, TB_TOP, 32.0f, TB_H); cx += 44.0f;
-	r->open = Ui_Rect(cx, TB_TOP, 74.0f, TB_H); cx += 80.0f;
-	r->save = Ui_Rect(cx, TB_TOP, 60.0f, TB_H); cx += 68.0f;
+	cx = r->title.x + titleW + (titleW > 0.0f ? 18.0f : 0.0f);
+	r->back = Ui_Rect(cx, TB_TOP, TB_IW, TB_H); cx += TB_IW + TB_G4;
+	r->fwd = Ui_Rect(cx, TB_TOP, TB_IW, TB_H); cx += TB_IW + TB_G12;
+	sx = cx - TB_G12 * 0.5f - 0.5f;             /* 第一条分组线 */
+	r->sep1 = Ui_Rect(sx, TB_TOP + 7.0f, 1.0f, TB_H - 14.0f);
+	r->open = Ui_Rect(cx, TB_TOP, TB_IW, TB_H); cx += TB_IW + TB_G4;
+	r->save = Ui_Rect(cx, TB_TOP, TB_IW, TB_H); cx += TB_IW + TB_G12;
+	sx = cx - TB_G12 * 0.5f - 0.5f;             /* 第二条分组线 */
+	r->sep2 = Ui_Rect(sx, TB_TOP + 7.0f, 1.0f, TB_H - 14.0f);
 	r->close = Ui_Rect(w - 16.0f - 38.0f, TB_TOP, 38.0f, TB_H);
-	r->theme = Ui_Rect(r->close.x - TB_GAP - 84.0f, TB_TOP, 84.0f, TB_H);
-	r->edit = Ui_Rect(r->theme.x - TB_GAP - 62.0f, TB_TOP, 62.0f, TB_H);
-	r->toc = Ui_Rect(r->edit.x - TB_GAP - 58.0f, TB_TOP, 58.0f, TB_H);
+	r->theme = Ui_Rect(r->close.x - TB_GAP - TB_IW, TB_TOP, TB_IW, TB_H);
+	r->edit = Ui_Rect(r->theme.x - TB_G4 - TB_IW, TB_TOP, TB_IW, TB_H);
+	r->toc = Ui_Rect(r->edit.x - TB_G4 - TB_IW, TB_TOP, TB_IW, TB_H);
 	r->bar = Ui_Rect(cx, TB_TOP, r->toc.x - TB_GAP - cx, TB_H);
+}
+
+/* 工具栏图标按钮: 有图标字体时纯图标 (TEXT 外观, 打开态用 primary 着色),
+ * 没有图标字体时退回文字按钮 —— 否则整个工具栏会变成一排空白方块. */
+static int tb_button(UiContext *ui, UiTheme *t, UiId id, UiRect rc,
+	uint32_t cp, const char *fallback, int active, int enabled)
+{
+	UiButtonStyle st = UiButtonStyle_Make(
+		active ? UI_BTYPE_PRIMARY : UI_BTYPE_DEFAULT,
+		UI_BAPPEAR_TEXT, UI_BSHAPE_RECT, 0);
+	UiIcon ic;
+
+	if (!t->fIcon) return Ui_ButtonEx(ui, id, rc, fallback, &st, enabled);
+	ic = UiIcon_Glyph(t->fIcon, cp);
+	return Ui_IconButton(ui, id, rc, &ic, &st, enabled);
 }
 
 static const char *g_title = "CUI Markdown Reader";
@@ -1339,24 +1404,37 @@ static void on_frame(UiApp *app, void *user)
 	/* ── 工具栏 ── */
 	{
 		UiId cid = Ui_Id("md.close", 0, 0);
+		UiId idBack = Ui_Id("md.back", 0, 0);
+		UiId idFwd = Ui_Id("md.fwd", 0, 0);
+		UiId idOpen = Ui_Id("md.open", 0, 0);
+		UiId idSave = Ui_Id("md.save", 0, 0);
+		UiId idToc = Ui_Id("md.toc", 0, 0);
+		UiId idEdit = Ui_Id("md.edit", 0, 0);
+		UiId idTheme = Ui_Id("md.theme", 0, 0);
 		ToolbarRects *tb = &a->tb;
+		double now = UiFrame_Now();
+		int dark = t->themeId == UI_THEME_DARK;
 
 		toolbar_rects(app->w, titleW, tb);
 		Gfx_Text(app->gfx, t->fHead, g_title, tb->title, t->text,
 			GFX_TEXT_VCENTER);
 
-		if (Ui_Button(&app->ui, Ui_Id("md.back", 0, 0), tb->back,
-			"\xE2\x86\x90", UI_BTN_DEFAULT, a->histPos > 0))
+		/* 分组细线: 导航 | 文件 | 地址栏. 只是视觉分隔, 仍属可拖区(不出现在
+		 * nchittest 的排除列表里). */
+		Gfx_Line(app->gfx, tb->sep1.x + 0.5f, tb->sep1.y,
+			tb->sep1.x + 0.5f, tb->sep1.y + tb->sep1.h, t->border, 1.0f);
+		Gfx_Line(app->gfx, tb->sep2.x + 0.5f, tb->sep2.y,
+			tb->sep2.x + 0.5f, tb->sep2.y + tb->sep2.h, t->border, 1.0f);
+
+		if (tb_button(&app->ui, t, idBack, tb->back, 0xE72Bu, "后退", 0,
+			a->histPos > 0))
 			hist_go(app, a, -1);
-		if (Ui_Button(&app->ui, Ui_Id("md.fwd", 0, 0), tb->fwd,
-			"\xE2\x86\x92", UI_BTN_DEFAULT,
+		if (tb_button(&app->ui, t, idFwd, tb->fwd, 0xE72Au, "前进", 0,
 			a->histPos >= 0 && a->histPos + 1 < a->histN))
 			hist_go(app, a, 1);
-		if (Ui_Button(&app->ui, Ui_Id("md.open", 0, 0), tb->open,
-			"打开", UI_BTN_DEFAULT, 1))
+		if (tb_button(&app->ui, t, idOpen, tb->open, 0xE8E5u, "打开", 0, 1))
 			a->wantOpen = 1;
-		if (Ui_Button(&app->ui, Ui_Id("md.save", 0, 0), tb->save,
-			"保存", UI_BTN_DEFAULT,
+		if (tb_button(&app->ui, t, idSave, tb->save, 0xE74Eu, "保存", 0,
 			a->docUrl[0] && !is_remote(a->docUrl)))
 			a->wantSave = 1;
 
@@ -1373,23 +1451,21 @@ static void on_frame(UiApp *app, void *user)
 				a->docUrl[0] ? t->text2 : t->text3);
 		}
 
-		if (Ui_Button(&app->ui, Ui_Id("md.toc", 0, 0), tb->toc,
-			"目录", UI_BTN_DEFAULT, 1))
+		if (tb_button(&app->ui, t, idToc, tb->toc, 0xE8FDu, "目录",
+			a->tocOpen, 1))
 			a->tocOpen = !a->tocOpen;
-		if (Ui_Button(&app->ui, Ui_Id("md.edit", 0, 0), tb->edit,
-			a->editorOpen ? "收起源码" : "编辑",
-			a->editorOpen ? UI_BTN_PRIMARY : UI_BTN_DEFAULT, 1)) {
+		if (tb_button(&app->ui, t, idEdit, tb->edit, 0xE70Fu, "编辑",
+			a->editorOpen, 1)) {
 			a->editorOpen = !a->editorOpen;
 			if (a->editorOpen) {
 				if (a->tocOpen) a->tocOpen = 0;
 				Ui_SetFocusId(&app->ui, a->src.id);
 			}
 		}
-		if (Ui_Button(&app->ui, Ui_Id("md.theme", 0, 0), tb->theme,
-			t->themeId == UI_THEME_DARK ? "浅色" : "深色",
-			UI_BTN_DEFAULT, 1))
-			UiTheme_SetTheme(t, t->themeId == UI_THEME_DARK
-				? UI_THEME_LIGHT : UI_THEME_DARK);
+		/* 主题按钮显示"要切到的目标": 深色时给太阳, 浅色时给月亮 */
+		if (tb_button(&app->ui, t, idTheme, tb->theme,
+			dark ? 0xE706u : 0xE708u, dark ? "浅色" : "深色", 0, 1))
+			UiTheme_SetTheme(t, dark ? UI_THEME_LIGHT : UI_THEME_DARK);
 
 		/* 关闭: 自绘 ✕, hover 渐入标准关闭红 (与其它按钮同一行) */
 		{
@@ -1408,6 +1484,24 @@ static void on_frame(UiApp *app, void *user)
 			if (cs.hovered) Ui_SetCursor(&app->ui, cid, UI_CURSOR_HAND);
 			if (app->ui.clicked == cid) UiApp_Close(app);
 		}
+
+		/* 悬停提示: 必须在控件注册之后调用 (读 ui->hover) */
+		UiTooltip_Update(&a->tips[TIP_BACK], &app->ui, idBack, tb->back,
+			"后退  Alt+←", now);
+		UiTooltip_Update(&a->tips[TIP_FWD], &app->ui, idFwd, tb->fwd,
+			"前进  Alt+→", now);
+		UiTooltip_Update(&a->tips[TIP_OPEN], &app->ui, idOpen, tb->open,
+			"打开本地 .md", now);
+		UiTooltip_Update(&a->tips[TIP_SAVE], &app->ui, idSave, tb->save,
+			"保存  Ctrl+S", now);
+		UiTooltip_Update(&a->tips[TIP_TOC], &app->ui, idToc, tb->toc,
+			a->tocOpen ? "收起目录" : "标题目录", now);
+		UiTooltip_Update(&a->tips[TIP_EDIT], &app->ui, idEdit, tb->edit,
+			a->editorOpen ? "收起源码" : "源码编辑", now);
+		UiTooltip_Update(&a->tips[TIP_THEME], &app->ui, idTheme, tb->theme,
+			dark ? "切换到浅色" : "切换到深色", now);
+		UiTooltip_Update(&a->tips[TIP_CLOSE], &app->ui, cid, tb->close,
+			"关闭", now);
 	}
 
 	/* ── 三栏 ── */
@@ -1463,6 +1557,84 @@ static void on_frame(UiApp *app, void *user)
 				lstrcpynA(clickedCopy, clicked, (int)sizeof(clickedCopy));
 			if (clickedCopy[0])
 				app_navigate(app, a, clickedCopy, 1);
+
+			/* ── 回到顶部: 浮在文档右下角, 滚过一段才淡入 ──
+			 * 用两条动画通道: 透明度 + 8 DIP 上滑, 出现/消失都不突兀;
+			 * Ui_AnimBusy 会替我们保持帧循环, 不用自己记时间. */
+			{
+				UiId tid = Ui_Id("md.top", 0, 0);
+				float off = UiMarkdown_ScrollOffset(a->md);
+				int want = off > 160.0f;
+				float k, slide, sz, rad;
+				UiRect rc;
+				UiWidgetState st;
+
+				Ui_AnimSmooth(&app->ui, tid, UI_AN_ALPHA,
+					want ? 1.0f : 0.0f);
+				Ui_AnimSmooth(&app->ui, tid, UI_AN_OFFSET,
+					want ? 0.0f : 10.0f);
+				k = Ui_AnimGet(&app->ui, tid, UI_AN_ALPHA, 0.0f);
+				slide = Ui_AnimGet(&app->ui, tid, UI_AN_OFFSET, 10.0f);
+				a->topRc = Ui_Rect(0, 0, 0, 0);
+				if (k > 0.02f) {
+					sz = 38.0f;
+					rad = sz * 0.5f;
+					rc = Ui_Rect(viewArea.x + viewArea.w - 14.0f - sz - 8.0f,
+						viewArea.y + viewArea.h - 14.0f - sz + slide,
+						sz, sz);
+					a->topRc = rc;
+					/* 比文档视图高一层: 命中按 z 取最大, 否则点不到 */
+					Ui_PushLayer(&app->ui, UI_Z_BASE + 50);
+					st = Ui_State(&app->ui, tid, rc, 1);
+					{
+						UiColor bg = Ui_ColorMix(t->card,
+							t->primary.soft, st.hover);
+						UiColor bd = Ui_ColorMix(t->border,
+							t->primary.base, st.hover * 0.7f);
+						UiColor fg = Ui_ColorMix(t->text2,
+							t->primary.base, st.hover);
+					int a255 = k > 0.85f ? 255
+						: (int)(k * 255.0f);
+						int sh1 = (int)(k * 26.0f);
+						int sh2 = (int)(k * 44.0f);
+
+						/* 两圈低透明度底当"影": Gfx_DrawGlowRect 的
+						 * 柔光纹理会蒙住按钮内部, 不能用在这里 */
+						Gfx_FillRoundRect(app->gfx,
+							Ui_Rect(rc.x - 6, rc.y - 6,
+								rc.w + 12, rc.h + 12),
+							rad + 6,
+							Ui_ColorAlpha(0xFF10162E, sh1));
+						Gfx_FillRoundRect(app->gfx,
+							Ui_Rect(rc.x - 2, rc.y - 2,
+								rc.w + 4, rc.h + 4),
+							rad + 2,
+							Ui_ColorAlpha(0xFF10162E, sh2));
+						Gfx_FillRoundRect(app->gfx, rc, rad,
+							Ui_ColorAlpha(bg, a255));
+						Gfx_StrokeRoundRect(app->gfx, rc, rad,
+							Ui_ColorAlpha(bd, a255), 1.0f);
+						if (t->fIcon) {
+							UiIcon up = UiIcon_Glyph(t->fIcon, 0xE74Au);
+							UiIcon_Draw(&app->ui, &up,
+								Ui_Rect(rc.x + rad - 8.0f,
+									rc.y + rad - 8.0f, 16.0f, 16.0f),
+								Ui_ColorAlpha(fg, a255), 1);
+						} else {
+							Gfx_Text(app->gfx, t->fBtn, "↑",
+								Ui_Rect(rc.x, rc.y, rc.w, rc.h),
+								Ui_ColorAlpha(fg, a255),
+								GFX_TEXT_CENTER | GFX_TEXT_VCENTER);
+						}
+					}
+					if (st.hovered)
+						Ui_SetCursor(&app->ui, tid, UI_CURSOR_HAND);
+					if (app->ui.clicked == tid)
+						UiMarkdown_ScrollToOffset(a->md, &app->ui,
+							0.0f, 1);
+					Ui_PopLayer(&app->ui);
+				}
+			}
 		}
 	}
 
@@ -1477,12 +1649,27 @@ static void on_frame(UiApp *app, void *user)
 		draw_text_fit(app->gfx, t->fSmall, line,
 			Ui_Rect(18.0f, app->h - 24.0f, app->w - 36.0f, 18.0f), t->hint);
 	}
+
+	/* ── 悬停提示: 最上层, 必须在所有控件注册之后 ── */
+	{
+		int i;
+
+		/* 按钮消失时也要 update 一次, 否则提示会停在最后一帧不关 */
+		UiTooltip_Update(&a->tips[TIP_TOP], &app->ui, Ui_Id("md.top", 0, 0),
+			a->topRc, "回到顶部", UiFrame_Now());
+		for (i = 0; i < TIP_N; i++)
+			UiTooltip_Draw(&a->tips[i], &app->ui);
+	}
 }
 
 static int on_animating(UiApp *app, void *user)
 {
 	App *a = (App *)user;
+	int i;
+
 	(void)app;
+	for (i = 0; i < TIP_N; i++)
+		if (UiTooltip_Pending(&a->tips[i])) return 1;   /* 等 delay 到期 */
 	return (a->md ? UiMarkdown_Busy(a->md) : 0) || a->loading ||
 		(a->editorOpen ? UiTextArea_Busy(&a->src) : 0);
 }
@@ -1583,7 +1770,8 @@ void __stdcall startup(void)
 	App app;
 	static const UiAppCallbacks cb = {
 		on_init, on_frame, on_after_frame, on_shutdown, on_animating,
-		NULL, NULL, NULL, on_key, on_chr, on_ime, on_timer, on_nchittest
+		NULL, NULL, NULL, on_key, on_chr, on_ime, on_timer, on_nchittest,
+		on_dropfiles
 	};
 	ZeroMemory(&app, sizeof(app));
 	app.pendingRow = -1;

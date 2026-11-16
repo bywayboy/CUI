@@ -251,6 +251,25 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		}
 		break;
 
+	/* 文件拖放: 应用没接 dropfiles 时窗口根本不注册接受拖放, 这里只是兜底 */
+	case WM_DROPFILES: {
+		HDROP drop = (HDROP)wp;
+		UINT i, n = DragQueryFileW(drop, 0xFFFFFFFFu, NULL, 0);
+		int done = 0;
+
+		if (app && app->cb && app->cb->dropfiles) {
+			for (i = 0; i < n && !done; i++) {
+				wchar_t path[1024];
+				if (DragQueryFileW(drop, i, path,
+					(int)(sizeof(path) / sizeof(path[0]))) == 0)
+					continue;
+				done = app->cb->dropfiles(app, path, app->user);
+			}
+		}
+		DragFinish(drop);
+		return 0;
+	}
+
 	case WM_MOUSEMOVE: {
 		POINT pt = { (short)LOWORD(lp), (short)HIWORD(lp) };
 		float x, y;
@@ -503,6 +522,9 @@ int UiApp_Run(const wchar_t *title, int widthDip, int heightDip,
 
 	app_apply_dpi(app);
 	app_place_window(app, widthDip, heightDip);
+	/* 只有接了 dropfiles 的应用才注册接受拖放: 否则拖到窗口上连提示光标都没有 */
+	DragAcceptFiles(app->hwnd,
+		(app->cb && app->cb->dropfiles) ? TRUE : FALSE);
 	ShowWindow(app->hwnd, SW_SHOW);
 	UpdateWindow(app->hwnd);
 	UiFrame_ResetTick(&app->clock);
