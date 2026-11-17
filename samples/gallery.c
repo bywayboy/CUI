@@ -3192,6 +3192,9 @@ static void nav_demo(Gallery *g, UiRect rc)
 		"水平栏尾部放不下时收进 >>; 垂直模式可切换为图标 rail。");
 }
 
+/* ── Nav 导航菜单段常量 ── (布局按钮组标签: 0=水平 1=垂直) */
+static const char *const kNavLayoutLabels[2] = { "水平", "垂直" };
+
 static void nav_props(Gallery *g, UiRect rc)
 {
 	UiApp *app = g->app;
@@ -3228,21 +3231,28 @@ static void nav_props(Gallery *g, UiRect rc)
 	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "布局");
 	Ui_StackSkip(&col, 4.0f);
 	UiButtonGroup_Draw(ui, &g->nav.layout, Ui_StackTake(&col, 34.0f),
-		kBgsLabels /* 占位: 下方手动切换 */, NULL, NULL, 1);
+		kNavLayoutLabels, NULL, NULL, 1);
 	Ui_StackSkip(&col, 10.0f);
 
 	vertical = g->nav.layout.selected == 1;
 	UiNavBar_SetLayout(&g->nav.nav, vertical ? UI_NAV_VERTICAL
 		: UI_NAV_HORIZONTAL);
 
-	Ui_Checkbox(&g->nav.rail, ui, Ui_StackTake(&col, 26.0f),
-		"垂直图标 rail", !vertical ? 0 : 1);
+	/* rail 仅垂直布局可用: 水平时禁用 (点击不翻转, 文案提示先切布局) */
+	if (Ui_Checkbox(&g->nav.rail, ui, Ui_StackTake(&col, 26.0f),
+			vertical ? "垂直图标 rail (收窄为图标栏)"
+				: "垂直图标 rail (先切「垂直」布局启用)",
+			vertical)) {
+		char buf[64];
+		wsprintfA(buf, "rail: %s", g->nav.rail.checked ? "开" : "关");
+		set_status(g, buf);
+	}
 	UiNavBar_SetRail(&g->nav.nav, vertical ? g->nav.rail.checked : 0);
 	Ui_StackSkip(&col, 10.0f);
 
 	note_txt(gfx, t, Ui_StackTakeFill(&col),
 		"预览就是同一个导航栏实例 —— 直接在上面点选。\n"
-		"图标 rail 只在垂直布局下可用。");
+		"布局切「垂直」后, 勾选 rail 收窄为图标栏。");
 
 	{
 		UiRect area = pane_in(pv, 12.0f);
