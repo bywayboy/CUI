@@ -56,7 +56,7 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
   Light/Dark、模板受控变换、对比度自动校验），可分别锁定主色/中性色/语义色
   后重抽，单步撤销；工程自动保存到 exe 旁 `theme_editor.palette`，一键生成
   可回贴 `ui_theme.c` 的 `theme_apply_preset()` 并保存/复制。
-- `samples/gallery.c` + `samples/gallery_docs.c`：**综合组件画廊（约 6800 行）**。
+- `samples/gallery.c` + `samples/gallery_docs.c` + `samples/gallery_icons.c`：**综合组件画廊（约 6900 行）**。
   左侧导航列出全部 29 页（28 个组件/能力页 + 欢迎页），每页六个标签：**演示**（真实可
   操作组件）、**属性**（改参数右侧预览实时变化，**右下角同步生成可复制的创建
   代码**，Consolas 深色代码面板随属性逐项刷新）、**文档 / API / 最佳实践**（由
@@ -64,8 +64,9 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
   代码示例，底部是**实时事件日志**——去「演示」页操作组件，每次事件响应都
   会写入状态栏并出现在这里）。
   侧边导航本身是自绘控件示范（ScrollView + `Ui_State` 即时注册）；顶栏主题切换、
-  弹层统一走一个 `UiPopupManager`；覆盖 Button/ButtonGroup/Icon（60 个 MDL2 glyph
-  全集，虚拟滚动 + 点击看码点）/Input/TextArea/Checkbox/Radio/Switch/Slider/
+  弹层统一走一个 `UiPopupManager`；覆盖 Button/ButtonGroup/Icon（**1386 个
+  MDL2 glyph 官方档案全量**，按名称/码点搜索 + PUA 分区过滤 + 虚拟滚动 +
+  点击复制码点并显示用法代码，且与属性页代码联动）/Input/TextArea/Checkbox/Radio/Switch/Slider/
   Select/DatePicker/Tabs/Nav/Pagination/ScrollView/Layout/Dialog/Menu/Toast/
   Tooltip/Progress/Image/Markdown/Theme/网络与定时器/**WebSocket 客户端与
   服务端（本机 18082 回显联调，广播）**/**App 框架（壳回调实时监视器）**。

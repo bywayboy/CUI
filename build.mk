@@ -55,7 +55,8 @@ SAMPLE_OBJS = $(OBJ)\demo.obj $(OBJ)\minimal.obj $(OBJ)\advanced.obj \
     $(OBJ)\overlays.obj $(OBJ)\textarea.obj $(OBJ)\datepicker.obj \
     $(OBJ)\net.obj $(OBJ)\image.obj $(OBJ)\ws_server.obj $(OBJ)\nav.obj \
     $(OBJ)\pagination.obj $(OBJ)\markdown.obj $(OBJ)\theme_editor.obj \
-    $(OBJ)\grid.obj $(OBJ)\gallery.obj $(OBJ)\gallery_docs.obj
+    $(OBJ)\grid.obj $(OBJ)\gallery.obj $(OBJ)\gallery_docs.obj \
+    $(OBJ)\gallery_icons.obj
 
 TEST_OBJS = $(OBJ)\net_test.obj $(OBJ)\gfx_rich_test.obj $(OBJ)\md_test.obj \
     $(OBJ)\md_ui_test.obj $(OBJ)\md_math_test.obj $(OBJ)\gfx_math_test.obj \
@@ -211,7 +212,7 @@ $(BIN)\cui_grid.exe: $(CORE_OBJS) $(OBJ)\grid.obj
 	@echo [cui] link grid
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_gallery.exe: $(CORE_OBJS) $(OPT_OBJS) $(OBJ)\gallery.obj $(OBJ)\gallery_docs.obj
+$(BIN)\cui_gallery.exe: $(CORE_OBJS) $(OPT_OBJS) $(OBJ)\gallery.obj $(OBJ)\gallery_docs.obj $(OBJ)\gallery_icons.obj
 	@echo [cui] link gallery (optional module)
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 

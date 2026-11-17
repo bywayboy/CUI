@@ -38,6 +38,7 @@
 #include "net/ui_ws_server.h"
 #include "edit.h"
 #include "gallery_docs.h"
+#include "gallery_icons.h"
 
 /* crtstub(0CRT) 提供 snprintf(支持 %f); wsprintfA 不支持浮点格式 */
 int snprintf(char *buf, size_t cap, const char *fmt, ...);
@@ -146,8 +147,15 @@ typedef struct Gallery {
 	struct {
 		UiScrollView sv;        /* glyph 全集虚拟滚动 */
 		UiSlider size;
-		UiButtonGroup tint;
+		UiButtonGroup tint, zone;  /* tint: 属性页着色; zone: 演示页 PUA 分区 */
 		UiCheckbox disabled;
+		UiInput form;           /* 演示页搜索框 */
+		int search;
+		unsigned short vis[GALLERY_ICON_MAX]; /* 过滤结果: kMdl2Icons 下标 */
+		int visN;
+		int sel;                /* 选中 glyph (kMdl2Icons 下标), -1 = 无 */
+		char lastQuery[48];
+		int lastZone;
 	} icon;
 
 	/* Input */
@@ -1295,55 +1303,125 @@ static int bgroup_key(Gallery *g, UINT vk)
 
 /* ── Icon ──────────────────────────────────────────────────────────── */
 
-/* Segoe MDL2 Assets glyph 全集: 5 组 x 12 = 60 (按用途分组)。
- * 码点均取自本工程与 Windows 通用 MDL2 常用集。 */
-static const struct { uint32_t cp; const char *name; } kIconList[] = {
-	/* 操作 */
-	{ 0xE706u, "亮色" }, { 0xE708u, "暗色" }, { 0xE713u, "设置" },
-	{ 0xE72Cu, "刷新" }, { 0xE74Du, "删除" }, { 0xE74Eu, "保存" },
-	{ 0xE72Bu, "后退" }, { 0xE72Au, "前进" }, { 0xE70Fu, "编辑" },
-	{ 0xE715u, "搜索" }, { 0xE710u, "添加" }, { 0xE7E2u, "清空" },
-	/* 状态 */
-	{ 0xE73Eu, "完成" }, { 0xE783u, "错误" }, { 0xE946u, "信息" },
-	{ 0xE7BAu, "警告" }, { 0xE7E7u, "同步中" }, { 0xEB51u, "等待" },
-	{ 0xE8FDu, "目录" }, { 0xE8A5u, "文档" }, { 0xE719u, "邮件" },
-	{ 0xE753u, "云" }, { 0xE7F4u, "桌面" }, { 0xE8EAu, "移动" },
-	/* 导航 */
-	{ 0xE80Fu, "首页" }, { 0xE71Du, "产品" }, { 0xE8F1u, "方案" },
-	{ 0xE897u, "支持" }, { 0xE8ECu, "定价" }, { 0xE743u, "开发者" },
-	{ 0xE716u, "案例" }, { 0xE72Eu, "安全" }, { 0xE77Bu, "招聘" },
-	{ 0xE774u, "伙伴" }, { 0xE9D9u, "状态" }, { 0xE7C1u, "购物" },
-	/* 媒体与杂项 */
-	{ 0xE8E5u, "打开" }, { 0xE8B7u, "相机" }, { 0xE8D6u, "图片" },
-	{ 0xE7C9u, "音频" }, { 0xE768u, "播放" }, { 0xE71Au, "暂停" },
-	{ 0xE787u, "计算器" }, { 0xE8C8u, "切换" }, { 0xE8CBu, "日历" },
-	{ 0xE716u, "用户" }, { 0xE90Bu, "图表" }, { 0xE945u, "下载" }
-};
-#define ICON_N (int)(sizeof(kIconList) / sizeof(kIconList[0]))
-#define ICON_COLS 10
-static const char *const kIconGroups[5] = {
-	"操作", "状态", "导航", "媒体与杂项"
-};
+/* glyph 数据表移至 samples/gallery_icons.c: 1386 条官方档案全量收录
+ * (来源/口径见 gallery_icons.h 头注释), 这里只留页面自身的常量。 */
+
+/* 属性页着色 (tint) 组 */
 static const char *const kIconTintLabels[5] = {
 	"主色", "成功", "警告", "正文", "禁用"
 };
 
+/* 演示页 PUA 分区过滤: 0 = 全部; 1..6 对应官方档案的六个分区表 */
+static const char *const kIconZoneLabels[7] = {
+	"全部", "E7-E9", "EA-EC", "ED-EF", "F0-F2", "F3-F5", "F6-F8"
+};
+static const uint32_t kIconZoneLo[7] = {
+	0x0000u, 0xE700u, 0xEA00u, 0xED00u, 0xF000u, 0xF300u, 0xF600u
+};
+static const uint32_t kIconZoneHi[7] = {
+	0xFFFFu, 0xE9FFu, 0xECFFu, 0xEFFFu, 0xF2FFu, 0xF5FFu, 0xF8FFu
+};
+#define ICON_ZONE_N 7
+
 static int icon_anim(Gallery *g)
 {
-	return UiScrollView_Busy(&g->icon.sv);
+	return UiScrollView_Busy(&g->icon.sv) || UiTooltip_Pending(&g->tip);
+}
+
+/* ANSI 文本写剪贴板 (码点串是纯 ASCII, CF_TEXT 即可) */
+static int icon_copy_text(UiApp *app, const char *s)
+{
+	int len = lstrlenA(s), ok = 0, i;
+	HGLOBAL h;
+	char *p;
+
+	if (!OpenClipboard(app->hwnd)) return 0;
+	if (EmptyClipboard()) {
+		h = GlobalAlloc(GMEM_MOVEABLE, (SIZE_T)len + 1u);
+		if (h) {
+			p = (char *)GlobalLock(h);
+			if (p) {
+				for (i = 0; i < len; i++) p[i] = s[i];
+				p[len] = 0;
+				GlobalUnlock(h);
+				ok = SetClipboardData(CF_TEXT, h) != NULL;
+			}
+			if (!ok) GlobalFree(h);
+		}
+	}
+	CloseClipboard();
+	return ok;
+}
+
+/* 大小写不敏感 ASCII 子串匹配; q 必须先转成小写 */
+static int icon_icontains(const char *hay, const char *q)
+{
+	int i;
+	if (!q[0]) return 1;
+	for (i = 0; hay[i]; i++) {
+		int j = i, k = 0;
+		while (hay[j] && q[k]) {
+			char a = hay[j];
+			if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
+			if (a != q[k]) break;
+			j++; k++;
+		}
+		if (!q[k]) return 1;
+	}
+	return 0;
+}
+
+/* 按分区 + 搜索串过滤官方档案, 结果存 vis[] (kMdl2Icons 下标)。
+ * 名称与码点都参与匹配 (码点按 4 位十六进制子串)。 */
+static void icon_refilter(Gallery *g, const char *q)
+{
+	char low[48];
+	int i, n = 0, z = g->icon.zone.selected;
+
+	if (z < 0 || z >= ICON_ZONE_N) z = 0;
+	for (i = 0; q[i] && i < (int)sizeof(low) - 1; i++) {
+		char c = q[i];
+		if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+		low[i] = c;
+	}
+	low[i] = 0;
+	for (i = 0; i < kMdl2IconCount; i++) {
+		uint32_t cp = kMdl2Icons[i].cp;
+		if (cp < kIconZoneLo[z] || cp > kIconZoneHi[z]) continue;
+		if (low[0]) {
+			char hex[8];
+			wsprintfA(hex, "%04X", cp);
+			if (!icon_icontains(kMdl2Icons[i].name, low) &&
+				!icon_icontains(hex, low)) continue;
+		}
+		if (n >= (int)(sizeof(g->icon.vis) / sizeof(g->icon.vis[0]))) break;
+		g->icon.vis[n++] = (unsigned short)i;
+	}
+	g->icon.visN = n;
+	g->icon.lastZone = z;
+	lstrcpynA(g->icon.lastQuery, q, (int)sizeof(g->icon.lastQuery));
 }
 
 static void icon_init(Gallery *g)
 {
 	UiScrollConfig icfg = UiScrollConfig_Desktop();
 	UiScrollbarStyle ibar = UiScrollbarStyle_Default();
-	icfg.wheelStep = 62.0f;
+	icfg.wheelStep = 72.0f;
 	UiScrollView_Init(&g->icon.sv, Ui_Id("gl.icon.sv", 0, 0), &icfg, &ibar);
 	UiSlider_Init(&g->icon.size, Ui_Id("gl.icon.size", 0, 0), 0.36f);
 	UiButtonGroup_Init(&g->icon.tint, Ui_Id("gl.icon.tint", 0, 0),
 		UI_BG_SINGLE, 5);
 	UiButtonGroup_SetSelected(&g->icon.tint, 0);
+	UiButtonGroup_Init(&g->icon.zone, Ui_Id("gl.icon.zone", 0, 0),
+		UI_BG_SINGLE, ICON_ZONE_N);
+	UiButtonGroup_SetSelected(&g->icon.zone, 0);
 	UiCheckbox_Init(&g->icon.disabled, Ui_Id("gl.icon.dis", 0, 0), 0);
+	UiInput_Init(&g->icon.form, &g->app->ui, &g->app->ime);
+	g->icon.search = UiInput_Add(&g->icon.form, Ui_Id("gl.icon.q", 0, 0),
+		40, 0, NULL, L"搜索名称 / 码点 (camera / e713)");
+	g->icon.sel = -1;
+	g->icon.lastZone = -1;            /* 首帧必重过滤 (与初始 0 不同) */
+	icon_refilter(g, "");
 }
 
 static UiColor icon_tint(Gallery *g)
@@ -1364,52 +1442,149 @@ static void icon_demo(Gallery *g, UiRect rc)
 	UiTheme *t = &app->theme;
 	UiContext *ui = &app->ui;
 	Gfx *gfx = app->gfx;
-	UiStack col;
+	UiStack col, bar;
 	UiRect grid;
-	int i;
-	float px = 14.0f + g->icon.size.value * 18.0f;
-	int rows = (ICON_N + ICON_COLS - 1) / ICON_COLS;
-	float contentH = (float)rows * 62.0f + 8.0f;
+	char q[64], buf[160];
+	int i, cols, rows, tipMatched = 0;
+	float tileW, tileH = 72.0f, rowGap = 8.0f, contentH;
+
+	/* 搜索文本 / 分区变化时重过滤, 并把滚动复位到顶部 */
+	Edit_TextUtf8(UiInput_Edit(&g->icon.form, g->icon.search), q,
+		(int)sizeof(q));
+	if (lstrcmpA(q, g->icon.lastQuery) ||
+		g->icon.zone.selected != g->icon.lastZone) {
+		icon_refilter(g, q);
+		UiScrollView_ScrollTo(&g->icon.sv, ui, 0.0f, 0);
+		UiApp_Invalidate(app);
+	}
 
 	Ui_StackBeginPad(&col, rc, UI_COLUMN, 0.0f, 4.0f, 10.0f, 4.0f, 10.0f);
 
-	lbl(gfx, t, Ui_StackTake(&col, 18.0f),
-		"glyph 全集 (60 个 · 点击查看码点 · 可滚动)");
-	grid = Ui_StackTakeFill(&col);
+	wsprintfA(buf, "Segoe MDL2 Assets 官方档案 (共 %d glyphs · 当前 %d)",
+		kMdl2IconCount, g->icon.visN);
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), buf);
+	Ui_StackSkip(&col, 4.0f);
 
-	/* 全集放不下 → 放进 ScrollView (虚拟滚动, 只画可见 tile) */
+	/* 搜索框 + PUA 分区过滤 (同一行) */
+	Ui_StackBegin(&bar, Ui_StackTake(&col, 38.0f), UI_ROW, 10.0f, 0.0f);
+	UiInput_BeginFrame(&g->icon.form);
+	UiInput_SetRect(&g->icon.form, g->icon.search, Ui_StackTake(&bar, 250.0f));
+	UiInput_Draw(&g->icon.form, g->icon.search);
+	UiButtonGroup_Draw(ui, &g->icon.zone, Ui_StackTakeFill(&bar),
+		kIconZoneLabels, NULL, NULL, 1);
+	if (g->icon.zone.changed) UiApp_Invalidate(app);
+	Ui_StackSkip(&col, 8.0f);
+
+	/* 点击选中详情卡 (未选中时显示引导, 即时反馈而非只写状态栏) */
+	if (g->icon.sel >= 0 && g->icon.sel < kMdl2IconCount) {
+		const GalleryIcon *ic = &kMdl2Icons[g->icon.sel];
+		UiRect card = Ui_StackTake(&col, 92.0f);
+		float bigPx = 40.0f;
+		Gfx_FillRoundRect(gfx, card, 10.0f,
+			Ui_ColorAlpha(t->primary.base, 16));
+		Gfx_StrokeRoundRect(gfx, card, 10.0f,
+			Ui_ColorAlpha(t->primary.base, 60), 1.0f);
+		if (t->fIcon) {
+			UiIcon icx = UiIcon_Glyph(t->fIcon, ic->cp);
+			UiIcon_Draw(ui, &icx,
+				Ui_Rect(card.x + 18.0f,
+					card.y + (card.h - bigPx) * 0.5f, bigPx, bigPx),
+				t->primary.base, 1);
+		}
+		wsprintfA(buf, "%s  ·  U+%04X  ·  已复制到剪贴板, 粘贴即用",
+			ic->name, ic->cp);
+		Gfx_Text(gfx, t->fSmall, buf,
+			Ui_Rect(card.x + 72.0f, card.y + 12.0f, card.w - 88.0f, 20.0f),
+			t->text, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+		wsprintfA(buf, "UiIcon ic = UiIcon_Glyph(t->fIcon, 0x%04Xu);", ic->cp);
+		Gfx_Text(gfx, g->fCode ? g->fCode : t->fSmall, buf,
+			Ui_Rect(card.x + 72.0f, card.y + 34.0f, card.w - 88.0f, 18.0f),
+			t->text3, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+		wsprintfA(buf, "// %s · UiIcon_Draw(ui, &ic, rc, tint, 1);",
+			ic->name);
+		Gfx_Text(gfx, g->fCode ? g->fCode : t->fSmall, buf,
+			Ui_Rect(card.x + 72.0f, card.y + 54.0f, card.w - 88.0f, 18.0f),
+			t->hint, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+	} else {
+		UiRect card = Ui_StackTake(&col, 62.0f);
+		note_txt(gfx, t, card,
+			"1386 个 glyph 全量收录自 Windows 官方 MDL2 档案, 按 PUA 分区浏览,\n"
+			"可按英文名与码点搜索; 点击任意图标: 选中高亮 + 复制码点到剪贴板 + 此处显示用法代码。");
+	}
+	Ui_StackSkip(&col, 8.0f);
+
+	/* 全量网格: 放进 ScrollView (虚拟滚动, 只画可见 tile) */
+	grid = Ui_StackTakeFill(&col);
+	cols = (int)(grid.w / 84.0f);
+	if (cols < 8) cols = 8;
+	if (cols > 20) cols = 20;
+	tileW = grid.w / (float)cols;
+	rows = (g->icon.visN + cols - 1) / cols;
+	contentH = g->icon.visN ? (float)rows * (tileH + rowGap) + 8.0f : grid.h;
+
 	UiScrollView_Tick(&g->icon.sv, ui, frame_dt(g));
 	UiScrollView_Begin(&g->icon.sv, ui, grid, grid.w, contentH);
 	{
 		UiRect content = UiScrollView_ContentRect(&g->icon.sv);
-		for (i = 0; i < ICON_N; i++) {
-			UiRect tile = Ui_Rect(content.x + (i % ICON_COLS) * 66.0f,
-				content.y + (i / ICON_COLS) * 62.0f, 60.0f, 56.0f);
-			UiId id = Ui_IdIndex("gl.icon.tile", i, 0, 0);
+		for (i = 0; i < g->icon.visN; i++) {
+			unsigned short idx = g->icon.vis[i];
+			const GalleryIcon *ic = &kMdl2Icons[idx];
+			UiRect tile = Ui_Rect(
+				content.x + (float)(i % cols) * tileW + 4.0f,
+				content.y + (float)(i / cols) * (tileH + rowGap) + 4.0f,
+				tileW - 8.0f, tileH);
+			UiId id = Ui_IdIndex("gl.icon.tile", idx, 0, 0);
 			UiWidgetState st = Ui_State(ui, id, tile, 1);
+			int sel = idx == g->icon.sel;
 			if (UiScrollView_Cull(&g->icon.sv, tile)) continue;
-			Gfx_FillRoundRect(gfx, tile, 8.0f, st.hover > 0.01f
-				? Ui_ColorAlpha(t->primary.base, (int)(st.hover * 30.0f))
+			Gfx_FillRoundRect(gfx, tile, 8.0f, sel
+				? Ui_ColorAlpha(t->primary.base, 36)
+				: st.hover > 0.01f
+				? Ui_ColorAlpha(t->primary.base,
+					(int)(st.hover * 30.0f))
 				: Ui_ColorAlpha(t->text3, 14));
-			if (st.hovered) Ui_SetCursor(ui, id, UI_CURSOR_HAND);
+			if (sel)
+				Gfx_StrokeRoundRect(gfx, tile, 8.0f, t->primary.base, 1.5f);
 			if (t->fIcon) {
-				UiIcon ic = UiIcon_Glyph(t->fIcon, kIconList[i].cp);
-				UiIcon_Draw(ui, &ic,
-					Ui_Rect(tile.x + tile.w * 0.5f - px * 0.5f,
-						tile.y + 6.0f, px, px), t->text2, 1);
+				UiIcon icx = UiIcon_Glyph(t->fIcon, ic->cp);
+				UiIcon_Draw(ui, &icx,
+					Ui_Rect(tile.x + tile.w * 0.5f - 13.0f,
+						tile.y + 8.0f, 26.0f, 26.0f),
+					sel ? t->primary.base : t->text2, 1);
 			}
-			Gfx_Text(gfx, t->fMini, kIconList[i].name,
-				Ui_Rect(tile.x, tile.y + tile.h - 17.0f, tile.w, 15.0f),
+			Gfx_Text(gfx, t->fMini, ic->name,
+				Ui_Rect(tile.x + 4.0f, tile.y + 38.0f, tile.w - 8.0f, 14.0f),
+				sel ? t->text : t->text2,
+				GFX_TEXT_CENTER | GFX_TEXT_ELLIPSIS);
+			wsprintfA(buf, "%04X", ic ? ic->cp : 0);
+			Gfx_Text(gfx, t->fMini, buf,
+				Ui_Rect(tile.x + 4.0f, tile.y + 52.0f, tile.w - 8.0f, 13.0f),
 				t->hint, GFX_TEXT_CENTER | GFX_TEXT_ELLIPSIS);
+			if (st.hovered) {
+				Ui_SetCursor(ui, id, UI_CURSOR_HAND);
+				wsprintfA(buf, "%s (U+%04X)", ic->name, ic->cp);
+				UiTooltip_Update(&g->tip, ui, id, tile, buf,
+					UiFrame_Now());
+				tipMatched = 1;
+			}
 			if (ui->clicked == id) {
-				char buf[96];
-				wsprintfA(buf, "%s = U+%04X", kIconList[i].name,
-					kIconList[i].cp);
+				g->icon.sel = idx;
+				wsprintfA(buf, "U+%04X", ic->cp);
+				icon_copy_text(app, buf);
+				wsprintfA(buf, "%s (U+%04X) 码点已复制到剪贴板",
+					ic->name, ic->cp);
 				set_status(g, buf);
+				UiApp_Invalidate(app);
 			}
 		}
 	}
 	UiScrollView_End(&g->icon.sv, ui);
+	if (!tipMatched)
+		UiTooltip_Update(&g->tip, ui, UI_ID_NONE, Ui_Rect(0, 0, 0, 0),
+			"", UiFrame_Now());
+	if (!g->icon.visN)
+		note_txt(gfx, t, Ui_Rect(grid.x, grid.y + grid.h * 0.4f, grid.w, 40.0f),
+			"无匹配项: 试试英文名 (camera) 或 4 位码点 (e713)");
 }
 
 static void icon_props(Gallery *g, UiRect rc)
@@ -1420,12 +1595,25 @@ static void icon_props(Gallery *g, UiRect rc)
 	Gfx *gfx = app->gfx;
 	UiRect ed, pv;
 	UiStack col;
+	char buf[64], cpTxt[8], hdr[96];
+	float px;
+	UiColor tint;
+	int enabled;
+	uint32_t pvCp = 0xE713u;
+	const char *pvName = "Setting";
+
+	/* 演示页点击选中 glyph 后, 代码/预览同步切换到该图标 */
+	if (g->icon.sel >= 0 && g->icon.sel < kMdl2IconCount) {
+		pvCp = kMdl2Icons[g->icon.sel].cp;
+		pvName = kMdl2Icons[g->icon.sel].name;
+	}
+	wsprintfA(cpTxt, "%04X", pvCp);
 
 	/* 实时代码 */
 	{
 		snprintf(g->codeText, sizeof(g->codeText),
-			"/* 字号 %d DIP, tint 从主题令牌取色 */\n"
-			"UiIcon ic = UiIcon_Glyph(t->fIcon, 0xE713u);\n"
+			"/* %s (U+%s), 字号 %d DIP, tint 从主题令牌取色 */\n"
+			"UiIcon ic = UiIcon_Glyph(t->fIcon, 0x%su);\n"
 			"UiIcon_Draw(ui, &ic, rc, t->primary.base, %s);\n"
 			"\n"
 			"/* 可点击图标: 返回 1 = 点击 */\n"
@@ -1434,14 +1622,11 @@ static void icon_props(Gallery *g, UiRect rc)
 			"    UI_BSHAPE_RECT, 0);\n"
 			"if (Ui_IconButton(ui, id, rc, &ic, &st, %s))\n"
 			"    on_settings();\n",
-			(int)(12.0f + g->icon.size.value * 48.0f + 0.5f),
+			pvName, cpTxt,
+			(int)(12.0f + g->icon.size.value * 48.0f + 0.5f), cpTxt,
 			g->icon.disabled.checked ? "0" : "1",
 			g->icon.disabled.checked ? "0" : "1");
 	}
-	char buf[64];
-	float px;
-	UiColor tint;
-	int enabled;
 
 	props_split(g, ui, rc, &ed, &pv);
 	Ui_StackBeginPad(&col, pane_in(ed, 16.0f), UI_COLUMN, 0.0f,
@@ -1465,6 +1650,8 @@ static void icon_props(Gallery *g, UiRect rc)
 	Ui_StackSkip(&col, 10.0f);
 
 	px = 12.0f + g->icon.size.value * 48.0f;
+	wsprintfA(hdr, "实时预览 (%s · U+%s)", pvName, cpTxt);
+
 	wsprintfA(buf, "预览字号 %d DIP", (int)(px + 0.5f));
 	small_txt(gfx, t, Ui_StackTake(&col, 18.0f), buf);
 
@@ -1472,10 +1659,9 @@ static void icon_props(Gallery *g, UiRect rc)
 	enabled = !g->icon.disabled.checked;
 	{
 		UiRect area = pane_in(pv, 20.0f);
-		small_txt(gfx, t, Ui_Rect(area.x, area.y, area.w, 20.0f),
-			"实时预览 (0xE713 设置)");
+		small_txt(gfx, t, Ui_Rect(area.x, area.y, area.w, 20.0f), hdr);
 		if (t->fIcon) {
-			UiIcon ic = UiIcon_Glyph(t->fIcon, 0xE713u);
+			UiIcon ic = UiIcon_Glyph(t->fIcon, pvCp);
 			UiIcon_Draw(ui, &ic,
 				Ui_Rect(area.x + area.w * 0.5f - px * 0.5f,
 					area.y + area.h * 0.5f - px * 0.5f, px, px),
@@ -1484,6 +1670,32 @@ static void icon_props(Gallery *g, UiRect rc)
 			note_txt(gfx, t, area, "未找到 Segoe MDL2 Assets 字体。");
 		}
 	}
+}
+
+/* 搜索框事件转发 (UiInput 生命周期与 button/input 页一致) */
+static int icon_key(Gallery *g, UINT vk)
+{
+	return UiInput_Key(&g->icon.form, g->app->hwnd, vk);
+}
+
+static int icon_chr(Gallery *g, wchar_t ch)
+{
+	return UiInput_Char(&g->icon.form, ch);
+}
+
+static void icon_ime(Gallery *g)
+{
+	UiInput_OnIme(&g->icon.form);
+}
+
+static void icon_blink(Gallery *g)
+{
+	UiInput_Blink(&g->icon.form);
+}
+
+static void icon_mouse(Gallery *g, int msg, float x, float y)
+{
+	form_mouse(&g->icon.form, g->app, msg, x, y);
 }
 
 /* ── Input ─────────────────────────────────────────────────────────── */
@@ -6445,9 +6657,9 @@ static const GalleryPage kPages[PG_COUNT] = {
 		bgroup_init, bgroup_demo, bgroup_props, bgroup_key, NULL, NULL,
 		NULL, NULL, NULL, NULL, NULL },
 	/* PG_ICON */
-	{ "Icon 图标", "Icon 图标", "Segoe MDL2 glyph 全集 · tint / 点击看码点",
-		icon_init, icon_demo, icon_props, NULL, NULL, NULL, NULL, NULL,
-		NULL, NULL, icon_anim },
+	{ "Icon 图标", "Icon 图标", "Segoe MDL2 官方档案 1386 glyphs · 搜索 / 分区 / 复制码点",
+		icon_init, icon_demo, icon_props, icon_key, icon_chr, icon_ime,
+		icon_blink, icon_mouse, NULL, NULL, icon_anim },
 	/* PG_INPUT */
 	{ "Input 输入框", "Input 单行输入", "选区 / 剪贴板 / 中文输入法 / 密码",
 		input_init, input_demo, input_props, input_key, input_chr,
