@@ -869,8 +869,10 @@ static void button_init(Gallery *g)
 	UiButtonGroup_SetSelected(&g->button.type, 1);
 	UiButtonGroup_Init(&g->button.appear, Ui_Id("gl.btn.appear", 0, 0),
 		UI_BG_SINGLE, 3);
+	UiButtonGroup_SetSelected(&g->button.appear, 0);
 	UiButtonGroup_Init(&g->button.shape, Ui_Id("gl.btn.shape", 0, 0),
 		UI_BG_SINGLE, 3);
+	UiButtonGroup_SetSelected(&g->button.shape, 0);
 	UiCheckbox_Init(&g->button.dashed, Ui_Id("gl.btn.dashed", 0, 0), 0);
 	UiCheckbox_Init(&g->button.disabled, Ui_Id("gl.btn.disabled", 0, 0), 0);
 	UiCheckbox_Init(&g->button.icon, Ui_Id("gl.btn.icon", 0, 0), 0);
@@ -1118,6 +1120,7 @@ static void bgroup_init(Gallery *g)
 		UI_BG_NORMAL, 3);
 	UiButtonGroup_Init(&g->bgroup.demoS, Ui_Id("gl.bg.ds", 0, 0),
 		UI_BG_SINGLE, 2);
+	UiButtonGroup_SetSelected(&g->bgroup.demoS, 0);
 	UiButtonGroup_Init(&g->bgroup.demoM, Ui_Id("gl.bg.dm", 0, 0),
 		UI_BG_MULTI, 3);
 	UiButtonGroup_SetMask(&g->bgroup.demoM, 0x1u);
@@ -1129,8 +1132,10 @@ static void bgroup_init(Gallery *g)
 	UiButtonGroup_SetSelected(&g->bgroup.count, 1);
 	UiButtonGroup_Init(&g->bgroup.variant, Ui_Id("gl.bg.var", 0, 0),
 		UI_BG_SINGLE, 4);
+	UiButtonGroup_SetSelected(&g->bgroup.variant, 0);
 	UiButtonGroup_Init(&g->bgroup.pv, Ui_Id("gl.bg.pv", 0, 0),
 		UI_BG_SINGLE, 3);
+	UiButtonGroup_SetSelected(&g->bgroup.pv, 0);
 	g->bgroup.pvMode = UI_BG_SINGLE;
 	g->bgroup.pvCount = 3;
 	UiCheckbox_Init(&g->bgroup.disMid, Ui_Id("gl.bg.dis", 0, 0), 0);
@@ -1247,6 +1252,7 @@ static void bgroup_props(Gallery *g, UiRect rc)
 	cnt = 2 + g->bgroup.count.selected;
 	if (mode != g->bgroup.pvMode || cnt != g->bgroup.pvCount) {
 		UiButtonGroup_Init(&g->bgroup.pv, Ui_Id("gl.bg.pv", 0, 0), mode, cnt);
+		UiButtonGroup_SetSelected(&g->bgroup.pv, 0);
 		g->bgroup.pvMode = mode;
 		g->bgroup.pvCount = cnt;
 	}
@@ -1336,6 +1342,7 @@ static void icon_init(Gallery *g)
 	UiSlider_Init(&g->icon.size, Ui_Id("gl.icon.size", 0, 0), 0.36f);
 	UiButtonGroup_Init(&g->icon.tint, Ui_Id("gl.icon.tint", 0, 0),
 		UI_BG_SINGLE, 5);
+	UiButtonGroup_SetSelected(&g->icon.tint, 0);
 	UiCheckbox_Init(&g->icon.disabled, Ui_Id("gl.icon.dis", 0, 0), 0);
 }
 
@@ -2572,8 +2579,10 @@ static void dp_init(Gallery *g)
 
 	UiButtonGroup_Init(&g->dp.mode, Ui_Id("gl.dp.mode", 0, 0),
 		UI_BG_SINGLE, 4);
+	UiButtonGroup_SetSelected(&g->dp.mode, 0);
 	UiButtonGroup_Init(&g->dp.weekStart, Ui_Id("gl.dp.week", 0, 0),
 		UI_BG_SINGLE, 2);
+	UiButtonGroup_SetSelected(&g->dp.weekStart, 1);
 	UiCheckbox_Init(&g->dp.seconds, Ui_Id("gl.dp.sec", 0, 0), 0);
 	g->dp.weekApplied = 1;
 }
@@ -2816,8 +2825,10 @@ static void tabs_init(Gallery *g)
 	g->tabs.card = UiTabStyle_Card();
 	UiButtonGroup_Init(&g->tabs.style, Ui_Id("gl.tabs.style", 0, 0),
 		UI_BG_SINGLE, 3);
+	UiButtonGroup_SetSelected(&g->tabs.style, 0);
 	UiButtonGroup_Init(&g->tabs.axis, Ui_Id("gl.tabs.axis", 0, 0),
 		UI_BG_SINGLE, 3);
+	UiButtonGroup_SetSelected(&g->tabs.axis, 0);
 	UiCheckbox_Init(&g->tabs.fade, Ui_Id("gl.tabs.fade", 0, 0), 1);
 	UiCheckbox_Init(&g->tabs.reverse, Ui_Id("gl.tabs.rev", 0, 0), 0);
 	UiSlider_Init(&g->tabs.dur, Ui_Id("gl.tabs.dur", 0, 0), 0.3f);
@@ -3124,6 +3135,7 @@ static void nav_init(Gallery *g)
 
 	UiButtonGroup_Init(&g->nav.layout, Ui_Id("gl.nav.layout", 0, 0),
 		UI_BG_SINGLE, 2);
+	UiButtonGroup_SetSelected(&g->nav.layout, 0);
 	UiCheckbox_Init(&g->nav.rail, Ui_Id("gl.nav.rail", 0, 0), 0);
 }
 
@@ -3289,6 +3301,7 @@ static void pag_init(Gallery *g)
 	UiButtonGroup_SetSelected(&g->pag.total, 0);
 	UiButtonGroup_Init(&g->pag.slots, Ui_Id("gl.pag.slots", 0, 0),
 		UI_BG_SINGLE, 4);
+	UiButtonGroup_SetSelected(&g->pag.slots, 0);
 	UiCheckbox_Init(&g->pag.firstLast, Ui_Id("gl.pag.fl", 0, 0), 1);
 }
 
@@ -3528,6 +3541,7 @@ static void scroll_init(Gallery *g)
 
 	UiButtonGroup_Init(&g->scroll.preset, Ui_Id("gl.sv.preset", 0, 0),
 		UI_BG_SINGLE, 2);
+	UiButtonGroup_SetSelected(&g->scroll.preset, 0);
 	UiSlider_Init(&g->scroll.wheelStep, Ui_Id("gl.sv.step", 0, 0), 0.5f);
 	UiCheckbox_Init(&g->scroll.reserve, Ui_Id("gl.sv.reserve", 0, 0), 1);
 }
@@ -4418,6 +4432,7 @@ static void toast_init(Gallery *g)
 		"这是一条轻提示");
 	UiButtonGroup_Init(&g->toastP.kind, Ui_Id("gl.toast.kind", 0, 0),
 		UI_BG_SINGLE, 3);
+	UiButtonGroup_SetSelected(&g->toastP.kind, 0);
 	UiSlider_Init(&g->toastP.dur, Ui_Id("gl.toast.dur", 0, 0), 0.3f);
 }
 
@@ -4890,6 +4905,7 @@ static void img_init(Gallery *g)
 	if (bmp) HeapFree(GetProcessHeap(), 0, bmp);
 	UiButtonGroup_Init(&g->img.fit, Ui_Id("gl.img.fit", 0, 0),
 		UI_BG_SINGLE, 4);
+	UiButtonGroup_SetSelected(&g->img.fit, 0);
 	UiCheckbox_Init(&g->img.bg, Ui_Id("gl.img.bg", 0, 0), 0);
 	g->img.anchor = UI_IMG_ANCHOR_MC;
 }
@@ -5267,6 +5283,7 @@ static void theme_init(Gallery *g)
 {
 	UiButtonGroup_Init(&g->theme.preset, Ui_Id("gl.theme.preset", 0, 0),
 		UI_BG_SINGLE, 5);
+	UiButtonGroup_SetSelected(&g->theme.preset, 0);
 	g->theme.applied = 0;
 }
 
