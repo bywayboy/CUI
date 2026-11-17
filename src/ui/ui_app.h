@@ -51,6 +51,9 @@ typedef struct UiAppCallbacks {
 	int  (*chr)(UiApp *app, wchar_t ch, void *user);
 	void (*ime)(UiApp *app, void *user);
 	void (*timer)(UiApp *app, void *user);
+	/* 文件拖放 (UTF-16 完整路径): 逐个文件调用, 返回 1 提前停止后续.
+	 * 只有挂接了 dropfiles 的窗口才注册接受拖放, 其余窗口不接收. */
+	int  (*dropfiles)(UiApp *app, const wchar_t *path, void *user);
 	/* x/y 是客户区物理像素; 返回 1 表示 *hit 有效 */
 	int  (*nchittest)(UiApp *app, int x, int y, LRESULT *hit, void *user);
 	/* 文件拖放 (WM_DROPFILES): path 是 UTF-16 绝对路径, 每次一个文件,

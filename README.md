@@ -56,6 +56,22 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
   Light/Dark、模板受控变换、对比度自动校验），可分别锁定主色/中性色/语义色
   后重抽，单步撤销；工程自动保存到 exe 旁 `theme_editor.palette`，一键生成
   可回贴 `ui_theme.c` 的 `theme_apply_preset()` 并保存/复制。
+- `samples/gallery.c` + `samples/gallery_docs.c`：**综合组件画廊（约 6800 行）**。
+  左侧导航列出全部 29 页（28 个组件/能力页 + 欢迎页），每页六个标签：**演示**（真实可
+  操作组件）、**属性**（改参数右侧预览实时变化，**右下角同步生成可复制的创建
+  代码**，Consolas 深色代码面板随属性逐项刷新）、**文档 / API / 最佳实践**（由
+  内置 `UiMarkdown` 组件渲染的 GFM 文档）、**事件**（该组件的事件模型 + 接线
+  代码示例，底部是**实时事件日志**——去「演示」页操作组件，每次事件响应都
+  会写入状态栏并出现在这里）。
+  侧边导航本身是自绘控件示范（ScrollView + `Ui_State` 即时注册）；顶栏主题切换、
+  弹层统一走一个 `UiPopupManager`；覆盖 Button/ButtonGroup/Icon（60 个 MDL2 glyph
+  全集，虚拟滚动 + 点击看码点）/Input/TextArea/Checkbox/Radio/Switch/Slider/
+  Select/DatePicker/Tabs/Nav/Pagination/ScrollView/Layout/Dialog/Menu/Toast/
+  Tooltip/Progress/Image/Markdown/Theme/网络与定时器/**WebSocket 客户端与
+  服务端（本机 18082 回显联调，广播）**/**App 框架（壳回调实时监视器）**。
+- `samples/gallery_docs.c` 的四段文档（doc/api/events/best，共 112+ 段 Markdown）
+  都是纯 UTF-8 常量数组，可作为「怎么写组件文档」的模板；事件段统一按
+  「事件怎么产生 → 接线示例 → 本页怎么接的」三段式组织。
 
 > 来源：RMControl `installer/src`（提交 `1bc6929` 时的实现）。
 > 安装器目前仍保留自己的副本；CUI 是**独立可复用**版本，后续可让安装器切到它。
@@ -211,6 +227,7 @@ bin\cui_md_math_test.exe REM 数学公式排版断言
 bin\cui_gfx_rich_test.exe REM 多 run 富文本层断言
 bin\cui_theme_editor.exe  REM 主题编辑器：基础/高级令牌 / 预览点选 / 导出预设
 bin\cui_theme_edit_test.exe REM 主题令牌与代码生成断言
+bin\cui_gallery.exe     REM 组件画廊：29 页 / 演示+属性+实时代码+文档+API+事件日志+最佳实践 / WS 客户端与服务端联调 / App 框架回调监视器
 ```
 
 构建是 **增量** 的：`build.cmd` 生成头文件清单后调用 `nmake`，只重编比
@@ -671,3 +688,5 @@ WM_TIMER(530ms)   -> 编辑框光标闪烁 caretOn = !caretOn
   远程图片异步加载；全仓 30 个 exe 0CRT。
 - 无桌面环境（SSH/Session 0）不能目视验证，但编译与链接判据（0CRT/无未解析符号）
   可在 CI 里跑。
+
+> AI生成
