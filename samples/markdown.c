@@ -1768,11 +1768,19 @@ static void on_shutdown(UiApp *app, void *user)
 void __stdcall startup(void)
 {
 	App app;
-	static const UiAppCallbacks cb = {
-		on_init, on_frame, on_after_frame, on_shutdown, on_animating,
-		NULL, NULL, NULL, on_key, on_chr, on_ime, on_timer, on_nchittest,
-		on_dropfiles
-	};
+	static UiAppCallbacks cb;
+	ZeroMemory(&cb, sizeof(cb));
+	cb.init = on_init;
+	cb.frame = on_frame;
+	cb.after_frame = on_after_frame;
+	cb.shutdown = on_shutdown;
+	cb.animating = on_animating;
+	cb.key = on_key;
+	cb.chr = on_chr;
+	cb.ime = on_ime;
+	cb.timer = on_timer;
+	cb.dropfiles = on_dropfiles;
+	cb.nchittest = on_nchittest;
 	ZeroMemory(&app, sizeof(app));
 	app.pendingRow = -1;
 	ExitProcess((UINT)UiApp_Run(L"CUI Markdown Browser", 1180, 760,
