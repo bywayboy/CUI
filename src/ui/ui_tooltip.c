@@ -1,4 +1,5 @@
 #include "ui/ui_tooltip.h"
+#include "ui/ui_anim.h"
 #include "ui/ui_popup.h"
 
 static int tooltip_same_anchor(UiRect a, UiRect b)
@@ -44,6 +45,11 @@ void UiTooltip_Update(UiTooltip *tt, UiContext *ui, UiId target,
 	}
 	if (!tt->open && nowMs - tt->hoverStartMs >= (double)tt->delayMs)
 		tt->open = 1;
+	if (!tt->open) {
+		/* 等延迟到期: 登记锚点脏区让动画循环保持出帧。窗口静止后不会
+		 * 再有 WM_PAINT, 否则提示要等下一次输入 (例如按下鼠标) 才弹出。 */
+		Ui_AnimDirtyRect(ui, anchor);
+	}
 }
 
 int UiTooltip_Pending(const UiTooltip *tt)
