@@ -3090,6 +3090,52 @@ static const char BEST_APP[] =
 	"- [ ] 低层 API (手写 WndProc) 仍可用: 见 samples/advanced.c;\n"
 	"- [ ] 多窗口见 samples/multiwindow.c。\n";
 
+/* ── WebView2 ─────────────────────────────────────────────────────── */
+
+static const char DOC_WEBVIEW2[] =
+	"## WebView2 宿主\n"
+	"\n"
+	"`src/ui/ui_webview.c` 是纯 C、0CRT 的 WebView2 宿主：手写 COM、共享\n"
+	"环境、DComp 视觉托管，ULW 时回退窗口模式。\n"
+	"\n"
+	"本页默认打开 `https://www.baidu.com`，顶栏可主页/刷新/前进/后退。\n"
+	"发布时需要系统 WebView2 Runtime 与 exe 同目录的 `WebView2Loader.dll`。\n";
+
+static const char API_WEBVIEW2[] =
+	"## API 速查\n"
+	"\n"
+	"| API | 作用 |\n"
+	"| --- | --- |\n"
+	"| `UiWebView_Create` / `Destroy` | 创建/销毁宿主 |\n"
+	"| `Ui_WebView(wv, ui, rc)` | 每帧更新视觉矩形 |\n"
+	"| `UiWebView_Navigate/Reload/GoHome` | 导航 |\n"
+	"| `UiWebView_CanGoBack/GoBack...` | 历史 |\n"
+	"| `UiWebView_PostWebMessageJson` | Host -> 页面 |\n"
+	"| `UiWebView_SetVisible` | 显示/隐藏视觉层 |\n"
+	"\n"
+	"输入通过 `UiAppCallbacks.input` 原样转给 `UiWebView_Input`。\n";
+
+static const char BEST_WEBVIEW2[] =
+	"- [x] 页面内容区每帧调用 `Ui_WebView` 更新矩形；\n"
+	"- [x] 离开页面立即 `UiWebView_SetVisible(0)`，避免遮住其它页；\n"
+	"- [x] 虚拟主机名避免 `.local`（mDNS 首包约 2s）；\n"
+	"- [x] 需要自定义证书/CORS 时用 `web_resource_requested` 事件；\n"
+	"- [ ] 不要把 WebView2 视觉层当作普通 CUI 子控件参与命中。\n";
+
+static const char EVENTS_WEBVIEW2[] =
+	"## 事件\n"
+	"\n"
+	"`created/create_failed`、`navigation_starting/completed`、\n"
+	"`source_changed`、`history_changed`、`content_loading`、\n"
+	"`dom_content_loaded`、`document_title_changed`、`new_window`、\n"
+	"`download_starting`、`script_dialog`、`web_message`、`process_failed`。\n"
+	"\n"
+	"```c\n"
+	"ev.navigation_completed = on_nav;\n"
+	"ev.web_message = on_msg;\n"
+	"ev.new_window = on_new_window;   /* handled=1 后宿主接管 */\n"
+	"```\n";
+
 /* ── 表 ───────────────────────────────────────────────────────────── */
 
 static const GalleryDocText kDocs[PG_COUNT] = {
@@ -3123,6 +3169,7 @@ static const GalleryDocText kDocs[PG_COUNT] = {
 	/* PG_NET       */ { 0, DOC_NET, API_NET, BEST_NET, EVENTS_NET },
 	/* PG_WS        */ { 0, DOC_WS, API_WS, BEST_WS, EVENTS_WS },
 	/* PG_WSSRV     */ { 0, DOC_WSSRV, API_WSSRV, BEST_WSSRV, EVENTS_WSSRV },
+	/* PG_WEBVIEW   */ { 0, DOC_WEBVIEW2, API_WEBVIEW2, BEST_WEBVIEW2, EVENTS_WEBVIEW2 },
 	/* PG_APP       */ { 0, DOC_APP, API_APP, BEST_APP, EVENTS_APP },
 };
 

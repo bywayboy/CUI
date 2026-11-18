@@ -221,14 +221,13 @@ $(BIN)\cui_grid.exe: $(CORE_OBJS) $(OBJ)\grid.obj
 	@echo [cui] link grid
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_gallery.exe: $(CORE_OBJS) $(OPT_OBJS) $(OBJ)\gallery.obj $(OBJ)\gallery_docs.obj $(OBJ)\gallery_icons.obj
+$(BIN)\cui_gallery.exe: $(CORE_OBJS) $(OPT_OBJS) $(WEBVIEW_OBJS) $(OBJ)\gallery.obj $(OBJ)\gallery_docs.obj $(OBJ)\gallery_icons.obj
 	@echo [cui] link gallery (optional module)
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
 $(BIN)\cui_webview.exe: $(CORE_OBJS) $(WEBVIEW_OBJS) $(OBJ)\webview.obj
 	@echo [cui] link webview (optional module)
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
-	@copy /y third_party\webview2\x64\WebView2Loader.dll $(BIN)\WebView2Loader.dll >NUL
 	@copy /y samples\webview_test.html $(BIN)\webview_test.html >NUL
 
 # Application icon. rc.exe ships with the Windows SDK; vcvars puts it on PATH.
@@ -293,5 +292,5 @@ clean:
 	@-del /q $(OBJ)\*.obj $(OBJ)\*.json 2>NUL
 	@-del /q build\headers.mk build\grain_cso.h 2>NUL
 	@-del /q $(TARGETS) 2>NUL
-	@-del /q $(BIN)\WebView2Loader.dll $(BIN)\webview_test.html 2>NUL
+	@-del /q $(BIN)\webview_test.html 2>NUL
 	@echo [cui] cleaned

@@ -62,8 +62,8 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
   Light/Dark、模板受控变换、对比度自动校验），可分别锁定主色/中性色/语义色
   后重抽，单步撤销；工程自动保存到 exe 旁 `theme_editor.palette`，一键生成
   可回贴 `ui_theme.c` 的 `theme_apply_preset()` 并保存/复制。
-- `samples/gallery.c` + `samples/gallery_docs.c` + `samples/gallery_icons.c`：**综合组件画廊（约 6900 行）**。
-  左侧导航列出全部 31 页（30 个组件/能力页 + 欢迎页），每页六个标签：**演示**（真实可
+- `samples/gallery.c` + `samples/gallery_docs.c` + `samples/gallery_icons.c`：**综合组件画廊（约 12000 行）**。
+  左侧导航列出全部 32 页（31 个组件/能力页 + 欢迎页），每页六个标签：**演示**（真实可
   操作组件）、**属性**（改参数右侧预览实时变化，**右下角同步生成可复制的创建
   代码**，Consolas 深色代码面板随属性逐项刷新）、**文档 / API / 最佳实践**（由
   内置 `UiMarkdown` 组件渲染的 GFM 文档）、**事件**（该组件的事件模型 + 接线
@@ -75,7 +75,8 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
   点击复制码点并显示用法代码，且与属性页代码联动）/Input/TextArea/Checkbox/Radio/Switch/Slider/
   Select/DatePicker/Tabs/Nav/Pagination/ScrollView/Layout/Dialog/Menu/Toast/
   Tooltip/Progress/Image/Markdown/Theme/网络与定时器/**WebSocket 客户端与
-  服务端（本机 18082 回显联调，广播）**/**App 框架（壳回调实时监视器）**。
+  服务端（本机 18082 回显联调，广播）**/**WebView2 网页（默认百度，DComp
+  视觉托管/ULW 回退）**/**App 框架（壳回调实时监视器）**。
 - `samples/gallery_docs.c` 的四段文档（doc/api/events/best，共 112+ 段 Markdown）
   都是纯 UTF-8 常量数组，可作为「怎么写组件文档」的模板；事件段统一按
   「事件怎么产生 → 接线示例 → 本页怎么接的」三段式组织。
@@ -237,7 +238,7 @@ bin\cui_md_math_test.exe REM 数学公式排版断言
 bin\cui_gfx_rich_test.exe REM 多 run 富文本层断言
 bin\cui_theme_editor.exe  REM 主题编辑器：基础/高级令牌 / 预览点选 / 导出预设
 bin\cui_theme_edit_test.exe REM 主题令牌与代码生成断言
-bin\cui_gallery.exe     REM 组件画廊：31 页 / 演示+属性+实时代码+文档+API+事件日志+最佳实践 / WS 客户端与服务端联调 / App 框架回调监视器
+bin\cui_gallery.exe     REM 组件画廊：32 页 / 演示+属性+实时代码+文档+API+事件日志+最佳实践 / WebView2 网页 / WS 联调
 ```
 
 构建是 **增量** 的：`build.cmd` 生成头文件清单后调用 `nmake`，只重编比
@@ -250,8 +251,9 @@ printf（flags/宽度/精度/length）和分配器；`mem_avx2.c` 单独 `/arch:
 `msvcrt/ucrtbase/api-ms-win-crt-*`，有就直接判失败。
 
 `cui_webview.exe` 额外需要：系统安装 **WebView2 Evergreen Runtime**，且
-`WebView2Loader.dll` 与 exe 同目录（构建时从 `third_party/webview2/x64/`
-自动复制）。SDK 头文件只参与编译，不随程序分发。
+`WebView2Loader.dll` 与 exe 同目录。构建不再自动复制 Loader，发布/安装阶段
+需从 `third_party/webview2/x64/` 取对应架构文件放到 exe 旁；SDK 头文件只
+参与编译，不随程序分发。
 
 ---
 

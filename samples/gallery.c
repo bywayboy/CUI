@@ -36,6 +36,7 @@
 #include "ui/ui_md.h"
 #include "net/ui_net.h"
 #include "net/ui_ws_server.h"
+#include "ui/ui_webview.h"
 #include "edit.h"
 #include "gallery_docs.h"
 #include "gallery_icons.h"
@@ -378,6 +379,14 @@ typedef struct Gallery {
 		int initDone;
 		double lastFrameMs;
 	} appf;
+
+	/* WebView2 */
+	struct {
+		UiWebView *wv;
+		int failed;
+		int shown;
+		char status[160];
+	} web;
 } Gallery;
 
 static Gallery g_gl;
@@ -628,6 +637,7 @@ static const SideRow kSide[] = {
 	{ NULL, PG_NET },
 	{ NULL, PG_WS },
 	{ NULL, PG_WSSRV },
+	{ NULL, PG_WEBVIEW },
 	{ NULL, PG_APP },
 };
 #define SIDE_ROWS (int)(sizeof(kSide) / sizeof(kSide[0]))
@@ -3628,13 +3638,15 @@ static void pag_demo(Gallery *g, UiRect rc)
 	char range[128];
 
 	pag_apply(g);
-	Ui_StackBeginPad(&col, rc, UI_COLUMN, 0.0f, 4.0f, 8.0f, 4.0f, 8.0f);
-	rangeRc = Ui_StackTake(&col, 20.0f);
-	Ui_StackSkip(&col, 6.0f);
-	/* 固定行在前、TakeFill 最后: 先为底部分页条预留空间 */
-	Ui_StackSkip(&col, 36.0f + 10.0f);
-	listRc = Ui_StackTakeFill(&col);
-	barRc = Ui_Rect(rc.x, rc.y + rc.h - 40.0f, rc.w, 36.0f);
+	(void)col;
+	/* 列表与分页条都显式算高度: TakeFill 不能跨过底部固定条,
+	 * 否则列表会压到分页条下面并把分页条挤出面板. */
+	rangeRc = Ui_Rect(rc.x + 8.0f, rc.y + 8.0f, rc.w - 16.0f, 20.0f);
+	barRc = Ui_Rect(rc.x + 8.0f, rc.y + rc.h - 8.0f - 36.0f,
+		rc.w - 16.0f, 36.0f);
+	listRc = Ui_Rect(rangeRc.x, rangeRc.y + rangeRc.h + 8.0f,
+		rangeRc.w, barRc.y - 10.0f - (rangeRc.y + rangeRc.h + 8.0f));
+	if (listRc.h < 34.0f) listRc.h = 34.0f;
 
 	pag_draw_bar(g, barRc, range, (int)sizeof(range));
 	Gfx_Text(gfx, t->fBody, range, rangeRc, t->text2,
@@ -4286,39 +4298,45 @@ static void flex_demo(Gallery *g, UiRect rc)
 	UiApp *app = g->app;
 	UiTheme *t = &app->theme;
 	Gfx *gfx = app->gfx;
-	UiStack col;
-	UiRect mainArea, liteArea;
+	UiRect area, mainArea, liteArea, mainLbl, liteLbl;
 	float gap = 4.0f + g->flex.gap.value * 20.0f;
 	float gr2 = 1.0f + g->flex.w2.value * 3.0f;
 	float gr3 = 1.0f + g->flex.w3.value * 3.0f;
 	char buf[64], hdr[128];
-	float mainH;
 	int i;
 	int dir = g->flex.dir.selected;      /* 0=水平 1=垂直 */
 
-	Ui_StackBeginPad(&col, rc, UI_COLUMN, 0.0f, 4.0f, 10.0f, 4.0f, 10.0f);
-
-	/* 主演示区高度 = 剩余空间 - 轻量版整段(8+18+4+56), 按方向取上限。
-	 * 全部固定 Take 在前, 不把 TakeFill 插在中间 —— 顺序即布局,
-	 * 否则后面的轻量版区会被挤出容器 (Stack 铁律)。 */
-	{
-		float cap = dir ? 300.0f : 150.0f;
-		mainH = Ui_StackRemaining(&col) - 86.0f;
-		if (mainH > cap) mainH = cap;
-		if (mainH < 90.0f) mainH = 90.0f;
-	}
-
 	wsprintfA(hdr, "主演示区: Ui_FlexLayout(%s) —— 属性页「方向」按钮即时切换",
 		dir ? "UI_COLUMN 垂直" : "UI_ROW 水平");
-	lbl(gfx, t, Ui_StackTake(&col, 18.0f), hdr);
-	Ui_StackSkip(&col, 4.0f);
-	mainArea = Ui_StackTake(&col, mainH);
-	Ui_StackSkip(&col, 8.0f);
+	lbl(gfx, t, Ui_Rect(rc.x + 4.0f, rc.y, rc.w - 8.0f, 18.0f), hdr);
 
-	lbl(gfx, t, Ui_StackTake(&col, 18.0f),
-		"轻量版 Ui_FlexRow / Ui_FlexCol (basis+grow, 无测量回调; 同参数换 Ui_FlexCol 即垂直)");
-	Ui_StackSkip(&col, 4.0f);
-	liteArea = Ui_StackTake(&col, 56.0f);
+	/* 水平: 主区在上、轻量版在下; 垂直: 左右分栏.
+	 * 属性页预览高度有限, 垂直模式上下堆叠会把两侧卡片压扁. */
+	area = Ui_Rect(rc.x + 4.0f, rc.y + 24.0f, rc.w - 8.0f, rc.h - 24.0f);
+	if (dir) {
+		float mw = area.w * 0.56f;
+		mainLbl = Ui_Rect(area.x, area.y, mw - 6.0f, 18.0f);
+		liteLbl = Ui_Rect(area.x + mw + 6.0f, area.y,
+			area.w - mw - 6.0f, 18.0f);
+		mainArea = Ui_Rect(area.x, area.y + 20.0f, mw - 6.0f,
+			area.h - 20.0f);
+		liteArea = Ui_Rect(area.x + mw + 6.0f, area.y + 20.0f,
+			area.w - mw - 6.0f, area.h - 20.0f);
+	} else {
+		float mh = area.h * 0.56f;
+		if (mh < 120.0f) mh = 120.0f;
+		if (mh > 170.0f) mh = 170.0f;
+		mainLbl = Ui_Rect(area.x, area.y, area.w, 18.0f);
+		mainArea = Ui_Rect(area.x, area.y + 20.0f, area.w, mh - 20.0f);
+		liteLbl = Ui_Rect(area.x, area.y + mh, area.w, 18.0f);
+		liteArea = Ui_Rect(area.x, area.y + mh + 20.0f, area.w,
+			area.h - mh - 20.0f);
+	}
+	Gfx_Text(gfx, t->fMini, "主演示区 (measure 协议)", mainLbl,
+		t->hint, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+	Gfx_Text(gfx, t->fMini,
+		"轻量版 (Ui_FlexRow / Ui_FlexCol, basis+grow)", liteLbl,
+		t->hint, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 
 	/* ── 主演示区: measure 协议, 方向由属性页按钮组决定 ── */
 	{
@@ -4334,21 +4352,11 @@ static void flex_demo(Gallery *g, UiRect rc)
 		accs[1] = t->success.base;
 		accs[2] = t->warning.base;
 
+		flexArea = mainArea;
 		if (dir) {
-			/* 垂直: 左 44% 演示列, 右侧对比说明 */
-			flexArea = Ui_Rect(mainArea.x, mainArea.y,
-				mainArea.w * 0.44f, mainArea.h);
-			Gfx_Text(gfx, t->fMini,
-				"垂直方向: 主轴是高 —— basis/grow 作用于高度,\n"
-				"弹簧项认领剩余高度, 固定项不受影响;\n"
-				"切回「水平」对比: 主轴变宽, 语义不变。",
-				Ui_Rect(mainArea.x + mainArea.w * 0.46f + 12.0f,
-					mainArea.y, mainArea.w * 0.54f - 12.0f, mainArea.h),
-				t->hint, GFX_TEXT_WRAP);
-			fx[0].w = 0.0f; fx[0].h = 34.0f;    /* 垂直: basis 是高度 */
+			fx[0].w = 0.0f; fx[0].h = 34.0f;   /* 垂直: basis 是高度 */
 		} else {
-			flexArea = mainArea;
-			fx[0].w = 110.0f; fx[0].h = 0.0f;   /* 水平: basis 是宽度 */
+			fx[0].w = 110.0f; fx[0].h = 0.0f;  /* 水平: basis 是宽度 */
 		}
 		fx[1].w = 0.0f; fx[1].h = 0.0f;
 		fx[2].w = 0.0f; fx[2].h = 0.0f;
@@ -4373,27 +4381,32 @@ static void flex_demo(Gallery *g, UiRect rc)
 		}
 	}
 
-	/* ── 轻量版: Ui_FlexRow (水平, UiFlexItem basis+grow) ── */
+	/* ── 轻量版: basis+grow, 方向跟随主演示 ── */
 	{
 		UiFlexItem it[3];
 		UiRect outs[3];
-		it[0].basis = 96.0f; it[0].grow = 0.0f;
+		static const char *const kTagsH[3] = {
+			"basis 96", "grow 2", "grow 1"
+		};
+		static const char *const kTagsV[3] = {
+			"basis 24", "grow 2", "grow 1"
+		};
+		const char *const *tags = dir ? kTagsV : kTagsH;
+		it[0].basis = dir ? 24.0f : 96.0f; it[0].grow = 0.0f;
 		it[0].minSize = 0.0f; it[0].maxSize = 0.0f;
 		it[1].basis = 0.0f;  it[1].grow = 2.0f;
 		it[1].minSize = 0.0f; it[1].maxSize = 0.0f;
 		it[2].basis = 0.0f;  it[2].grow = 1.0f;
 		it[2].minSize = 0.0f; it[2].maxSize = 0.0f;
-		if (Ui_FlexRow(liteArea, 8.0f, it, 3, outs)) {
-			static const char *const kTags[3] = {
-				"basis 96", "grow 2", "grow 1"
-			};
+		if ((dir ? Ui_FlexCol(liteArea, 8.0f, it, 3, outs)
+			: Ui_FlexRow(liteArea, 8.0f, it, 3, outs))) {
 			UiColor acc2[3];
 			acc2[0] = t->blue;
 			acc2[1] = t->blue2;
 			acc2[2] = t->text3;
 			for (i = 0; i < 3; i++) {
 				LayoutCard c;
-				c.label = kTags[i];
+				c.label = tags[i];
 				c.sub = NULL;
 				c.minW = 60.0f;
 				c.prefH = 40.0f;
@@ -4522,8 +4535,21 @@ static void grid_demo(Gallery *g, UiRect rc)
 		UiGridTrack cols[3];
 		UiGridItem gridItems[6];
 		UiRect cell[6];
+		LayoutCard lc[6];
+		float rowH;
 		int wide = g->grid.wide.checked;
 		int tall = g->grid.tall.checked;
+		/* 属性页预览高度较矮: 按实际行数压缩卡片, 避免网格溢出面板.
+		 * tall 时 B 跨两行且 E 自动回填会用到第 4 行. */
+		{
+			float rows = tall ? 4.0f : 3.0f;
+			rowH = (gridRc.h - gap * (rows - 1.0f)) / rows;
+		}
+		if (rowH < 36.0f) rowH = 36.0f;
+		if (rowH > 64.0f) rowH = 64.0f;
+		lc[0] = kLcHead; lc[1] = kLcA; lc[2] = kLcB;
+		lc[3] = kLcC; lc[4] = kLcD; lc[5] = kLcE;
+		for (i = 0; i < 6; i++) lc[i].prefH = rowH;
 		grid.rows = 0;
 		grid.cols = 3;
 		grid.rowGap = gap;
@@ -4536,12 +4562,13 @@ static void grid_demo(Gallery *g, UiRect rc)
 		cols[2].kind = UI_GRID_FR;    cols[2].value = 1.0f;
 		cols[2].minSize = 80.0f; cols[2].maxSize = 0.0f;
 
-		gridItems[0] = layout_item(&kLcHead, 0, 0, 1, 3);
-		gridItems[1] = layout_item(&kLcA, 1, 0, 1, wide ? 2 : 1);
-		gridItems[2] = layout_item(&kLcB, 1, wide ? 2 : 1, tall ? 2 : 1, 1);
-		gridItems[3] = layout_item(&kLcC, 2, 0, 1, 1);
-		gridItems[4] = layout_item(&kLcD, 2, 1, 1, 1);
-		gridItems[5] = layout_item(&kLcE, -1, -1, 1, 1);
+		gridItems[0] = layout_item(&lc[0], 0, 0, 1, 3);
+		gridItems[1] = layout_item(&lc[1], 1, 0, 1, wide ? 2 : 1);
+		gridItems[2] = layout_item(&lc[2], 1, wide ? 2 : 1,
+			tall ? 2 : 1, 1);
+		gridItems[3] = layout_item(&lc[3], 2, 0, 1, 1);
+		gridItems[4] = layout_item(&lc[4], 2, 1, 1, 1);
+		gridItems[5] = layout_item(&lc[5], -1, -1, 1, 1);
 		if (Ui_GridLayout(gridRc, &grid, cols, NULL, gridItems, 6, cell)) {
 			UiColor accents[6];
 			accents[0] = t->blue;
@@ -4550,9 +4577,11 @@ static void grid_demo(Gallery *g, UiRect rc)
 			accents[3] = t->success.base;
 			accents[4] = t->red;
 			accents[5] = t->blue2;
+			Gfx_PushClip(gfx, gridRc);
 			for (i = 0; i < 6; i++)
 				layout_draw_cell(g, cell[i],
 					(LayoutCard *)gridItems[i].user, accents[i]);
+			Gfx_PopClip(gfx);
 		}
 	}
 }
@@ -7030,6 +7059,161 @@ static void appf_demo(Gallery *g, UiRect rc)
 		);
 }
 
+/* ── WebView2 网页宿主 ─────────────────────────────────────────────── */
+
+static void web_set(Gallery *g, const char *s)
+{
+	lstrcpynA(g->web.status, s ? s : "", (int)sizeof(g->web.status));
+	set_status(g, g->web.status);
+	UiApp_Invalidate(g->app);
+}
+
+static void web_created(void *user, UiWebView *wv)
+{
+	Gallery *g = (Gallery *)user;
+	(void)wv;
+	web_set(g, "WebView2 已创建 · 默认打开 www.baidu.com");
+}
+
+static void web_create_failed(void *user, UiWebView *wv, int hr)
+{
+	Gallery *g = (Gallery *)user;
+	(void)wv;
+	g->web.failed = 1;
+	wsprintfA(g->web.status,
+		"WebView2 创建失败 hr=0x%08X (检查 Runtime/Loader)", (unsigned)hr);
+	set_status(g, g->web.status);
+	UiApp_Invalidate(g->app);
+}
+
+static void web_nav_done(void *user, UiWebView *wv, int success, int error)
+{
+	Gallery *g = (Gallery *)user;
+	(void)wv;
+	if (success) web_set(g, "网页载入完成");
+	else {
+		wsprintfA(g->web.status, "网页载入失败 (error=%d)", error);
+		set_status(g, g->web.status);
+		UiApp_Invalidate(g->app);
+	}
+}
+
+static void web_new_window(void *user, UiWebView *wv, UiWebViewNewWindow *nw)
+{
+	Gallery *g = (Gallery *)user;
+	(void)g;
+	nw->handled = 1;
+	UiWebView_Navigate(wv, nw->uri);
+}
+
+static void web_title(void *user, UiWebView *wv, const wchar_t *title)
+{
+	Gallery *g = (Gallery *)user;
+	char utf8[160];
+	int n;
+	(void)wv;
+	n = WideCharToMultiByte(CP_UTF8, 0, title ? title : L"", -1, utf8,
+		(int)sizeof(utf8) - 1, NULL, NULL);
+	if (n > 0) {
+		lstrcpynA(g->web.status, "标题: ", (int)sizeof(g->web.status));
+		lstrcatA(g->web.status, utf8);
+		set_status(g, g->web.status);
+	}
+}
+
+static void webview_ensure(Gallery *g)
+{
+	UiWebViewConfig cfg;
+	UiWebViewEvents ev;
+	if (g->web.wv) return;
+	UiWebViewConfig_Default(&cfg);
+	cfg.homepage = L"https://www.baidu.com";
+	cfg.flags |= UI_WVF_DEVTOOLS | UI_WVF_CONTEXT_MENUS;
+	ZeroMemory(&ev, sizeof(ev));
+	ev.created = web_created;
+	ev.create_failed = web_create_failed;
+	ev.navigation_completed = web_nav_done;
+	ev.new_window = web_new_window;
+	ev.document_title_changed = web_title;
+	ev.user = g;
+	g->web.wv = UiWebView_Create(g->app->gfx, Ui_Id("gl.webview", 0, 0),
+		&cfg, &ev);
+	if (!g->web.failed)
+		lstrcpynA(g->web.status, g->web.wv
+			? "WebView2 启动中..." : "UiWebView_Create 返回 NULL",
+			(int)sizeof(g->web.status));
+}
+
+static void webview_demo(Gallery *g, UiRect rc)
+{
+	UiApp *app = g->app;
+	UiTheme *t = &app->theme;
+	UiContext *ui = &app->ui;
+	Gfx *gfx = app->gfx;
+	UiRect bar, view;
+	float bx, by;
+
+	webview_ensure(g);
+	bar = Ui_Rect(rc.x, rc.y, rc.w, 36.0f);
+	view = Ui_Rect(rc.x, rc.y + 42.0f, rc.w, rc.h - 42.0f);
+	by = bar.y + 3.0f;
+
+	bx = bar.x;
+	if (Ui_Button(ui, Ui_Id("gl.web.home", 0, 0),
+			Ui_Rect(bx, by, 64.0f, 30.0f), "主页",
+			UI_BTN_SECONDARY, 1))
+		UiWebView_GoHome(g->web.wv);
+	bx += 70.0f;
+	if (Ui_Button(ui, Ui_Id("gl.web.reload", 0, 0),
+			Ui_Rect(bx, by, 64.0f, 30.0f), "刷新",
+			UI_BTN_SECONDARY, 1))
+		UiWebView_Reload(g->web.wv);
+	bx += 70.0f;
+	if (Ui_Button(ui, Ui_Id("gl.web.back", 0, 0),
+			Ui_Rect(bx, by, 38.0f, 30.0f), "←",
+			UI_BTN_SECONDARY, g->web.wv && UiWebView_CanGoBack(g->web.wv)))
+		UiWebView_GoBack(g->web.wv);
+	bx += 44.0f;
+	if (Ui_Button(ui, Ui_Id("gl.web.fwd", 0, 0),
+			Ui_Rect(bx, by, 38.0f, 30.0f), "→",
+			UI_BTN_SECONDARY, g->web.wv && UiWebView_CanGoForward(g->web.wv)))
+		UiWebView_GoForward(g->web.wv);
+	bx += 52.0f;
+	if (g->web.status[0])
+		Gfx_Text(gfx, t->fSmall, g->web.status,
+			Ui_Rect(bx, bar.y, bar.x + bar.w - bx, bar.h), t->hint,
+			GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+
+	if (!g->web.wv || g->web.failed ||
+		UiWebView_State(g->web.wv) == 3) {
+		Ui_Panel(ui, view);
+		Gfx_Text(gfx, t->fBody,
+			g->web.status[0] ? g->web.status :
+			"WebView2 不可用: 需要 Runtime + WebView2Loader.dll",
+			view, t->text2, GFX_TEXT_CENTER | GFX_TEXT_VCENTER |
+			GFX_TEXT_ELLIPSIS);
+		g->web.shown = 0;
+		return;
+	}
+	if (!g->web.shown) {
+		UiWebView_SetVisible(g->web.wv, 1);
+		g->web.shown = 1;
+	}
+	Ui_WebView(g->web.wv, ui, view);
+}
+
+static int webview_input(UiApp *app, UINT msg, WPARAM wp, LPARAM lp,
+	LRESULT *result, void *user)
+{
+	Gallery *g = (Gallery *)user;
+	if (g->web.wv && g->web.shown &&
+		UiWebView_Input(g->web.wv, &app->ui, msg, wp, lp)) {
+		*result = 0;
+		return 1;
+	}
+	return 0;
+}
+
 /* ── Welcome ────────────────────────────────────────────────── */
 /* ── Welcome ───────────────────────────────────────────────────────── */
 
@@ -7163,6 +7347,11 @@ static const GalleryPage kPages[PG_COUNT] = {
 	{ "WS 服务端", "WebSocket 服务端", "UiWsServer · 监听 / 广播 / 回显",
 		wss_init, wss_demo, wss_props, wss_key, wss_chr, wss_ime,
 		wss_blink, wss_mouse, NULL, NULL, NULL },
+	/* PG_WEBVIEW */
+	{ "WebView2 网页", "WebView2 网页宿主",
+		"纯 C COM · DComp 视觉托管 / ULW 回退 · 默认百度",
+		NULL, webview_demo, NULL, NULL, NULL, NULL, NULL, NULL,
+		NULL, NULL, NULL },
 	/* PG_APP */
 	{ "App 框架", "UiApp 应用框架", "回调监视器 · 壳接管一切",
 		appf_init, appf_demo, NULL, NULL, NULL, NULL, NULL, NULL,
@@ -7233,6 +7422,12 @@ static void on_frame(UiApp *app, void *user)
 	 * 其它页面隐藏 (合成器 overlay 是独立层, 不随页面绘制消失)。 */
 	UiProgress_SetHidden(&g->prog.prog,
 		!(g->page == PG_PROGRESS && g->subTab[PG_PROGRESS] == 0));
+	/* WebView2 是独立视觉层: 离开演示页立刻隐藏, 避免盖住其它页面. */
+	if (g->web.wv && g->web.shown &&
+		(g->page != PG_WEBVIEW || g->subTab[PG_WEBVIEW] != 0)) {
+		UiWebView_SetVisible(g->web.wv, 0);
+		g->web.shown = 0;
+	}
 
 	UiPopupManager_BeginFrame(&g->pm, &app->ui);
 
@@ -7385,6 +7580,10 @@ static void on_shutdown(UiApp *app, void *user)
 	Gallery *g = (Gallery *)user;
 	int i;
 	(void)app;
+	if (g->web.wv) {
+		UiWebView_Destroy(g->web.wv);
+		g->web.wv = NULL;
+	}
 
 	for (i = PG_COUNT - 1; i >= 0; i--) {
 		if (i == PG_TEXTAREA) ta_shutdown(g);
@@ -7434,6 +7633,7 @@ static int page_from_cmd(const char *name)
 		{ "image", PG_IMAGE }, { "markdown", PG_MARKDOWN },
 		{ "theme", PG_THEME }, { "net", PG_NET },
 		{ "ws", PG_WS }, { "wssrv", PG_WSSRV },
+		{ "webview", PG_WEBVIEW },
 		{ "app", PG_APP }
 	};
 	int i;
@@ -7483,6 +7683,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 		}
 	}
 	ZeroMemory(&cb, sizeof(cb));
+	cb.input = webview_input;
 	cb.init = on_init;
 	cb.frame = on_frame;
 	cb.after_frame = on_after_frame;
