@@ -4286,156 +4286,121 @@ static void flex_demo(Gallery *g, UiRect rc)
 	UiApp *app = g->app;
 	UiTheme *t = &app->theme;
 	Gfx *gfx = app->gfx;
-	UiContext *ui = &app->ui;
 	UiStack col;
-	UiRect rowArea, colArea, liteArea;
+	UiRect mainArea, liteArea;
 	float gap = 4.0f + g->flex.gap.value * 20.0f;
 	float gr2 = 1.0f + g->flex.w2.value * 3.0f;
 	float gr3 = 1.0f + g->flex.w3.value * 3.0f;
-	char buf[64];
+	char buf[64], hdr[128];
+	float mainH;
 	int i;
+	int dir = g->flex.dir.selected;      /* 0=水平 1=垂直 */
 
 	Ui_StackBeginPad(&col, rc, UI_COLUMN, 0.0f, 4.0f, 10.0f, 4.0f, 10.0f);
 
-	lbl(gfx, t, Ui_StackTake(&col, 18.0f),
-		"水平模式 (UI_ROW): measure 协议 Ui_FlexLayout");
+	/* 主演示区高度 = 剩余空间 - 轻量版整段(8+18+4+56), 按方向取上限。
+	 * 全部固定 Take 在前, 不把 TakeFill 插在中间 —— 顺序即布局,
+	 * 否则后面的轻量版区会被挤出容器 (Stack 铁律)。 */
+	{
+		float cap = dir ? 300.0f : 150.0f;
+		mainH = Ui_StackRemaining(&col) - 86.0f;
+		if (mainH > cap) mainH = cap;
+		if (mainH < 90.0f) mainH = 90.0f;
+	}
+
+	wsprintfA(hdr, "主演示区: Ui_FlexLayout(%s) —— 属性页「方向」按钮即时切换",
+		dir ? "UI_COLUMN 垂直" : "UI_ROW 水平");
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), hdr);
 	Ui_StackSkip(&col, 4.0f);
-	rowArea = Ui_StackTake(&col, 76.0f);
+	mainArea = Ui_StackTake(&col, mainH);
 	Ui_StackSkip(&col, 8.0f);
 
 	lbl(gfx, t, Ui_StackTake(&col, 18.0f),
-		"垂直模式 (UI_COLUMN): 同参数, 方向切到列");
-	Ui_StackSkip(&col, 4.0f);
-	colArea = Ui_StackTakeFill(&col);
-	Ui_StackSkip(&col, 8.0f);
-
-	lbl(gfx, t, Ui_StackTake(&col, 18.0f),
-		"轻量版 Ui_FlexRow / Ui_FlexCol (basis+grow, 无测量回调)");
+		"轻量版 Ui_FlexRow / Ui_FlexCol (basis+grow, 无测量回调; 同参数换 Ui_FlexCol 即垂直)");
 	Ui_StackSkip(&col, 4.0f);
 	liteArea = Ui_StackTake(&col, 56.0f);
 
-	/* 演示用的模式开关由属性页控制; 两区块同时显示, 方向按钮组即时对比 */
+	/* ── 主演示区: measure 协议, 方向由属性页按钮组决定 ── */
 	{
-		int dir = g->flex.dir.selected;      /* 0=水平 1=垂直 */
+		UiFixedSize fx[3];
+		UiMeasureItem items[3];
+		UiRect outs[3], flexArea;
+		static const char *const kTagsH[3] = { "固定 110", "弹簧 A", "弹簧 B" };
+		static const char *const kTagsV[3] = { "固定 34", "弹簧 A", "弹簧 B" };
+		const char *const *tags = dir ? kTagsV : kTagsH;
 		UiColor accs[3];
+
 		accs[0] = t->primary.base;
 		accs[1] = t->success.base;
 		accs[2] = t->warning.base;
 
-		/* 水平: measure 协议 */
-		{
-			UiFixedSize fx[3];
-			UiMeasureItem items[3];
-			UiRect outs[3];
-			float g2 = dir == 0 ? gr2 : gr2;
-			fx[0].w = 110.0f; fx[0].h = 0.0f;
-			fx[1].w = 0.0f;   fx[1].h = 0.0f;
-			fx[2].w = 0.0f;   fx[2].h = 0.0f;
-			items[0] = Ui_FixedItem(&fx[0], 0.0f);
-			items[1] = Ui_FixedItem(&fx[1], g2);
-			items[2] = Ui_FixedItem(&fx[2], gr3);
-			if (Ui_FlexLayout(rowArea, UI_ROW, gap, items, 3, outs)) {
-				static const char *const kTags[3] = {
-					"固定 110", "弹簧 A", "弹簧 B"
-				};
-				for (i = 0; i < 3; i++) {
-					LayoutCard c;
-					c.label = kTags[i];
-					c.sub = NULL;
-					c.minW = 60.0f;
-					c.prefH = 40.0f;
-					layout_draw_cell(g, outs[i], &c, accs[i]);
-					if (i > 0) {
-						int gv = (int)((i == 1 ? g2 : gr3) * 10.0f + 0.5f);
-						wsprintfA(buf, "grow=%d.%d", gv / 10, gv % 10);
-						Gfx_Text(gfx, t->fMini, buf,
-							Ui_Rect(outs[i].x + 10.0f, outs[i].y + 28.0f,
-								outs[i].w - 20.0f, 16.0f),
-							t->text3, GFX_TEXT_VCENTER);
-					}
-				}
-			}
-		}
-
-		/* 垂直: 同参数 UI_COLUMN */
-		{
-			UiFixedSize fx[3];
-			UiMeasureItem items[3];
-			UiRect outs[3];
-			UiRect vArea;
-			float g2 = gr2;
-			/* 垂直区块里再分左右: 左列演示, 右侧留说明 */
-			vArea = Ui_Rect(colArea.x, colArea.y,
-				colArea.w * 0.44f, colArea.h);
-			fx[0].w = 0.0f; fx[0].h = 34.0f;   /* 垂直时 basis 用 h */
-			fx[1].w = 0.0f; fx[1].h = 0.0f;
-			fx[2].w = 0.0f; fx[2].h = 0.0f;
-			items[0] = Ui_FixedItem(&fx[0], 0.0f);
-			items[1] = Ui_FixedItem(&fx[1], g2);
-			items[2] = Ui_FixedItem(&fx[2], gr3);
-			if (Ui_FlexLayout(vArea, UI_COLUMN, gap, items, 3, outs)) {
-				static const char *const kTags[3] = {
-					"固定 34", "弹簧 A", "弹簧 B"
-				};
-				for (i = 0; i < 3; i++) {
-					LayoutCard c;
-					c.label = kTags[i];
-					c.sub = NULL;
-					c.minW = 60.0f;
-					c.prefH = 30.0f;
-					layout_draw_cell(g, outs[i], &c, accs[i]);
-					if (i > 0) {
-						int gv = (int)((i == 1 ? g2 : gr3) * 10.0f + 0.5f);
-						wsprintfA(buf, "grow=%d.%d", gv / 10, gv % 10);
-						Gfx_Text(gfx, t->fMini, buf,
-							Ui_Rect(outs[i].x + 10.0f, outs[i].y + 26.0f,
-								outs[i].w - 20.0f, 14.0f),
-							t->text3, GFX_TEXT_VCENTER);
-					}
-				}
-			}
+		if (dir) {
+			/* 垂直: 左 44% 演示列, 右侧对比说明 */
+			flexArea = Ui_Rect(mainArea.x, mainArea.y,
+				mainArea.w * 0.44f, mainArea.h);
 			Gfx_Text(gfx, t->fMini,
-				"垂直方向: 主轴是高, basis/grow 作用于高度;\n"
-				"弹簧项认领剩余高度, 固定项不受影响。",
-				Ui_Rect(colArea.x + colArea.w * 0.46f + 12.0f, colArea.y,
-					colArea.w * 0.54f - 12.0f, colArea.h), t->hint,
-				GFX_TEXT_WRAP);
+				"垂直方向: 主轴是高 —— basis/grow 作用于高度,\n"
+				"弹簧项认领剩余高度, 固定项不受影响;\n"
+				"切回「水平」对比: 主轴变宽, 语义不变。",
+				Ui_Rect(mainArea.x + mainArea.w * 0.46f + 12.0f,
+					mainArea.y, mainArea.w * 0.54f - 12.0f, mainArea.h),
+				t->hint, GFX_TEXT_WRAP);
+			fx[0].w = 0.0f; fx[0].h = 34.0f;    /* 垂直: basis 是高度 */
+		} else {
+			flexArea = mainArea;
+			fx[0].w = 110.0f; fx[0].h = 0.0f;   /* 水平: basis 是宽度 */
 		}
-
-		/* 轻量版: Ui_FlexRow (水平, UiFlexItem basis+grow) */
-		{
-			UiFlexItem it[3];
-			UiRect outs[3];
-			it[0].basis = 96.0f; it[0].grow = 0.0f;
-			it[0].minSize = 0.0f; it[0].maxSize = 0.0f;
-			it[1].basis = 0.0f;  it[1].grow = 2.0f;
-			it[1].minSize = 0.0f; it[1].maxSize = 0.0f;
-			it[2].basis = 0.0f;  it[2].grow = 1.0f;
-			it[2].minSize = 0.0f; it[2].maxSize = 0.0f;
-			if (Ui_FlexRow(liteArea, 8.0f, it, 3, outs)) {
-				static const char *const kTags[3] = {
-					"basis 96", "grow 2", "grow 1"
-				};
-				UiColor acc2[3];
-				acc2[0] = t->blue;
-				acc2[1] = t->blue2;
-				acc2[2] = t->text3;
-				for (i = 0; i < 3; i++) {
-					LayoutCard c;
-					c.label = kTags[i];
-					c.sub = NULL;
-					c.minW = 60.0f;
-					c.prefH = 40.0f;
-					layout_draw_cell(g, outs[i], &c, acc2[i]);
+		fx[1].w = 0.0f; fx[1].h = 0.0f;
+		fx[2].w = 0.0f; fx[2].h = 0.0f;
+		items[0] = Ui_FixedItem(&fx[0], 0.0f);
+		items[1] = Ui_FixedItem(&fx[1], gr2);
+		items[2] = Ui_FixedItem(&fx[2], gr3);
+		if (Ui_FlexLayout(flexArea, dir ? UI_COLUMN : UI_ROW, gap,
+				items, 3, outs)) {
+			for (i = 0; i < 3; i++) {
+				LayoutCard c;
+				c.label = tags[i];
+				c.sub = NULL;
+				if (i > 0) {
+					int gv = (int)((i == 1 ? gr2 : gr3) * 10.0f + 0.5f);
+					wsprintfA(buf, "grow=%d.%d", gv / 10, gv % 10);
+					c.sub = buf;
 				}
-				Gfx_Text(gfx, t->fMini, "Ui_FlexCol 同参数即垂直 (样例见属性页代码)",
-					Ui_Rect(liteArea.x + liteArea.w - 240.0f,
-						liteArea.y - 20.0f, 240.0f, 16.0f),
-					t->hint, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+				c.minW = 60.0f;
+				c.prefH = 40.0f;
+				layout_draw_cell(g, outs[i], &c, accs[i]);
 			}
 		}
 	}
-	(void)ui;
+
+	/* ── 轻量版: Ui_FlexRow (水平, UiFlexItem basis+grow) ── */
+	{
+		UiFlexItem it[3];
+		UiRect outs[3];
+		it[0].basis = 96.0f; it[0].grow = 0.0f;
+		it[0].minSize = 0.0f; it[0].maxSize = 0.0f;
+		it[1].basis = 0.0f;  it[1].grow = 2.0f;
+		it[1].minSize = 0.0f; it[1].maxSize = 0.0f;
+		it[2].basis = 0.0f;  it[2].grow = 1.0f;
+		it[2].minSize = 0.0f; it[2].maxSize = 0.0f;
+		if (Ui_FlexRow(liteArea, 8.0f, it, 3, outs)) {
+			static const char *const kTags[3] = {
+				"basis 96", "grow 2", "grow 1"
+			};
+			UiColor acc2[3];
+			acc2[0] = t->blue;
+			acc2[1] = t->blue2;
+			acc2[2] = t->text3;
+			for (i = 0; i < 3; i++) {
+				LayoutCard c;
+				c.label = kTags[i];
+				c.sub = NULL;
+				c.minW = 60.0f;
+				c.prefH = 40.0f;
+				layout_draw_cell(g, outs[i], &c, acc2[i]);
+			}
+		}
+	}
 }
 
 static void flex_props(Gallery *g, UiRect rc)
@@ -4544,14 +4509,13 @@ static void grid_demo(Gallery *g, UiRect rc)
 	lbl(gfx, t, Ui_StackTake(&col, 18.0f),
 		"Ui_GridLayout: fixed / auto / fr 轨道 · span · dense");
 	Ui_StackSkip(&col, 4.0f);
-	gridRc = Ui_StackTakeFill(&col);
-	Ui_StackSkip(&col, 8.0f);
-
 	trackRc = Ui_StackTake(&col, 44.0f);
 	Gfx_Text(gfx, t->fMini,
 		"轨道: [FIXED 110] [AUTO minmax(90,190)] [FR 1·min 80]   "
 		"自动放置 row=-1 col=-1 · dense 时 E 抢占最早空位",
 		trackRc, t->hint, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+	Ui_StackSkip(&col, 8.0f);
+	gridRc = Ui_StackTakeFill(&col);   /* 最后: 吃掉剩余高度 */
 
 	{
 		UiGrid grid;
