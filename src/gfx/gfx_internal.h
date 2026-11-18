@@ -14,9 +14,12 @@
 #include <d2d1_1.h>
 #include <dwrite.h>
 #include "gfx/gfx.h"
+#include "gfx/gfx_visual.h"
 
 /* 绘制表面是否就绪 (首帧前/设备丢失时为 0) */
 int Gfx_IntReady(Gfx *g);
+HWND Gfx_IntHwnd(Gfx *g);
+float Gfx_IntScale(Gfx *g);
 
 /* DirectWrite 工厂 / 当前 D2D 渲染目标 (借用, 不要 Release) */
 IDWriteFactory *Gfx_IntDWrite(Gfx *g);
@@ -35,5 +38,7 @@ void Gfx_IntDrawBitmap(Gfx *g, GfxBitmap *b, GfxRect dst);
 IDWriteTextFormat *Gfx_IntFontFormat(GfxFont *f);
 float Gfx_IntFontSize(GfxFont *f);
 int Gfx_IntFontWeight(GfxFont *f);   /* 原始字重; >=600 视为粗体 */
+
+/* 外部合成 Visual 宿主见 gfx_visual.h (C 兼容). */
 
 #endif /* CUI_GFX_INTERNAL_H */

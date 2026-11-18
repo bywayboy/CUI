@@ -1872,6 +1872,71 @@ int Gfx_Resize(Gfx *g, int pixelW, int pixelH, float scale)
 
 int Gfx_Generation(Gfx *g) { return g ? g->generation : 0; }
 int Gfx_DeviceGeneration(Gfx *g) { return g ? g->deviceGen : 0; }
+
+/* ── 外部合成 Visual 宿主 ─────────────────────────────────────────── */
+
+HWND Gfx_IntHwnd(Gfx *g) { return g ? g->hwnd : NULL; }
+float Gfx_IntScale(Gfx *g) { return (g && g->scale > 0.0f) ? g->scale : 1.0f; }
+
+int Gfx_IntDcomp(Gfx *g)
+{
+	return g && g->useDcomp && g->compDevice && g->compVisual;
+}
+
+int Gfx_IntRenderMode(Gfx *g)
+{
+	if (!g || !g->dcompTried) return 0;
+	return g->useDcomp ? 1 : 2;
+}
+
+void *Gfx_IntCreateChildVisual(Gfx *g, GfxRect rc, int top)
+{
+	IDCompositionVisual *v = NULL;
+	float s, w, h;
+	if (!Gfx_IntDcomp(g)) return NULL;
+	if (FAILED(g->compDevice->CreateVisual(&v)) || !v) return NULL;
+	s = g->scale > 0.0f ? g->scale : 1.0f;
+	w = (rc.w > 1.0f ? rc.w : 1.0f) * s;
+	h = (rc.h > 1.0f ? rc.h : 1.0f) * s;
+	if (FAILED(v->SetOffsetX(rc.x * s)) || FAILED(v->SetOffsetY(rc.y * s)) ||
+		FAILED(v->SetClip(D2D1::RectF(0.0f, 0.0f, w, h))) ||
+		FAILED(top ? CompAddTop(g->compVisual, v)
+			: CompAddBottom(g->compVisual, v)) ||
+		FAILED(g->compDevice->Commit())) {
+		v->Release();
+		return NULL;
+	}
+	return v;
+}
+
+void Gfx_IntUpdateChildVisual(Gfx *g, void *visual, GfxRect rc, int visible)
+{
+	IDCompositionVisual *v = (IDCompositionVisual *)visual;
+	float s, w, h;
+	if (!g || !v || !g->compDevice) return;
+	s = g->scale > 0.0f ? g->scale : 1.0f;
+	w = (rc.w > 1.0f ? rc.w : 1.0f) * s;
+	h = (rc.h > 1.0f ? rc.h : 1.0f) * s;
+	v->SetOffsetX(rc.x * s);
+	v->SetOffsetY(rc.y * s);
+	v->SetClip(visible ? D2D1::RectF(0.0f, 0.0f, w, h)
+		: D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f));
+	g->compDevice->Commit();
+}
+
+void Gfx_IntDestroyChildVisual(Gfx *g, void *visual)
+{
+	IDCompositionVisual *v = (IDCompositionVisual *)visual;
+	if (!g || !v) return;
+	if (g->compVisual) g->compVisual->RemoveVisual(v);
+	if (g->compDevice) g->compDevice->Commit();
+	v->Release();
+}
+
+void Gfx_IntCommit(Gfx *g)
+{
+	if (g && g->compDevice) g->compDevice->Commit();
+}
 int Gfx_Ready(Gfx *g) { return g && g->rt != NULL; }
 
 int Gfx_GradientCreates(Gfx *g)

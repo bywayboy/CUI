@@ -38,6 +38,10 @@ enum {
 };
 
 typedef struct UiAppCallbacks {
+	/* 原始消息钩子: 在壳的默认派发之前调用; 返回 1 = 已处理, result 即返回值.
+	 * 用于把鼠标/滚轮先送给子表面宿主 (如 WebView2 视觉托管). */
+	int  (*input)(UiApp *app, UINT msg, WPARAM wParam, LPARAM lParam,
+		LRESULT *result, void *user);
 	void (*init)(UiApp *app, void *user);
 	void (*frame)(UiApp *app, void *user);
 	void (*after_frame)(UiApp *app, void *user);

@@ -5,7 +5,8 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
 平滑 + 转场补间"的轻动画内核，以及支持中文输入法（IMM32）的单行编辑框
 `UiEdit` 与多行 `UiTextArea`（动态容量）；上层组件覆盖 Markdown 渲染
 （含 GFM、`:::` 容器、数学公式与多 run 富文本层）、滚动虚拟列表、Tab、
-弹层/菜单/对话框、日期选择、分页、导航、图片与网络（HTTP/WS/WSS，含服务端）。
+弹层/菜单/对话框、日期选择、分页、导航、图片、网络（HTTP/WS/WSS，含服务端）
+与 WebView2 宿主（纯 C COM、DComp 视觉托管 / ULW 窗口模式回退）。
 
 工程包含多个样例，公共代码在 `src/ui`：
 
@@ -45,6 +46,10 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
   包含可编辑备注 TextArea。
 - `samples/textarea.c`：多行编辑器样例。软换行、垂直滚动、选区、剪贴板、
   IME、readonly/disabled；7000+ 字符动态追加与中段编辑。
+- `samples/webview.c`：WebView2 宿主样例。CUI 顶栏 + 内容区网页；
+  DComp 视觉托管（无 DComp 时窗口模式回退）；鼠标/滚轮转发、键盘键入、
+  虚拟主机映射、导航/加载完成事件、Host↔页面双向消息（按钮发 JSON，页面回执）；
+  网页资源在 `samples/webview_test.html`。
 - `samples/nav.c`：多级导航菜单样例。水平/垂直切换、图标 rail、水平尾部
   `>>` 收起、垂直高度不足时的底部 `>>`、多级子菜单、选中路径面包屑；
   子菜单超高时用"更多 >>"续页，不出现滚动条。
@@ -100,6 +105,7 @@ CUI/
 │  ├─ CUI-网络层-设计方案.md  IOCP+SChannel/自研 DNS/APC 归位/定时器/验证判据
 │  ├─ CUI-图片-设计方案.md   UiImage：WIC 解码/URL-文件-内存/GPU loading/失效
 │  ├─ CUI-Markdown-设计方案.md  块/行模型/懒测量/富文本层/容器标签/锚点与性能
+│  ├─ CUI-WebView2-设计方案.md  纯 C COM / 共享环境 / 视觉托管 / 输入与回退
 │  └─ CUI-主题编辑器-设计方案.md  令牌快照/双模式编辑/拾取器/代码生成/持久化
 ├─ samples/
 │  ├─ minimal.c           最小接入样例
@@ -119,6 +125,7 @@ CUI/
 │  ├─ net.c               网络层：HTTP(S) / WebSocket(wss) / UiTimer
 │  ├─ ws_server.c         WebSocket 服务端：ws/wss / 回显 / 广播 / 连接日志
 │  ├─ image.c             图片：URL / 本地文件 / 内存 + GPU loading
+│  ├─ webview.c           WebView2：视觉托管 / 窗口回退 / 输入 / 虚拟主机
 │  └─ theme_editor.c      主题编辑器：双模式 68 色 + 5 圆角 / 预览 / 导出预设
 ├─ tests/
 │  ├─ net_test.c          headless + 实网断言（CUI_NET_LIVE=1）
@@ -221,6 +228,7 @@ bin\cui_net.exe         REM 网络层：HTTP(S) / WS / WSS / UiTimer
 bin\cui_ws_server.exe   REM WebSocket 服务端：WS/WSS / 回显 / 广播
 bin\cui_net_test.exe    REM 网络层断言（CUI_NET_LIVE=1 跑实网，需先起 tests\net_server_*.ps1）
 bin\cui_image.exe       REM 图片：URL / 文件 / 内存 + GPU loading 动画
+bin\cui_webview.exe     REM WebView2：DComp 视觉托管 / ULW 窗口回退 / 输入
 bin\cui_markdown.exe    REM Markdown 阅读器 + 编辑器：目录树 / 历史 / 本地与远程
 bin\cui_md_test.exe     REM Markdown 解析器断言（金样 / 性能上限）
 bin\cui_md_ui_test.exe  REM Markdown 渲染断言（盒模型 / 跳转落点 / 当前章节）
@@ -239,6 +247,10 @@ bin\cui_gallery.exe     REM 组件画廊：31 页 / 演示+属性+实时代码+�
 printf（flags/宽度/精度/length）和分配器；`mem_avx2.c` 单独 `/arch:AVX2`。
 脚本用 `/Oi- /GS- /Gs32768`，最后用 `dumpbin` 检查导入表里没有
 `msvcrt/ucrtbase/api-ms-win-crt-*`，有就直接判失败。
+
+`cui_webview.exe` 额外需要：系统安装 **WebView2 Evergreen Runtime**，且
+`WebView2Loader.dll` 与 exe 同目录（构建时从 `third_party/webview2/x64/`
+自动复制）。SDK 头文件只参与编译，不随程序分发。
 
 ---
 

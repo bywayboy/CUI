@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CUI WebView2 Test</title>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body { font: 16px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif;
+         color: #1f2430; background: #f5f6f8; }
+  #out { position: absolute; left: 24px; top: 20px; margin: 0;
+         font-size: 26px; }
+  #in  { position: absolute; left: 24px; top: 80px; width: 320px;
+         height: 38px; padding: 0 10px; font-size: 16px; }
+  #btn { position: absolute; left: 24px; top: 136px; width: 160px;
+         height: 40px; font-size: 16px; }
+  #log { position: absolute; left: 24px; top: 200px; color: #4a5568; }
+</style>
+<h1 id="out">CUI WebView2</h1>
+<input id="in" placeholder="在这里输入">
+<button id="btn">Click me</button>
+<div id="log">点击按钮 / 输入后按 Enter</div>
+<script>
+  var out = document.getElementById('out');
+  var input = document.getElementById('in');
+  document.getElementById('btn').addEventListener('click', function () {
+    out.textContent = 'clicked ' + input.value;
+  });
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter')
+      out.textContent = 'enter: ' + input.value;
+  });
+  window.chrome.webview.addEventListener('message', function (e) {
+    document.getElementById('log').textContent =
+      'host: ' + JSON.stringify(e.data);
+    window.chrome.webview.postMessage({ reply: 'ok', got: e.data });
+  });
+  window.chrome.webview.postMessage({ hello: 'cui' });
+</script>

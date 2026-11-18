@@ -4927,6 +4927,49 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 
 ---
 
+## 21. WebView2 宿主（可选模块）
+
+`src/ui/ui_webview.h` 提供纯 C 的 WebView2 宿主，能力对齐 DuiLib
+`CWebview2UI`：脚本/对话框/WebMessage/错误页/拖放/右键菜单/加速键/状态栏/
+缩放/DevTools 等设置，导航、脚本执行、宿主对象注入、虚拟主机、Cookie/
+证书/权限/进程失败/WebResource 事件，以及原始 Environment/Controller/Core
+COM 指针。页面消息双向：页面 `postMessage` 触发 `web_message`；Host 用
+`UiWebView_PostWebMessageJson` / `...String`（对应
+`PostWebMessageAsJson` / `PostWebMessageAsString`）。导航提供
+`navigation_starting`（可取消）、`navigation_completed`（加载完成/失败）
+与 `frame_navigation_completed`。
+
+用法：
+
+```c
+UiWebViewConfig cfg;
+UiWebViewEvents ev;
+UiWebViewConfig_Default(&cfg);
+cfg.homepage = L"https://example.com";
+ZeroMemory(&ev, sizeof(ev));
+/* 填 created / navigation_completed / web_message ... */
+wv = UiWebView_Create(app->gfx, Ui_Id("wv", 0, 0), &cfg, &ev);
+
+/* 顶栏照常用 CUI 画；内容区每帧更新视觉矩形 */
+Ui_WebView(wv, &app->ui, Ui_Rect(0, 54, app->w, app->h - 54));
+
+/* 原始消息钩子: 鼠标/滚轮/最小化先给 WebView2 */
+static int on_input(UiApp *app, UINT msg, WPARAM wp, LPARAM lp,
+    LRESULT *result, void *user) {
+    if (UiWebView_Input(wv, &app->ui, msg, wp, lp)) { *result = 0; return 1; }
+    return 0;
+}
+```
+
+要点与限制：
+
+- DComp 可用时用 CompositionController + 最上层子视觉；ULW 回退为窗口模式。
+- 需要 WebView2 Evergreen Runtime 与同目录 `WebView2Loader.dll`。
+- 浏览器参数/GPU 开关在共享环境首次创建时生效；不提供 DuiLib 示例中
+  关闭证书校验的 CORS 代理，证书策略由应用事件决定。
+- 视觉托管下网页位于 CUI 根视觉之上，CUI Popup/Tooltip 不能覆盖网页。
+- 详细设计与验证记录见 `docs/CUI-WebView2-设计方案.md`。
+
 ## 结语
 
 CUI 的核心只有一句话：**每帧重新画、用稳定 ID 读交互、把动作推迟到帧结束**。

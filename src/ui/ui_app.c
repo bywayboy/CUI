@@ -146,6 +146,11 @@ static void app_timer_tick(void *user, uint64_t id)
 static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	UiApp *app = (UiApp *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+	if (app && app->cb && app->cb->input) {
+		LRESULT result = 0;
+		if (app->cb->input(app, msg, wp, lp, &result, app->user))
+			return result;
+	}
 	switch (msg) {
 	case WM_NCCREATE:
 		app = (UiApp *)((CREATESTRUCTW *)lp)->lpCreateParams;
