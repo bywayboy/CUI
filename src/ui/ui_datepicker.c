@@ -328,7 +328,8 @@ static void dp_month_fade(UiDatePicker *dp, UiContext *ui)
 	for (b = 0; b < n; b++) {
 		UiId gid = dp_child(dp->id, "ui.dp.grid", b);
 		Ui_AnimSet(ui, gid, UI_AN_ALPHA, 0.0f);
-		Ui_AnimTo(ui, gid, UI_AN_ALPHA, 1.0f, 140, UI_AN_EASE_OUT);
+		Ui_AnimTo(ui, gid, UI_AN_ALPHA, 1.0f,
+			Ui_AnimTweenMs(UI_AN_TWEEN_CONTENT), UI_AN_EASE_OUT);
 	}
 }
 
@@ -355,7 +356,8 @@ static void dp_open(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui,
 		Ui_AnimSet(ui, panelId, UI_AN_ALPHA, 1.0f);
 	} else if (!ui->animReduced) {
 		Ui_AnimSet(ui, panelId, UI_AN_ALPHA, 0.0f);
-		Ui_AnimTo(ui, panelId, UI_AN_ALPHA, 1.0f, 160, UI_AN_EASE_OUT);
+		Ui_AnimTo(ui, panelId, UI_AN_ALPHA, 1.0f,
+			Ui_AnimTweenMs(UI_AN_TWEEN_PANEL), UI_AN_EASE_OUT);
 	} else {
 		Ui_AnimSet(ui, panelId, UI_AN_ALPHA, 1.0f);
 	}
@@ -659,7 +661,8 @@ static void dp_draw_month(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui,
 		UiRect block = Ui_Rect(bx, by, DP_GRID_W,
 			DP_HDR_H + DP_WD_H + 6.0f * DP_CELL);
 		dp->gridFx &= ~(1 << panelIdx);
-		Ui_FxChangeRect(ui, block, 140);
+		Ui_FxChangeRect(ui, block,
+			Ui_AnimTweenMs(UI_AN_TWEEN_CONTENT));
 		return;
 	}
 
@@ -955,7 +958,8 @@ void UiDatePicker_DrawPopup(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui)
 	 * 正常绘制并由覆盖层从旧画面淡到新面板. */
 	if (dp->panelFx) {
 		dp->panelFx = 0;
-		Ui_FxChangeRect(ui, panel, 160);
+		Ui_FxChangeRect(ui, panel,
+			Ui_AnimTweenMs(UI_AN_TWEEN_PANEL));
 		return;
 	}
 	UiDate_Now(&now);

@@ -45,6 +45,16 @@ int Ui_AnimFxMs(int ch)
 	return (int)(Ui_AnimChanTauMs(ch) * 3.0f + 0.5f);
 }
 
+int Ui_AnimTweenMs(int kind)
+{
+	switch (kind) {
+	case UI_AN_TWEEN_PANEL:   return 160;
+	case UI_AN_TWEEN_CONTENT: return 140;
+	case UI_AN_TWEEN_ARROW:   return 180;
+	default:                  return 160;
+	}
+}
+
 static float fabsf_(float v) { return v < 0.0f ? -v : v; }
 
 /* 平滑收敛阈值: 交互强度最终映射到 8bit 颜色, 0.008 ≈ 2 个色阶 —— 再迭代也

@@ -68,6 +68,15 @@ float Ui_AnimChanTauMs(int ch);
  * 与 CPU 通道保持同速; 曲线在 gfx 侧用 EASE_OUT (1-(1-p)^3) 对齐. */
 int   Ui_AnimFxMs(int ch);
 
+/* 转场 (非状态通道) 的共用时长: 弹层/内容切换/箭头旋转.
+ * 合成器 FX 与 CPU 降级都从这里取, 两边不能各写一个数字. */
+enum {
+	UI_AN_TWEEN_PANEL = 0,   /* 弹层/菜单/下拉 打开与关闭 */
+	UI_AN_TWEEN_CONTENT,     /* 面板内内容切换 (日期月份) */
+	UI_AN_TWEEN_ARROW        /* 下拉箭头旋转 */
+};
+int   Ui_AnimTweenMs(int kind);
+
 /* 从当前值补间到 target; ease 见 UI_AN_EASE_* */
 void  Ui_AnimTo(UiContext *ctx, UiId id, int ch, float target, int ms, int ease);
 

@@ -135,7 +135,8 @@ void UiPopupManager_Close(UiPopupManager *pm, UiContext *ui)
 		/* 弹层收起的过渡: 登记一次 160ms 淡出 (旧面板快照在下一帧
 		 * Flush 时仍完整保留在 uiTarget 中), 由合成器覆盖层完成;
 		 * 无法走合成器时仍是整窗硬切。 */
-		if (pm->visualValid) Ui_FxChangeRect(ui, pm->visualRc, 160);
+		if (pm->visualValid) Ui_FxChangeRect(ui, pm->visualRc,
+			Ui_AnimTweenMs(UI_AN_TWEEN_PANEL));
 		/* 关闭后必须擦掉整个弹层. */
 		if (ui->hwnd) InvalidateRect(ui->hwnd, NULL, FALSE);
 	}

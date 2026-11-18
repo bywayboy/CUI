@@ -600,7 +600,8 @@ int Ui_Select(UiSelect *s, UiPopupManager *pm, UiContext *ui, UiRect rc,
 			Ui_PartPlace(ui, s->arrowPart, ar.x, ar.y, ar.w, ar.h);
 			if (s->arrowPartTarget != target) {
 				Gfx_PartAnimateRotation(part,
-					180.0f * (float)target, 180);
+					180.0f * (float)target,
+					Ui_AnimTweenMs(UI_AN_TWEEN_ARROW));
 				s->arrowPartTarget = target;
 			}
 		}
@@ -619,7 +620,8 @@ int Ui_Select(UiSelect *s, UiPopupManager *pm, UiContext *ui, UiRect rc,
 	}
 	if (s->arrowAnim) {
 		double now = (double)GetTickCount64();
-		float p = (float)((now - s->arrowT0) / 180.0);
+		float p = (float)((now - s->arrowT0) /
+			(double)Ui_AnimTweenMs(UI_AN_TWEEN_ARROW));
 		if (p >= 1.0f) {
 			s->arrowAngle = (float)target;
 			s->arrowAnim = 0;
@@ -694,7 +696,8 @@ void UiSelect_DrawPopup(UiSelect *s, UiPopupManager *pm, UiContext *ui)
 	/* 打开首帧: 面板不画 (uiTarget 保留上一帧), 下一帧由覆盖层淡入 */
 	if (s->panelFx && Ui_FxActive(ui)) {
 		s->panelFx = 0;
-		Ui_FxChangeRect(ui, panel, 160);
+		Ui_FxChangeRect(ui, panel,
+			Ui_AnimTweenMs(UI_AN_TWEEN_PANEL));
 		return;
 	}
 

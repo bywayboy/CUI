@@ -143,7 +143,8 @@ void UiMenu_Draw(UiMenu *m, UiPopupManager *pm, UiContext *ui)
 	/* 打开首帧: 面板不画, 下一帧由合成器覆盖层淡入 */
 	if (m->panelFx && Ui_FxActive(ui)) {
 		m->panelFx = 0;
-		Ui_FxChangeRect(ui, panel, 160);
+		Ui_FxChangeRect(ui, panel,
+			Ui_AnimTweenMs(UI_AN_TWEEN_PANEL));
 		return;
 	}
 
