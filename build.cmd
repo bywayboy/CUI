@@ -50,7 +50,7 @@ FOR /R src %%H IN (*.h *.hpp) DO SET "HDRS=!HDRS! %%H"
 nmake /NOLOGO /f build.mk "FXC=%FXC%" || GOTO :err
 
 ECHO.
-FOR %%E IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe bin\cui_net.exe bin\cui_net_test.exe bin\cui_image.exe bin\cui_ws_server.exe bin\cui_gfx_rich_test.exe bin\cui_md_test.exe bin\cui_md_ui_test.exe bin\cui_md_math_test.exe bin\cui_gfx_math_test.exe bin\cui_markdown.exe bin\cui_nav.exe bin\cui_nav_test.exe bin\cui_pagination.exe bin\cui_pagination_test.exe bin\cui_layout_test.exe bin\cui_grid.exe bin\cui_grid_test.exe bin\cui_theme_editor.exe bin\cui_theme_edit_test.exe bin\cui_gallery.exe bin\cui_webview.exe bin\cui_svgedit.exe) DO (
+FOR %%E IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe bin\cui_net.exe bin\cui_net_test.exe bin\cui_image.exe bin\cui_ws_server.exe bin\cui_gfx_rich_test.exe bin\cui_md_test.exe bin\cui_md_ui_test.exe bin\cui_md_math_test.exe bin\cui_gfx_math_test.exe bin\cui_markdown.exe bin\cui_nav.exe bin\cui_nav_test.exe bin\cui_pagination.exe bin\cui_pagination_test.exe bin\cui_layout_test.exe bin\cui_grid.exe bin\cui_grid_test.exe bin\cui_theme_editor.exe bin\cui_theme_edit_test.exe bin\cui_gallery.exe bin\cui_webview.exe bin\cui_svgedit.exe bin\cui_gfx_path_test.exe bin\cui_svg_test.exe) DO (
     dumpbin /imports %%E | findstr /i "msvcrt ucrtbase api-ms-win-crt" >NUL
     IF ERRORLEVEL 1 (
         ECHO [OK] no CRT dependency: %%E
@@ -60,7 +60,7 @@ FOR %%E IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_mu
     )
 )
 ECHO === BUILD OK ===
-FOR %%I IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe bin\cui_net.exe bin\cui_net_test.exe bin\cui_image.exe bin\cui_ws_server.exe bin\cui_gfx_rich_test.exe bin\cui_md_test.exe bin\cui_md_ui_test.exe bin\cui_md_math_test.exe bin\cui_gfx_math_test.exe bin\cui_markdown.exe bin\cui_nav.exe bin\cui_nav_test.exe bin\cui_pagination.exe bin\cui_pagination_test.exe bin\cui_layout_test.exe bin\cui_grid.exe bin\cui_grid_test.exe bin\cui_theme_editor.exe bin\cui_theme_edit_test.exe bin\cui_gallery.exe bin\cui_webview.exe bin\cui_svgedit.exe) DO ECHO Output: %%~fI (%%~zI bytes)
+FOR %%I IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe bin\cui_net.exe bin\cui_net_test.exe bin\cui_image.exe bin\cui_ws_server.exe bin\cui_gfx_rich_test.exe bin\cui_md_test.exe bin\cui_md_ui_test.exe bin\cui_md_math_test.exe bin\cui_gfx_math_test.exe bin\cui_markdown.exe bin\cui_nav.exe bin\cui_nav_test.exe bin\cui_pagination.exe bin\cui_pagination_test.exe bin\cui_layout_test.exe bin\cui_grid.exe bin\cui_grid_test.exe bin\cui_theme_editor.exe bin\cui_theme_edit_test.exe bin\cui_gallery.exe bin\cui_webview.exe bin\cui_svgedit.exe bin\cui_gfx_path_test.exe bin\cui_svg_test.exe) DO ECHO Output: %%~fI (%%~zI bytes)
 EXIT /B 0
 
 :err
