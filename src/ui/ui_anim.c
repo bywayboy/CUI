@@ -22,7 +22,7 @@ static UiAnimEntry *anim_reserve(UiContext *ctx, int need)
 }
 
 /* 各通道的平滑时间常数 (ms)。交互按"按下最快、光晕最慢"排, 手感更自然。 */
-static float chan_tau(int ch)
+float Ui_AnimChanTauMs(int ch)
 {
 	switch (ch) {
 	case UI_AN_HOVER:  return 90.0f;
@@ -31,6 +31,18 @@ static float chan_tau(int ch)
 	case UI_AN_GLOW:   return 160.0f;
 	default:           return 140.0f;
 	}
+}
+
+static float chan_tau(int ch)
+{
+	return Ui_AnimChanTauMs(ch);
+}
+
+/* 3τ ≈ 指数平滑到达 95%: 合成器覆盖层走完这么长, CPU 降级也基本收敛。
+ * 两条渲染路径用同一个时长, 不能一边 120ms 一边 250ms。 */
+int Ui_AnimFxMs(int ch)
+{
+	return (int)(Ui_AnimChanTauMs(ch) * 3.0f + 0.5f);
 }
 
 static float fabsf_(float v) { return v < 0.0f ? -v : v; }

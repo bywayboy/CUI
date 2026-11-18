@@ -1,4 +1,6 @@
 #include "ui/ui_controls.h"
+#include "gfx/gfx_fx.h"
+#include "log.h"
 
 static UINT ctrl_bit(int i)
 {
@@ -23,9 +25,11 @@ static void ctrl_focus_bg(UiContext *ui, UiRect rc, int focus)
 		Ui_ColorAlpha(ui->theme->primary.base, 26));
 }
 
-/* 状态 0..1 平滑值: 首次绘制直接取目标, 切换时淡入淡出. */
+/* 状态 0..1: 合成器路径直接取最终值 (过渡由 SnapshotFx 负责);
+ * ULW/无合成器时用平滑通道。 */
 static float ctrl_state_t(UiContext *ui, UiId id, int ch, int on)
 {
+	if (Ui_FxActive(ui)) return on ? 1.0f : 0.0f;
 	Ui_AnimSmooth(ui, id, ch, on ? 1.0f : 0.0f);
 	return Ui_AnimGet(ui, id, ch, on ? 1.0f : 0.0f);
 }
@@ -134,6 +138,27 @@ void UiCheckbox_Init(UiCheckbox *c, UiId id, int checked)
 	c->checked = checked != 0;
 }
 
+static void checkbox_toggle(UiCheckbox *c)
+{
+	if (c->indeterminate) {
+		c->indeterminate = 0;
+		c->checked = 1;
+	} else {
+		c->checked = !c->checked;
+	}
+}
+
+static void checkbox_click_cb(void *user, UiContext *ui, UiId id)
+{
+	UiCheckbox *c = (UiCheckbox *)user;
+	(void)id;
+	if (!c || !ui) return;
+	checkbox_toggle(c);
+	c->changed = 1;
+	ui->navId = c->id;
+	Ui_FxChange(ui, c->id, Ui_AnimFxMs(UI_AN_USER));
+}
+
 int Ui_Checkbox(UiCheckbox *c, UiContext *ui, UiRect rc,
 	const char *label, int enabled)
 {
@@ -142,23 +167,15 @@ int Ui_Checkbox(UiCheckbox *c, UiContext *ui, UiRect rc,
 	UiRect box;
 	UiColor col;
 	float checkT, minusT;
-	int focus;
+	int focus, changed;
 	if (!c || !ui || !ui->theme || !ui->gfx) return 0;
 	t = ui->theme;
+	changed = c->changed;
 	c->changed = 0;
 	if (rc.w <= 0.0f || rc.h <= 0.0f) return 0;
 	box = Ui_Rect(rc.x, rc.y + (rc.h - 18.0f) * 0.5f, 18.0f, 18.0f);
 	st = Ui_State(ui, c->id, rc, enabled);
-	if (ui->clicked == c->id && enabled) {
-		if (c->indeterminate) {
-			c->indeterminate = 0;
-			c->checked = 1;
-		} else {
-			c->checked = !c->checked;
-		}
-		c->changed = 1;
-		ui->navId = c->id;
-	}
+	if (enabled) Ui_SetClickFn(ui, c->id, checkbox_click_cb, c);
 	if (st.hover > 0.004f && enabled)
 		Gfx_FillRoundRect(ui->gfx, Ui_RectInset(rc, 2.0f), 6.0f,
 			Ui_ColorAlpha(t->primary.base, (int)(st.hover * 16.0f)));
@@ -178,7 +195,7 @@ int Ui_Checkbox(UiCheckbox *c, UiContext *ui, UiRect rc,
 			Ui_Rect(box.x + 26.0f, rc.y, rc.w - 26.0f, rc.h), col,
 			GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 	}
-	return c->changed;
+	return changed;
 }
 
 int UiCheckbox_Key(UiCheckbox *c, UiContext *ui, UINT vk)
@@ -186,13 +203,9 @@ int UiCheckbox_Key(UiCheckbox *c, UiContext *ui, UINT vk)
 	if (!c || !ui || ui->navId != c->id) return 0;
 	ui->navFocusVisible = 1;
 	if (vk == VK_SPACE || vk == VK_RETURN) {
-		if (c->indeterminate) {
-			c->indeterminate = 0;
-			c->checked = 1;
-		} else {
-			c->checked = !c->checked;
-		}
+		checkbox_toggle(c);
 		c->changed = 1;
+		Ui_FxChange(ui, c->id, Ui_AnimFxMs(UI_AN_USER));
 		return 1;
 	}
 	return 0;
@@ -234,14 +247,33 @@ static int group_find(const UiCheckboxGroup *g, int from, int dir)
 	return -1;
 }
 
+static void chkgroup_click_cb(void *user, UiContext *ui, UiId id)
+{
+	UiCheckboxGroup *g = (UiCheckboxGroup *)user;
+	int i;
+	if (!g || !ui) return;
+	for (i = 0; i < g->count; i++) {
+		UiId rowId = ctrl_child(g->id, "ui.ctrl.chk", i);
+		if (rowId != id) continue;
+		if (!ctrl_item_enabled(&g->disabledMask, i, 1)) return;
+		g->mask ^= ctrl_bit(i);
+		g->focus = i;
+		ui->navId = g->id;
+		g->changed = 1;
+		Ui_FxChange(ui, rowId, Ui_AnimFxMs(UI_AN_USER));
+		return;
+	}
+}
+
 int UiCheckboxGroup_Draw(UiCheckboxGroup *g, UiContext *ui, UiRect rc,
 	const char *const *labels, float rowH, int enabled)
 {
 	UiTheme *t;
-	int i, clicked = 0, hitClip;
+	int i, hitClip, changed;
 	if (!g || !ui || !ui->theme || !ui->gfx || !labels || g->count <= 0) return 0;
 	if (rc.w <= 0.0f || rc.h <= 0.0f) return 0;
 	t = ui->theme;
+	changed = g->changed;
 	g->changed = 0;
 	if (rowH <= 0.0f) rowH = 28.0f;
 	/* 行内复选框描边中心在 rc.x 上, 左半像素/AA 会被 rc 边界裁掉,
@@ -261,13 +293,7 @@ int UiCheckboxGroup_Draw(UiCheckboxGroup *g, UiContext *ui, UiRect rc,
 		int focus;
 		if (row.y >= rc.y + rc.h) break;
 		st = Ui_State(ui, id, row, en);
-		if (ui->clicked == id && en) {
-			g->mask ^= ctrl_bit(i);
-			g->focus = i;
-			ui->navId = g->id;
-			g->changed = 1;
-			clicked = 1;
-		}
+		if (en) Ui_SetClickFn(ui, id, chkgroup_click_cb, g);
 		checkT = ctrl_state_t(ui, id, UI_AN_USER,
 			(g->mask & ctrl_bit(i)) != 0);
 		if (st.hover > 0.004f && en)
@@ -284,7 +310,7 @@ int UiCheckboxGroup_Draw(UiCheckboxGroup *g, UiContext *ui, UiRect rc,
 	}
 	if (hitClip) Ui_PopClipRect(ui);
 	Gfx_PopClip(ui->gfx);
-	return clicked;
+	return changed;
 }
 
 int UiCheckboxGroup_Key(UiCheckboxGroup *g, UiContext *ui, UINT vk)
@@ -314,6 +340,8 @@ int UiCheckboxGroup_Key(UiCheckboxGroup *g, UiContext *ui, UINT vk)
 		if (ctrl_item_enabled(&g->disabledMask, g->focus, 1)) {
 			g->mask ^= ctrl_bit(g->focus);
 			g->changed = 1;
+			Ui_FxChange(ui, ctrl_child(g->id, "ui.ctrl.chk",
+				g->focus), Ui_AnimFxMs(UI_AN_USER));
 		}
 		return 1;
 	}
@@ -359,14 +387,44 @@ static int radio_find(const UiRadioGroup *g, int from, int dir)
 	return -1;
 }
 
+static void radio_click_cb(void *user, UiContext *ui, UiId id)
+{
+	UiRadioGroup *g = (UiRadioGroup *)user;
+	int i;
+	if (!g || !ui) return;
+	for (i = 0; i < g->count; i++) {
+		UiId rowId = ctrl_child(g->id, "ui.ctrl.rad", i);
+		if (rowId != id) continue;
+		if (!ctrl_item_enabled(&g->disabledMask, i, 1)) return;
+		if (g->selected == i) {
+			g->focus = i;
+			ui->navId = g->id;
+			return;
+		}
+		{
+			int old = g->selected;
+			g->selected = i;
+			g->focus = i;
+			ui->navId = g->id;
+			g->changed = 1;
+			Ui_FxChange(ui, rowId, Ui_AnimFxMs(UI_AN_USER));
+			if (old >= 0)
+				Ui_FxChange(ui, ctrl_child(g->id, "ui.ctrl.rad",
+					old), Ui_AnimFxMs(UI_AN_USER));
+		}
+		return;
+	}
+}
+
 int UiRadioGroup_Draw(UiRadioGroup *g, UiContext *ui, UiRect rc,
 	const char *const *labels, float rowH, int enabled)
 {
 	UiTheme *t;
-	int i, hitClip;
+	int i, hitClip, changed;
 	if (!g || !ui || !ui->theme || !ui->gfx || !labels || g->count <= 0) return 0;
 	if (rc.w <= 0.0f || rc.h <= 0.0f) return 0;
 	t = ui->theme;
+	changed = g->changed;
 	g->changed = 0;
 	if (rowH <= 0.0f) rowH = 28.0f;
 	/* 同 CheckboxGroup: 放宽绘制裁剪, 保住左边描边/AA. */
@@ -384,12 +442,7 @@ int UiRadioGroup_Draw(UiRadioGroup *g, UiContext *ui, UiRect rc,
 		int focus;
 		if (row.y >= rc.y + rc.h) break;
 		st = Ui_State(ui, id, row, en);
-		if (ui->clicked == id && en) {
-			g->selected = i;
-			g->focus = i;
-			ui->navId = g->id;
-			g->changed = 1;
-		}
+		if (en) Ui_SetClickFn(ui, id, radio_click_cb, g);
 		onT = ctrl_state_t(ui, id, UI_AN_USER, g->selected == i);
 		if (st.hover > 0.004f && en)
 			Gfx_FillRoundRect(ui->gfx, Ui_RectInset(row, 2.0f), 6.0f,
@@ -405,7 +458,7 @@ int UiRadioGroup_Draw(UiRadioGroup *g, UiContext *ui, UiRect rc,
 	}
 	if (hitClip) Ui_PopClipRect(ui);
 	Gfx_PopClip(ui->gfx);
-	return g->changed;
+	return changed;
 }
 
 int UiRadioGroup_Key(UiRadioGroup *g, UiContext *ui, UINT vk)
@@ -433,8 +486,14 @@ int UiRadioGroup_Key(UiRadioGroup *g, UiContext *ui, UINT vk)
 		return 1;
 	case VK_SPACE: case VK_RETURN:
 		if (ctrl_item_enabled(&g->disabledMask, g->focus, 1)) {
+			int old = g->selected;
 			g->selected = g->focus;
 			g->changed = 1;
+			Ui_FxChange(ui, ctrl_child(g->id, "ui.ctrl.rad",
+				g->selected), Ui_AnimFxMs(UI_AN_USER));
+			if (old >= 0 && old != g->selected)
+				Ui_FxChange(ui, ctrl_child(g->id, "ui.ctrl.rad",
+					old), Ui_AnimFxMs(UI_AN_USER));
 		}
 		return 1;
 	}
@@ -451,6 +510,36 @@ void UiSwitch_Init(UiSwitch *s, UiId id, int on)
 	s->on = on != 0;
 }
 
+#define SW_THUMB_R 7.0f
+#define SW_THUMB_PAD 8.0f   /* 内容四周留 1 DIP 给抗锯齿 */
+
+/* PartFx 内容: 滑块圆点 (透明底, 半径 7 DIP) */
+static void switch_thumb_draw(Gfx *g, void *user)
+{
+	UiSwitch *s = (UiSwitch *)user;
+	Gfx_FillEllipse(g, SW_THUMB_PAD, SW_THUMB_PAD, SW_THUMB_R, SW_THUMB_R,
+		s->thumbColor);
+}
+
+static float switch_thumb_x(const UiSwitch *s)
+{
+	return s->thumbBase + (s->on ? s->thumbStep : 0.0f);
+}
+
+static void switch_click_cb(void *user, UiContext *ui, UiId id)
+{
+	UiSwitch *s = (UiSwitch *)user;
+	(void)id;
+	if (!s || !ui) return;
+	s->on = !s->on;
+	s->changed = 1;
+	ui->navId = s->id;
+	Ui_FxChange(ui, s->id, Ui_AnimFxMs(UI_AN_USER));
+	if (s->thumbPart)
+		Gfx_PartAnimateX((GfxPart *)s->thumbPart, switch_thumb_x(s),
+			Ui_AnimFxMs(UI_AN_USER));
+}
+
 int Ui_Switch(UiSwitch *s, UiContext *ui, UiRect rc,
 	const char *label, int enabled)
 {
@@ -459,30 +548,47 @@ int Ui_Switch(UiSwitch *s, UiContext *ui, UiRect rc,
 	UiRect track;
 	UiColor trackCol, thumb;
 	float pos;
-	int focus;
+	int focus, changed;
+	int fx;
 	if (!s || !ui || !ui->theme || !ui->gfx) return 0;
 	t = ui->theme;
+	changed = s->changed;
 	s->changed = 0;
 	if (rc.w <= 0.0f || rc.h <= 0.0f) return 0;
 	track = Ui_Rect(rc.x, rc.y + (rc.h - 20.0f) * 0.5f, 38.0f, 20.0f);
 	st = Ui_State(ui, s->id, rc, enabled);
-	if (ui->clicked == s->id && enabled) {
-		s->on = !s->on;
-		s->changed = 1;
-		ui->navId = s->id;
-	}
+	if (enabled) Ui_SetClickFn(ui, s->id, switch_click_cb, s);
 	focus = ui->navFocusVisible && ui->navId == s->id;
 	ctrl_focus_bg(ui, rc, focus);
-	Ui_AnimSmooth(ui, s->id, UI_AN_USER, s->on ? 1.0f : 0.0f);
-	pos = Ui_AnimGet(ui, s->id, UI_AN_USER, s->on ? 1.0f : 0.0f);
+	pos = ctrl_state_t(ui, s->id, UI_AN_USER, s->on);
+	fx = Ui_FxActive(ui);
 	trackCol = enabled ? Ui_ColorMix(t->switchOff, t->switchOn, pos)
 		: t->neutral.soft;
 	if (st.hover > 0.004f && enabled)
 		trackCol = Ui_ColorMix(trackCol, t->primary.hover, st.hover * 0.12f);
 	Gfx_FillRoundRect(ui->gfx, track, 10.0f, trackCol);
 	thumb = enabled ? t->neutral.base : t->neutral.base;
-	Gfx_FillEllipse(ui->gfx, track.x + 10.0f + pos * 18.0f,
-		track.y + 10.0f, 7.0f, 7.0f, thumb);
+	s->thumbBase = track.x + 10.0f - SW_THUMB_PAD;
+	s->thumbStep = 18.0f;
+	if (fx) {
+		/* 滑块单独放 visual, 位移由合成器补间; 主表面不画滑块 */
+		if (!s->thumbPart) {
+			s->thumbColor = thumb;
+			s->thumbPart = Gfx_PartCreate(ui->gfx, SW_THUMB_PAD * 2.0f,
+				SW_THUMB_PAD * 2.0f, switch_thumb_draw, s);
+		} else if (s->thumbColor != thumb) {
+			s->thumbColor = thumb;
+			Gfx_PartUpdate((GfxPart *)s->thumbPart);
+		}
+		if (s->thumbPart)
+			Ui_PartPlace(ui, s->thumbPart,
+				s->thumbBase + pos * s->thumbStep,
+				track.y + 10.0f - SW_THUMB_PAD,
+				SW_THUMB_PAD * 2.0f, SW_THUMB_PAD * 2.0f);
+	} else {
+		Gfx_FillEllipse(ui->gfx, track.x + 10.0f + pos * 18.0f,
+			track.y + 10.0f, 7.0f, 7.0f, thumb);
+	}
 	if (focus)
 		Gfx_StrokeRoundRect(ui->gfx, track, 10.0f,
 			Ui_ColorAlpha(t->primary.base, 180), 1.0f);
@@ -493,7 +599,7 @@ int Ui_Switch(UiSwitch *s, UiContext *ui, UiRect rc,
 			Ui_Rect(track.x + 50.0f, rc.y, rc.w - 50.0f, rc.h), col,
 			GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 	}
-	return s->changed;
+	return changed;
 }
 
 int UiSwitch_Key(UiSwitch *s, UiContext *ui, UINT vk)
@@ -503,6 +609,10 @@ int UiSwitch_Key(UiSwitch *s, UiContext *ui, UINT vk)
 	if (vk == VK_SPACE || vk == VK_RETURN) {
 		s->on = !s->on;
 		s->changed = 1;
+		Ui_FxChange(ui, s->id, Ui_AnimFxMs(UI_AN_USER));
+		if (s->thumbPart)
+			Gfx_PartAnimateX((GfxPart *)s->thumbPart,
+				switch_thumb_x(s), Ui_AnimFxMs(UI_AN_USER));
 		return 1;
 	}
 	return 0;

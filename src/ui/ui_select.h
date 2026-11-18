@@ -42,6 +42,11 @@ typedef struct UiSelect {
 	double arrowT0;
 	int arrowTarget;
 	int arrowAnim;
+	/* 合成器路径: chevron 是独立 visual (PartFx), 旋转由合成器补间 */
+	void *arrowPart;
+	unsigned arrowColor;
+	int arrowPartTarget;
+	int panelFx;           /* 打开首帧: 登记面板淡入矩形 */
 	double lastTickNow;    /* 列表平滑滚动用真实帧间隔 */
 	int visCount;          /* 当前过滤后的可见项数 */
 	int searchActive;      /* 搜索框是否已接管焦点/IME */

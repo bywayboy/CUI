@@ -1,8 +1,17 @@
 #include "ui/ui_tab.h"
+#include "gfx/gfx_fx.h"
 
 static UINT tab_bit(int i)
 {
 	return i >= 0 && i < 32 ? (1u << i) : 0u;
+}
+
+/* LINE 指示条内容: 按最大宽度画一条实心条, 圆角由 DComp clip 提供 */
+static void tab_ind_draw(Gfx *g, void *user)
+{
+	UiTabBar *tb = (UiTabBar *)user;
+	Gfx_FillRoundRect(g, Ui_Rect(0.0f, 0.0f, tb->indContentW, tb->indH),
+		0.0f, tb->indColor);
 }
 
 static UiId tab_child_id(UiId id, int index)
@@ -73,6 +82,7 @@ void UiTabBar_Init(UiTabBar *tb, UiId id, int count)
 	tb->count = count > 0 ? count : 0;
 	tb->selected = tb->count > 0 ? 0 : -1;
 	tb->focus = tb->selected;
+	tb->indSel = -2;
 }
 
 void UiTabBar_SetCount(UiTabBar *tb, int count)
@@ -87,6 +97,7 @@ void UiTabBar_SetCount(UiTabBar *tb, int count)
 	if (count < 32) tb->disabledMask &= (1u << count) - 1u;
 	if (count == 0) tb->disabledMask = 0;
 	tb->indicatorInit = 0;
+	tb->indSel = -2;
 }
 
 void UiTabBar_SetSelected(UiTabBar *tb, int index)
@@ -424,23 +435,63 @@ int UiTabBar_DrawEx(UiTabBar *tb, UiContext *ui, UiRect rc,
 			(iconW > 0.0f && tw > 0.0f ? 6.0f : 0.0f);
 		float maxW = selectedRc.w - 8.0f;
 		float tx, ty, ax, aw;
+		int partOk = 0;
 		if (iw > maxW) iw = maxW;
 		if (iw < 8.0f) iw = 8.0f;
 		tx = selectedRc.x + (selectedRc.w - iw) * 0.5f;
 		ty = header.y + header.h - indicatorW;
-		if (!tb->indicatorInit) {
-			Ui_AnimSet(ui, tb->id, UI_AN_USER, tx);
-			Ui_AnimSet(ui, tb->id, UI_AN_USER + 1, iw);
-			tb->indicatorInit = 1;
-		} else {
-			Ui_AnimSmooth(ui, tb->id, UI_AN_USER, tx);
-			Ui_AnimSmooth(ui, tb->id, UI_AN_USER + 1, iw);
+		if (Ui_FxActive(ui)) {
+			/* 指示条: 独立 visual, x 与宽度 (clip) 由合成器补间 */
+			if (tb->indPart &&
+				(tb->indContentW + 0.5f < header.w ||
+					tb->indH != indicatorW)) {
+				Gfx_PartDestroy((GfxPart *)tb->indPart);
+				tb->indPart = NULL;
+			}
+			if (!tb->indPart) {
+				tb->indContentW = header.w;
+				tb->indH = indicatorW;
+				tb->indColor = cInd;
+				tb->indPart = Gfx_PartCreate(ui->gfx, header.w,
+					indicatorW, tab_ind_draw, tb);
+				if (tb->indPart) {
+					Gfx_PartSetClipRadius((GfxPart *)tb->indPart,
+						indicatorW * 0.5f);
+					Gfx_PartUpdate((GfxPart *)tb->indPart);
+					Ui_PartPlaceRect(ui, tb->indPart, tx, ty, iw, tb->indH);
+					tb->indSel = selectedIndex;
+				}
+			} else if (tb->indColor != cInd) {
+				tb->indColor = cInd;
+				Gfx_PartUpdate((GfxPart *)tb->indPart);
+			}
+			if (tb->indPart) {
+				partOk = 1;
+				if (tb->indSel != selectedIndex) {
+					Gfx_PartAnimateRect((GfxPart *)tb->indPart,
+						tx, ty, iw, Ui_AnimFxMs(UI_AN_USER));
+					tb->indSel = selectedIndex;
+				} else {
+					Ui_PartPlaceRect(ui, tb->indPart, tx, ty, iw, tb->indH);
+				}
+			}
 		}
-		ax = Ui_AnimGet(ui, tb->id, UI_AN_USER, tx);
-		aw = Ui_AnimGet(ui, tb->id, UI_AN_USER + 1, iw);
-		if (aw > 0.5f)
-			Gfx_FillRoundRect(g, Ui_Rect(ax, ty, aw, indicatorW),
-				indicatorW * 0.5f, cInd);
+		if (!partOk) {
+			/* 合成器部件不可用 (ULW 或创建失败): CPU 通道同样的视觉 */
+			if (!tb->indicatorInit) {
+				Ui_AnimSet(ui, tb->id, UI_AN_USER, tx);
+				Ui_AnimSet(ui, tb->id, UI_AN_USER + 1, iw);
+				tb->indicatorInit = 1;
+			} else {
+				Ui_AnimSmooth(ui, tb->id, UI_AN_USER, tx);
+				Ui_AnimSmooth(ui, tb->id, UI_AN_USER + 1, iw);
+			}
+			ax = Ui_AnimGet(ui, tb->id, UI_AN_USER, tx);
+			aw = Ui_AnimGet(ui, tb->id, UI_AN_USER + 1, iw);
+			if (aw > 0.5f)
+				Gfx_FillRoundRect(g, Ui_Rect(ax, ty, aw, indicatorW),
+					indicatorW * 0.5f, cInd);
+		}
 	}
 
 	Ui_PopClipRect(ui);

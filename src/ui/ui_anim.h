@@ -61,6 +61,13 @@ void  Ui_AnimSet(UiContext *ctx, UiId id, int ch, float v);
 /* 平滑到 target (tau 由通道默认值决定) */
 void  Ui_AnimSmooth(UiContext *ctx, UiId id, int ch, float target);
 
+/* 通道的指数平滑时间常数 (ms). 合成器路径与 CPU 降级共用同一套节奏参数. */
+float Ui_AnimChanTauMs(int ch);
+
+/* 合成器覆盖层过渡时长: 3τ 是指数平滑的视觉收敛时间 (≈95%),
+ * 与 CPU 通道保持同速; 曲线在 gfx 侧用 EASE_OUT (1-(1-p)^3) 对齐. */
+int   Ui_AnimFxMs(int ch);
+
 /* 从当前值补间到 target; ease 见 UI_AN_EASE_* */
 void  Ui_AnimTo(UiContext *ctx, UiId id, int ch, float target, int ms, int ease);
 

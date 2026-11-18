@@ -44,6 +44,8 @@ typedef struct UiPopupManager {
 	int  focusOnClose;    /* 关闭后是否显示键盘焦点样式 */
 	int  closed;          /* 单帧: 本帧发生关闭 */
 	int  outsidePress;    /* 单帧: 打开期间在弹层外按下 */
+	UiRect visualRc;      /* 最近一次绘制的弹层外框 (DIP) */
+	int  visualValid;
 } UiPopupManager;
 
 void UiPopupManager_Init(UiPopupManager *pm);
@@ -58,6 +60,9 @@ int  UiPopupManager_AnyOpen(const UiPopupManager *pm);
 void UiPopupManager_Open(UiPopupManager *pm, UiContext *ui, UiId id,
 	UiId owner, int focusOnClose);
 void UiPopupManager_Close(UiPopupManager *pm, UiContext *ui);
+
+/* 绘制弹层面板时登记外框; 关闭时用它登记一次淡出过渡 (合成器覆盖层). */
+void UiPopupManager_SetVisualRect(UiPopupManager *pm, UiRect rc);
 
 /* 绘制弹层面板前/后调用: 临时把 inputScope 恢复为打开时捕获的 owner,
  * 使帧末绘制、对话框内弹层都能被正确命中. */

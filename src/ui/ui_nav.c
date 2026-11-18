@@ -880,7 +880,6 @@ static int nav_draw_panel(UiNavBar *nav, UiPopupManager *pm, UiContext *ui,
 	UiTheme *t = ui->theme;
 	UiNavStyle *s = &nav->style;
 	UiRect content, row, ir, tr, sr, ar, moreRc;
-	UiId panelId;
 	float y, rh, lw, sw;
 	UiId keyId;
 	int i, leaf, anc, openChild, en;
@@ -888,10 +887,8 @@ static int nav_draw_panel(UiNavBar *nav, UiPopupManager *pm, UiContext *ui,
 	*nextAnchor = nav_empty();
 	if (!nav || !pm || !ui || !items || visible <= 0) return 0;
 	items += start;
-	panelId = nav_level_id("ui.nav.panel", nav->id, level);
 	/* 同层 z + 后注册优先: 更深面板在循环里更晚绘制/注册, 仍能压住浅层. */
 	Ui_PushLayer(ui, UI_Z_OVERLAY);
-	Ui_RegisterWidget(ui, panelId, panel);
 	Gfx_FillRoundRect(ui->gfx, panel, 8.0f,
 		nav_col(s->panelBg, t->toastBg));
 	Gfx_StrokeRoundRect(ui->gfx, panel, 8.0f,
@@ -1357,6 +1354,21 @@ void UiNavBar_DrawPopups(UiNavBar *nav, UiPopupManager *pm, UiContext *ui)
 			}
 			anchor = next;
 		}
+	}
+	if (level > 0) {
+		/* 关闭时按所有已绘制面板的并集做一次淡出. */
+		UiRect vr = nav->panelRc[0];
+		int i;
+		for (i = 1; i < level; i++) {
+			float x0 = vr.x < nav->panelRc[i].x ? vr.x : nav->panelRc[i].x;
+			float y0 = vr.y < nav->panelRc[i].y ? vr.y : nav->panelRc[i].y;
+			float x1 = (vr.x + vr.w) > (nav->panelRc[i].x + nav->panelRc[i].w)
+				? (vr.x + vr.w) : (nav->panelRc[i].x + nav->panelRc[i].w);
+			float y1 = (vr.y + vr.h) > (nav->panelRc[i].y + nav->panelRc[i].h)
+				? (vr.y + vr.h) : (nav->panelRc[i].y + nav->panelRc[i].h);
+			vr = Ui_Rect(x0, y0, x1 - x0, y1 - y0);
+		}
+		UiPopupManager_SetVisualRect(pm, vr);
 	}
 	if (level < nav->openDepth) {
 		nav->openDepth = level;

@@ -37,6 +37,7 @@ typedef struct UiMenu {
 	float rowH;             /* 默认 30 */
 	float minW;             /* 默认 160 */
 	UiRect panelRc;         /* 最近一帧面板矩形 */
+	int panelFx;            /* 合成器路径: 打开首帧登记淡入 */
 } UiMenu;
 
 void UiMenu_Init(UiMenu *m, UiId id);

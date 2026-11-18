@@ -545,6 +545,8 @@ void UiScrollView_Tick(UiScrollView *sv, UiContext *ui, float dtMs)
 		moved = 1;
 		sv->idleMs = 0.0f;
 		invalidate_rc(ui, sv->viewport, 2.0f);
+		/* 内容在动: 该区域内的过渡快照会与新内容错位, 直接落位 */
+		Ui_FxCancelRect(ui, sv->viewport);
 	}
 
 	targetOp = 0.0f;

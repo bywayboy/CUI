@@ -96,6 +96,13 @@ int UiPopupManager_AnyOpen(const UiPopupManager *pm)
 	return pm && pm->openId != UI_ID_NONE;
 }
 
+void UiPopupManager_SetVisualRect(UiPopupManager *pm, UiRect rc)
+{
+	if (!pm || rc.w <= 0.0f || rc.h <= 0.0f) return;
+	pm->visualRc = rc;
+	pm->visualValid = 1;
+}
+
 void UiPopupManager_Open(UiPopupManager *pm, UiContext *ui, UiId id,
 	UiId owner, int focusOnClose)
 {
@@ -107,6 +114,7 @@ void UiPopupManager_Open(UiPopupManager *pm, UiContext *ui, UiId id,
 	pm->focusOnClose = focusOnClose != 0;
 	pm->closed = 0;
 	pm->outsidePress = 0;
+	pm->visualValid = 0;
 	ui->popupOpen = 1;
 	if (owner) ui->navId = owner;
 	/* 弹层在触发器脏区之外, 只失效按钮矩形会画不出来. */
@@ -124,6 +132,10 @@ void UiPopupManager_Close(UiPopupManager *pm, UiContext *ui)
 			ui->navId = pm->ownerId;
 			ui->navFocusVisible = pm->focusOnClose;
 		}
+		/* 弹层收起的过渡: 登记一次 160ms 淡出 (旧面板快照在下一帧
+		 * Flush 时仍完整保留在 uiTarget 中), 由合成器覆盖层完成;
+		 * 无法走合成器时仍是整窗硬切。 */
+		if (pm->visualValid) Ui_FxChangeRect(ui, pm->visualRc, 160);
 		/* 关闭后必须擦掉整个弹层. */
 		if (ui->hwnd) InvalidateRect(ui->hwnd, NULL, FALSE);
 	}
@@ -131,6 +143,7 @@ void UiPopupManager_Close(UiPopupManager *pm, UiContext *ui)
 	pm->scope = UI_ID_NONE;
 	pm->scopeDepth = 0;
 	pm->focusOnClose = 0;
+	pm->visualValid = 0;
 }
 
 void UiPopupManager_BeginDraw(UiPopupManager *pm, UiContext *ui)
@@ -158,11 +171,16 @@ void UiPopupManager_BeginFrame(UiPopupManager *pm, UiContext *ui)
 		return;
 	}
 	ui->popupOpen = 1;
-	/* 打开时底层不参与命中; 因此鼠标按下后 pressed==0 即"点在弹层外".
-	 * 弹层面板本身会注册一个 overlay 命中, 所以点面板空白不会误关. */
+	/* 打开时底层不参与命中, 所以 pressed==0 表示按在弹层控件之外.
+	 * 用最近一帧的弹层外框区分"面板空白"与"面板外", 不依赖额外注册的
+	 * 命中控件; 判定用按下时的坐标, 按住拖出面板不会误关. */
 	if (ui->mouseDown && ui->pressed == UI_ID_NONE) {
-		pm->outsidePress = 1;
-		UiPopupManager_Close(pm, ui);
+		int inside = pm->visualValid &&
+			Ui_RectContains(pm->visualRc, ui->pressX, ui->pressY);
+		if (!inside) {
+			pm->outsidePress = 1;
+			UiPopupManager_Close(pm, ui);
+		}
 	}
 }
 

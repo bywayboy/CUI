@@ -41,6 +41,10 @@ enum {
 typedef int (*UiHoverFn)(void *user, UiContext *ctx, float x, float y,
 	UiRect *dirty);
 
+/* 单击绑定: 在抬起事件里立即落状态 (供 Radio/Switch/Checkbox 等
+ * 需要在输入事件内提交状态与过渡的控件使用). */
+typedef void (*UiClickFn)(void *user, UiContext *ctx, UiId id);
+
 typedef struct {
 	UiId id;
 	UiRect rect;
@@ -51,6 +55,8 @@ typedef struct {
 	uint8_t pressPoll; /* 1 = 按下期间指针移动需逐次重绘 (滑块/拖选等) */
 	UiHoverFn hoverFn; /* 非 NULL: 指针在控件上移动时调用 */
 	void *hoverUser;
+	UiClickFn clickFn; /* 非 NULL: 同一控件按下并抬起时同步调用 */
+	void *clickUser;
 	UiId scope;
 } UiWidget;
 
@@ -69,6 +75,7 @@ struct UiContext {
 	float scale;
 	float width, height;      /* 视口尺寸（DIP） */
 	float mouseX, mouseY;     /* 最近鼠标位置（DIP） */
+	float pressX, pressY;     /* 最近一次按下时的位置（DIP） */
 	int mouseDown;
 	int mouseOver;            /* 光标在窗口客户区内 (WM_MOUSELEAVE 清 0) */
 	int inputBlock;           /* >0: 本帧不注册控件/滚轮目标 (翻页转场) */
@@ -112,6 +119,7 @@ struct UiContext {
 	int clickedOutside;       /* 单帧: 抬起时未命中任何控件 */
 	int popupOpen;
 	UiId modal;               /* 非 0: 不可见全窗输入 blocker (合成器 Toast 等) */
+	int fxOff;                /* 1: 暂停合成器过渡, 控件走自身动画通道 (模态对话框) */
 
 	GfxRect panelRect;        /* 设备面板内容区（弹窗定位/夹取） */
 	GfxRect closeRect;        /* 顶部关闭按钮命中区 */
@@ -131,6 +139,17 @@ struct UiContext {
 	UiRect      animDirty;        /* 本帧动画改动的并集 (DIP) */
 	int         animDirtyHas;
 	int         animDirtyFull;    /* 无法定位到矩形 (窗口淡入等) */
+
+	/* 合成器过渡 (SnapshotFx): 输入事件里登记的待提交矩形 */
+	UiRect      fxRect[8];
+	int         fxDur[8];
+	int         fxCount;
+
+	/* 合成器部件遮挡: 弹层/对话框画在主表面, part visual 必须让位 */
+	UiRect      fxCut[8];
+	int         fxCutCount;
+	UiRect      fxCutPrev[8];
+	int         fxCutPrevCount;
 };
 
 void Ui_ContextInit(UiContext *ctx, HWND hwnd, Gfx *gfx, UiTheme *theme);
@@ -163,6 +182,34 @@ void Ui_SetHoverFn(UiContext *ctx, UiId id, UiHoverFn fn, void *user);
 
 /* 命中处应显示的 UI_CURSOR_*; 无控件/模态遮罩时返回箭头. */
 int  Ui_CursorAt(const UiContext *ctx, float x, float y);
+
+/* ── 合成器过渡 (SnapshotFx) ─────────────────────────────────────────
+ * DComp 路径下状态动画不再逐帧推进: 输入事件里登记变化矩形, 绘制前
+ * Ui_FxFlush 一次性交给 gfx, 交叉淡化由合成器执行. */
+int  Ui_FxActive(UiContext *ctx);
+/* 按 id 取本帧控件矩形; 找到返回 1. */
+int  Ui_WidgetRect(UiContext *ctx, UiId id, UiRect *out);
+/* 登记一个控件的一次视觉变化.
+ * durMs 用 Ui_AnimFxMs(通道): 合成器覆盖层按 3τ 走 cubic-out,
+ * 与 CPU 通道的指数平滑同节奏、同曲线族. */
+void Ui_FxChange(UiContext *ctx, UiId id, int durMs);
+void Ui_FxChangeRect(UiContext *ctx, UiRect rc, int durMs);
+/* 绘制前调用: 把登记的矩形交给 gfx (此时后缓冲/上一帧副本仍是旧画面). */
+void Ui_FxFlush(UiContext *ctx);
+void Ui_FxCancelAll(UiContext *ctx);
+/* 只撤销与矩形相交的过渡 (滚动区域) */
+void Ui_FxCancelRect(UiContext *ctx, UiRect rc);
+
+/* 弹层/对话框在主表面之上: 登记遮挡矩形 (本帧), 下一帧绘制 part 时让位 */
+void Ui_OccludeRect(UiContext *ctx, UiRect rc);
+int  Ui_Occluded(const UiContext *ctx, UiRect rc);
+/* 声明部件位置; 被遮挡时隐藏 (part 宽度/高度用于遮挡判定) */
+void Ui_PartPlace(UiContext *ctx, void *part, float x, float y,
+	float w, float h);
+void Ui_PartPlaceRect(UiContext *ctx, void *part, float x, float y,
+	float w, float h);
+
+void Ui_SetClickFn(UiContext *ctx, UiId id, UiClickFn fn, void *user);
 /* DIP 对齐到设备像素: 滚动中的文本行用它定位, 避免亚像素相位变化
  * 造成行距/文字逐帧抖动. */
 float Ui_PxSnap(const UiContext *ctx, float dip);

@@ -2,6 +2,7 @@
 #include <imm.h>
 #include <string.h>
 #include "ui/ui_app.h"
+#include "gfx/gfx_fx.h"
 #include "log.h"
 
 static int g_classReady;
@@ -63,6 +64,16 @@ void UiApp_Close(UiApp *app)
 	if (app && app->hwnd) PostMessageW(app->hwnd, WM_CLOSE, 0, 0);
 }
 
+/* 空闲后第一次动画: dt 不能带空闲期的巨大间隔 (会被夹到 100ms, 第一帧
+ * 就把 CPU 过渡推到中后段)。只在空闲 -> 动画时调用。 */
+static void app_kick_anim_clock(UiApp *app)
+{
+	double period;
+	if (!app) return;
+	period = app->clock.periodMs > 1.0 ? app->clock.periodMs : 16.6667;
+	app->clock.lastMs = UiFrame_Now() - period;
+}
+
 /* 光标由 UI 每帧声明: WM_SETCURSOR 负责指针移动时, 这里负责 UI 状态
  * 变化 (弹层关闭/控件禁用/布局移动) 后不用等下一次移动就能换形状. */
 static void app_apply_cursor(UiApp *app)
@@ -84,6 +95,9 @@ static void app_render(UiApp *app, const RECT *dirty)
 	Ui_SetViewport(&app->ui, app->w, app->h, app->scale);
 
 	Gfx_SetDirtyRect(app->gfx, app->fullRedraw ? NULL : dirty);
+	/* 输入事件里登记的视觉变化在此一次性交给 gfx:
+	 * 旧快照来自上一帧副本, 之后绘制出的新帧会被抓成新快照。 */
+	Ui_FxFlush(&app->ui);
 	Gfx_Begin(app->gfx);
 	Gfx_Clear(app->gfx, 0x00000000);
 
@@ -235,7 +249,12 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		float d = (float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA;
 		if (!app) return 0;
 		ScreenToClient(hwnd, &pt);
-		Ui_OnMouseWheel(&app->ui, pt.x / app->scale, pt.y / app->scale, d);
+		{
+			int was = Ui_AnimBusy(&app->ui);
+			Ui_OnMouseWheel(&app->ui, pt.x / app->scale,
+				pt.y / app->scale, d);
+			if (!was) app_kick_anim_clock(app);
+		}
 		if (app->cb && app->cb->wheel)
 			app->cb->wheel(app, pt.x / app->scale, pt.y / app->scale,
 				d, app->user);
@@ -291,7 +310,11 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		y = pt.y / app->scale;
 		if (app->cb && app->cb->mouse)
 			app->cb->mouse(app, UI_APP_MOUSE_MOVE, x, y, app->user);
-		Ui_OnMouseMove(&app->ui, x, y);
+		{
+			int was = Ui_AnimBusy(&app->ui);
+			Ui_OnMouseMove(&app->ui, x, y);
+			if (!was) app_kick_anim_clock(app);
+		}
 		/* 悬停回调已同步更新控件光标: 立即应用, 不等重绘 */
 		app_apply_cursor(app);
 		return 0;
@@ -310,7 +333,12 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		if (!app) return 0;
 		SetCapture(hwnd);
 		SetFocus(hwnd);
-		Ui_OnMouseDown(&app->ui, pt.x / app->scale, pt.y / app->scale);
+		{
+			int was = Ui_AnimBusy(&app->ui);
+			Ui_OnMouseDown(&app->ui, pt.x / app->scale,
+				pt.y / app->scale);
+			if (!was) app_kick_anim_clock(app);
+		}
 		if (app->cb && app->cb->mouse)
 			app->cb->mouse(app, UI_APP_MOUSE_DOWN,
 				pt.x / app->scale, pt.y / app->scale, app->user);
@@ -322,7 +350,12 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		if (app->cb && app->cb->mouse)
 			app->cb->mouse(app, UI_APP_MOUSE_UP,
 				pt.x / app->scale, pt.y / app->scale, app->user);
-		Ui_OnMouseUp(&app->ui, pt.x / app->scale, pt.y / app->scale);
+		{
+			int was = Ui_AnimBusy(&app->ui);
+			Ui_OnMouseUp(&app->ui, pt.x / app->scale,
+				pt.y / app->scale);
+			if (!was) app_kick_anim_clock(app);
+		}
 		ReleaseCapture();
 		return 0;
 	}
@@ -349,12 +382,20 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		return 0;
 
 	case WM_KEYDOWN:
-		if (app && app->cb && app->cb->key)
-			app->cb->key(app, (UINT)wp, app->user);
+		if (app) {
+			int was = Ui_AnimBusy(&app->ui);
+			if (app->cb && app->cb->key)
+				app->cb->key(app, (UINT)wp, app->user);
+			if (!was) app_kick_anim_clock(app);
+		}
 		return 0;
 	case WM_CHAR:
-		if (app && app->cb && app->cb->chr)
-			app->cb->chr(app, (wchar_t)wp, app->user);
+		if (app) {
+			int was = Ui_AnimBusy(&app->ui);
+			if (app->cb && app->cb->chr)
+				app->cb->chr(app, (wchar_t)wp, app->user);
+			if (!was) app_kick_anim_clock(app);
+		}
 		return 0;
 
 	case WM_SETFOCUS:
@@ -538,6 +579,7 @@ int UiApp_Run(const wchar_t *title, int widthDip, int heightDip,
 		int anim = !app->minimized &&
 			(Ui_AnimBusy(&app->ui) ||
 				(app->cb && app->cb->animating && app->cb->animating(app, app->user)));
+		int fx = !app->minimized && app->gfx && Gfx_FxBusy(app->gfx);
 		if (anim) {
 			double t0 = UiFrame_Now();
 			double dt = UiFrame_Tick(&app->clock);
@@ -554,6 +596,17 @@ int UiApp_Run(const wchar_t *title, int widthDip, int heightDip,
 				UiFrame_Delay(&app->clock,
 					app->clock.periodMs - (UiFrame_Now() - t0));
 			}
+		} else if (fx) {
+			/* 合成器过渡进行中: UI 线程不做动画计算也不重绘,
+			 * 只按最早结束时间休眠并在结束时回收覆盖层。 */
+			int ms = Gfx_FxIdleMs(app->gfx);
+			HANDLE th = UiTimer_WaitHandle(app->timer);
+			if (ms < 1) ms = 1;
+			if (ms > 200) ms = 200;
+			MsgWaitForMultipleObjectsEx(th ? 1 : 0, th ? &th : NULL,
+				(DWORD)ms, QS_ALLINPUT,
+				MWMO_INPUTAVAILABLE | MWMO_ALERTABLE);
+			Gfx_FxTick(app->gfx);
 		} else {
 			HANDLE th = UiTimer_WaitHandle(app->timer);
 			/* MWMO_ALERTABLE: 网络层的 APC 归位依赖 alertable 等待 */

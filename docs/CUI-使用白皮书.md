@@ -109,9 +109,9 @@
 >    （内嵌 `UiEdit` + IME；ASCII 大小写不敏感 / 中文精确匹配）；多选点击/
 >    Enter 切换并保持展开，关闭时提交；样例增加可搜索多选标签。
 > 30. Select 增加持久 placeholder（`SetPlaceholder`，`Ui_Select` 参数优先）
->    与可配置搜索提示；右侧箭头改为矢量 chevron，展开/收起做 180ms 旋转补间，
->    新增 `Gfx_PushRotate/PopTransform`；动画期间自行失效触发器，不依赖应用
->    持续 `animating` 回调。
+与可配置搜索提示；右侧箭头改为矢量 chevron，展开/收起做 180ms 旋转；
+DComp 路径由 PartFx + `IDCompositionRotateTransform` 在合成器补间，
+ULW 回退仍用 `Gfx_PushRotate/PopTransform`。
 > 31. 修复 CheckboxGroup/RadioGroup 左侧少 1px：组内复选框描边中心落在组
 >    矩形边界上，按 rc 绘制裁剪会切掉左半边抗锯齿；绘制裁剪左右各放宽 1 DIP，
 >    命中裁剪不变。
@@ -167,6 +167,14 @@
 >    `ui_theme.c`；新增 `src/ui/ui_theme_edit.*` 与 `ui_theme_edit_test`
 >    （7574 断言）。见
 >    [CUI-主题编辑器-设计方案.md](CUI-主题编辑器-设计方案.md)。
+>
+> 45. 状态动画改为**合成器执行**（9.0）：DComp 路径下 hover/press/选中、
+>    下拉/菜单/日期面板都由 SnapshotFx（快照交叉淡化）与 PartFx
+>    （独立 visual 的位移/clip 宽度/旋转）完成，动画期间 UI 线程零重绘、
+>    零动画计算；打断从当前呈现值继续；过渡区域在主表面保留旧像素，
+>    不会先闪最终帧。Switch 滑块、Tab 指示器、Select chevron 已迁移；
+>    ULW 回退保留原 CPU 通道。新增 `src/ui/ui_fx.c`、`src/gfx/gfx_fx.h`，
+>    设计见 [CUI-GPU动画执行模型.md](CUI-GPU动画执行模型.md)。
 
 ---
 
@@ -1147,7 +1155,8 @@ Ui_PopLayer(&ui);
 | `focused` | `Ui_SetFocusId` 设置的焦点 ID 与它相同 |
 | `hover/press/focus/glow` | 平滑后的 0..1 强度，可直接用于插值 |
 
-`Ui_State` 会自动对 `UI_AN_HOVER/PRESS/FOCUS/GLOW` 调用 `Ui_AnimSmooth`。
+`Ui_State` 在 DComp 路径下直接返回最终权重（hover/press 由输入事件驱动，
+过渡交给 SnapshotFx），不写 CPU 通道；ULW 回退时才调用 `Ui_AnimSmooth`。
 `Ui_DrawSurface` 还会根据 `glowMask` 重新计算 glow 目标。
 
 **瞬时状态**：下拉/菜单的列表项这类“指针离开就应立即还原”的临时行用
@@ -2580,9 +2589,10 @@ void on_timer(UiApp *app, void *user) { UiSelect_Blink(&tags, &app->ui); }
   `max(触发器宽度, 最长项)`，封顶视口；`listW/maxListH/rowH` 可调；
 - placeholder：`Ui_Select` 的每帧参数非空时优先；否则用
   `UiSelect_SetPlaceholder` 的持久文本；两者都空则显示空白（`text4` 灰字）；
-- 右侧箭头是矢量 chevron（两段圆头线），展开/收起做 180ms ease-out 旋转，
-  颜色从 `text3` 渐到 `primary.base`；动画期间控件自行失效触发器矩形，
-  不依赖应用持续 `animating` 回调；`animReduced` 时直接跳到终态；
+- 右侧箭头是矢量 chevron（两段圆头线）。DComp 路径下箭头是独立 visual
+  （PartFx），展开/收起由 `IDCompositionRotateTransform` 的 Angle 在合成器
+  补间 180ms，不逐帧重绘；ULW 回退仍用 `Gfx_PushRotate` 的 CPU 补间；
+  `animReduced` 时直接跳到终态；
 - 列表滚动区**复用 `UiScrollView`**：滚轮 3 行/格（默认 100ms 平滑尾随，
   `UiSelect_SetScrollSmoothing(0)` 恢复即时）、thumb 拖动、轨道点击翻页、
   滚动条 hover 高亮、右侧预留槽全部走 ScrollView；track 透明，只显示 6 DIP thumb；
@@ -2743,7 +2753,8 @@ Tab/Shift+Tab 在这些目标间循环，不离开 Dialog；保留鼠标设置�
 不每帧用 `navId` 覆盖 `focusId`。关闭后恢复原 nav/focus 与可见性。
 可选 `UiDialog_AttachIme` 在打开时取消并暂停背景组合，关闭完成后恢复原编辑器。
 
-打开 180ms、关闭 140ms，遮罩淡变、卡片轻微上移；Tick/Busy 显式驱动，
+打开 180ms、关闭 140ms，遮罩淡变、卡片轻微上移（CPU 进度通道：卡片内容由应用内联绘制，无法放进合成器 visual）；
+Tick/Busy 显式驱动，
 不依赖可能耗尽的控件动画池。仅转场期间失效整窗，静止不请求动画帧；
 系统 reduced-motion 时直接到终态。淡出期间继续阻断输入，结果只在淡出完成后
 发布一次，避免按钮松开或重复 Enter 穿透到背景。
@@ -3177,7 +3188,40 @@ unsigned used = UiThemeGen_Palette(&light, &dark, &opts);
 
 ## 9. UiAnim 动画内核
 
-### 9.1 两种运动模型
+### 9.0 状态过渡：合成器执行（SnapshotFx / PartFx）
+
+DComp 路径下，**状态类过渡**（hover / press / 选中 / 弹层 / 日期面板）不再逐帧
+改值重绘，而是由合成器插值：
+
+- **SnapshotFx**：输入事件登记变化矩形；绘制前从 `uiTarget` 抓旧快照，绘制后
+  抓新快照，两张快照作为两个子 visual 交叉淡化（`IDCompositionEffectGroup`
+  的 opacity，`AddCubic` 精确写入 smoothstep `3p²−2p³`）。过渡区域在主表面
+  保持旧像素（mask），不依赖 Commit 与 swapchain flip 的先后；结束且新主帧
+  上屏后再拆覆盖层。重叠打断时在 GPU 上把当前呈现值烘进新快照，从当前值继续。
+- **PartFx**：滑块/指示器/chevron 这类位移/旋转元素渲染到独立 visual；
+  位置与 clip 宽度用 `IDCompositionAnimation` 补间，旋转用
+  `IDCompositionRotateTransform`。部件被弹层/对话框遮挡时隐藏
+  （`Ui_OccludeRect` 本帧登记、下一帧生效）。
+- 绘制期间才出现的变化（打开下拉、换月）：首帧不画新内容（保留旧像素），
+  登记矩形并立即重绘；下一帧由覆盖层淡入。
+- 动画期间 UI 线程零重绘、零动画计算；只有过渡结束后的最后一次收尾绘制。
+
+| 过渡 | 时长 |
+|---|---|
+| hover 进入/离开 | 120ms |
+| press / release | 90ms |
+| 选中态（Radio/Checkbox/Switch） | 250ms |
+| 下拉/菜单淡入 | 160ms |
+| DatePicker 面板 / 换月 | 160 / 140ms |
+| Dialog（CPU 进度通道） | 180 / 140ms |
+
+受“Windows 动画效果”系统开关影响吗？不受——这些是挂在我们 visual 上的
+`IDCompositionAnimation`，由 DWM 按时间求值；机器慢时只会掉帧，不会丢动画。
+ULW 回退（无 DComp）时走下面的 CPU 通道。
+
+> 完整设计与实现细节见 `docs/CUI-GPU动画执行模型.md`。
+
+### 9.1 两种运动模型（CPU 通道：ULW 回退 / 连续量）
 
 | 模型 | API | 行为 | 用途 |
 |---|---|---|---|
@@ -4860,7 +4904,7 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 - **控件/Tooltip 回归**：`cui_controls.exe` 的 Checkbox（checked/
   indeterminate/disabled）、CheckboxGroup mask、RadioGroup、Switch、Slider
   点击/拖动/committed 正常；Group 内“开机启动”等项与上方单项 Checkbox 左边缘
-  像素对齐（修复前少 1px）；勾选/取消约 140ms 淡入淡出，indeterminate→checked
+  像素对齐（修复前少 1px）；勾选/取消与 Radio/Switch 选中约 250ms（hover 120ms、press 90ms）合成器过渡，indeterminate→checked
   横线退、对勾进，RadioGroup 换项旧点淡出新点淡入；IconButton 悬停 450ms 显示 Tooltip，右侧翻转/
   夹取正确；Tab/方向键/空格导航、深色主题通过；静止 CPU 0；`cui_controls`
   为 0CRT。
@@ -4874,7 +4918,7 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
   下拉菜单方向键 Down×2 + Enter 提交“保存”；右键在鼠标点打开上下文菜单，
   分隔线/禁用项/危险项正确；Esc 与点击弹层外部均关闭并把焦点还给触发器；
   弹层打开时点击底层按钮不触发；初始主题 Select 显示 placeholder“选择主题”，
-  展开时右侧矢量 chevron 在 ~60° 中间帧可见、180ms 后指向上方并转 primary 色，
+  展开时右侧矢量 chevron 在 ~60° 中间帧可见（合成器旋转）、180ms 后指向上方并转 primary 色，
   关闭后回落到向下/灰字；搜索框提示“搜索标签…”；下拉/菜单项 hover 在 30ms
   与 330ms 截图颜色一致（`Ui_StateInstant`，无淡变滞后）；深色主题下
   搜索框/列表/摘要正常；静止 CPU 0；`cui_overlays` 为 0CRT。

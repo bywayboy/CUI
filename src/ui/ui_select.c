@@ -1,6 +1,7 @@
 #include "ui/ui_select.h"
 #include "ui/ui_frame.h"
 #include "ui/ui_icon.h"
+#include "gfx/gfx_fx.h"
 #include <string.h>
 
 #define SEL_PAD_X 12.0f
@@ -293,6 +294,7 @@ static void sel_open(UiSelect *s, UiPopupManager *pm, UiContext *ui,
 	s->sv.velocity = 0.0f;
 	s->lastTickNow = 0.0;
 	s->ensureFocus = 1;
+	s->panelFx = 1;
 	UiPopupManager_Open(pm, ui, s->id, s->id, focusOnClose);
 }
 
@@ -483,6 +485,14 @@ static void sel_draw_arrow(UiContext *ui, UiRect cr, float t, UiColor col)
 	Gfx_PopTransform(g);
 }
 
+/* PartFx 内容: 18x18 的向下 chevron (旋转由 visual transform 负责) */
+static void sel_arrow_draw(Gfx *g, void *user)
+{
+	UiSelect *s = (UiSelect *)user;
+	Gfx_Line(g, 4.0f, 6.6f, 9.0f, 11.8f, s->arrowColor, 1.6f);
+	Gfx_Line(g, 9.0f, 11.8f, 14.0f, 6.6f, s->arrowColor, 1.6f);
+}
+
 static void sel_invalidate_trigger(UiContext *ui, UiRect rc)
 {
 	RECT r;
@@ -520,6 +530,7 @@ int Ui_Select(UiSelect *s, UiPopupManager *pm, UiContext *ui, UiRect rc,
 	if (!open && s->wasOpen) {
 		if (s->multiple) s->committed = 1;
 		sel_search_end(s, ui);
+		s->panelFx = 0;
 	}
 	s->wasOpen = open;
 
@@ -559,9 +570,42 @@ int Ui_Select(UiSelect *s, UiPopupManager *pm, UiContext *ui, UiRect rc,
 
 	ar = Ui_Rect(rc.x + rc.w - 24.0f, rc.y + (rc.h - 18.0f) * 0.5f,
 		18.0f, 18.0f);
-	/* 180ms 明确补间; 不依赖应用持续的 animating 回调. 动画期间自行
-	 * 失效触发器, 由下一次 WM_PAINT 继续推进. */
+	/* 180ms 明确补间; 不依赖应用持续的 animating 回调.
+	 * DComp 路径: 旋转交给合成器 (PartFx), CPU 只维护目标状态。 */
 	target = open ? 1 : 0;
+	if (Ui_FxActive(ui)) {
+		GfxPart *part;
+		unsigned col = !enabled ? t->btnDisabledText
+			: (target ? t->primary.base : t->text3);
+		s->arrowAngle = (float)target;
+		s->arrowAnim = 0;
+		s->arrowTarget = target;
+		if (!s->arrowPart) {
+			s->arrowColor = col;
+			s->arrowPart = Gfx_PartCreate(ui->gfx, ar.w, ar.h,
+				sel_arrow_draw, s);
+			if (s->arrowPart) {
+				Gfx_PartUpdate((GfxPart *)s->arrowPart);
+				Ui_PartPlace(ui, s->arrowPart, ar.x, ar.y, ar.w, ar.h);
+				Gfx_PartSetRotation((GfxPart *)s->arrowPart,
+					180.0f * (float)target);
+				s->arrowPartTarget = target;
+			}
+		} else if (s->arrowColor != col) {
+			s->arrowColor = col;
+			Gfx_PartUpdate((GfxPart *)s->arrowPart);
+		}
+		part = (GfxPart *)s->arrowPart;
+		if (part) {
+			Ui_PartPlace(ui, s->arrowPart, ar.x, ar.y, ar.w, ar.h);
+			if (s->arrowPartTarget != target) {
+				Gfx_PartAnimateRotation(part,
+					180.0f * (float)target, 180);
+				s->arrowPartTarget = target;
+			}
+		}
+		return s->changed;
+	}
 	if (s->arrowTarget != target) {
 		s->arrowTarget = target;
 		s->arrowFrom = s->arrowAngle;
@@ -604,7 +648,6 @@ void UiSelect_DrawPopup(UiSelect *s, UiPopupManager *pm, UiContext *ui)
 	float rowH, viewH, contentH, w, h, tw, maxTw;
 	int i, k, first, last;
 	float searchH;
-	UiId panelId;
 	UiWidgetState st;
 	UiColor col;
 	UiIcon check;
@@ -644,11 +687,19 @@ void UiSelect_DrawPopup(UiSelect *s, UiPopupManager *pm, UiContext *ui)
 	panel = UiPopup_Place(ui, s->anchor, w, h, UI_POPUP_BELOW,
 		UI_POPUP_ALIGN_START, 6.0f);
 	s->listRc = panel;
+	UiPopupManager_SetVisualRect(pm, panel);
+	Ui_OccludeRect(ui, Ui_Rect(panel.x - 12.0f, panel.y - 12.0f,
+		panel.w + 24.0f, panel.h + 24.0f));
+
+	/* 打开首帧: 面板不画 (uiTarget 保留上一帧), 下一帧由覆盖层淡入 */
+	if (s->panelFx && Ui_FxActive(ui)) {
+		s->panelFx = 0;
+		Ui_FxChangeRect(ui, panel, 160);
+		return;
+	}
 
 	UiPopupManager_BeginDraw(pm, ui);
 	Ui_PushLayer(ui, UI_Z_OVERLAY);
-	panelId = sel_child(s->id, "ui.select.panel", 0);
-	Ui_RegisterWidget(ui, panelId, panel);
 	Gfx_FillRoundRect(ui->gfx, panel, 8.0f, t->toastBg);
 	Gfx_StrokeRoundRect(ui->gfx, panel, 8.0f, t->toastBorder, 1.0f);
 

@@ -57,6 +57,11 @@ typedef struct UiSwitch {
 	UiId id;
 	int on;
 	int changed;
+	/* 合成器路径: 滑块是独立 visual (PartFx), 主表面不画滑块 */
+	void *thumbPart;
+	unsigned thumbColor;
+	float thumbBase;   /* 未选中时滑块左上角 x (DIP) */
+	float thumbStep;   /* 选中位移 (DIP) */
 } UiSwitch;
 
 void UiSwitch_Init(UiSwitch *s, UiId id, int on);

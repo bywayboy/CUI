@@ -53,6 +53,8 @@ typedef struct UiDatePicker {
 
 	UiRect anchor;
 	UiRect panelRc;
+	int panelFx;           /* 合成器路径: 下一帧为面板登记淡入 */
+	int gridFx;            /* 位图: 各月块登记淡入 (换月) */
 	UiScrollView timeSv[2][3]; /* [端点][时/分/秒]; 范围每端点一套 */
 	int timeFocus;         /* 键盘焦点列: -1=日历, 否则 端点*ncol+列 */
 	int timeCenter;        /* 位掩码: 下一帧把对应端点时间列选中行居中 */

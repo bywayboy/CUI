@@ -694,11 +694,15 @@ static void draw_topbar(Gallery *g)
 
 	if (t->fIcon) {
 		UiIcon ic = UiIcon_Glyph(t->fIcon, dark ? 0xE706u : 0xE708u);
-		if (Ui_IconButton(ui, tid, trc, &ic, &style, 1))
+		if (Ui_IconButton(ui, tid, trc, &ic, &style, 1)) {
+			Ui_FxCancelAll(&app->ui);
 			UiTheme_SetTheme(t, dark ? UI_THEME_LIGHT : UI_THEME_DARK);
+		}
 	} else {
-		if (Ui_ButtonEx(ui, tid, trc, dark ? "浅色" : "深色", &style, 1))
+		if (Ui_ButtonEx(ui, tid, trc, dark ? "浅色" : "深色", &style, 1)) {
+			Ui_FxCancelAll(&app->ui);
 			UiTheme_SetTheme(t, dark ? UI_THEME_LIGHT : UI_THEME_DARK);
+		}
 	}
 
 	/* 自绘关闭键: hover 渐入关闭红 */
@@ -725,6 +729,8 @@ static void switch_page(Gallery *g, int pg)
 	if (pg == g->page) return;
 	g->page = pg;
 	Ui_SetFocusId(&g->app->ui, UI_ID_NONE);
+	/* 换页是整窗内容替换, 进行中的过渡矩形会盖在新页面上 */
+	Ui_FxCancelAll(&g->app->ui);
 	UiApp_Invalidate(g->app);
 }
 

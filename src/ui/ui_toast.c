@@ -179,11 +179,11 @@ static int toast_sync_layer(UiToast *t, double nowMs)
 
 	if (t->hideStartMs) {
 		if (!t->layerOut) {
-			Gfx_LayerSetOpacity(t->layer, 0.0f, UI_TOAST_FADE_MS);
+			Gfx_LayerSetOpacity(t->layer, 0.0f, UI_TOAST_FADE_MS, GFX_EASE_LINEAR);
 			t->layerOut = 1;
 		}
 	} else if (!t->layerIn) {
-		Gfx_LayerSetOpacity(t->layer, 1.0f, UI_TOAST_FADE_MS);
+		Gfx_LayerSetOpacity(t->layer, 1.0f, UI_TOAST_FADE_MS, GFX_EASE_LINEAR);
 		t->layerIn = 1;
 	}
 	return 1;

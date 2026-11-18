@@ -186,10 +186,22 @@ void Gfx_OverlayDestroy(GfxOverlay *o);
  * 主窗内的输入拦截由应用调用 Ui_SetModal 注册不可见全窗 blocker。 */
 GfxLayer *Gfx_CreateLayer(Gfx *g, int pixelW, int pixelH);
 int  Gfx_LayerDraw(GfxLayer *l, GfxLayerDrawFn fn, void *user);
-int  Gfx_LayerSetOpacity(GfxLayer *l, float opacity, int animateMs);
+/* 补间曲线 (合成器关键帧): */
+#define GFX_EASE_LINEAR 0 /* 匀速 */
+#define GFX_EASE_OUT    1 /* cubic-out: 快起慢收 (减速) */
+#define GFX_EASE_IN     2 /* cubic-in: 慢起快收 (加速) */
+int  Gfx_LayerSetOpacity(GfxLayer *l, float opacity, int animateMs, int ease);
+int  Gfx_LayerSetOffsetY(GfxLayer *l, float dipY, int animateMs, int ease);
 int  Gfx_LayerResize(GfxLayer *l, int pixelW, int pixelH);
 int  Gfx_LayerAlive(GfxLayer *l);
 void Gfx_LayerDestroy(GfxLayer *l);
+
+/* 帧内把绘制重定向到 layer 表面: 应用在 Gfx_Begin/End 之间内联绘制的整块
+ * 内容 (对话框等) 改画到独立 swapchain, 之后由合成器动画. 调用点不能有
+ * 未闭合的 clip/alpha/transform 栈. 成功返回 1, 必须配对 EndInline;
+ * 失败返回 0, 调用方应在主表面直接绘制. */
+int  Gfx_LayerBeginInline(Gfx *g, GfxLayer *l);
+int  Gfx_LayerEndInline(Gfx *g);
 
 /* ── GPU 效果 (D2D effect) ──────────────────────────────────────────
  * 先支持 D2D 内置效果 + 一个自定义 HLSL (Grain). 仅 DComp 路径可用;

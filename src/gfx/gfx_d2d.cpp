@@ -34,6 +34,7 @@
 
 #include "gfx.h"
 #include "gfx/gfx_internal.h"
+#include "gfx/gfx_fx.h"
 #include "log.h"
 #include "grain_cso.h"   /* fxc 生成: g_grainCso / g_grainCsoSize */
 
@@ -96,6 +97,10 @@ typedef struct {
 	GfxBitmap *bmp;
 } GfxGlowCache;
 
+struct GfxFx;
+struct GfxFxQ;
+struct GfxPart;
+
 struct Gfx {
 	HWND hwnd;
 	ID2D1Factory1 *d2d;
@@ -113,6 +118,7 @@ struct Gfx {
 	ID2D1DeviceContext *dc;
 	ID2D1Bitmap1 *swapTarget;
 	ID2D1Bitmap1 *uiTarget;
+	ID3D11Texture2D *uiTex;      /* uiTarget 的底层纹理: 快照从这里取 */
 	IDCompositionDevice *compDevice;
 	IDCompositionTarget *compTarget;
 	IDCompositionVisual *compVisual;
@@ -160,11 +166,29 @@ struct Gfx {
 	GfxOverlay *overlays;
 	GfxLayer *layers;
 	GfxEffect *effects;
+	GfxFx *fxList;
+	GfxFxQ *fxQueue;
+	int fxCount;
+	int fxQueueCount;
+	int fxBuilt;         /* 本帧新建的过渡数 */
+	GfxPart *parts;
+	int partFrame;
 	ID2D1Image *currentTarget;   /* 当前 Draw 目标 (借用, 不 AddRef) */
 	GfxEffect *frameFx[GFX_MAX_FRAME_EFFECTS];
 	int frameFxCount;
 	int grainFxRegistered;
 	int fxDepth;
+
+	/* 帧内 layer 内联绘制: 主表面状态保存 (同一时刻只允许一层) */
+	int inlineActive;
+	struct {
+		GfxLayer *layer;
+		ID2D1Image *target;   /* AddRef 持有 */
+		ID2D1RenderTarget *rt;
+		D2D1_MATRIX_3X2_F xform;
+		GfxRect dirty;
+		int dirtyFull, forceFull, inFrame;
+	} inlineSave;
 };
 
 /* 合成器动画 overlay: 独立小 swapchain + 子 visual + 可动画矩形裁剪。
@@ -199,6 +223,7 @@ struct GfxLayer {
 	IDCompositionEffectGroup *effect;
 	int pw, ph;
 	float opacity;
+	float offsetY;      /* 当前视觉纵向位移 (DIP) */
 	int valid;
 	GfxLayer *next;
 };
@@ -218,6 +243,8 @@ struct GfxEffect {
 };
 
 static void LayerRelease(GfxLayer *l);
+static void FxDropAll(Gfx *g);
+static void PartsFree(Gfx *g);
 
 /* reference=NULL 时 DComp 的 insertAbove 语义反直觉:
  * FALSE = 放到所有兄弟之上, TRUE = 放到所有兄弟之下.
@@ -469,7 +496,10 @@ static void ReleaseDcompTargets(Gfx *g, int releaseSwap)
 	if (g->compVisual) g->compVisual->SetContent(NULL);
 	SAFE_RELEASE(g->swapTarget);
 	SAFE_RELEASE(g->uiTarget);
-	if (releaseSwap) SAFE_RELEASE(g->swap);
+	SAFE_RELEASE(g->uiTex);
+	if (releaseSwap) {
+		SAFE_RELEASE(g->swap);
+	}
 	if (g->rt == (ID2D1RenderTarget *)g->dc) g->rt = NULL;
 }
 
@@ -480,6 +510,8 @@ static void ReleaseDcomp(Gfx *g)
 	g->alphaDepth = 0;
 	ReleaseBrushes(g);
 	ReleaseGradients(g);
+	FxDropAll(g);
+	PartsFree(g);
 	/* overlay/layer 的 visual/surface 必须在 compDevice/compVisual 之前释放 */
 	for (GfxOverlay *o = g->overlays; o; o = o->next) {
 		o->valid = 0;
@@ -516,6 +548,7 @@ static int CreateDcompTargets(Gfx *g)
 	if (!g || !g->swap || !g->dc || g->pw <= 0 || g->ph <= 0) return 0;
 	SAFE_RELEASE(g->swapTarget);
 	SAFE_RELEASE(g->uiTarget);
+	SAFE_RELEASE(g->uiTex);
 
 	IDXGISurface *surface = NULL;
 	HRESULT hr = g->swap->GetBuffer(0, IID_PPV_ARGS(&surface));
@@ -528,13 +561,32 @@ static int CreateDcompTargets(Gfx *g)
 	SAFE_RELEASE(surface);
 	if (FAILED(hr) || !g->swapTarget) return 0;
 
-	D2D1_BITMAP_PROPERTIES1 up = D2D1::BitmapProperties1(
-		D2D1_BITMAP_OPTIONS_TARGET,
-		D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
-		96.0f, 96.0f);
-	hr = g->dc->CreateBitmap(D2D1::SizeU((UINT32)g->pw, (UINT32)g->ph),
-		NULL, 0, &up, &g->uiTarget);
-	if (FAILED(hr) || !g->uiTarget) return 0;
+	/* uiTarget 用自有 D3D 纹理承载: 状态过渡的“旧快照”直接从这块纹理拷贝,
+	 * 不需要额外维护一份上一帧副本。 */
+	{
+		D3D11_TEXTURE2D_DESC td;
+		IDXGISurface *us = NULL;
+		ZeroMemory(&td, sizeof(td));
+		td.Width = (UINT)g->pw;
+		td.Height = (UINT)g->ph;
+		td.MipLevels = 1;
+		td.ArraySize = 1;
+		td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+		td.SampleDesc.Count = 1;
+		td.Usage = D3D11_USAGE_DEFAULT;
+		td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+		if (FAILED(g->d3d->CreateTexture2D(&td, NULL, &g->uiTex)) || !g->uiTex)
+			return 0;
+		hr = g->uiTex->QueryInterface(IID_PPV_ARGS(&us));
+		if (FAILED(hr) || !us) return 0;
+		D2D1_BITMAP_PROPERTIES1 up = D2D1::BitmapProperties1(
+			D2D1_BITMAP_OPTIONS_TARGET,
+			D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+			96.0f, 96.0f);
+		hr = g->dc->CreateBitmapFromDxgiSurface(us, &up, &g->uiTarget);
+		us->Release();
+		if (FAILED(hr) || !g->uiTarget) return 0;
+	}
 	return 1;
 }
 
@@ -655,6 +707,7 @@ static int InitDcomp(Gfx *g)
 static int ResizeDcomp(Gfx *g)
 {
 	if (!g || !g->swap || !g->dc) return 0;
+	FxDropAll(g);
 	ReleaseDcompTargets(g, 0);
 	if (g->d3dctx) g->d3dctx->Flush();
 	HRESULT hr = g->swap->ResizeBuffers(0, (UINT32)g->pw, (UINT32)g->ph,
@@ -1249,7 +1302,26 @@ int Gfx_LayerDraw(GfxLayer *l, GfxLayerDrawFn fn, void *user)
 	return 1;
 }
 
-int Gfx_LayerSetOpacity(GfxLayer *l, float opacity, int animateMs)
+/* from 到 to 的三次补间关键帧; ease: 0 线性, 1 cubic-out (减速), 2 cubic-in (加速) */
+static void anim_cubic(IDCompositionAnimation *anim, double sec,
+	float from, float to, int ease)
+{
+	float d = to - from;
+	float s = (float)sec;
+	if (ease == GFX_EASE_OUT) {
+		/* p(t)=1-(1-t/d)^3: c1=3D/d, c2=-3D/d^2, c3=D/d^3 */
+		anim->AddCubic(0.0, from, 3.0f * d / s,
+			-3.0f * d / (s * s), d / (s * s * s));
+	} else if (ease == GFX_EASE_IN) {
+		/* p(t)=(t/d)^3 */
+		anim->AddCubic(0.0, from, 0.0f, 0.0f, d / (s * s * s));
+	} else {
+		anim->AddCubic(0.0, from, d / s, 0.0f, 0.0f);
+	}
+	anim->End(sec, to);
+}
+
+int Gfx_LayerSetOpacity(GfxLayer *l, float opacity, int animateMs, int ease)
 {
 	Gfx *g;
 	IDCompositionAnimation *anim = NULL;
@@ -1270,10 +1342,7 @@ int Gfx_LayerSetOpacity(GfxLayer *l, float opacity, int animateMs)
 	if (l->opacity == opacity) return 1;
 	hr = g->compDevice->CreateAnimation(&anim);
 	if (SUCCEEDED(hr) && anim) {
-		double sec = (double)animateMs / 1000.0;
-		anim->AddCubic(0.0, l->opacity,
-			(opacity - l->opacity) / (float)sec, 0.0f, 0.0f);
-		anim->End(sec, opacity);
+		anim_cubic(anim, (double)animateMs / 1000.0, l->opacity, opacity, ease);
 		if (l->visual3) l->visual3->SetOpacity(anim);
 		else l->effect->SetOpacity(anim);
 		SAFE_RELEASE(anim);
@@ -1336,6 +1405,1269 @@ void Gfx_LayerDestroy(GfxLayer *l)
 	LayerRelease(l);
 	if (g && g->compDevice) g->compDevice->Commit();
 	HeapFree(GetProcessHeap(), 0, l);
+}
+
+int Gfx_LayerSetOffsetY(GfxLayer *l, float dipY, int animateMs, int ease)
+{
+	Gfx *g;
+	IDCompositionAnimation *anim = NULL;
+	float px, fromPx;
+	double sec;
+
+	if (!l || !l->valid || !l->visual) return 0;
+	g = l->g;
+	if (!g || !g->compDevice) return 0;
+	px = dipY * (g->scale > 0.0f ? g->scale : 1.0f);
+	if (animateMs <= 0) {
+		l->offsetY = dipY;
+		l->visual->SetOffsetY(px);
+		g->compDevice->Commit();
+		return 1;
+	}
+	fromPx = l->offsetY * (g->scale > 0.0f ? g->scale : 1.0f);
+	sec = (double)animateMs / 1000.0;
+	if (SUCCEEDED(g->compDevice->CreateAnimation(&anim)) && anim) {
+		anim_cubic(anim, sec, fromPx, px, ease);
+		l->visual->SetOffsetY(anim);
+		SAFE_RELEASE(anim);
+	} else {
+		l->visual->SetOffsetY(px);
+	}
+	l->offsetY = dipY;
+	g->compDevice->Commit();
+	return 1;
+}
+
+int Gfx_LayerBeginInline(Gfx *g, GfxLayer *l)
+{
+	IDXGISurface *surf = NULL;
+	D2D1_BITMAP_PROPERTIES1 bp;
+	D2D1_COLOR_F clear = { 0.0f, 0.0f, 0.0f, 0.0f };
+	HRESULT hr;
+
+	if (!g || !l || !l->valid || !g->dc || !g->rt) return 0;
+	if (!g->inFrame || g->inlineActive) return 0;
+	if (g->alphaDepth > 0 || g->clipDepth > 0) return 0;
+
+	/* 结束主表面本帧的绘制, 稍后在 EndInline 里重开 */
+	if (g->dirtyClip) { g->rt->PopAxisAlignedClip(); g->dirtyClip = 0; }
+	hr = g->rt->EndDraw(NULL, NULL);
+	if (FAILED(hr)) {
+		Log_Write("[layer] inline EndDraw 0x%08X", (unsigned)hr);
+		g->rt->BeginDraw();
+		if (!g->dirtyFull) {
+			D2D1_RECT_F rc = { g->dirty.x, g->dirty.y,
+				g->dirty.x + g->dirty.w, g->dirty.y + g->dirty.h };
+			g->rt->PushAxisAlignedClip(&rc, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+			g->dirtyClip = 1;
+		}
+		return 0;
+	}
+
+	g->inlineSave.layer = l;
+	g->inlineSave.target = g->currentTarget;
+	if (g->inlineSave.target) g->inlineSave.target->AddRef();
+	g->inlineSave.rt = g->rt;
+	g->dc->GetTransform(&g->inlineSave.xform);
+	g->inlineSave.dirty = g->dirty;
+	g->inlineSave.dirtyFull = g->dirtyFull;
+	g->inlineSave.forceFull = g->forceFull;
+	g->inlineSave.inFrame = g->inFrame;
+
+	hr = l->swap->GetBuffer(0, IID_PPV_ARGS(&surf));
+	if (FAILED(hr) || !surf) goto fail;
+	bp = D2D1::BitmapProperties1(
+		D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+		D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+		96.0f, 96.0f);
+	SAFE_RELEASE(l->target);
+	hr = g->dc->CreateBitmapFromDxgiSurface(surf, &bp, &l->target);
+	SAFE_RELEASE(surf);
+	if (FAILED(hr) || !l->target) goto fail;
+
+	g->dc->SetTarget(l->target);
+	g->currentTarget = (ID2D1Image *)l->target;
+	g->rt->BeginDraw();
+	g->rt->Clear(&clear);
+	{
+		D2D1_MATRIX_3X2_F m = { g->scale, 0.0f, 0.0f, g->scale, 0.0f, 0.0f };
+		g->rt->SetTransform(&m);
+	}
+	g->rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+	g->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+	g->clipDepth = 0;
+	g->xformDepth = 0;
+	g->alphaDepth = 0;
+	g->dirtyClip = 0;
+	g->dirtyFull = 1;
+	g->forceFull = 0;
+	g->inlineActive = 1;
+	return 1;
+
+fail:
+	if (g->inlineSave.target) {
+		g->inlineSave.target->Release();
+		g->inlineSave.target = NULL;
+	}
+	g->inlineSave.layer = NULL;
+	g->rt->BeginDraw();
+	if (!g->dirtyFull) {
+		D2D1_RECT_F rc = { g->dirty.x, g->dirty.y,
+			g->dirty.x + g->dirty.w, g->dirty.y + g->dirty.h };
+		g->rt->PushAxisAlignedClip(&rc, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+		g->dirtyClip = 1;
+	}
+	return 0;
+}
+
+int Gfx_LayerEndInline(Gfx *g)
+{
+	GfxLayer *l;
+	HRESULT hr;
+
+	if (!g || !g->inlineActive) return 0;
+	l = g->inlineSave.layer;
+	while (g->alphaDepth > 0) { g->rt->PopLayer(); g->alphaDepth--; }
+	while (g->clipDepth > 0) { g->rt->PopAxisAlignedClip(); g->clipDepth--; }
+	if (g->dirtyClip) { g->rt->PopAxisAlignedClip(); g->dirtyClip = 0; }
+	hr = g->rt->EndDraw(NULL, NULL);
+	SAFE_RELEASE(l->target);
+
+	/* 恢复主表面 */
+	if (g->inlineSave.target) {
+		g->dc->SetTarget(g->inlineSave.target);
+		g->currentTarget = g->inlineSave.target;
+		g->inlineSave.target->Release();
+		g->inlineSave.target = NULL;
+	}
+	g->rt = g->inlineSave.rt;
+	g->dc->SetTransform(&g->inlineSave.xform);
+	g->dirty = g->inlineSave.dirty;
+	g->dirtyFull = g->inlineSave.dirtyFull;
+	g->forceFull = g->inlineSave.forceFull;
+	g->inFrame = g->inlineSave.inFrame;
+	g->clipDepth = 0;
+	g->xformDepth = 0;
+	g->alphaDepth = 0;
+	g->dirtyClip = 0;
+	g->inlineSave.layer = NULL;
+	g->inlineActive = 0;
+
+	if (l) {
+		if (FAILED(hr)) l->valid = 0;
+		if (!l->valid || FAILED(l->swap->Present(1, 0))) l->valid = 0;
+	}
+	if (!g->inFrame) return 0;
+	g->rt->BeginDraw();
+	if (!g->dirtyFull) {
+		D2D1_RECT_F rc = { g->dirty.x, g->dirty.y,
+			g->dirty.x + g->dirty.w, g->dirty.y + g->dirty.h };
+		g->rt->PushAxisAlignedClip(&rc, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+		g->dirtyClip = 1;
+	}
+	return l && l->valid ? 1 : 0;
+}
+
+/* ── SnapshotFx: 状态过渡交给合成器淡出 ──────────────────────────────
+ *
+ * 覆盖层只放"旧快照": 以不透明度 1 建好后动画到 0, 主表面始终是最新
+ * 状态。这样:
+ *  - 过渡途中不需要"把当前值烘进旧快照", 也就不会因为按 CPU 时间猜
+ *    合成器进度而在快速 hover 时跳变;
+ *  - 同区域再次变化时旧覆盖层继续淡出, 主表面的新内容自然接上;
+ *  - 覆盖层拆除时它的不透明度已经是 0, 与主帧上屏先后无关。 */
+
+#define GFX_FX_MAX 12
+
+struct GfxFx {
+	Gfx *g;
+	int px, py, pw, ph;      /* 物理像素 */
+	ID3D11Texture2D *texOld;
+	ID2D1Bitmap1 *bmpOld;
+	IDCompositionSurface *surf;
+	IDCompositionVisual *vis;
+	IDCompositionEffectGroup *effect;
+	double startMs;
+	int durMs;
+	int started;         /* 已写入合成器动画? */
+	int done;            /* 动画已结束, 可以拆除 */
+	int replaced;        /* 被新的过渡接管, 等新覆盖层建好后拆 */
+	GfxFx *next;
+};
+
+struct GfxFxQ {
+	int px, py, pw, ph;
+	int durMs;
+	ID3D11Texture2D *texOld;
+	ID2D1Bitmap1 *bmpOld;
+	GfxFxQ *next;
+};
+
+static double FxNow(void)
+{
+	LARGE_INTEGER f, c;
+	QueryPerformanceFrequency(&f);
+	QueryPerformanceCounter(&c);
+	if (f.QuadPart <= 0) return 0.0;
+	return (double)c.QuadPart * 1000.0 / (double)f.QuadPart;
+}
+
+static ID3D11Texture2D *FxTex(Gfx *g, int w, int h)
+{
+	D3D11_TEXTURE2D_DESC d;
+	ID3D11Texture2D *t = NULL;
+	if (!g || !g->d3d || w <= 0 || h <= 0) return NULL;
+	ZeroMemory(&d, sizeof(d));
+	d.Width = (UINT)w;
+	d.Height = (UINT)h;
+	d.MipLevels = 1;
+	d.ArraySize = 1;
+	d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+	d.SampleDesc.Count = 1;
+	d.Usage = D3D11_USAGE_DEFAULT;
+	d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+	if (FAILED(g->d3d->CreateTexture2D(&d, NULL, &t))) return NULL;
+	return t;
+}
+
+static ID2D1Bitmap1 *FxBmp(Gfx *g, ID3D11Texture2D *tex, int target)
+{
+	IDXGISurface *s = NULL;
+	ID2D1Bitmap1 *b = NULL;
+	D2D1_BITMAP_PROPERTIES1 bp;
+	if (!g || !g->dc || !tex) return NULL;
+	if (FAILED(tex->QueryInterface(IID_PPV_ARGS(&s))) || !s) return NULL;
+	bp = D2D1::BitmapProperties1(
+		target ? D2D1_BITMAP_OPTIONS_TARGET : D2D1_BITMAP_OPTIONS_NONE,
+		D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+			D2D1_ALPHA_MODE_PREMULTIPLIED), 96.0f, 96.0f);
+	g->dc->CreateBitmapFromDxgiSurface(s, &bp, &b);
+	s->Release();
+	return b;
+}
+
+static int FxCaptureFrom(Gfx *g, ID3D11Texture2D *src, int sx, int sy,
+	int w, int h, ID3D11Texture2D **outTex, ID2D1Bitmap1 **outBmp)
+{
+	ID3D11Texture2D *t;
+	ID2D1Bitmap1 *b;
+	D3D11_BOX box;
+	if (!src) return 0;
+	t = FxTex(g, w, h);
+	if (!t) return 0;
+	box.left = (UINT)sx;
+	box.top = (UINT)sy;
+	box.front = 0;
+	box.right = (UINT)(sx + w);
+	box.bottom = (UINT)(sy + h);
+	box.back = 1;
+	g->d3dctx->CopySubresourceRegion(t, 0, 0, 0, 0, src, 0, &box);
+	b = FxBmp(g, t, 0);
+	if (!b) { t->Release(); return 0; }
+	*outTex = t;
+	*outBmp = b;
+	return 1;
+}
+
+/* 旧快照来源: uiTarget 的底层纹理 = 上一帧完整画面 (帧间一直有效) */
+static ID3D11Texture2D *FxSourceTex(Gfx *g)
+{
+	return g ? g->uiTex : NULL;
+}
+
+/* 把快照纹理拷进 DComp 表面。设备是 DCompositionCreateDevice(v1), 未与
+ * D2D 设备关联, BeginDraw 只能用 IDXGISurface (传 ID2D1DeviceContext 会
+ * E_INVALIDARG); 拿到 DXGI 表面后直接做 D3D 纹理拷贝, 全 GPU。 */
+static int FxSurfaceDraw(Gfx *g, IDCompositionSurface *s, ID3D11Texture2D *src,
+	int w, int h)
+{
+	IDXGISurface *surf = NULL;
+	ID3D11Texture2D *dst = NULL;
+	POINT off;
+	HRESULT hr;
+	(void)w;
+	(void)h;
+	if (!s || !src) return 0;
+	off.x = 0;
+	off.y = 0;
+	hr = s->BeginDraw(NULL, IID_IDXGISurface, (void **)&surf, &off);
+	if (FAILED(hr) || !surf) {
+		Log_Write("[fx] surface BeginDraw hr=%08X", (unsigned)hr);
+		return 0;
+	}
+	hr = surf->QueryInterface(IID_PPV_ARGS(&dst));
+	if (FAILED(hr) || !dst) {
+		Log_Write("[fx] surface QI d3d hr=%08X", (unsigned)hr);
+		surf->Release();
+		s->EndDraw();
+		return 0;
+	}
+	g->d3dctx->CopySubresourceRegion(dst, 0, (UINT)off.x, (UINT)off.y, 0,
+		src, 0, NULL);
+	dst->Release();
+	surf->Release();
+	return SUCCEEDED(s->EndDraw());
+}
+
+static void FxRelease(GfxFx *f)
+{
+	if (!f) return;
+	if (f->vis && f->g && f->g->compVisual)
+		f->g->compVisual->RemoveVisual(f->vis);
+	SAFE_RELEASE(f->effect);
+	SAFE_RELEASE(f->vis);
+	SAFE_RELEASE(f->surf);
+	SAFE_RELEASE(f->bmpOld);
+	SAFE_RELEASE(f->texOld);
+}
+
+static int FxBuild(Gfx *g, GfxFx *f)
+{
+	HRESULT hr;
+	if (!g || !f) return 0;
+	if (!g->compDevice || !g->compVisual) return 0;
+	hr = g->compDevice->CreateSurface((UINT)f->pw, (UINT)f->ph,
+		DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_ALPHA_MODE_PREMULTIPLIED,
+		&f->surf);
+	if (FAILED(hr) || !f->surf) return 0;
+	if (!FxSurfaceDraw(g, f->surf, f->texOld, f->pw, f->ph)) {
+		Log_Write("[fx] surface draw failed");
+		return 0;
+	}
+	if (FAILED(g->compDevice->CreateVisual(&f->vis)) || !f->vis) return 0;
+	f->vis->SetContent(f->surf);
+	f->vis->SetOffsetX((float)f->px);
+	f->vis->SetOffsetY((float)f->py);
+	if (FAILED(g->compDevice->CreateEffectGroup(&f->effect)) || !f->effect)
+		return 0;
+	f->effect->SetOpacity(1.0f);
+	f->vis->SetEffect(f->effect);
+	if (FAILED(CompAddBottom(g->compVisual, f->vis))) return 0;
+
+	/* 先以不透明度 1 提交旧快照覆盖层 (画面 = 旧内容), 再上屏新主帧。
+	 * 不论合成器先处理哪一边, 这一块都还是旧画面。 */
+	f->startMs = FxNow();
+	f->started = 0;
+	g->compDevice->Commit();
+	return 1;
+}
+
+/* 覆盖层 Commit 是异步的: 新主帧上屏前必须保证它已进入合成, 否则那一帧
+ * 会先露出新状态再跳回旧覆盖层。等一次合成即可 (Win10 没有
+ * DCompositionWaitForCompositorClock, 统一用 DwmFlush)。 */
+static void FxWaitComposited(void)
+{
+	typedef HRESULT (WINAPI *Fn)(void);
+	static Fn fn;
+	static int tried;
+	if (!tried) {
+		HMODULE m = LoadLibraryW(L"dwmapi.dll");
+		tried = 1;
+		if (m) fn = (Fn)GetProcAddress(m, "DwmFlush");
+	}
+	if (fn) fn();
+}
+
+static void FxStartAnim(Gfx *g)
+{
+	GfxFx *f;
+	if (!g || !g->compDevice) return;
+	for (f = g->fxList; f; f = f->next) {
+		IDCompositionAnimation *anim = NULL;
+		double d;
+		if (f->started) continue;
+		d = (double)f->durMs / 1000.0;
+		f->startMs = FxNow();
+		f->started = 1;
+		if (d > 0.0 &&
+			SUCCEEDED(g->compDevice->CreateAnimation(&anim)) && anim) {
+			/* 旧快照淡出: opacity(p) = (1-p)^3。新内容可见度 1-(1-p)^3,
+			 * 与 CPU 通道 UI_AN_EASE_OUT 完全同曲线; 初速度 -3/d = -1/τ
+			 * 也与指数平滑的起点斜率一致 (d = 3τ)。 */
+			anim->AddCubic(0.0, 1.0f,
+				(float)(-3.0 / d), (float)(3.0 / (d * d)),
+				(float)(-1.0 / (d * d * d)));
+			anim->End(d, 0.0f);
+			f->effect->SetOpacity(anim);
+			anim->Release();
+		} else {
+			f->effect->SetOpacity(0.0f);
+		}
+	}
+	g->compDevice->Commit();
+}
+
+/* 动画到时间: 标记 done 并请求一次重绘以回收覆盖层。此时不透明度已是
+ * 0, 拆除与主帧上屏的先后不影响画面。 */
+static void FxMarkDone(Gfx *g)
+{
+	GfxFx *f;
+	double now;
+	RECT r;
+	if (!g) return;
+	now = FxNow();
+	for (f = g->fxList; f; f = f->next) {
+		if (f->done) continue;
+		if (now >= f->startMs + (double)f->durMs + 16.0) {
+			f->done = 1;
+			if (g->hwnd) {
+				r.left = f->px - 2;
+				r.top = f->py - 2;
+				r.right = f->px + f->pw + 2;
+				r.bottom = f->py + f->ph + 2;
+				InvalidateRect(g->hwnd, &r, FALSE);
+			}
+		}
+	}
+}
+
+static int FxHasDone(Gfx *g)
+{
+	GfxFx *f;
+	for (f = g ? g->fxList : NULL; f; f = f->next)
+		if (f->done) return 1;
+	return 0;
+}
+
+/* Present 之后调用: 覆盖层已透明, 直接拆除。 */
+static void FxRemoveDone(Gfx *g)
+{
+	GfxFx **pp;
+	int removed = 0;
+	if (!g) return;
+	pp = &g->fxList;
+	while (*pp) {
+		GfxFx *f = *pp;
+		if (!f->done) { pp = &f->next; continue; }
+		*pp = f->next;
+		FxRelease(f);
+		HeapFree(GetProcessHeap(), 0, f);
+		g->fxCount--;
+		removed = 1;
+	}
+	if (removed && g->compDevice) g->compDevice->Commit();
+}
+
+static void FxFreeQueue(GfxFxQ *q)
+{
+	while (q) {
+		GfxFxQ *n = q->next;
+		SAFE_RELEASE(q->bmpOld);
+		SAFE_RELEASE(q->texOld);
+		HeapFree(GetProcessHeap(), 0, q);
+		q = n;
+	}
+}
+
+/* 抓“旧快照”排队, 由 FxEndFrame 建成淡出覆盖层。
+ *
+ * 与进行中的过渡重叠时: 旧覆盖层正在淡出, 主表面已经是最新状态, 再叠
+ * 一层会把"旧快照"插到画面上 (闪)。所以除非新过渡更长 (代表更大的变化,
+ * 如关闭弹层接管按钮 hover), 否则直接丢弃新过渡。 */
+int Gfx_FxQueue(Gfx *g, GfxRect rc, int durMs)
+{
+	GfxFxQ *q;
+	GfxFx *f, **pp, *hits[GFX_FX_MAX];
+	int nHit = 0, i, supersede = 0;
+	int x0, y0, x1, y1;
+	int ux0, uy0, ux1, uy1;
+	float sc;
+	if (!g || !g->useDcomp || !g->compDevice || !g->swap) return 0;
+	if (durMs <= 0 || rc.w <= 0.0f || rc.h <= 0.0f) return 0;
+	if (!FxSourceTex(g)) return 0;
+	sc = g->scale > 0.0f ? g->scale : 1.0f;
+	x0 = (int)(rc.x * sc);
+	y0 = (int)(rc.y * sc);
+	x1 = (int)((rc.x + rc.w) * sc + 0.999f);
+	y1 = (int)((rc.y + rc.h) * sc + 0.999f);
+	if (x0 < 0) x0 = 0;
+	if (y0 < 0) y0 = 0;
+	if (x1 > g->pw) x1 = g->pw;
+	if (y1 > g->ph) y1 = g->ph;
+	if (x1 - x0 < 1 || y1 - y0 < 1) return 0;
+	if ((double)(x1 - x0) * (double)(y1 - y0) > 2048.0 * 2048.0) return 0;
+
+	ux0 = x0; uy0 = y0; ux1 = x1; uy1 = y1;
+	for (pp = &g->fxList; *pp; pp = &(*pp)->next) {
+		f = *pp;
+		if (f->px >= x1 || f->py >= y1 ||
+			f->px + f->pw <= x0 || f->py + f->ph <= y0) continue;
+		if (nHit < GFX_FX_MAX) hits[nHit++] = f;
+	}
+	if (nHit) {
+		for (i = 0; i < nHit; i++)
+			if (hits[i]->durMs >= durMs) return 0;
+		supersede = 1;
+		for (i = 0; i < nHit; i++) {
+			if (hits[i]->px < ux0) ux0 = hits[i]->px;
+			if (hits[i]->py < uy0) uy0 = hits[i]->py;
+			if (hits[i]->px + hits[i]->pw > ux1) ux1 = hits[i]->px + hits[i]->pw;
+			if (hits[i]->py + hits[i]->ph > uy1) uy1 = hits[i]->py + hits[i]->ph;
+		}
+	}
+
+	q = (GfxFxQ *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*q));
+	if (!q) return 0;
+	q->px = ux0;
+	q->py = uy0;
+	q->pw = ux1 - ux0;
+	q->ph = uy1 - uy0;
+	q->durMs = durMs;
+
+	if (!FxCaptureFrom(g, FxSourceTex(g), ux0, uy0, q->pw, q->ph,
+			&q->texOld, &q->bmpOld)) {
+		HeapFree(GetProcessHeap(), 0, q);
+		return 0;
+	}
+	/* 被接管的旧层先不拆: 新覆盖层要在 FxEndFrame 里建好后再拆。 */
+	if (supersede)
+		for (i = 0; i < nHit; i++) hits[i]->replaced = 1;
+
+	if (g->fxQueueCount >= GFX_FX_MAX) {
+		/* 队列上限: 丢弃待提交项, 保证不无限增长 (极端连点下最多少一段过渡) */
+		FxFreeQueue(g->fxQueue);
+		g->fxQueue = NULL;
+		g->fxQueueCount = 0;
+	}
+	q->next = g->fxQueue;
+	g->fxQueue = q;
+	g->fxQueueCount++;
+	return 1;
+}
+
+/* 在 Present 绘制之前构建本帧的淡出覆盖层。
+ * 旧快照在排队时已经抓自上一帧 uiTarget。 */
+static void FxEndFrame(Gfx *g)
+{
+	int built = 0;
+	if (!g || !g->useDcomp || !g->swap || !g->uiTex) return;
+	g->fxBuilt = 0;
+	while (g->fxQueue) {
+		GfxFxQ *q = g->fxQueue;
+		GfxFx *f;
+		g->fxQueue = q->next;
+		g->fxQueueCount--;
+		f = (GfxFx *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*f));
+		if (!f) {
+			SAFE_RELEASE(q->bmpOld);
+			SAFE_RELEASE(q->texOld);
+			HeapFree(GetProcessHeap(), 0, q);
+			continue;
+		}
+		f->g = g;
+		f->px = q->px;
+		f->py = q->py;
+		f->pw = q->pw;
+		f->ph = q->ph;
+		f->durMs = q->durMs;
+		f->texOld = q->texOld;
+		f->bmpOld = q->bmpOld;
+		q->texOld = NULL;
+		q->bmpOld = NULL;
+		HeapFree(GetProcessHeap(), 0, q);
+		if (!FxBuild(g, f)) {
+			Log_Write("[fx] build failed (%d,%d %dx%d)", f->px, f->py,
+				f->pw, f->ph);
+			FxRelease(f);
+			HeapFree(GetProcessHeap(), 0, f);
+			continue;
+		}
+		f->next = g->fxList;
+		g->fxList = f;
+		g->fxCount++;
+		built++;
+	}
+	g->fxBuilt = built;
+	if (built > 0) {
+		/* 新覆盖层已提交: 拆被接管的旧层 */
+		GfxFx **pp = &g->fxList;
+		while (*pp) {
+			GfxFx *f = *pp;
+			if (f->replaced) {
+				*pp = f->next;
+				FxRelease(f);
+				HeapFree(GetProcessHeap(), 0, f);
+				g->fxCount--;
+				continue;
+			}
+			pp = &f->next;
+		}
+		if (g->compDevice) g->compDevice->Commit();
+	} else {
+		GfxFx *f;
+		for (f = g->fxList; f; f = f->next) f->replaced = 0;
+	}
+}
+
+static void FxDropAll(Gfx *g)
+{
+	GfxFx *f;
+	if (!g) return;
+	FxFreeQueue(g->fxQueue);
+	g->fxQueue = NULL;
+	g->fxQueueCount = 0;
+	f = g->fxList;
+	g->fxList = NULL;
+	g->fxCount = 0;
+	while (f) {
+		GfxFx *n = f->next;
+		FxRelease(f);
+		HeapFree(GetProcessHeap(), 0, f);
+		f = n;
+	}
+	if (g->compDevice) g->compDevice->Commit();
+}
+
+int Gfx_FxEnabled(Gfx *g)
+{
+	return g && g->useDcomp && g->compDevice && g->swap ? 1 : 0;
+}
+
+void Gfx_FxCancelAll(Gfx *g)
+{
+	if (!g) return;
+	FxDropAll(g);
+}
+
+void Gfx_FxCancelRect(Gfx *g, GfxRect rc)
+{
+	GfxFx **pp;
+	GfxFxQ **qp;
+	int x0, y0, x1, y1, removed = 0;
+	float sc;
+	if (!g) return;
+	if (rc.w <= 0.0f || rc.h <= 0.0f) { return; }
+	sc = g->scale > 0.0f ? g->scale : 1.0f;
+	x0 = (int)(rc.x * sc);
+	y0 = (int)(rc.y * sc);
+	x1 = (int)((rc.x + rc.w) * sc + 0.999f);
+	y1 = (int)((rc.y + rc.h) * sc + 0.999f);
+	pp = &g->fxList;
+	while (*pp) {
+		GfxFx *f = *pp;
+		if (f->px >= x1 || f->py >= y1 ||
+			f->px + f->pw <= x0 || f->py + f->ph <= y0) {
+			pp = &f->next;
+			continue;
+		}
+		*pp = f->next;
+		FxRelease(f);
+		HeapFree(GetProcessHeap(), 0, f);
+		g->fxCount--;
+		removed = 1;
+	}
+	qp = &g->fxQueue;
+	while (*qp) {
+		GfxFxQ *q = *qp;
+		if (q->px >= x1 || q->py >= y1 ||
+			q->px + q->pw <= x0 || q->py + q->ph <= y0) {
+			qp = &q->next;
+			continue;
+		}
+		*qp = q->next;
+		SAFE_RELEASE(q->bmpOld);
+		SAFE_RELEASE(q->texOld);
+		HeapFree(GetProcessHeap(), 0, q);
+		g->fxQueueCount--;
+		removed = 1;
+	}
+	if (removed && g->compDevice) g->compDevice->Commit();
+}
+int Gfx_FxBusy(Gfx *g)
+{
+	if (!g) return 0;
+	return (g->fxQueueCount > 0 || g->fxCount > 0) ? 1 : 0;
+}
+
+int Gfx_FxIdleMs(Gfx *g)
+{
+	double now, best = 0.0;
+	int found = 0;
+	GfxFx *f;
+	if (!g) return -1;
+	if (g->fxQueueCount > 0) return 0;
+	now = FxNow();
+	for (f = g->fxList; f; f = f->next) {
+		double end, d;
+		if (f->done) return 0;   /* 立刻安排一次绘制来完成拆除 */
+		end = f->startMs + (double)f->durMs + 16.0;
+		d = end - now;
+		if (d < 0.0) d = 0.0;
+		if (!found || d < best) { best = d; found = 1; }
+	}
+	if (!found) return -1;
+	if (best > 200.0) best = 200.0;
+	return (int)(best + 0.5);
+}
+
+void Gfx_FxTick(Gfx *g)
+{
+	FxMarkDone(g);
+}
+
+/* ── PartFx: 独立 visual 的位移部件 ───────────────────────────────── */
+
+struct GfxPart {
+	Gfx *g;
+	int pw, ph;
+	float baseX, baseY;
+	float x, fromX, toX;     /* DIP */
+	float w, fromW, toW;
+	double startMs;
+	int durMs;
+	int animating;
+	int visible;
+	int seen;
+	int needDraw;
+	float appliedX, appliedY;
+	float appliedW;
+	IDCompositionRectangleClip *clip;
+	IDCompositionRotateTransform *rot;
+	float ang, angFrom, angTo;
+	double rotStart;
+	int rotDur;
+	int rotAnim;
+	ID3D11Texture2D *tex;
+	ID2D1Bitmap1 *bmp;
+	IDCompositionSurface *surf;
+	IDCompositionVisual *vis;
+	GfxPartDrawFn fn;
+	void *user;
+	GfxPart *next;
+};
+
+/* cubic-out: 1-(1-p)^3, 纯减速, 不回弹. */
+static float PartDecelLerp(float from, float to, double t, int durMs)
+{
+	double q, u;
+	if (durMs <= 0) return to;
+	if (t <= 0.0) return from;
+	if (t >= (double)durMs) return to;
+	q = t / (double)durMs;
+	u = 1.0 - q;
+	return from + (to - from) * (float)(1.0 - u * u * u);
+}
+
+static float PartXNow(GfxPart *p, double now)
+{
+	if (!p) return 0.0f;
+	if (!p->animating) return p->x;
+	return PartDecelLerp(p->fromX, p->toX, now - p->startMs, p->durMs);
+}
+
+static float PartWNow(GfxPart *p, double now)
+{
+	if (!p) return 0.0f;
+	if (!p->animating) return p->w;
+	return PartDecelLerp(p->fromW, p->toW, now - p->startMs, p->durMs);
+}
+
+float Gfx_PartX(const GfxPart *p)
+{
+	return PartXNow((GfxPart *)p, FxNow());
+}
+
+float Gfx_PartW(const GfxPart *p)
+{
+	return PartWNow((GfxPart *)p, FxNow());
+}
+
+static float PartRotNow(GfxPart *p, double now)
+{
+	if (!p) return 0.0f;
+	if (!p->rotAnim) return p->ang;
+	return PartDecelLerp(p->angFrom, p->angTo, now - p->rotStart, p->rotDur);
+}
+
+float Gfx_PartRotation(const GfxPart *p)
+{
+	return PartRotNow((GfxPart *)p, FxNow());
+}
+
+static int PartEnsureRot(GfxPart *p)
+{
+	Gfx *g;
+	if (!p || !p->g || !p->vis) return 0;
+	g = p->g;
+	if (p->rot) return 1;
+	if (FAILED(g->compDevice->CreateRotateTransform(&p->rot)) || !p->rot)
+		return 0;
+	p->rot->SetCenterX(p->pw * 0.5f);
+	p->rot->SetCenterY(p->ph * 0.5f);
+	p->rot->SetAngle(0.0f);
+	p->vis->SetTransform(p->rot);
+	return 1;
+}
+
+void Gfx_PartSetRotation(GfxPart *p, float deg)
+{
+	Gfx *g;
+	if (!p || !p->g) return;
+	g = p->g;
+	if (!PartEnsureRot(p)) return;
+	p->ang = deg;
+	p->rotAnim = 0;
+	p->rot->SetAngle(deg);
+	if (g->compDevice) g->compDevice->Commit();
+}
+
+void Gfx_PartAnimateRotation(GfxPart *p, float toDeg, int durMs)
+{
+	Gfx *g;
+	IDCompositionAnimation *a = NULL;
+	double now, d;
+	float cur;
+	if (!p || !p->g) return;
+	g = p->g;
+	if (!PartEnsureRot(p)) return;
+	now = FxNow();
+	cur = PartRotNow(p, now);
+	p->angFrom = cur;
+	p->angTo = toDeg;
+	p->rotStart = now;
+	p->rotDur = durMs;
+	p->rotAnim = 1;
+	p->ang = cur;
+	if (durMs <= 0 ||
+		FAILED(g->compDevice->CreateAnimation(&a)) || !a) {
+		p->rotAnim = 0;
+		p->ang = toDeg;
+		p->rot->SetAngle(toDeg);
+		if (g->compDevice) g->compDevice->Commit();
+		return;
+	}
+	d = (double)durMs / 1000.0;
+	{
+		double dd = (double)toDeg - (double)cur;
+		/* cubic-out: 与 CPU 侧 sel_arrow 的 1-(1-p)^3 一致. */
+		a->AddCubic(0.0, (float)cur, (float)(dd * 3.0 / d),
+			(float)(dd * -3.0 / (d * d)),
+			(float)(dd / (d * d * d)));
+		a->End(d, toDeg);
+	}
+	p->rot->SetAngle(a);
+	a->Release();
+	if (g->compDevice) g->compDevice->Commit();
+}
+
+void Gfx_PartUpdate(GfxPart *p)
+{
+	if (p) p->needDraw = 1;
+}
+
+/* 内容渲染到自己的纹理, 再拷进 DComp 表面; 只在 needDraw 时执行 */
+static void PartDrawContent(Gfx *g, GfxPart *p)
+{
+	ID2D1Image *savedTarget = NULL;
+	ID2D1RenderTarget *savedRt;
+	D2D1_MATRIX_3X2_F savedTransform;
+	D2D1_COLOR_F clear = { 0.0f, 0.0f, 0.0f, 0.0f };
+	int sInFrame, sDirtyFull, sDirtyClip, sClipDepth, sAlphaDepth, sForceFull;
+	int sXform;
+	if (!g || !p || !p->bmp || !p->fn) return;
+	savedRt = g->rt;
+	g->dc->GetTarget(&savedTarget);
+	g->currentTarget = savedTarget;
+	g->dc->GetTransform(&savedTransform);
+	sInFrame = g->inFrame;
+	sDirtyFull = g->dirtyFull;
+	sDirtyClip = g->dirtyClip;
+	sClipDepth = g->clipDepth;
+	sXform = g->xformDepth;
+	sAlphaDepth = g->alphaDepth;
+	sForceFull = g->forceFull;
+
+	g->dc->SetTarget(p->bmp);
+	g->currentTarget = (ID2D1Image *)p->bmp;
+	g->rt = (ID2D1RenderTarget *)g->dc;
+	g->rt->BeginDraw();
+	g->rt->Clear(&clear);
+	{
+		D2D1_MATRIX_3X2_F m = { g->scale, 0.0f, 0.0f, g->scale, 0.0f, 0.0f };
+		g->rt->SetTransform(&m);
+	}
+	g->rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+	g->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+	g->clipDepth = 0;
+	g->xformDepth = 0;
+	g->alphaDepth = 0;
+	g->dirtyClip = 0;
+	g->dirtyFull = 1;
+	g->forceFull = 0;
+	g->inFrame = 1;
+	p->fn(g, p->user);
+	while (g->alphaDepth > 0) { g->rt->PopLayer(); g->alphaDepth--; }
+	while (g->clipDepth > 0) { g->rt->PopAxisAlignedClip(); g->clipDepth--; }
+	if (g->dirtyClip) { g->rt->PopAxisAlignedClip(); g->dirtyClip = 0; }
+	g->rt->EndDraw();
+
+	g->dc->SetTarget(savedTarget);
+	g->currentTarget = savedTarget;
+	g->dc->SetTransform(&savedTransform);
+	SAFE_RELEASE(savedTarget);
+	g->rt = savedRt;
+	g->inFrame = sInFrame;
+	g->dirtyFull = sDirtyFull;
+	g->dirtyClip = sDirtyClip;
+	g->clipDepth = sClipDepth;
+	g->xformDepth = sXform;
+	g->alphaDepth = sAlphaDepth;
+	g->forceFull = sForceFull;
+
+	FxSurfaceDraw(g, p->surf, p->tex, p->pw, p->ph);
+	p->needDraw = 0;
+}
+
+static int PartsDraw(Gfx *g)
+{
+	GfxPart *p;
+	int drawn = 0;
+	if (!g) return 0;
+	for (p = g->parts; p; p = p->next) {
+		if (!p->needDraw) continue;
+		PartDrawContent(g, p);
+		drawn++;
+	}
+	return drawn;
+}
+
+static void PartsHideUnseen(Gfx *g)
+{
+	GfxPart *p;
+	int changed = 0;
+	if (!g) return;
+	for (p = g->parts; p; p = p->next) {
+		if (p->seen == g->partFrame) continue;
+		if (!p->visible) continue;
+		p->visible = 0;
+		if (p->vis) p->vis->SetContent(NULL);
+		changed = 1;
+	}
+	if (changed && g->compDevice) g->compDevice->Commit();
+}
+
+static void PartsFree(Gfx *g)
+{
+	GfxPart *p;
+	if (!g) return;
+	p = g->parts;
+	g->parts = NULL;
+	while (p) {
+		GfxPart *n = p->next;
+		if (p->vis && g->compVisual) g->compVisual->RemoveVisual(p->vis);
+		SAFE_RELEASE(p->rot);
+		SAFE_RELEASE(p->clip);
+		SAFE_RELEASE(p->vis);
+		SAFE_RELEASE(p->surf);
+		SAFE_RELEASE(p->bmp);
+		SAFE_RELEASE(p->tex);
+		HeapFree(GetProcessHeap(), 0, p);
+		p = n;
+	}
+}
+
+GfxPart *Gfx_PartCreate(Gfx *g, float dipW, float dipH,
+	GfxPartDrawFn fn, void *user)
+{
+	GfxPart *p;
+	HRESULT hr;
+	if (!g || !g->useDcomp || !g->compDevice || !g->compVisual || !g->d3d)
+		return NULL;
+	if (dipW <= 0.0f || dipH <= 0.0f || !fn) return NULL;
+	p = (GfxPart *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*p));
+	if (!p) return NULL;
+	p->g = g;
+	p->pw = (int)(dipW * g->scale + 0.999f);
+	p->ph = (int)(dipH * g->scale + 0.999f);
+	if (p->pw < 1) p->pw = 1;
+	if (p->ph < 1) p->ph = 1;
+	p->fn = fn;
+	p->user = user;
+	p->tex = FxTex(g, p->pw, p->ph);
+	if (!p->tex) { HeapFree(GetProcessHeap(), 0, p); return NULL; }
+	p->bmp = FxBmp(g, p->tex, 1);
+	if (!p->bmp) { SAFE_RELEASE(p->tex); HeapFree(GetProcessHeap(), 0, p); return NULL; }
+	hr = g->compDevice->CreateSurface((UINT)p->pw, (UINT)p->ph,
+		DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_ALPHA_MODE_PREMULTIPLIED, &p->surf);
+	if (FAILED(hr) || !p->surf) goto fail;
+	if (FAILED(g->compDevice->CreateVisual(&p->vis)) || !p->vis) goto fail;
+	p->vis->SetContent(NULL);
+	p->vis->SetOffsetX(0.0f);
+	p->vis->SetOffsetY(0.0f);
+	if (FAILED(CompAddBottom(g->compVisual, p->vis))) goto fail;
+	g->compDevice->Commit();
+	p->needDraw = 1;
+	p->seen = g->partFrame;
+	p->next = g->parts;
+	g->parts = p;
+	return p;
+fail:
+	if (p->vis) p->vis->Release();
+	if (p->surf) p->surf->Release();
+	SAFE_RELEASE(p->bmp);
+	SAFE_RELEASE(p->tex);
+	HeapFree(GetProcessHeap(), 0, p);
+	return NULL;
+}
+
+void Gfx_PartPlace(GfxPart *p, float x, float y)
+{
+	Gfx *g;
+	int changed = 0;
+	if (!p || !p->g) return;
+	g = p->g;
+	p->baseX = x;
+	p->baseY = y;
+	p->seen = g->partFrame;
+	if (p->animating && FxNow() >= p->startMs + (double)p->durMs) {
+		p->animating = 0;
+		p->x = p->toX;
+	}
+	if (!p->animating) p->x = x;
+	if (p->vis) {
+		if (!p->animating && p->appliedX != p->x) {
+			p->appliedX = p->x;
+			p->vis->SetOffsetX(p->x * g->scale);
+			changed = 1;
+		}
+		if (p->appliedY != y) {
+			p->appliedY = y;
+			p->vis->SetOffsetY(y * g->scale);
+			changed = 1;
+		}
+	}
+	if (!p->visible && p->vis) {
+		p->visible = 1;
+		p->vis->SetContent(p->surf);
+		changed = 1;
+	}
+	if (changed && g->compDevice) g->compDevice->Commit();
+}
+
+void Gfx_PartSetVisible(GfxPart *p, int visible)
+{
+	Gfx *g;
+	int v = visible ? 1 : 0;
+	if (!p || !p->g || !p->vis) return;
+	g = p->g;
+	if (p->visible == v) return;
+	p->visible = v;
+	p->vis->SetContent(v ? (IUnknown *)p->surf : NULL);
+	if (g->compDevice) g->compDevice->Commit();
+}
+
+void Gfx_PartAnimateX(GfxPart *p, float toXDip, int durMs)
+{
+	Gfx *g;
+	IDCompositionAnimation *anim = NULL;
+	double now, d;
+	float cur;
+	if (!p || !p->g) return;
+	g = p->g;
+	now = FxNow();
+	cur = PartXNow(p, now);
+	p->fromX = cur;
+	p->toX = toXDip;
+	p->startMs = now;
+	p->durMs = durMs;
+	p->animating = 1;
+	p->x = cur;
+	if (!p->vis || durMs <= 0 ||
+		FAILED(g->compDevice->CreateAnimation(&anim)) || !anim) {
+		p->animating = 0;
+		p->x = toXDip;
+		if (p->vis) {
+			p->appliedX = toXDip;
+			p->vis->SetOffsetX(toXDip * g->scale);
+		}
+		if (g->compDevice) g->compDevice->Commit();
+		return;
+	}
+	d = (double)durMs / 1000.0;
+	{
+		double c0 = (double)cur * g->scale;
+		double c1 = (double)toXDip * g->scale;
+		double dd = c1 - c0;
+		/* cubic-out: dd * (3 t/d - 3 t^2/d^2 + t^3/d^3). */
+		anim->AddCubic(0.0, (float)c0, (float)(dd * 3.0 / d),
+			(float)(dd * -3.0 / (d * d)),
+			(float)(dd / (d * d * d)));
+		anim->End(d, (float)c1);
+	}
+	p->vis->SetOffsetX(anim);
+	anim->Release();
+	p->appliedX = toXDip;   /* 动画接管, 避免 Place 再写静态值 */
+	if (g->compDevice) g->compDevice->Commit();
+}
+
+void Gfx_PartSetClipRadius(GfxPart *p, float radiusDip)
+{
+	Gfx *g;
+	if (!p || !p->g || !p->vis) return;
+	g = p->g;
+	if (!p->clip) {
+		if (FAILED(g->compDevice->CreateRectangleClip(&p->clip)) || !p->clip)
+			return;
+		p->clip->SetLeft(0.0f);
+		p->clip->SetTop(0.0f);
+		p->clip->SetRight((float)p->pw);
+		p->clip->SetBottom((float)p->ph);
+		p->vis->SetClip(p->clip);
+		p->w = (float)p->pw / (g->scale > 0.0f ? g->scale : 1.0f);
+		p->appliedW = p->w;
+	}
+	if (radiusDip > 0.0f) {
+		float r = radiusDip * g->scale;
+		p->clip->SetTopLeftRadiusX(r);
+		p->clip->SetTopLeftRadiusY(r);
+		p->clip->SetTopRightRadiusX(r);
+		p->clip->SetTopRightRadiusY(r);
+		p->clip->SetBottomLeftRadiusX(r);
+		p->clip->SetBottomLeftRadiusY(r);
+		p->clip->SetBottomRightRadiusX(r);
+		p->clip->SetBottomRightRadiusY(r);
+	}
+	g->compDevice->Commit();
+}
+
+void Gfx_PartPlaceRect(GfxPart *p, float x, float y, float w)
+{
+	Gfx *g;
+	int changed = 0;
+	double now;
+	if (!p || !p->g) return;
+	g = p->g;
+	now = FxNow();
+	p->baseX = x;
+	p->baseY = y;
+	p->seen = g->partFrame;
+	if (p->animating && now >= p->startMs + (double)p->durMs) {
+		p->animating = 0;
+		p->x = p->toX;
+		p->w = p->toW;
+	}
+	if (!p->animating) { p->x = x; p->w = w; }
+	if (p->vis) {
+		if (!p->animating && p->appliedX != p->x) {
+			p->appliedX = p->x;
+			p->vis->SetOffsetX(p->x * g->scale);
+			changed = 1;
+		}
+		if (p->appliedY != y) {
+			p->appliedY = y;
+			p->vis->SetOffsetY(y * g->scale);
+			changed = 1;
+		}
+		if (p->clip && !p->animating && p->appliedW != p->w) {
+			p->appliedW = p->w;
+			p->clip->SetRight(p->w * g->scale);
+			changed = 1;
+		}
+	}
+	if (!p->visible && p->vis) {
+		p->visible = 1;
+		p->vis->SetContent(p->surf);
+		changed = 1;
+	}
+	if (changed && g->compDevice) g->compDevice->Commit();
+}
+
+void Gfx_PartAnimateRect(GfxPart *p, float x, float y, float w, int durMs)
+{
+	Gfx *g;
+	IDCompositionAnimation *ax = NULL;
+	IDCompositionAnimation *aw = NULL;
+	double now, d;
+	float cx, cw;
+	if (!p || !p->g) return;
+	g = p->g;
+	now = FxNow();
+	cx = PartXNow(p, now);
+	cw = PartWNow(p, now);
+	p->fromX = cx;
+	p->toX = x;
+	p->fromW = cw;
+	p->toW = w;
+	p->startMs = now;
+	p->durMs = durMs;
+	p->animating = 1;
+	p->x = cx;
+	p->w = cw;
+	p->baseX = x;
+	p->baseY = y;
+	p->seen = g->partFrame;
+	if (p->vis) {
+		p->appliedY = y;
+		p->vis->SetOffsetY(y * g->scale);
+	}
+	if (!p->vis || durMs <= 0 ||
+		FAILED(g->compDevice->CreateAnimation(&ax)) || !ax) {
+		p->animating = 0;
+		p->x = x;
+		p->w = w;
+		if (p->vis) {
+			p->appliedX = x;
+			p->vis->SetOffsetX(x * g->scale);
+		}
+		if (p->clip) {
+			p->appliedW = w;
+			p->clip->SetRight(w * g->scale);
+		}
+		if (g->compDevice) g->compDevice->Commit();
+		return;
+	}
+	d = (double)durMs / 1000.0;
+	{
+		double c0 = (double)cx * g->scale;
+		double c1 = (double)x * g->scale;
+		double dd = c1 - c0;
+		/* cubic-out: dd * (3 t/d - 3 t^2/d^2 + t^3/d^3). */
+		ax->AddCubic(0.0, (float)c0, (float)(dd * 3.0 / d),
+			(float)(dd * -3.0 / (d * d)),
+			(float)(dd / (d * d * d)));
+		ax->End(d, (float)c1);
+	}
+	p->vis->SetOffsetX(ax);
+	ax->Release();
+	if (p->clip &&
+		SUCCEEDED(g->compDevice->CreateAnimation(&aw)) && aw) {
+		double w0 = (double)cw * g->scale;
+		double w1 = (double)w * g->scale;
+		double dw = w1 - w0;
+		aw->AddCubic(0.0, (float)w0, (float)(dw * 3.0 / d),
+			(float)(dw * -3.0 / (d * d)),
+			(float)(dw / (d * d * d)));
+		aw->End(d, (float)w1);
+		p->clip->SetRight(aw);
+		aw->Release();
+	} else if (p->clip) {
+		p->clip->SetRight(w * g->scale);
+	}
+	p->appliedX = x;
+	p->appliedW = w;
+	if (g->compDevice) g->compDevice->Commit();
+}
+
+void Gfx_PartDestroy(GfxPart *p)
+{
+	Gfx *g;
+	GfxPart **pp;
+	if (!p) return;
+	g = p->g;
+	if (g) {
+		for (pp = &g->parts; *pp; pp = &(*pp)->next) {
+			if (*pp == p) { *pp = p->next; break; }
+		}
+		if (p->vis && g->compVisual) g->compVisual->RemoveVisual(p->vis);
+	}
+	SAFE_RELEASE(p->rot);
+	SAFE_RELEASE(p->clip);
+	SAFE_RELEASE(p->vis);
+	SAFE_RELEASE(p->surf);
+	SAFE_RELEASE(p->bmp);
+	SAFE_RELEASE(p->tex);
+	HeapFree(GetProcessHeap(), 0, p);
+	if (g && g->compDevice) g->compDevice->Commit();
 }
 
 /* ── GPU 效果: D2D 内置效果 + 自定义 Grain ────────────────────────── */
@@ -1979,6 +3311,7 @@ void Gfx_SetDirtyRect(Gfx *g, const RECT *rcPx)
 void Gfx_Begin(Gfx *g)
 {
 	if (!g || !g->rt) return;
+	g->partFrame++;
 	/* 始终画到离屏 uiTarget: 局部重绘要把"上一帧的其余部分"拷回去, 必须有持久层。
 	 * 曾试过整帧直画后缓冲, 省下的拷贝被 Present 等 vsync 掩盖 (无收益), 却让
 	 * 之后的局部重绘拷到从未画过的离屏内容 → 控件整块消失 (真机)。 */
@@ -2029,6 +3362,13 @@ int Gfx_End(Gfx *g)
 			FallbackToUlw(g);
 			return 0;
 		}
+		/* 部件内容 (滑块/指示器): 只在内容变化时渲染到自己的表面 */
+		int partsDrawn = PartsDraw(g);
+		/* 本帧新过渡: 用排队时抓的旧快照建淡出覆盖层 (不透明度 1) */
+		FxEndFrame(g);
+		FxMarkDone(g);
+		if (g->fxBuilt <= 0 && partsDrawn && g->compDevice)
+			g->compDevice->Commit();   /* 部件表面内容要 Commit 才上屏 */
 		g->dc->SetTarget(g->swapTarget);
 		g->currentTarget = (ID2D1Image *)g->swapTarget;
 		g->dc->SetTransform(D2D1::Matrix3x2F::Identity());
@@ -2058,12 +3398,19 @@ int Gfx_End(Gfx *g)
 			FallbackToUlw(g);
 			return 0;
 		}
+		/* 新主帧上屏前确保旧快照覆盖层已进入合成 (绘制期间已发出 Commit)。 */
+		if (g->fxBuilt > 0) FxWaitComposited();
 		HRESULT sr = g->swap->Present(g->noVsync ? 0 : 1, 0);
 		if (FAILED(sr)) {
 			Log_Write("[gfx] DComp Present failed 0x%08X", (unsigned)sr);
 			FallbackToUlw(g);
 			return 0;
 		}
+		/* 覆盖层已淡出为全透明, 拆除与上屏先后无关 */
+		if (g->fxBuilt > 0) FxStartAnim(g);
+		if (FxHasDone(g)) FxRemoveDone(g);
+		/* 本帧没再声明的部件隐藏 (换页/控件消失) */
+		PartsHideUnseen(g);
 		return 1;
 	}
 	if (hr == D2DERR_RECREATE_TARGET) {

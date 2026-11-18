@@ -23,10 +23,17 @@ typedef struct UiDialog {
 	int closeOnBackdrop;
 	int visible, closing;
 	int pendingResult, result;
-	float progress;
+	/* 入场/离场由合成器 layer 承担: 1=入场 2=稳定 3=离场 */
+	int stage;
+	double stageMs;
+	GfxLayer *dimLayer, *cardLayer;
+	int layerPxW, layerPxH;
+	int dimDirty;
+	int kicked;              /* 入场动画已交给合成器 */
+	int fxHeld;              /* 持有 ctx->fxOff */
 	UiRect rect, body;
 	UiId savedScope;
-	int begun, alphaPushed, inputBlocked, ownerPushed;
+	int begun, capture, inputBlocked, ownerPushed;
 } UiDialog;
 
 void UiDialog_Init(UiDialog *d, UiId id);

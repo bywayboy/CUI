@@ -36,7 +36,7 @@ CORE_OBJS = $(OBJ)\edit.obj $(OBJ)\log.obj $(OBJ)\crtstub.obj $(OBJ)\heap.obj \
     $(OBJ)\ui_toast.obj $(OBJ)\ui_input.obj $(OBJ)\ui_app.obj \
     $(OBJ)\ui_progress.obj $(OBJ)\ui_scroll.obj $(OBJ)\ui_tab.obj \
     $(OBJ)\ui_nav.obj $(OBJ)\ui_pagination.obj $(OBJ)\ui_datetime.obj \
-    $(OBJ)\ui_datepicker.obj \
+    $(OBJ)\ui_datepicker.obj $(OBJ)\ui_fx.obj \
     $(OBJ)\ui_image.obj $(OBJ)\net_base.obj $(OBJ)\net_tcp.obj \
     $(OBJ)\net_dns.obj $(OBJ)\net_tls.obj $(OBJ)\net_http.obj \
     $(OBJ)\net_ws.obj $(OBJ)\ui_net.obj $(OBJ)\net_ws_server.obj \

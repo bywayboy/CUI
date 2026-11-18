@@ -50,12 +50,20 @@ UiWidgetState Ui_DrawSurface(UiContext *ui, UiId id, UiRect rc,
 
 	if (!g || !s) return st;
 
-	/* 光晕只由动画值驱动: 进入时从 0 亮起, 离开时渐暗 —— 不能用离散 hovered
-	 * 做门闩, 否则离开瞬间直接消失、再进入时残留值让它跳亮 (真机反馈)。 */
+	/* CPU 回退路径光晕只由动画值驱动: 进入时从 0 亮起, 离开时渐暗 ——
+	 * 不能用离散 hovered 做门闩, 否则离开瞬间直接消失、再进入时残留值让它
+	 * 跳亮 (真机反馈)。 */
 	wantGlow = ((s->glowMask & UI_GLOW_HOVER) && st.hovered)
 		|| ((s->glowMask & UI_GLOW_FOCUS) && st.focused);
-	Ui_AnimSmooth(ui, id, UI_AN_GLOW, wantGlow ? 1.0f : 0.0f);
-	st.glow = Ui_AnimGet(ui, id, UI_AN_GLOW, 0.0f);
+	/* 合成器路径: 直接落最终值, 过渡由 SnapshotFx 覆盖层完成; CPU 平滑通道
+	 * 会与快照交叉淡化叠加, 并在过渡结束时把"快照里的旧值"跳成实时值。 */
+	if (Ui_FxActive(ui)) {
+		Ui_AnimSet(ui, id, UI_AN_GLOW, wantGlow ? 1.0f : 0.0f);
+		st.glow = wantGlow ? 1.0f : 0.0f;
+	} else {
+		Ui_AnimSmooth(ui, id, UI_AN_GLOW, wantGlow ? 1.0f : 0.0f);
+		st.glow = Ui_AnimGet(ui, id, UI_AN_GLOW, 0.0f);
+	}
 	if (st.glow > 0.004f) draw_glow(g, rc, s, st.glow);
 
 	/* 渐变面 + 两端同色的 hover/press: 等价于"固定渐变 + 半透明纯色叠加"。

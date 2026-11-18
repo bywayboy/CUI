@@ -99,6 +99,7 @@ void UiMenu_OpenAt(UiMenu *m, UiPopupManager *pm, UiContext *ui, UiId owner,
 	m->anchor = anchor;
 	m->focus = menu_first(m);
 	m->keyFocus = focusOnClose != 0;
+	m->panelFx = 1;
 	UiPopupManager_Open(pm, ui, m->id, owner, focusOnClose);
 }
 
@@ -108,7 +109,6 @@ void UiMenu_Draw(UiMenu *m, UiPopupManager *pm, UiContext *ui)
 	UiRect panel, inner, row, lr, sr;
 	float rowH, y, w, lw, sw, need;
 	int i, hitClip;
-	UiId panelId;
 
 	if (!m || !pm || !ui || !ui->theme || !ui->gfx) return;
 	m->changed = 0;
@@ -136,11 +136,19 @@ void UiMenu_Draw(UiMenu *m, UiPopupManager *pm, UiContext *ui)
 	panel = UiPopup_Place(ui, m->anchor, w, menu_height(m), UI_POPUP_BELOW,
 		UI_POPUP_ALIGN_START, 6.0f);
 	m->panelRc = panel;
+	UiPopupManager_SetVisualRect(pm, panel);
+	Ui_OccludeRect(ui, Ui_Rect(panel.x - 12.0f, panel.y - 12.0f,
+		panel.w + 24.0f, panel.h + 24.0f));
+
+	/* 打开首帧: 面板不画, 下一帧由合成器覆盖层淡入 */
+	if (m->panelFx && Ui_FxActive(ui)) {
+		m->panelFx = 0;
+		Ui_FxChangeRect(ui, panel, 160);
+		return;
+	}
 
 	UiPopupManager_BeginDraw(pm, ui);
 	Ui_PushLayer(ui, UI_Z_OVERLAY);
-	panelId = menu_child(m->id, "ui.menu.panel", 0);
-	Ui_RegisterWidget(ui, panelId, panel);
 	Gfx_FillRoundRect(ui->gfx, panel, 8.0f, t->toastBg);
 	Gfx_StrokeRoundRect(ui->gfx, panel, 8.0f, t->toastBorder, 1.0f);
 

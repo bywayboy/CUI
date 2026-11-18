@@ -317,6 +317,14 @@ static void dp_month_fade(UiDatePicker *dp, UiContext *ui)
 {
 	int b, n = dp_is_range(dp) ? 2 : 1;
 	if (ui->animReduced) return;
+	if (Ui_FxActive(ui)) {
+		/* 合成器路径: 下一帧由 DrawPopup 登记矩形, 期间保留旧月份像素 */
+		dp->gridFx |= (1 << n) - 1;
+		for (b = 0; b < n; b++)
+			Ui_AnimSet(ui, dp_child(dp->id, "ui.dp.grid", b),
+				UI_AN_ALPHA, 1.0f);
+		return;
+	}
 	for (b = 0; b < n; b++) {
 		UiId gid = dp_child(dp->id, "ui.dp.grid", b);
 		Ui_AnimSet(ui, gid, UI_AN_ALPHA, 0.0f);
@@ -342,7 +350,10 @@ static void dp_open(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui,
 	dp->timeCenter = dp_is_range(dp) ? 3 : 1;
 	if (dp_is_range(dp)) dp->phase = (dp->hasValue && !dp->hasEnd) ? 1 : 0;
 	panelId = dp_child(dp->id, "ui.dp.panel", 0);
-	if (!ui->animReduced) {
+	if (!ui->animReduced && Ui_FxActive(ui)) {
+		dp->panelFx = 1;
+		Ui_AnimSet(ui, panelId, UI_AN_ALPHA, 1.0f);
+	} else if (!ui->animReduced) {
 		Ui_AnimSet(ui, panelId, UI_AN_ALPHA, 0.0f);
 		Ui_AnimTo(ui, panelId, UI_AN_ALPHA, 1.0f, 160, UI_AN_EASE_OUT);
 	} else {
@@ -358,6 +369,8 @@ static void dp_close_cleanup(UiDatePicker *dp, UiContext *ui)
 	if (dp->hasValue && (!dp_is_range(dp) || dp->hasEnd))
 		dp->committed = 1;
 	dp->timeFocus = -1;
+	dp->panelFx = 0;
+	dp->gridFx = 0;
 }
 
 /* ── 生命周期 ──────────────────────────────────────────────────────── */
@@ -520,7 +533,7 @@ int Ui_DatePicker(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui,
 
 	st = Ui_State(ui, dp->id, rc, enabled);
 	/* 子键入段/glyph 会抢走 hover, 父触发器按命中归属平滑描边;
-	 * 纯几何会在被弹层盖住时误亮 (弹层 panel 已登记命中 blocker) */
+	 * 纯几何会在被弹层盖住时误亮 (弹层打开时底层不参与命中). */
 	manual = 0.0f;
 	if (enabled && ui->mouseOver) {
 		UiId h = ui->hover;
@@ -529,8 +542,14 @@ int Ui_DatePicker(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui,
 			h == dp_child(dp->id, "ui.dp.glyph", 0))
 			manual = 1.0f;
 	}
-	Ui_AnimSmooth(ui, dp->id, UI_AN_HOVER, manual);
-	hv = Ui_AnimGet(ui, dp->id, UI_AN_HOVER, 0.0f);
+	if (Ui_FxActive(ui)) {
+		/* 合成器路径: 直接落最终值, 由 SnapshotFx 覆盖层做过渡 */
+		Ui_AnimSet(ui, dp->id, UI_AN_HOVER, manual);
+		hv = manual;
+	} else {
+		Ui_AnimSmooth(ui, dp->id, UI_AN_HOVER, manual);
+		hv = Ui_AnimGet(ui, dp->id, UI_AN_HOVER, 0.0f);
+	}
 	if (st.hover > hv) hv = st.hover;
 	focus = ui->navFocusVisible && ui->navId == dp->id;
 	if (!enabled) {
@@ -635,6 +654,15 @@ static void dp_draw_month(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui,
 	float alpha = Ui_AnimGet(ui, gridId, UI_AN_ALPHA, 1.0f);
 	int pushed;
 
+	/* 换月: 本帧不画该月块 (保留旧月份像素), 下一帧由覆盖层交叉淡化 */
+	if (dp->gridFx & (1 << panelIdx)) {
+		UiRect block = Ui_Rect(bx, by, DP_GRID_W,
+			DP_HDR_H + DP_WD_H + 6.0f * DP_CELL);
+		dp->gridFx &= ~(1 << panelIdx);
+		Ui_FxChangeRect(ui, block, 140);
+		return;
+	}
+
 	/* 头部导航: 单值左右都有; 范围左块只有‹, 右块只有› */
 	{
 		int showPrev = !isR || panelIdx == 0;
@@ -735,7 +763,6 @@ static void dp_draw_month(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui,
 		wsprintfA(num, "%d", d);
 		Gfx_Text(ui->gfx, t->fBody, num, cell, col,
 			GFX_TEXT_CENTER | GFX_TEXT_VCENTER);
-		if (!UiPopupManager_IsOpen(pm, dp->id)) break;
 	}
 	if (pushed) Gfx_PopAlpha(ui->gfx);
 }
@@ -831,48 +858,63 @@ static void dp_draw_footer(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui,
 		UI_BAPPEAR_SOLID, UI_BSHAPE_RECT, 0);
 	UiRect okRc = Ui_Rect(rx - 64.0f, by, 64.0f, bh);
 	UiRect clRc = Ui_Rect(okRc.x - 8.0f - 64.0f, by, 64.0f, bh);
+	int act = -1, todayDn = 0, firstDn = 0, lastDn = 0;
 	(void)t;
+	/* 动作必须在所有按钮画完之后执行: dp_clear/dp_commit 会当场关弹层,
+	 * 提前 return 会让本帧剩下的页脚按钮缺画 (整块面板被重填后少字). */
 	if (Ui_ButtonEx(ui, dp_child(dp->id, "ui.dp.foot", DP_FOOT_OK), okRc,
-		"\xE7\xA1\xAE\xE5\xAE\x9A", &pri, 1)) {
-		if (dp->hasValue && (!dp_is_range(dp) || dp->hasEnd)) dp_commit(dp, pm, ui, 1);
-		else if (pm) UiPopupManager_Close(pm, ui);
-		return;
-	}
+		"\xE7\xA1\xAE\xE5\xAE\x9A", &pri, 1))
+		act = DP_FOOT_OK;
 	if (Ui_ButtonEx(ui, dp_child(dp->id, "ui.dp.foot", DP_FOOT_CLEAR), clRc,
-		"\xE6\xB8\x85\xE9\x99\xA4", &txt, 1)) {
-		dp_clear(dp, pm, ui);
-		return;
-	}
+		"\xE6\xB8\x85\xE9\x99\xA4", &txt, 1))
+		act = DP_FOOT_CLEAR;
 	if (!dp_is_range(dp)) {
 		const char *lab = dp_has_time(dp) ? "\xE6\xAD\xA4\xE5\x88\xBB" : "\xE4\xBB\x8A\xE5\xA4\xA9";
 		if (Ui_ButtonEx(ui, dp_child(dp->id, "ui.dp.foot", DP_FOOT_TODAY),
-			Ui_Rect(lx, by, 64.0f, bh), lab, &txt, 1)) {
-			dp_today(dp, pm, ui);
-			return;
-		}
+			Ui_Rect(lx, by, 64.0f, bh), lab, &txt, 1))
+			act = DP_FOOT_TODAY;
 	} else {
 		UiDateTime now;
-		int todayDn, firstDn, lastDn;
 		UiDate_Now(&now);
 		todayDn = UiDate_DayNumber(now.y, now.m, now.d);
 		firstDn = UiDate_DayNumber(now.y, now.m, 1);
 		lastDn = UiDate_DayNumber(now.y, now.m, UiDate_DaysInMonth(now.y, now.m));
 		if (Ui_ButtonEx(ui, dp_child(dp->id, "ui.dp.foot", DP_FOOT_TODAY),
-			Ui_Rect(lx, by, 64.0f, bh), "\xE4\xBB\x8A\xE5\xA4\xA9", &txt, 1)) {
-			dp_preset_range(dp, pm, ui, todayDn, todayDn); return;
-		}
+			Ui_Rect(lx, by, 64.0f, bh), "\xE4\xBB\x8A\xE5\xA4\xA9", &txt, 1))
+			act = DP_FOOT_TODAY;
 		if (Ui_ButtonEx(ui, dp_child(dp->id, "ui.dp.foot", DP_FOOT_P7),
-			Ui_Rect(lx + 70.0f, by, 64.0f, bh), "\xE8\xBF\x91" "7\xE5\xA4\xA9", &txt, 1)) {
-			dp_preset_range(dp, pm, ui, todayDn - 6, todayDn); return;
-		}
+			Ui_Rect(lx + 70.0f, by, 64.0f, bh), "\xE8\xBF\x91" "7\xE5\xA4\xA9", &txt, 1))
+			act = DP_FOOT_P7;
 		if (Ui_ButtonEx(ui, dp_child(dp->id, "ui.dp.foot", DP_FOOT_P30),
-			Ui_Rect(lx + 140.0f, by, 70.0f, bh), "\xE8\xBF\x91" "30\xE5\xA4\xA9", &txt, 1)) {
-			dp_preset_range(dp, pm, ui, todayDn - 29, todayDn); return;
-		}
+			Ui_Rect(lx + 140.0f, by, 70.0f, bh), "\xE8\xBF\x91" "30\xE5\xA4\xA9", &txt, 1))
+			act = DP_FOOT_P30;
 		if (Ui_ButtonEx(ui, dp_child(dp->id, "ui.dp.foot", DP_FOOT_PMON),
-			Ui_Rect(lx + 216.0f, by, 64.0f, bh), "\xE6\x9C\xAC\xE6\x9C\x88", &txt, 1)) {
-			dp_preset_range(dp, pm, ui, firstDn, lastDn); return;
-		}
+			Ui_Rect(lx + 216.0f, by, 64.0f, bh), "\xE6\x9C\xAC\xE6\x9C\x88", &txt, 1))
+			act = DP_FOOT_PMON;
+	}
+	switch (act) {
+	case DP_FOOT_OK:
+		if (dp->hasValue && (!dp_is_range(dp) || dp->hasEnd)) dp_commit(dp, pm, ui, 1);
+		else if (pm) UiPopupManager_Close(pm, ui);
+		break;
+	case DP_FOOT_CLEAR:
+		dp_clear(dp, pm, ui);
+		break;
+	case DP_FOOT_TODAY:
+		if (dp_is_range(dp)) dp_preset_range(dp, pm, ui, todayDn, todayDn);
+		else dp_today(dp, pm, ui);
+		break;
+	case DP_FOOT_P7:
+		dp_preset_range(dp, pm, ui, todayDn - 6, todayDn);
+		break;
+	case DP_FOOT_P30:
+		dp_preset_range(dp, pm, ui, todayDn - 29, todayDn);
+		break;
+	case DP_FOOT_PMON:
+		dp_preset_range(dp, pm, ui, firstDn, lastDn);
+		break;
+	default:
+		break;
 	}
 }
 
@@ -906,6 +948,16 @@ void UiDatePicker_DrawPopup(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui)
 	panel = UiPopup_Place(ui, dp->anchor, w, h, UI_POPUP_BELOW,
 		UI_POPUP_ALIGN_START, 6.0f);
 	dp->panelRc = panel;
+	UiPopupManager_SetVisualRect(pm, panel);
+	Ui_OccludeRect(ui, Ui_Rect(panel.x - 12.0f, panel.y - 12.0f,
+		panel.w + 24.0f, panel.h + 24.0f));
+	/* 合成器淡入: 本帧不画面板 (uiTarget 保留上一帧像素), 下一帧
+	 * 正常绘制并由覆盖层从旧画面淡到新面板. */
+	if (dp->panelFx) {
+		dp->panelFx = 0;
+		Ui_FxChangeRect(ui, panel, 160);
+		return;
+	}
 	UiDate_Now(&now);
 	todayDn = UiDate_DayNumber(now.y, now.m, now.d);
 
@@ -942,11 +994,12 @@ void UiDatePicker_DrawPopup(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui)
 	alpha = Ui_AnimGet(ui, panelId, UI_AN_ALPHA, 1.0f);
 	Ui_AnimSetRect(ui, panelId, panel);
 	Ui_PushLayer(ui, UI_Z_OVERLAY);
-	Ui_RegisterWidget(ui, panelId, panel);
 	pushed = Gfx_PushAlpha(ui->gfx, alpha);
 	Gfx_FillRoundRect(ui->gfx, panel, 8.0f, t->toastBg);
 	Gfx_StrokeRoundRect(ui->gfx, panel, 8.0f, t->toastBorder, 1.0f);
 
+	/* 点选日格可能当场关闭弹层 (单值/范围完成): 仍要把本帧面板画完整,
+	 * 关闭淡出抓的就是这一帧的画面, 半帧内容会在淡出里缺格. */
 	for (b = 0; b < nblk; b++) {
 		int vy = dp->viewY, vm = dp->viewM;
 		if (b == 1) {
@@ -954,12 +1007,9 @@ void UiDatePicker_DrawPopup(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui)
 			UiDate_AddMonths(&nv, 1); vy = nv.y; vm = nv.m;
 		}
 		dp_draw_month(dp, pm, ui, bx[b], gy, vy, vm, b, todayDn);
-		if (!UiPopupManager_IsOpen(pm, dp->id)) break;
 	}
-	if (UiPopupManager_IsOpen(pm, dp->id)) {
-		if (hasT) dp_draw_time(dp, ui, panel, ty, bx, isR);
-		dp_draw_footer(dp, pm, ui, panel, fy);
-	}
+	if (hasT) dp_draw_time(dp, ui, panel, ty, bx, isR);
+	dp_draw_footer(dp, pm, ui, panel, fy);
 	if (pushed) Gfx_PopAlpha(ui->gfx);
 	Ui_PopLayer(ui);
 }

@@ -62,6 +62,12 @@ typedef struct UiTabBar {
 	unsigned disabledMask;
 	UiRect rc;
 	int indicatorInit;
+	/* LINE 指示条: 合成器路径下是独立 visual (PartFx), 宽度用 clip 补间 */
+	void *indPart;
+	unsigned indColor;
+	float indContentW;
+	float indH;
+	int indSel;
 	/* CARD 两阶段绘制: Draw 保存活动项几何/状态, DrawActive 在内容之后覆盖. */
 	UiRect activeRc;
 	float activeHover, activePress;
