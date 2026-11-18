@@ -89,6 +89,19 @@ UiWebView_Create
 `web_resource_requested`（原始 COM，由应用完全控制）、`focus_changed`、
 `accelerator_key(handled)`。
 
+P0 宿主事件（对齐常见 WebView2 宿主骨架）：
+
+- `new_window`：`target=_blank`/`window.open`，`handled=1` 后宿主决定当前视图
+  或新窗口（原始 args 可设置 NewWindow）；
+- `source_changed` / `history_changed`：地址栏、前进/后退状态；配套
+  `UiWebView_CanGoBack/CanGoForward/GoBack/GoForward`；
+- `content_loading` / `dom_content_loaded`：加载进度与 DOM 就绪；
+- `document_title_changed`：窗口/Tab 标题；
+- `download_starting`：可取消或接管保存路径（原始 args）；
+- `script_dialog`：alert/confirm/prompt/beforeunload。**设置该回调时组件自动
+  关闭 WebView2 内置对话框**，由宿主绘制 UI；`handled=1` 时按 `accept` 调用
+  `Accept`，prompt 的 `result_text` 作为返回值。
+
 ## 6. 与 DuiLib 的差异
 
 - DuiLib 的 WebResourceRequested CORS 代理会关闭证书校验；CUI 只暴露原始
@@ -111,4 +124,7 @@ UiWebView_Create
 - DComp 视觉托管：页面铺满内容区；窗口 resize、最小化/还原正常；
 - 鼠标点击按钮、滚轮滚动、输入框键入与 Enter 均生效；
 - ULW 回退：窗口模式页面正常显示、点击/键入/退出正常，无挂起；
+- P0 事件：标题变化、新窗口请求、下载拦截、alert/confirm/prompt 自定义处理
+  均验证通过；底栏计数确认 SourceChanged / HistoryChanged / ContentLoading /
+  DOMContentLoaded 均触发；
 - `dumpbin` 检查 `cui_webview.exe` 无 CRT 导入。

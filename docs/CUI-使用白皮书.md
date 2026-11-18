@@ -4937,7 +4937,10 @@ COM 指针。页面消息双向：页面 `postMessage` 触发 `web_message`；Ho
 `UiWebView_PostWebMessageJson` / `...String`（对应
 `PostWebMessageAsJson` / `PostWebMessageAsString`）。导航提供
 `navigation_starting`（可取消）、`navigation_completed`（加载完成/失败）
-与 `frame_navigation_completed`。
+与 `frame_navigation_completed`。宿主骨架事件：
+`new_window`、`source_changed`、`history_changed`、`content_loading`、
+`dom_content_loaded`、`document_title_changed`、`download_starting`、
+`script_dialog`（有回调时自动关闭内置脚本对话框）。
 
 用法：
 

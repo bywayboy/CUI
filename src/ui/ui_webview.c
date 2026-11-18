@@ -448,6 +448,233 @@ static const ICoreWebView2WebResourceRequestedEventHandlerVtbl
 	wv_res_QI, wv_res_AddRef, wv_res_Release, wv_res_Invoke
 };
 
+WV_COM3(wv_newwin, ICoreWebView2NewWindowRequestedEventHandler)
+static HRESULT STDMETHODCALLTYPE wv_newwin_Invoke(
+	ICoreWebView2NewWindowRequestedEventHandler *This,
+	ICoreWebView2 *sender, ICoreWebView2NewWindowRequestedEventArgs *args)
+{
+	WvHdr *h = (WvHdr *)This;
+	UiWebViewNewWindow nw;
+	LPWSTR uri = NULL;
+	BOOL userInitiated = FALSE;
+	(void)sender;
+	if (!wv_h_alive_(h)) return S_OK;
+	ZeroMemory(&nw, sizeof(nw));
+	if (args) {
+		args->lpVtbl->get_Uri(args, &uri);
+		args->lpVtbl->get_IsUserInitiated(args, &userInitiated);
+	}
+	nw.uri = uri ? uri : L"";
+	nw.user_initiated = userInitiated ? 1 : 0;
+	nw.args = (IUnknown *)args;
+	if (h->wv->ev.new_window)
+		h->wv->ev.new_window(h->wv->ev.user, h->wv, &nw);
+	if (nw.handled && args) args->lpVtbl->put_Handled(args, TRUE);
+	if (uri) CoTaskMemFree(uri);
+	return S_OK;
+}
+
+static const ICoreWebView2NewWindowRequestedEventHandlerVtbl
+	wv_newwin_vtbl = {
+	wv_newwin_QI, wv_newwin_AddRef, wv_newwin_Release, wv_newwin_Invoke
+};
+
+WV_COM3(wv_source, ICoreWebView2SourceChangedEventHandler)
+static HRESULT STDMETHODCALLTYPE wv_source_Invoke(
+	ICoreWebView2SourceChangedEventHandler *This,
+	ICoreWebView2 *sender, ICoreWebView2SourceChangedEventArgs *args)
+{
+	WvHdr *h = (WvHdr *)This;
+	LPWSTR uri = NULL;
+	BOOL isNew = FALSE;
+	if (!wv_h_alive_(h)) return S_OK;
+	if (args) args->lpVtbl->get_IsNewDocument(args, &isNew);
+	if (sender) sender->lpVtbl->get_Source(sender, &uri);
+	if (h->wv->ev.source_changed)
+		h->wv->ev.source_changed(h->wv->ev.user, h->wv,
+			uri ? uri : L"", isNew ? 1 : 0);
+	if (uri) CoTaskMemFree(uri);
+	return S_OK;
+}
+
+static const ICoreWebView2SourceChangedEventHandlerVtbl wv_source_vtbl = {
+	wv_source_QI, wv_source_AddRef, wv_source_Release, wv_source_Invoke
+};
+
+WV_COM3(wv_history, ICoreWebView2HistoryChangedEventHandler)
+static HRESULT STDMETHODCALLTYPE wv_history_Invoke(
+	ICoreWebView2HistoryChangedEventHandler *This,
+	ICoreWebView2 *sender, IUnknown *args)
+{
+	WvHdr *h = (WvHdr *)This;
+	BOOL back = FALSE, fwd = FALSE;
+	(void)args;
+	if (!wv_h_alive_(h)) return S_OK;
+	if (sender) {
+		sender->lpVtbl->get_CanGoBack(sender, &back);
+		sender->lpVtbl->get_CanGoForward(sender, &fwd);
+	}
+	if (h->wv->ev.history_changed)
+		h->wv->ev.history_changed(h->wv->ev.user, h->wv,
+			back ? 1 : 0, fwd ? 1 : 0);
+	return S_OK;
+}
+
+static const ICoreWebView2HistoryChangedEventHandlerVtbl wv_history_vtbl = {
+	wv_history_QI, wv_history_AddRef, wv_history_Release, wv_history_Invoke
+};
+
+WV_COM3(wv_content, ICoreWebView2ContentLoadingEventHandler)
+static HRESULT STDMETHODCALLTYPE wv_content_Invoke(
+	ICoreWebView2ContentLoadingEventHandler *This,
+	ICoreWebView2 *sender, ICoreWebView2ContentLoadingEventArgs *args)
+{
+	WvHdr *h = (WvHdr *)This;
+	BOOL isErr = FALSE;
+	(void)sender;
+	if (!wv_h_alive_(h)) return S_OK;
+	if (args) args->lpVtbl->get_IsErrorPage(args, &isErr);
+	if (h->wv->ev.content_loading)
+		h->wv->ev.content_loading(h->wv->ev.user, h->wv,
+			isErr ? 1 : 0);
+	return S_OK;
+}
+
+static const ICoreWebView2ContentLoadingEventHandlerVtbl wv_content_vtbl = {
+	wv_content_QI, wv_content_AddRef, wv_content_Release, wv_content_Invoke
+};
+
+WV_COM3(wv_domready, ICoreWebView2DOMContentLoadedEventHandler)
+static HRESULT STDMETHODCALLTYPE wv_domready_Invoke(
+	ICoreWebView2DOMContentLoadedEventHandler *This,
+	ICoreWebView2 *sender, ICoreWebView2DOMContentLoadedEventArgs *args)
+{
+	WvHdr *h = (WvHdr *)This;
+	UINT64 id = 0;
+	(void)sender;
+	if (!wv_h_alive_(h)) return S_OK;
+	if (args) args->lpVtbl->get_NavigationId(args, &id);
+	if (h->wv->ev.dom_content_loaded)
+		h->wv->ev.dom_content_loaded(h->wv->ev.user, h->wv,
+			(unsigned long long)id);
+	return S_OK;
+}
+
+static const ICoreWebView2DOMContentLoadedEventHandlerVtbl
+	wv_domready_vtbl = {
+	wv_domready_QI, wv_domready_AddRef, wv_domready_Release,
+	wv_domready_Invoke
+};
+
+WV_COM3(wv_title, ICoreWebView2DocumentTitleChangedEventHandler)
+static HRESULT STDMETHODCALLTYPE wv_title_Invoke(
+	ICoreWebView2DocumentTitleChangedEventHandler *This,
+	ICoreWebView2 *sender, IUnknown *args)
+{
+	WvHdr *h = (WvHdr *)This;
+	LPWSTR title = NULL;
+	(void)args;
+	if (!wv_h_alive_(h)) return S_OK;
+	if (sender) sender->lpVtbl->get_DocumentTitle(sender, &title);
+	if (h->wv->ev.document_title_changed)
+		h->wv->ev.document_title_changed(h->wv->ev.user, h->wv,
+			title ? title : L"");
+	if (title) CoTaskMemFree(title);
+	return S_OK;
+}
+
+static const ICoreWebView2DocumentTitleChangedEventHandlerVtbl
+	wv_title_vtbl = {
+	wv_title_QI, wv_title_AddRef, wv_title_Release, wv_title_Invoke
+};
+
+WV_COM3(wv_download, ICoreWebView2DownloadStartingEventHandler)
+static HRESULT STDMETHODCALLTYPE wv_download_Invoke(
+	ICoreWebView2DownloadStartingEventHandler *This,
+	ICoreWebView2 *sender, ICoreWebView2DownloadStartingEventArgs *args)
+{
+	WvHdr *h = (WvHdr *)This;
+	UiWebViewDownload dl;
+	ICoreWebView2DownloadOperation *op = NULL;
+	LPWSTR uri = NULL, path = NULL;
+	(void)sender;
+	if (!wv_h_alive_(h)) return S_OK;
+	ZeroMemory(&dl, sizeof(dl));
+	if (args) {
+		args->lpVtbl->get_ResultFilePath(args, &path);
+		if (SUCCEEDED(args->lpVtbl->get_DownloadOperation(args, &op)) &&
+			op)
+			op->lpVtbl->get_Uri(op, &uri);
+	}
+	dl.uri = uri ? uri : L"";
+	dl.default_path = path ? path : L"";
+	dl.args = (IUnknown *)args;
+	if (h->wv->ev.download_starting)
+		h->wv->ev.download_starting(h->wv->ev.user, h->wv, &dl);
+	if (args) {
+		if (dl.cancel) args->lpVtbl->put_Cancel(args, TRUE);
+		if (dl.handled) args->lpVtbl->put_Handled(args, TRUE);
+	}
+	if (op) WV_RELEASE(op);
+	if (uri) CoTaskMemFree(uri);
+	if (path) CoTaskMemFree(path);
+	return S_OK;
+}
+
+static const ICoreWebView2DownloadStartingEventHandlerVtbl
+	wv_download_vtbl = {
+	wv_download_QI, wv_download_AddRef, wv_download_Release,
+	wv_download_Invoke
+};
+
+WV_COM3(wv_dialog, ICoreWebView2ScriptDialogOpeningEventHandler)
+static HRESULT STDMETHODCALLTYPE wv_dialog_Invoke(
+	ICoreWebView2ScriptDialogOpeningEventHandler *This,
+	ICoreWebView2 *sender, ICoreWebView2ScriptDialogOpeningEventArgs *args)
+{
+	WvHdr *h = (WvHdr *)This;
+	UiWebViewScriptDialog dlg;
+	LPWSTR msg = NULL, def = NULL;
+	(void)sender;
+	if (!wv_h_alive_(h)) return S_OK;
+	ZeroMemory(&dlg, sizeof(dlg));
+	if (args) {
+		COREWEBVIEW2_SCRIPT_DIALOG_KIND k =
+			COREWEBVIEW2_SCRIPT_DIALOG_KIND_ALERT;
+		args->lpVtbl->get_Kind(args, &k);
+		switch (k) {
+		case COREWEBVIEW2_SCRIPT_DIALOG_KIND_CONFIRM:
+			dlg.kind = UI_WV_DIALOG_CONFIRM; break;
+		case COREWEBVIEW2_SCRIPT_DIALOG_KIND_PROMPT:
+			dlg.kind = UI_WV_DIALOG_PROMPT; break;
+		case COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD:
+			dlg.kind = UI_WV_DIALOG_BEFOREUNLOAD; break;
+		default:
+			dlg.kind = UI_WV_DIALOG_ALERT; break;
+		}
+		args->lpVtbl->get_Message(args, &msg);
+		args->lpVtbl->get_DefaultText(args, &def);
+	}
+	dlg.message = msg ? msg : L"";
+	dlg.default_text = def ? def : L"";
+	if (def) lstrcpynW(dlg.result_text, def, 512);
+	if (h->wv->ev.script_dialog)
+		h->wv->ev.script_dialog(h->wv->ev.user, h->wv, &dlg);
+	if (args && dlg.handled) {
+		if (dlg.kind == UI_WV_DIALOG_PROMPT && dlg.result_text[0])
+			args->lpVtbl->put_ResultText(args, dlg.result_text);
+		if (dlg.accept) args->lpVtbl->Accept(args);
+	}
+	if (msg) CoTaskMemFree(msg);
+	if (def) CoTaskMemFree(def);
+	return S_OK;
+}
+
+static const ICoreWebView2ScriptDialogOpeningEventHandlerVtbl
+	wv_dialog_vtbl = {
+	wv_dialog_QI, wv_dialog_AddRef, wv_dialog_Release, wv_dialog_Invoke
+};
+
 WV_COM3(wv_focus, ICoreWebView2FocusChangedEventHandler)
 static HRESULT STDMETHODCALLTYPE wv_gotfocus_Invoke(
 	ICoreWebView2FocusChangedEventHandler *This,
@@ -708,6 +935,100 @@ static void wv_setup_events_(struct UiWebView *wv)
 			wv->webview->lpVtbl->AddWebResourceRequestedFilter(
 				wv->webview, L"*",
 				COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST);
+		if (wv->ev.new_window) {
+			h = wv_hnew_(sizeof(WvHdr), &wv_newwin_vtbl,
+				&IID_ICoreWebView2NewWindowRequestedEventHandler, wv);
+			if (h) {
+				wv->webview->lpVtbl->add_NewWindowRequested(
+					wv->webview,
+					(ICoreWebView2NewWindowRequestedEventHandler *)h,
+					&tok);
+				wv_h_release_(h);
+			}
+		}
+		if (wv->ev.source_changed) {
+			h = wv_hnew_(sizeof(WvHdr), &wv_source_vtbl,
+				&IID_ICoreWebView2SourceChangedEventHandler, wv);
+			if (h) {
+				wv->webview->lpVtbl->add_SourceChanged(wv->webview,
+					(ICoreWebView2SourceChangedEventHandler *)h, &tok);
+				wv_h_release_(h);
+			}
+		}
+		if (wv->ev.history_changed) {
+			h = wv_hnew_(sizeof(WvHdr), &wv_history_vtbl,
+				&IID_ICoreWebView2HistoryChangedEventHandler, wv);
+			if (h) {
+				wv->webview->lpVtbl->add_HistoryChanged(wv->webview,
+					(ICoreWebView2HistoryChangedEventHandler *)h, &tok);
+				wv_h_release_(h);
+			}
+		}
+		if (wv->ev.content_loading) {
+			h = wv_hnew_(sizeof(WvHdr), &wv_content_vtbl,
+				&IID_ICoreWebView2ContentLoadingEventHandler, wv);
+			if (h) {
+				wv->webview->lpVtbl->add_ContentLoading(wv->webview,
+					(ICoreWebView2ContentLoadingEventHandler *)h, &tok);
+				wv_h_release_(h);
+			}
+		}
+		if (wv->ev.document_title_changed) {
+			h = wv_hnew_(sizeof(WvHdr), &wv_title_vtbl,
+				&IID_ICoreWebView2DocumentTitleChangedEventHandler, wv);
+			if (h) {
+				wv->webview->lpVtbl->add_DocumentTitleChanged(
+					wv->webview,
+					(ICoreWebView2DocumentTitleChangedEventHandler *)h,
+					&tok);
+				wv_h_release_(h);
+			}
+		}
+		if (wv->ev.script_dialog) {
+			h = wv_hnew_(sizeof(WvHdr), &wv_dialog_vtbl,
+				&IID_ICoreWebView2ScriptDialogOpeningEventHandler, wv);
+			if (h) {
+				wv->webview->lpVtbl->add_ScriptDialogOpening(
+					wv->webview,
+					(ICoreWebView2ScriptDialogOpeningEventHandler *)h,
+					&tok);
+				wv_h_release_(h);
+			}
+		}
+		if (wv->ev.dom_content_loaded) {
+			ICoreWebView2_2 *w2 = NULL;
+			if (SUCCEEDED(WV_QI(wv->webview, &IID_ICoreWebView2_2,
+				&w2)) && w2) {
+				WvHdr *d = wv_hnew_(sizeof(WvHdr),
+					&wv_domready_vtbl,
+					&IID_ICoreWebView2DOMContentLoadedEventHandler,
+					wv);
+				if (d) {
+					w2->lpVtbl->add_DOMContentLoaded(w2,
+						(ICoreWebView2DOMContentLoadedEventHandler *)d,
+						&tok);
+					wv_h_release_(d);
+				}
+				WV_RELEASE(w2);
+			}
+		}
+		if (wv->ev.download_starting) {
+			ICoreWebView2_4 *w4 = NULL;
+			if (SUCCEEDED(WV_QI(wv->webview, &IID_ICoreWebView2_4,
+				&w4)) && w4) {
+				WvHdr *d = wv_hnew_(sizeof(WvHdr),
+					&wv_download_vtbl,
+					&IID_ICoreWebView2DownloadStartingEventHandler,
+					wv);
+				if (d) {
+					w4->lpVtbl->add_DownloadStarting(w4,
+						(ICoreWebView2DownloadStartingEventHandler *)d,
+						&tok);
+					wv_h_release_(d);
+				}
+				WV_RELEASE(w4);
+			}
+		}
 	}
 	{
 		WvHdr *g = wv_hnew_(sizeof(WvHdr), &wv_gotfocus_vtbl,
@@ -742,8 +1063,10 @@ static void wv_apply_settings_(struct UiWebView *wv)
 	if (s) {
 		s->lpVtbl->put_IsScriptEnabled(s,
 			(f & UI_WVF_SCRIPT) ? TRUE : FALSE);
+		/* 提供 script_dialog 回调时关闭内置对话框, 否则事件不会交给宿主. */
 		s->lpVtbl->put_AreDefaultScriptDialogsEnabled(s,
-			(f & UI_WVF_DEFAULT_DIALOGS) ? TRUE : FALSE);
+			((f & UI_WVF_DEFAULT_DIALOGS) && !wv->ev.script_dialog)
+				? TRUE : FALSE);
 		s->lpVtbl->put_IsWebMessageEnabled(s,
 			(f & UI_WVF_WEB_MESSAGE) ? TRUE : FALSE);
 		s->lpVtbl->put_IsBuiltInErrorPageEnabled(s,
@@ -1156,6 +1479,34 @@ void UiWebView_Navigate(UiWebView *wv, const wchar_t *url)
 void UiWebView_Reload(UiWebView *wv)
 {
 	if (wv && wv->webview) wv->webview->lpVtbl->Reload(wv->webview);
+}
+
+int UiWebView_CanGoBack(const UiWebView *wv)
+{
+	BOOL v = FALSE;
+	if (wv && wv->webview)
+		wv->webview->lpVtbl->get_CanGoBack(wv->webview, &v);
+	return v ? 1 : 0;
+}
+
+int UiWebView_CanGoForward(const UiWebView *wv)
+{
+	BOOL v = FALSE;
+	if (wv && wv->webview)
+		wv->webview->lpVtbl->get_CanGoForward(wv->webview, &v);
+	return v ? 1 : 0;
+}
+
+void UiWebView_GoBack(UiWebView *wv)
+{
+	if (wv && wv->webview)
+		wv->webview->lpVtbl->GoBack(wv->webview);
+}
+
+void UiWebView_GoForward(UiWebView *wv)
+{
+	if (wv && wv->webview)
+		wv->webview->lpVtbl->GoForward(wv->webview);
 }
 
 void UiWebView_PostWebMessageJson(UiWebView *wv, const wchar_t *json)

@@ -52,6 +52,44 @@ typedef struct UiWebViewConfig {
 
 void UiWebViewConfig_Default(UiWebViewConfig *cfg);
 
+/* 脚本对话框类型 (对应 COREWEBVIEW2_SCRIPT_DIALOG_KIND_*). */
+enum {
+	UI_WV_DIALOG_ALERT = 0,
+	UI_WV_DIALOG_CONFIRM = 1,
+	UI_WV_DIALOG_PROMPT = 2,
+	UI_WV_DIALOG_BEFOREUNLOAD = 3
+};
+
+/* NewWindowRequested: handled=1 后由宿主负责 (可导航当前视图或自建窗口);
+ * args 是原始 ICoreWebView2NewWindowRequestedEventArgs*, 可设置 NewWindow. */
+typedef struct UiWebViewNewWindow {
+	const wchar_t *uri;
+	int user_initiated;
+	int handled;
+	IUnknown *args;
+} UiWebViewNewWindow;
+
+/* DownloadStarting: 默认路径可读; 应用可 cancel 或 handled (接管保存 UI).
+ * args 是原始 ICoreWebView2DownloadStartingEventArgs*, 可 put_ResultFilePath. */
+typedef struct UiWebViewDownload {
+	const wchar_t *uri;
+	const wchar_t *default_path;
+	int cancel;
+	int handled;
+	IUnknown *args;
+} UiWebViewDownload;
+
+/* ScriptDialogOpening: 应用填 handled=1 表示自行处理; prompt 结果写
+ * result_text, accept=0 表示取消/否定. */
+typedef struct UiWebViewScriptDialog {
+	int kind;                       /* UI_WV_DIALOG_* */
+	const wchar_t *message;
+	const wchar_t *default_text;
+	int accept;
+	int handled;
+	wchar_t result_text[512];
+} UiWebViewScriptDialog;
+
 /* 事件 (在 WebView2 回调线程 = UI 线程同步调用; 指针仅回调期间有效) */
 typedef struct UiWebViewEvents {
 	void (*created)(void *user, UiWebView *wv);
@@ -62,6 +100,20 @@ typedef struct UiWebViewEvents {
 		int success, int error);
 	void (*frame_navigation_completed)(void *user, UiWebView *wv,
 		int success, int error);
+	void (*new_window)(void *user, UiWebView *wv, UiWebViewNewWindow *nw);
+	void (*source_changed)(void *user, UiWebView *wv,
+		const wchar_t *uri, int is_new_document);
+	void (*history_changed)(void *user, UiWebView *wv,
+		int can_back, int can_forward);
+	void (*content_loading)(void *user, UiWebView *wv, int is_error);
+	void (*dom_content_loaded)(void *user, UiWebView *wv,
+		unsigned long long navigation_id);
+	void (*document_title_changed)(void *user, UiWebView *wv,
+		const wchar_t *title);
+	void (*download_starting)(void *user, UiWebView *wv,
+		UiWebViewDownload *dl);
+	void (*script_dialog)(void *user, UiWebView *wv,
+		UiWebViewScriptDialog *dlg);
 	void (*web_message)(void *user, UiWebView *wv, const wchar_t *json);
 	void (*process_failed)(void *user, UiWebView *wv, int kind);
 	/* allow: 置 1 放行证书/权限; 无回调时权限默认放行 (与 DuiLib 一致) */
@@ -92,6 +144,10 @@ const wchar_t *UiWebView_Homepage(const UiWebView *wv);
 void UiWebView_GoHome(UiWebView *wv);
 void UiWebView_Navigate(UiWebView *wv, const wchar_t *url);
 void UiWebView_Reload(UiWebView *wv);
+int  UiWebView_CanGoBack(const UiWebView *wv);
+int  UiWebView_CanGoForward(const UiWebView *wv);
+void UiWebView_GoBack(UiWebView *wv);
+void UiWebView_GoForward(UiWebView *wv);
 /* Host -> 页面: 对应 PostWebMessageAsJson / PostWebMessageAsString. */
 void UiWebView_PostWebMessageJson(UiWebView *wv, const wchar_t *json);
 void UiWebView_PostWebMessageString(UiWebView *wv, const wchar_t *text);

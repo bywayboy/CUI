@@ -11,6 +11,7 @@
 #include "ui/ui_webview.h"
 
 #define WV_BAR 54.0f
+#define WV_FOOT 24.0f
 #define WV_BTN_W 72.0f
 #define WV_BTN_H 34.0f
 #define WV_BTN_GAP 8.0f
@@ -20,6 +21,7 @@ typedef struct App {
 	UiWebView *wv;
 	UiApp *app;
 	int failed;
+	int nSource, nHistory, nLoading, nDom, nTitle;
 	char msg[256];
 } App;
 
@@ -86,6 +88,84 @@ static void on_nav_done(void *user, UiWebView *wv, int success, int error)
 	}
 }
 
+static void on_new_window(void *user, UiWebView *wv, UiWebViewNewWindow *nw)
+{
+	App *a = (App *)user;
+	nw->handled = 1;
+	set_msg_w(a, "新窗口请求(当前视图打开): ", nw->uri);
+	UiWebView_Navigate(wv, nw->uri);
+}
+
+static void on_source_changed(void *user, UiWebView *wv,
+	const wchar_t *uri, int is_new_document)
+{
+	App *a = (App *)user;
+	(void)wv; (void)is_new_document;
+	a->nSource++;
+	set_msg_w(a, "地址: ", uri);
+}
+
+static void on_history_changed(void *user, UiWebView *wv,
+	int can_back, int can_forward)
+{
+	App *a = (App *)user;
+	(void)wv;
+	a->nHistory++;
+	wsprintfA(a->msg, "历史: 后退=%d 前进=%d", can_back, can_forward);
+	if (a->app) UiApp_Invalidate(a->app);
+}
+
+static void on_content_loading(void *user, UiWebView *wv, int is_error)
+{
+	App *a = (App *)user;
+	(void)wv;
+	a->nLoading++;
+	set_msg(a, is_error ? "内容加载(错误页)" : "内容开始加载");
+}
+
+static void on_dom_ready(void *user, UiWebView *wv,
+	unsigned long long navigation_id)
+{
+	App *a = (App *)user;
+	(void)wv;
+	a->nDom++;
+	wsprintfA(a->msg, "DOMContentLoaded nav=%llu", navigation_id);
+	if (a->app) UiApp_Invalidate(a->app);
+}
+
+static void on_title_changed(void *user, UiWebView *wv, const wchar_t *title)
+{
+	App *a = (App *)user;
+	(void)wv;
+	a->nTitle++;
+	set_msg_w(a, "标题: ", title);
+}
+
+static void on_download(void *user, UiWebView *wv, UiWebViewDownload *dl)
+{
+	App *a = (App *)user;
+	(void)wv;
+	dl->cancel = 1;   /* 样例: 拦截下载, 不写磁盘 */
+	dl->handled = 0;
+	set_msg_w(a, "下载已拦截: ", dl->uri);
+}
+
+static void on_script_dialog(void *user, UiWebView *wv,
+	UiWebViewScriptDialog *dlg)
+{
+	App *a = (App *)user;
+	(void)wv;
+	dlg->handled = 1;
+	dlg->accept = 1;
+	if (dlg->kind == UI_WV_DIALOG_PROMPT)
+		lstrcpynW(dlg->result_text, L"CUI", 512);
+	{
+		char prefix[64];
+		wsprintfA(prefix, "脚本对话框 kind=%d: ", dlg->kind);
+		set_msg_w(a, prefix, dlg->message);
+	}
+}
+
 static void on_frame_nav_done(void *user, UiWebView *wv,
 	int success, int error)
 {
@@ -141,6 +221,14 @@ static void on_init(UiApp *app, void *user)
 	ev.navigation_starting = on_nav_starting;
 	ev.navigation_completed = on_nav_done;
 	ev.frame_navigation_completed = on_frame_nav_done;
+	ev.new_window = on_new_window;
+	ev.source_changed = on_source_changed;
+	ev.history_changed = on_history_changed;
+	ev.content_loading = on_content_loading;
+	ev.dom_content_loaded = on_dom_ready;
+	ev.document_title_changed = on_title_changed;
+	ev.download_starting = on_download;
+	ev.script_dialog = on_script_dialog;
 	ev.process_failed = on_process_failed;
 	ev.web_message = on_web_message;
 	ev.certificate_error = on_cert_error;
@@ -158,10 +246,11 @@ static void on_frame(UiApp *app, void *user)
 	UiRect content;
 
 	Gfx_FillRoundRectGradV(app->gfx, Ui_Rect(0, 0, app->w, app->h),
-		0.0f, t->page, t->page2);
+		14.0f, t->page, t->page2);
 
-	/* 顶栏 */
-	Gfx_FillRect(app->gfx, Ui_Rect(0, 0, app->w, WV_BAR), t->page);
+	/* 顶栏: 只圆上两角, 避免方角盖住窗口圆角 */
+	Gfx_FillRoundRectCorners(app->gfx, Ui_Rect(0, 0, app->w, WV_BAR),
+		Gfx_Corners(14.0f, 14.0f, 0.0f, 0.0f), t->page);
 	Gfx_FillRect(app->gfx, Ui_Rect(0, WV_BAR - 1.0f, app->w, 1.0f),
 		t->border);
 	Gfx_Text(app->gfx, t->fBig, "CUI WebView2",
@@ -198,8 +287,25 @@ static void on_frame(UiApp *app, void *user)
 	}
 
 	/* 内容区: 每帧只更新视觉矩形; controller 不重建 */
-	content = Ui_Rect(0, WV_BAR, app->w, app->h - WV_BAR);
+	content = Ui_Rect(0, WV_BAR, app->w,
+		app->h - WV_BAR - WV_FOOT);
 	Ui_WebView(a->wv, &app->ui, content);
+
+	/* 底栏: P0 事件计数器 (演示绑定是否生效) */
+	{
+		char stats[192];
+		float fy = app->h - WV_FOOT;
+		Gfx_FillRoundRectCorners(app->gfx,
+			Ui_Rect(0, fy, app->w, WV_FOOT),
+			Gfx_Corners(0.0f, 0.0f, 14.0f, 14.0f), t->page);
+		Gfx_FillRect(app->gfx, Ui_Rect(0, fy, app->w, 1.0f), t->border);
+		wsprintfA(stats, "事件: Source %d  历史 %d  ContentLoading %d  "
+			"DOMContentLoaded %d  标题 %d",
+			a->nSource, a->nHistory, a->nLoading, a->nDom, a->nTitle);
+		Gfx_Text(app->gfx, t->fSmall, stats,
+			Ui_Rect(12, fy, app->w - 24, WV_FOOT), t->hint,
+			GFX_TEXT_VCENTER);
+	}
 }
 
 static int on_input(UiApp *app, UINT msg, WPARAM wp, LPARAM lp,

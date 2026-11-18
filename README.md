@@ -48,8 +48,9 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
   IME、readonly/disabled；7000+ 字符动态追加与中段编辑。
 - `samples/webview.c`：WebView2 宿主样例。CUI 顶栏 + 内容区网页；
   DComp 视觉托管（无 DComp 时窗口模式回退）；鼠标/滚轮转发、键盘键入、
-  虚拟主机映射、导航/加载完成事件、Host↔页面双向消息（按钮发 JSON，页面回执）；
-  网页资源在 `samples/webview_test.html`。
+  虚拟主机映射、Host↔页面双向消息（按钮发 JSON，页面回执）、新窗口/下载/
+  脚本对话框/标题/历史事件；底栏实时显示 P0 事件计数。网页资源在
+  `samples/webview_test.html`。
 - `samples/nav.c`：多级导航菜单样例。水平/垂直切换、图标 rail、水平尾部
   `>>` 收起、垂直高度不足时的底部 `>>`、多级子菜单、选中路径面包屑；
   子菜单超高时用"更多 >>"续页，不出现滚动条。
