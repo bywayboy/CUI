@@ -22,6 +22,7 @@ typedef struct App {
 	UiApp *app;
 	int failed;
 	int nSource, nHistory, nLoading, nDom, nTitle;
+	DWORD t0, tCreated, tNav, tContent, tDom, tDone;
 	char msg[256];
 } App;
 
@@ -49,12 +50,13 @@ static void on_created(void *user, UiWebView *wv)
 {
 	App *a = (App *)user;
 	wchar_t dir[MAX_PATH];
+	a->tCreated = GetTickCount();
 	DWORD n = GetModuleFileNameW(NULL, dir, MAX_PATH);
 	while (n > 0 && dir[n - 1] != L'\\') n--;
 	if (n > 0) dir[n - 1] = 0;
-	if (!UiWebView_SetVirtualHost(wv, L"cui.local", dir))
+	if (!UiWebView_SetVirtualHost(wv, L"cui.example", dir))
 		set_msg(a, "虚拟主机映射失败");
-	UiWebView_Navigate(wv, L"https://cui.local/webview_test.html");
+	UiWebView_Navigate(wv, L"https://cui.example/webview_test.html");
 }
 
 static void on_create_failed(void *user, UiWebView *wv, int hr)
@@ -72,6 +74,10 @@ static void on_nav_starting(void *user, UiWebView *wv,
 {
 	App *a = (App *)user;
 	(void)wv; (void)cancel;
+	a->tNav = GetTickCount();
+	a->tContent = 0;
+	a->tDom = 0;
+	a->tDone = 0;
 	set_msg_w(a, "载入中: ", uri);
 }
 
@@ -79,6 +85,7 @@ static void on_nav_done(void *user, UiWebView *wv, int success, int error)
 {
 	App *a = (App *)user;
 	(void)wv;
+	if (success) a->tDone = GetTickCount();
 	if (success) {
 		set_msg(a, "载入完成");
 	} else {
@@ -120,6 +127,7 @@ static void on_content_loading(void *user, UiWebView *wv, int is_error)
 	App *a = (App *)user;
 	(void)wv;
 	a->nLoading++;
+	if (!a->tContent) a->tContent = GetTickCount();
 	set_msg(a, is_error ? "内容加载(错误页)" : "内容开始加载");
 }
 
@@ -129,6 +137,7 @@ static void on_dom_ready(void *user, UiWebView *wv,
 	App *a = (App *)user;
 	(void)wv;
 	a->nDom++;
+	if (!a->tDom) a->tDom = GetTickCount();
 	wsprintfA(a->msg, "DOMContentLoaded nav=%llu", navigation_id);
 	if (a->app) UiApp_Invalidate(a->app);
 }
@@ -211,7 +220,7 @@ static void on_init(UiApp *app, void *user)
 
 	a->app = app;
 	UiWebViewConfig_Default(&cfg);
-	cfg.homepage = L"https://cui.local/webview_test.html";
+	cfg.homepage = L"https://cui.example/webview_test.html";
 	cfg.flags &= ~UI_WVF_AUTO_NAVIGATE;
 	cfg.flags |= UI_WVF_DEVTOOLS | UI_WVF_CONTEXT_MENUS;
 
@@ -300,8 +309,18 @@ static void on_frame(UiApp *app, void *user)
 			Gfx_Corners(0.0f, 0.0f, 14.0f, 14.0f), t->page);
 		Gfx_FillRect(app->gfx, Ui_Rect(0, fy, app->w, 1.0f), t->border);
 		wsprintfA(stats, "事件: Source %d  历史 %d  ContentLoading %d  "
-			"DOMContentLoaded %d  标题 %d",
-			a->nSource, a->nHistory, a->nLoading, a->nDom, a->nTitle);
+			"DOMContentLoaded %d  标题 %d", a->nSource, a->nHistory,
+			a->nLoading, a->nDom, a->nTitle);
+		if (a->tDone && a->tNav) {
+			char tbuf[128];
+			DWORD content = a->tContent ? a->tContent - a->tNav : 0;
+			DWORD dom = a->tDom ? a->tDom - a->tNav : 0;
+			wsprintfA(tbuf, "  |  启动 %u ms  导航->内容 %u ms  "
+				"导航->DOM %u ms  导航->完成 %u ms",
+				a->tCreated - a->t0, content, dom,
+				a->tDone - a->tNav);
+			lstrcatA(stats, tbuf);
+		}
 		Gfx_Text(app->gfx, t->fSmall, stats,
 			Ui_Rect(12, fy, app->w - 24, WV_FOOT), t->hint,
 			GFX_TEXT_VCENTER);
@@ -350,6 +369,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 	static App a;
 	UiAppCallbacks cb;
 	(void)inst; (void)prev; (void)cmd; (void)show;
+	a.t0 = GetTickCount();
 	ZeroMemory(&cb, sizeof(cb));
 	cb.input = on_input;
 	cb.init = on_init;

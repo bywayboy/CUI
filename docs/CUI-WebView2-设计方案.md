@@ -116,7 +116,8 @@ P0 宿主事件（对齐常见 WebView2 宿主骨架）：
 `samples/webview.c` + `samples/webview_test.html`：
 
 - 顶栏 CUI 立即模式按钮（主页/刷新/退出），内容区 WebView2；
-- 虚拟主机 `https://cui.local/webview_test.html` 映射到 exe 目录；
+- 虚拟主机 `https://cui.example/webview_test.html` 映射到 exe 目录
+  （避免用 `.local` 域名：Chromium 会先走 mDNS 解析，实测首包延迟约 2s）；
 - 页面提供按钮、输入框与 `chrome.webview.postMessage`。
 
 验证记录（Windows 10 22H2 / 200% DPI）：

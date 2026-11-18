@@ -145,7 +145,10 @@ static PFN_CreateEnv s_createEnv;
 static int wv_loader_(void)
 {
 	if (s_createEnv) return 1;
-	if (!s_loader) s_loader = LoadLibraryW(L"WebView2Loader.dll");
+	if (!s_loader)
+		s_loader = LoadLibraryExW(L"WebView2Loader.dll", NULL,
+			LOAD_LIBRARY_SEARCH_APPLICATION_DIR |
+			LOAD_LIBRARY_SEARCH_SYSTEM32);
 	if (!s_loader) return 0;
 	s_createEnv = (PFN_CreateEnv)GetProcAddress(s_loader,
 		"CreateCoreWebView2EnvironmentWithOptions");

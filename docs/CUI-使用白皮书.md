@@ -4967,9 +4967,12 @@ static int on_input(UiApp *app, UINT msg, WPARAM wp, LPARAM lp,
 要点与限制：
 
 - DComp 可用时用 CompositionController + 最上层子视觉；ULW 回退为窗口模式。
-- 需要 WebView2 Evergreen Runtime 与同目录 `WebView2Loader.dll`。
+- 需要 WebView2 Evergreen Runtime 与同目录 `WebView2Loader.dll`
+  （现在只从 exe 目录/System32 加载，不再搜索 PATH，避免误用旧版）。
 - 浏览器参数/GPU 开关在共享环境首次创建时生效；不提供 DuiLib 示例中
   关闭证书校验的 CORS 代理，证书策略由应用事件决定。
+- 虚拟主机名不要用 `.local`（Chromium 会先做 mDNS 解析，实测本地页面
+  首包延迟约 2s）；用 `cui.example` 这类保留域名可降到 100~200ms。
 - 视觉托管下网页位于 CUI 根视觉之上，CUI Popup/Tooltip 不能覆盖网页。
 - 详细设计与验证记录见 `docs/CUI-WebView2-设计方案.md`。
 
