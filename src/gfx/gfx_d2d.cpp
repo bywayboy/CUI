@@ -97,6 +97,29 @@ typedef struct {
 	GfxBitmap *bmp;
 } GfxGlowCache;
 
+#define GFX_STROKE_CACHE_MAX 16
+typedef struct {
+	int cap, join;
+	float miter;
+	int dashCount;
+	float dashes[8];
+	uint32_t lastUse;
+	ID2D1StrokeStyle *style;
+} GfxStrokeCache;
+
+#define GFX_SVG_GRAD_CACHE_MAX 32
+#define GFX_SVG_GRAD_MAX_STOPS 16
+typedef struct {
+	float bx, by, bw, bh;   /* 元素局部包围盒 (0.5 DIP 量化) */
+	float angle;
+	int count;
+	GfxColor colors[GFX_SVG_GRAD_MAX_STOPS];
+	float positions[GFX_SVG_GRAD_MAX_STOPS];
+	uint32_t lastUse;
+	ID2D1LinearGradientBrush *brush;
+	ID2D1GradientStopCollection *stops;
+} GfxSvgGradCache;
+
 struct GfxFx;
 struct GfxFxQ;
 struct GfxPart;
@@ -162,6 +185,11 @@ struct Gfx {
 	GfxGlowCache glows[GFX_GLOW_CACHE_MAX];
 	uint32_t glowClock;
 	int glowGen;
+
+	GfxStrokeCache strokes[GFX_STROKE_CACHE_MAX];
+	uint32_t strokeClock;
+	GfxSvgGradCache svgGrads[GFX_SVG_GRAD_CACHE_MAX];
+	uint32_t svgGradClock;
 
 	GfxOverlay *overlays;
 	GfxLayer *layers;
@@ -323,6 +351,20 @@ static void ReleaseGradients(Gfx *g)
 	g->gradClock = 0;
 }
 
+/* 路径描边样式与 SVG 渐变画刷都依赖设备/RT, 表面重建时必须一起释放. */
+static void ReleasePathCaches(Gfx *g)
+{
+	if (!g) return;
+	for (int i = 0; i < GFX_STROKE_CACHE_MAX; i++)
+		SAFE_RELEASE(g->strokes[i].style);
+	g->strokeClock = 0;
+	for (int i = 0; i < GFX_SVG_GRAD_CACHE_MAX; i++) {
+		SAFE_RELEASE(g->svgGrads[i].brush);
+		SAFE_RELEASE(g->svgGrads[i].stops);
+	}
+	g->svgGradClock = 0;
+}
+
 static ID2D1SolidColorBrush *GetBrush(Gfx *g, GfxColor c)
 {
 	int cap = (int)(sizeof(g->brushes) / sizeof(g->brushes[0]));
@@ -377,6 +419,7 @@ static int CreateSurface(Gfx *g)
 	if (!g || !g->d2d || g->pw <= 0 || g->ph <= 0) return 0;
 	ReleaseBrushes(g);
 	ReleaseGradients(g);
+	ReleasePathCaches(g);
 	g->rt = NULL;
 
 	oldDC = g->memDC;
@@ -510,6 +553,7 @@ static void ReleaseDcomp(Gfx *g)
 	g->alphaDepth = 0;
 	ReleaseBrushes(g);
 	ReleaseGradients(g);
+	ReleasePathCaches(g);
 	FxDropAll(g);
 	PartsFree(g);
 	/* overlay/layer 的 visual/surface 必须在 compDevice/compVisual 之前释放 */
@@ -795,6 +839,7 @@ void Gfx_Shutdown(Gfx *g)
 	if (!g) return;
 	ReleaseBrushes(g);
 	ReleaseGradients(g);
+	ReleasePathCaches(g);
 	for (int i = 0; i < GFX_TEXT_CACHE_MAX; i++)
 		SAFE_RELEASE(g->textCache[i].layout);
 	if (g->useDcomp) ReleaseDcomp(g);
@@ -4011,6 +4056,490 @@ void Gfx_FillTriangle(Gfx *g, float x1, float y1, float x2, float y2, float x3, 
 	SAFE_RELEASE(geo);
 }
 
+/* ── 路径 / 描边样式 / 画刷 ───────────────────────────────────────── */
+
+enum { PATH_MOVE, PATH_LINE, PATH_CUBIC, PATH_QUAD, PATH_ARC, PATH_CLOSE };
+
+#define GFX_PATH_ARGS 7
+
+typedef struct {
+	uint8_t op;
+	float a[GFX_PATH_ARGS];
+} GfxPathCmd;
+
+struct GfxPath {
+	GfxPathCmd *cmds;
+	int count, cap;
+	ID2D1PathGeometry *geo;
+	int built;
+	int stage;   /* 构建失败诊断: 1=create 2=open 3=close */
+};
+
+struct GfxBrush {
+	int kind;
+	GfxColor color;
+	float bx, by, bw, bh;   /* 渐变框 (元素局部) */
+	float angle;
+	GfxGradStop *stops;
+	int stopCount;
+};
+
+static void PathInvalidate(GfxPath *p)
+{
+	if (!p || !p->built) return;
+	SAFE_RELEASE(p->geo);
+	p->built = 0;
+}
+
+static GfxPathCmd *PathPush(GfxPath *p, uint8_t op)
+{
+	GfxPathCmd *c;
+	if (!p) return NULL;
+	if (p->count >= p->cap) {
+		int cap = p->cap ? p->cap * 2 : 32;
+		/* HeapReAlloc 不接受 NULL (与 POSIX realloc 不同), 首块单独 HeapAlloc. */
+		GfxPathCmd *n = p->cmds
+			? (GfxPathCmd *)HeapReAlloc(GetProcessHeap(), 0,
+				p->cmds, (SIZE_T)cap * sizeof(GfxPathCmd))
+			: (GfxPathCmd *)HeapAlloc(GetProcessHeap(), 0,
+				(SIZE_T)cap * sizeof(GfxPathCmd));
+		if (!n) return NULL;
+		p->cmds = n;
+		p->cap = cap;
+	}
+	PathInvalidate(p);
+	c = &p->cmds[p->count++];
+	ZeroMemory(c, sizeof(*c));
+	c->op = op;
+	return c;
+}
+
+GfxPath *Gfx_PathCreate(Gfx *g)
+{
+	(void)g;
+	GfxPath *p = (GfxPath *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(GfxPath));
+	return p;
+}
+
+void Gfx_PathReset(GfxPath *p)
+{
+	if (!p) return;
+	PathInvalidate(p);
+	p->count = 0;
+}
+
+void Gfx_PathDestroy(Gfx *g, GfxPath *p)
+{
+	(void)g;
+	if (!p) return;
+	SAFE_RELEASE(p->geo);
+	HeapFree(GetProcessHeap(), 0, p->cmds);
+	HeapFree(GetProcessHeap(), 0, p);
+}
+
+void Gfx_PathMoveTo(GfxPath *p, float x, float y)
+{
+	GfxPathCmd *c = PathPush(p, PATH_MOVE);
+	if (c) { c->a[0] = x; c->a[1] = y; }
+}
+
+void Gfx_PathLineTo(GfxPath *p, float x, float y)
+{
+	GfxPathCmd *c = PathPush(p, PATH_LINE);
+	if (c) { c->a[0] = x; c->a[1] = y; }
+}
+
+void Gfx_PathCubicTo(GfxPath *p, float x1, float y1, float x2, float y2,
+	float x, float y)
+{
+	GfxPathCmd *c = PathPush(p, PATH_CUBIC);
+	if (c) {
+		c->a[0] = x1; c->a[1] = y1;
+		c->a[2] = x2; c->a[3] = y2;
+		c->a[4] = x;  c->a[5] = y;
+	}
+}
+
+void Gfx_PathQuadTo(GfxPath *p, float x1, float y1, float x, float y)
+{
+	GfxPathCmd *c = PathPush(p, PATH_QUAD);
+	if (c) {
+		c->a[0] = x1; c->a[1] = y1;
+		c->a[2] = x;  c->a[3] = y;
+	}
+}
+
+void Gfx_PathArcTo(GfxPath *p, float rx, float ry, float rotDeg,
+	int largeArc, int sweep, float x, float y)
+{
+	GfxPathCmd *c = PathPush(p, PATH_ARC);
+	if (c) {
+		c->a[0] = rx; c->a[1] = ry; c->a[2] = rotDeg;
+		c->a[3] = largeArc ? 1.0f : 0.0f;
+		c->a[4] = sweep ? 1.0f : 0.0f;
+		c->a[5] = x; c->a[6] = y;
+	}
+}
+
+void Gfx_PathClose(GfxPath *p)
+{
+	PathPush(p, PATH_CLOSE);
+}
+
+/* 惰性构建: 只有命令变化后的第一次绘制才重建几何. 空路径返回 NULL. */
+static ID2D1PathGeometry *PathBuild(Gfx *g, GfxPath *p)
+{
+	ID2D1PathGeometry *geo = NULL;
+	ID2D1GeometrySink *sink = NULL;
+	float cx = 0.0f, cy = 0.0f;
+	int open = 0;
+
+	if (!p) return NULL;
+	if (p->built) return p->geo;
+	p->built = 1;
+	p->stage = 0;
+	if (!g || !g->d2d || p->count <= 0) return NULL;
+	if (FAILED(g->d2d->CreatePathGeometry(&geo)) || !geo) { p->stage = 1; return NULL; }
+	if (FAILED(geo->Open(&sink)) || !sink) { p->stage = 2; SAFE_RELEASE(geo); return NULL; }
+	sink->SetFillMode(D2D1_FILL_MODE_WINDING);
+
+	for (int i = 0; i < p->count; i++) {
+		const GfxPathCmd *c = &p->cmds[i];
+		switch (c->op) {
+		case PATH_MOVE:
+			if (open) { sink->EndFigure(D2D1_FIGURE_END_OPEN); open = 0; }
+			cx = c->a[0]; cy = c->a[1];
+			sink->BeginFigure(D2D1_POINT_2F{ cx, cy }, D2D1_FIGURE_BEGIN_FILLED);
+			open = 1;
+			break;
+		case PATH_LINE:
+			if (!open) {
+				sink->BeginFigure(D2D1_POINT_2F{ cx, cy }, D2D1_FIGURE_BEGIN_FILLED);
+				open = 1;
+			}
+			cx = c->a[0]; cy = c->a[1];
+			sink->AddLine(D2D1_POINT_2F{ cx, cy });
+			break;
+		case PATH_CUBIC:
+			if (!open) {
+				sink->BeginFigure(D2D1_POINT_2F{ cx, cy }, D2D1_FIGURE_BEGIN_FILLED);
+				open = 1;
+			}
+			sink->AddBezier(D2D1_BEZIER_SEGMENT{
+				D2D1_POINT_2F{ c->a[0], c->a[1] },
+				D2D1_POINT_2F{ c->a[2], c->a[3] },
+				D2D1_POINT_2F{ c->a[4], c->a[5] } });
+			cx = c->a[4]; cy = c->a[5];
+			break;
+		case PATH_QUAD:
+			if (!open) {
+				sink->BeginFigure(D2D1_POINT_2F{ cx, cy }, D2D1_FIGURE_BEGIN_FILLED);
+				open = 1;
+			}
+			sink->AddQuadraticBezier(D2D1_QUADRATIC_BEZIER_SEGMENT{
+				D2D1_POINT_2F{ c->a[0], c->a[1] },
+				D2D1_POINT_2F{ c->a[2], c->a[3] } });
+			cx = c->a[2]; cy = c->a[3];
+			break;
+		case PATH_ARC: {
+			float dx = c->a[5] - cx, dy = c->a[6] - cy;
+			if (!open) {
+				sink->BeginFigure(D2D1_POINT_2F{ cx, cy }, D2D1_FIGURE_BEGIN_FILLED);
+				open = 1;
+			}
+			/* SVG: 端点重合的弧省略; 零半径按直线降级. */
+			if (dx * dx + dy * dy < 1e-12f) break;
+			if (c->a[0] <= 0.0f || c->a[1] <= 0.0f) {
+				sink->AddLine(D2D1_POINT_2F{ c->a[5], c->a[6] });
+			} else {
+				D2D1_ARC_SEGMENT seg;
+				seg.point = D2D1_POINT_2F{ c->a[5], c->a[6] };
+				seg.size = D2D1_SIZE_F{ c->a[0], c->a[1] };
+				seg.rotationAngle = c->a[2];
+				seg.sweepDirection = c->a[4] != 0.0f
+					? D2D1_SWEEP_DIRECTION_CLOCKWISE
+					: D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE;
+				seg.arcSize = c->a[3] != 0.0f
+					? D2D1_ARC_SIZE_LARGE : D2D1_ARC_SIZE_SMALL;
+				sink->AddArc(&seg);
+			}
+			cx = c->a[5]; cy = c->a[6];
+			break;
+		}
+		case PATH_CLOSE:
+			if (open) { sink->EndFigure(D2D1_FIGURE_END_CLOSED); open = 0; }
+			break;
+		}
+	}
+	if (open) sink->EndFigure(D2D1_FIGURE_END_OPEN);
+	if (FAILED(sink->Close())) { p->stage = 3; SAFE_RELEASE(sink); SAFE_RELEASE(geo); return NULL; }
+	SAFE_RELEASE(sink);
+	p->geo = geo;
+	return geo;
+}
+
+GfxRect Gfx_PathBounds(Gfx *g, GfxPath *p)
+{
+	GfxRect out = { 0.0f, 0.0f, 0.0f, 0.0f };
+	ID2D1PathGeometry *geo;
+	D2D1_RECT_F rc;
+	if (!p || p->count <= 0) return out;
+	geo = PathBuild(g, p);
+	if (!geo) return out;
+	if (FAILED(geo->GetBounds(NULL, &rc))) return out;
+	out.x = rc.left; out.y = rc.top;
+	out.w = rc.right - rc.left; out.h = rc.bottom - rc.top;
+	return out;
+}
+
+static ID2D1StrokeStyle *GetPathStroke(Gfx *g, const GfxStrokeStyle *st)
+{
+	D2D1_STROKE_STYLE_PROPERTIES sp;
+	GfxStrokeCache *slot = NULL;
+	uint32_t oldest = 0xFFFFFFFFu;
+	int cap, join, dashCount = 0;
+	float dashes[8];
+
+	if (!g) return NULL;
+	if (!st) return g->roundStroke;
+	cap = st->cap;
+	if (cap < GFX_CAP_BUTT || cap > GFX_CAP_SQUARE) cap = GFX_CAP_ROUND;
+	join = st->join;
+	if (join < GFX_JOIN_MITER || join > GFX_JOIN_BEVEL) join = GFX_JOIN_ROUND;
+	if (st->dashes && st->dashCount > 0) {
+		dashCount = st->dashCount > 8 ? 8 : st->dashCount;
+		for (int i = 0; i < dashCount; i++)
+			dashes[i] = st->dashes[i] > 0.01f ? st->dashes[i] : 0.01f;
+		if (dashCount == 1) { dashes[1] = dashes[0]; dashCount = 2; }
+	}
+
+	for (int i = 0; i < GFX_STROKE_CACHE_MAX; i++) {
+		GfxStrokeCache *e = &g->strokes[i];
+		if (!e->style) { if (!slot) slot = e; continue; }
+		if (e->cap != cap || e->join != join || e->dashCount != dashCount)
+			continue;
+		float miter = st->miterLimit > 0.0f ? st->miterLimit : 4.0f;
+		if (e->miter != miter) continue;
+		int same = 1;
+		for (int k = 0; k < dashCount; k++)
+			if (e->dashes[k] != dashes[k]) { same = 0; break; }
+		if (!same) continue;
+		e->lastUse = ++g->strokeClock;
+		return e->style;
+	}
+	if (!slot) {
+		for (int i = 0; i < GFX_STROKE_CACHE_MAX; i++) {
+			GfxStrokeCache *e = &g->strokes[i];
+			if (!slot || e->lastUse < oldest) { oldest = e->lastUse; slot = e; }
+		}
+	}
+	if (!slot) return g->roundStroke;
+
+	ZeroMemory(&sp, sizeof(sp));
+	sp.startCap = cap == GFX_CAP_ROUND ? D2D1_CAP_STYLE_ROUND
+		: cap == GFX_CAP_SQUARE ? D2D1_CAP_STYLE_SQUARE : D2D1_CAP_STYLE_FLAT;
+	sp.endCap = sp.startCap;
+	sp.dashCap = sp.startCap;
+	sp.lineJoin = join == GFX_JOIN_ROUND ? D2D1_LINE_JOIN_ROUND
+		: join == GFX_JOIN_BEVEL ? D2D1_LINE_JOIN_BEVEL : D2D1_LINE_JOIN_MITER;
+	sp.miterLimit = st->miterLimit > 0.0f ? st->miterLimit : 4.0f;
+	sp.dashStyle = dashCount > 0 ? D2D1_DASH_STYLE_CUSTOM : D2D1_DASH_STYLE_SOLID;
+
+	ID2D1StrokeStyle *style = NULL;
+	if (FAILED(g->d2d->CreateStrokeStyle(&sp, dashCount ? dashes : NULL,
+		(UINT32)dashCount, &style)) || !style)
+		return g->roundStroke;
+	SAFE_RELEASE(slot->style);
+	slot->style = style;
+	slot->cap = cap;
+	slot->join = join;
+	slot->miter = sp.miterLimit;
+	slot->dashCount = dashCount;
+	for (int k = 0; k < dashCount; k++) slot->dashes[k] = dashes[k];
+	slot->lastUse = ++g->strokeClock;
+	return style;
+}
+
+GfxBrush *Gfx_SolidBrush(Gfx *g, GfxColor c)
+{
+	GfxBrush *b;
+	(void)g;
+	b = (GfxBrush *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(GfxBrush));
+	if (!b) return NULL;
+	b->kind = GFX_BRUSH_SOLID;
+	b->color = c;
+	return b;
+}
+
+GfxBrush *Gfx_LinearGradientBrush(Gfx *g, GfxRect boxLocal, float angleDeg,
+	const GfxGradStop *stops, int count)
+{
+	GfxBrush *b;
+	(void)g;
+	if (!stops || count < 2) return NULL;
+	if (count > GFX_SVG_GRAD_MAX_STOPS) count = GFX_SVG_GRAD_MAX_STOPS;
+	b = (GfxBrush *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(GfxBrush));
+	if (!b) return NULL;
+	b->stops = (GfxGradStop *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+		(SIZE_T)count * sizeof(GfxGradStop));
+	if (!b->stops) { HeapFree(GetProcessHeap(), 0, b); return NULL; }
+	for (int i = 0; i < count; i++) b->stops[i] = stops[i];
+	b->kind = GFX_BRUSH_LINEAR;
+	b->stopCount = count;
+	b->bx = boxLocal.x; b->by = boxLocal.y;
+	b->bw = boxLocal.w; b->bh = boxLocal.h;
+	b->angle = angleDeg;
+	return b;
+}
+
+void Gfx_BrushDestroy(Gfx *g, GfxBrush *b)
+{
+	(void)g;
+	if (!b) return;
+	HeapFree(GetProcessHeap(), 0, b->stops);
+	HeapFree(GetProcessHeap(), 0, b);
+}
+
+static float QuantizeF(float v, float step)
+{
+	return (float)(int)(v / step + (v >= 0.0f ? 0.5f : -0.5f)) * step;
+}
+
+/* 线性渐变: 方向由角度决定, 起止点取包围盒在该方向上的投影.
+ * 参数做 0.5 DIP / 0.1° 量化后缓存, 拖动中包围盒连续变化也不会每帧重建. */
+static ID2D1LinearGradientBrush *GetSvgGradient(Gfx *g, GfxBrush *b)
+{
+	GfxSvgGradCache *slot = NULL;
+	uint32_t oldest = 0xFFFFFFFFu;
+	float bx, by, bw, bh, ang;
+	D2D1_GRADIENT_STOP stops[GFX_SVG_GRAD_MAX_STOPS];
+	GfxGradStop sorted[GFX_SVG_GRAD_MAX_STOPS];
+	int count = b->stopCount;
+
+	if (!g || !g->rt || !b->stops || count < 2) return NULL;
+	bx = QuantizeF(b->bx, 0.5f); by = QuantizeF(b->by, 0.5f);
+	bw = QuantizeF(b->bw, 0.5f); bh = QuantizeF(b->bh, 0.5f);
+	ang = QuantizeF(b->angle, 0.1f);
+	while (ang < 0.0f) ang += 360.0f;
+	while (ang >= 360.0f) ang -= 360.0f;
+
+	for (int i = 0; i < GFX_SVG_GRAD_CACHE_MAX; i++) {
+		GfxSvgGradCache *e = &g->svgGrads[i];
+		if (!e->brush) { if (!slot) slot = e; continue; }
+		if (e->bx != bx || e->by != by || e->bw != bw || e->bh != bh ||
+			e->angle != ang || e->count != count)
+			continue;
+		int same = 1;
+		for (int k = 0; k < count; k++) {
+			if (e->colors[k] != b->stops[k].color ||
+				e->positions[k] != b->stops[k].offset) { same = 0; break; }
+		}
+		if (!same) continue;
+		e->lastUse = ++g->svgGradClock;
+		return e->brush;
+	}
+	if (!slot) {
+		for (int i = 0; i < GFX_SVG_GRAD_CACHE_MAX; i++) {
+			GfxSvgGradCache *e = &g->svgGrads[i];
+			if (!slot || e->lastUse < oldest) { oldest = e->lastUse; slot = e; }
+		}
+	}
+	if (!slot) return NULL;
+
+	/* 按 offset 稳定排序 (色标数量很小). */
+	for (int i = 0; i < count; i++) sorted[i] = b->stops[i];
+	for (int i = 1; i < count; i++) {
+		GfxGradStop key = sorted[i];
+		int j = i - 1;
+		while (j >= 0 && sorted[j].offset > key.offset) {
+			sorted[j + 1] = sorted[j];
+			j--;
+		}
+		sorted[j + 1] = key;
+	}
+	for (int i = 0; i < count; i++) {
+		float o = sorted[i].offset;
+		if (o < 0.0f) o = 0.0f;
+		if (o > 1.0f) o = 1.0f;
+		stops[i].position = o;
+		stops[i].color = ToColor(sorted[i].color);
+	}
+	ID2D1GradientStopCollection *gs = NULL;
+	if (FAILED(g->rt->CreateGradientStopCollection(stops, (UINT32)count,
+		D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &gs)) || !gs)
+		return NULL;
+
+	float dx = CosDeg(ang), dy = SinDeg(ang);
+	float cx = bx + bw * 0.5f, cy = by + bh * 0.5f;
+	float half = (bw * (dx < 0.0f ? -dx : dx) + bh * (dy < 0.0f ? -dy : dy)) * 0.5f;
+	D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES lp;
+	lp.startPoint = D2D1_POINT_2F{ cx - dx * half, cy - dy * half };
+	lp.endPoint = D2D1_POINT_2F{ cx + dx * half, cy + dy * half };
+	ID2D1LinearGradientBrush *br = NULL;
+	if (FAILED(g->rt->CreateLinearGradientBrush(&lp, NULL, gs, &br)) || !br) {
+		SAFE_RELEASE(gs);
+		return NULL;
+	}
+	SAFE_RELEASE(slot->brush);
+	SAFE_RELEASE(slot->stops);
+	slot->bx = bx; slot->by = by; slot->bw = bw; slot->bh = bh;
+	slot->angle = ang;
+	slot->count = count;
+	for (int k = 0; k < count; k++) {
+		slot->colors[k] = b->stops[k].color;
+		slot->positions[k] = b->stops[k].offset;
+	}
+	slot->brush = br;
+	slot->stops = gs;
+	slot->lastUse = ++g->svgGradClock;
+	return br;
+}
+
+void Gfx_FillPath(Gfx *g, GfxPath *p, GfxColor c)
+{
+	ID2D1PathGeometry *geo;
+	ID2D1SolidColorBrush *br;
+	if (!g || !g->rt) return;
+	geo = PathBuild(g, p);
+	if (!geo) return;
+	br = GetBrush(g, c);
+	if (!br) return;
+	g->rt->FillGeometry(geo, br);
+}
+
+void Gfx_FillPathBrush(Gfx *g, GfxPath *p, GfxBrush *brush)
+{
+	ID2D1PathGeometry *geo;
+	if (!g || !g->rt || !brush) return;
+	geo = PathBuild(g, p);
+	if (!geo) return;
+	if (brush->kind == GFX_BRUSH_LINEAR) {
+		ID2D1LinearGradientBrush *br = GetSvgGradient(g, brush);
+		if (br) g->rt->FillGeometry(geo, br);
+	} else {
+		ID2D1SolidColorBrush *br = GetBrush(g, brush->color);
+		if (br) g->rt->FillGeometry(geo, br);
+	}
+}
+
+void Gfx_StrokePath(Gfx *g, GfxPath *p, GfxBrush *brush, float width,
+	const GfxStrokeStyle *st)
+{
+	ID2D1PathGeometry *geo;
+	ID2D1StrokeStyle *style;
+	if (!g || !g->rt || width <= 0.0f || !brush) return;
+	geo = PathBuild(g, p);
+	if (!geo) return;
+	style = GetPathStroke(g, st);
+	if (brush->kind == GFX_BRUSH_LINEAR) {
+		ID2D1LinearGradientBrush *br = GetSvgGradient(g, brush);
+		if (br) g->rt->DrawGeometry(geo, br, width, style);
+	} else {
+		ID2D1SolidColorBrush *br = GetBrush(g, brush->color);
+		if (br) g->rt->DrawGeometry(geo, br, width, style);
+	}
+}
+
 void Gfx_PushClip(Gfx *g, GfxRect r)
 {
 	if (!g || !g->rt) return;
@@ -4044,6 +4573,21 @@ void Gfx_PopTransform(Gfx *g)
 {
 	if (!g || !g->rt || g->xformDepth <= 0) return;
 	g->rt->SetTransform(&g->xformStack[--g->xformDepth]);
+}
+
+void Gfx_PushScaleTranslate(Gfx *g, float scale, float tx, float ty)
+{
+	D2D1_MATRIX_3X2_F cur, st, m;
+	if (!g || !g->rt) return;
+	if (g->xformDepth >= (int)(sizeof(g->xformStack) / sizeof(g->xformStack[0])))
+		return;
+	g->rt->GetTransform(&cur);
+	g->xformStack[g->xformDepth++] = cur;
+	/* 行向量: 先 Scale*Translate (世界 -> DIP) 再乘当前变换 (含 DPI 缩放). */
+	st = D2D1::Matrix3x2F::Scale(D2D1::SizeF(scale, scale)) *
+		D2D1::Matrix3x2F::Translation(tx, ty);
+	m = st * cur;
+	g->rt->SetTransform(&m);
 }
 
 static GfxFont *font_create(Gfx *g, const wchar_t *family,

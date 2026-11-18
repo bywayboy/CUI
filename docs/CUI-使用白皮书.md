@@ -3186,6 +3186,56 @@ unsigned used = UiThemeGen_Palette(&light, &dark, &opts);
 - 工程自动保存到 exe 同目录的 `theme_editor.palette`（启动时恢复，损坏则
   回退内置预设）；"导出代码"用系统保存对话框，"复制代码"进剪贴板。
 
+### 8.24 UiSvgEdit SVG 画布编辑器
+
+> 设计细节：[CUI-SVG编辑器-设计方案.md](CUI-SVG编辑器-设计方案.md)；组件
+> [src/ui/ui_svg_edit.c](../src/ui/ui_svg_edit.c) /
+> [src/ui/ui_svg_edit.h](../src/ui/ui_svg_edit.h)；模型
+> [src/svg/svg_doc.c](../src/svg/svg_doc.c)；样例
+> [samples/svgedit.c](../samples/svgedit.c)（`bin\cui_svgedit.exe`）；
+> headless 断言 `tests/svg_test.c`（`bin\cui_svg_test.exe`，140 项）与
+> `tests/gfx_path_test.c`。
+
+`ui_svg_edit` 把"画布"这一层收进组件：视口缩放/平移、框选/多选、移动/
+缩放/旋转、矩形/椭圆/直线/多边形、两种钢笔、节点编辑、网格吸附与历史
+全部由组件处理；工具箱、属性面板、文件对话框与剪贴板由应用负责。
+
+```c
+SvgDoc *doc = SvgDoc_Create(800.0f, 600.0f);   /* artboard = SVG viewBox */
+UiSvgEdit *ed = Ui_SvgEdit_Create(doc, Ui_Id("svg.canvas", 0, 0));
+Ui_SvgEdit_SetTool(ed, UI_SVG_TOOL_SELECT);
+
+/* 每帧: 在 Gfx_Begin/End 之间, 传入画布矩形 */
+Ui_SvgEdit_Frame(ed, &app->ui, canvasRc);
+
+/* 文本输入框未聚焦时转发键盘; 右键用于结束钢笔会话 */
+if (Ui_SvgEdit_Key(ed, &app->ui, vk)) return 1;
+Ui_SvgEdit_RightDown(ed, x, y);
+```
+
+语义：
+
+- **坐标**：模型是世界坐标；视口用 `Gfx_PushScaleTranslate` + `Gfx_PushRotate`
+  交给 D2D，绘制/命中不逐点变换 CPU 几何。缩放范围 5%–3200%，滚轮以光标
+  为锚点（`Ui_RegisterWheelTarget`）。
+- **创建**：矩形/椭圆 `Shift` 等比、`Alt` 中心；直线 `Shift` 45° 吸附；
+  多边形滚轮改边数（3–64）。画板外按下不创建；元素绘制裁剪到画板。
+- **钢笔**：`P` 折线、`B` 贝塞尔；会话中 `L` 直线、`A` 切向弧、
+  `Shift+A` 三点弧、`B` 贝塞尔、`C` 闭合、`U` 撤点；`Enter`/双击/右键/
+  点首节点结束。新建 PATH 会先清空模型预置的 3 个示例节点再落首点。
+- **节点工具**：双击线段按 De Casteljau/圆弧参数切分插点；拖动进/出柄默认
+  对称、`Alt` 断开；橙色凸柄直接拖弧（`Svg_ArcFromPoints` 反解）；`U` 或
+  `Delete` 删节点，节点不足 2 个时整条路径被丢弃。
+- **多选**：`Shift` 点选/框选累加；属性面板几何字段只改首个选中元素，
+  样式字段改全部；旋转绕选择框中心，`Shift` 15° 吸附；整体缩放支持
+  边/角手柄与 `Shift` 等比。
+- **历史**：拖动结束、属性回车提交、结构变化各提交一次；100 步快照环，
+  `Ctrl+Z` / `Ctrl+Y` / `Ctrl+Shift+Z`。改写期间不提交，避免每帧入栈。
+- **缓存**：路径几何与渐变画刷按 `元素指针 + version` 缓存；增删/复制/
+  层级/撤销导致元素搬移时整表失效，因此结构改动必须走组件 API。
+- **导出**：`Svg_Export` 输出 UTF-8 SVG；圆弧保留原生 `A` 段，渐变用
+  `objectBoundingBox` + `linearGradient`；样例提供另存对话框与剪贴板复制。
+
 ## 9. UiAnim 动画内核
 
 ### 9.0 状态过渡：合成器执行（SnapshotFx / PartFx）
@@ -4783,6 +4833,9 @@ UiIme_Start / UiIme_Comp / UiIme_End / UiIme_Char / UiIme_Pos
 | DatePicker 四模式 | [src/ui/ui_datepicker.c](../src/ui/ui_datepicker.c) / [src/ui/ui_datepicker.h](../src/ui/ui_datepicker.h) |
 | 日期数学 (0CRT) | [src/ui/ui_datetime.c](../src/ui/ui_datetime.c) / [src/ui/ui_datetime.h](../src/ui/ui_datetime.h) |
 | DatePicker 设计/样例 | [docs/CUI-日期选择-设计方案.md](CUI-日期选择-设计方案.md) / [samples/datepicker.c](../samples/datepicker.c) |
+| SVG 画布编辑器 | [src/ui/ui_svg_edit.c](../src/ui/ui_svg_edit.c) / [src/ui/ui_svg_edit.h](../src/ui/ui_svg_edit.h) |
+| SVG 模型/历史/导出 | [src/svg/svg_doc.c](../src/svg/svg_doc.c) / [src/svg/svg_doc.h](../src/svg/svg_doc.h) |
+| SVG 编辑器设计/样例 | [docs/CUI-SVG编辑器-设计方案.md](CUI-SVG编辑器-设计方案.md) / [samples/svgedit.c](../samples/svgedit.c) |
 | 右键回调 | [src/ui/ui_app.c:259](../src/ui/ui_app.c#L259) |
 | 窗口拖边缩放 | [src/ui/ui_app.c:102](../src/ui/ui_app.c#L102) |
 | z-index / 命中 | [src/ui/ui_context.c:116](../src/ui/ui_context.c#L116) |

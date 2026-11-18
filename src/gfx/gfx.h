@@ -17,7 +17,20 @@ typedef struct GfxBitmap GfxBitmap;
 typedef struct GfxOverlay GfxOverlay;
 typedef struct GfxLayer GfxLayer;
 typedef struct GfxEffect GfxEffect;
+typedef struct GfxPath GfxPath;
+typedef struct GfxBrush GfxBrush;
 
+/* 描边样式; dashes 以 DIP(世界单位) 给出, 空 = 实线.
+ * cap/join 用 GFX_CAP_* / GFX_JOIN_*, miterLimit<=0 取 4. */
+enum { GFX_CAP_BUTT = 0, GFX_CAP_ROUND, GFX_CAP_SQUARE };
+enum { GFX_JOIN_MITER = 0, GFX_JOIN_ROUND, GFX_JOIN_BEVEL };
+
+typedef struct GfxStrokeStyle {
+	int cap, join;
+	float miterLimit;
+	const float *dashes;
+	int dashCount;
+} GfxStrokeStyle;
 /* 效果内容的绘制回调. 和普通绘制一样用 Gfx_* (DIP); 不要调用 Begin/End. */
 typedef void (*GfxEffectDrawFn)(Gfx *g, void *user);
 
@@ -27,6 +40,8 @@ typedef void (*GfxLayerDrawFn)(Gfx *g, void *user);
 
 typedef struct { float x, y, w, h; } GfxRect;
 typedef uint32_t GfxColor;
+
+typedef struct { float offset; GfxColor color; } GfxGradStop;
 
 /* 四角独立圆角: tl/tr/br/bl 均为 DIP; 0 = 直角. */
 typedef struct GfxCorners {
@@ -120,6 +135,44 @@ void Gfx_StrokeArc(Gfx *g, float cx, float cy, float r, float startDeg, float sw
 void Gfx_FillTriangle(Gfx *g, float x1, float y1, float x2, float y2, float x3, float y3,
 	GfxColor c);
 
+/* ── 路径 (矢量几何) ────────────────────────────────────────────────
+ * GfxPath 归调用方所有: 创建后追加命令, 绘制时惰性构建 D2D 几何并缓存,
+ * 只有命令变化 (Reset/追加) 后下一次绘制才重建. 必须在 Gfx_Shutdown 前
+ * Destroy. 所有坐标为 DIP; 受当前变换栈影响.
+ * 弧段语义同 SVG A (端点参数化): 从当前点画到 (x,y), radii 为 rx/ry,
+ * rotDeg 为 x 轴旋转角, large/sweep 为 SVG 标志位 (sweep=1 = 屏幕顺时针).
+ * 半径退化 (≤0) 按直线处理, 端点与当前点重合的弧被忽略. */
+GfxPath *Gfx_PathCreate(Gfx *g);
+void Gfx_PathReset(GfxPath *p);
+void Gfx_PathDestroy(Gfx *g, GfxPath *p);
+void Gfx_PathMoveTo(GfxPath *p, float x, float y);
+void Gfx_PathLineTo(GfxPath *p, float x, float y);
+void Gfx_PathCubicTo(GfxPath *p, float x1, float y1, float x2, float y2,
+	float x, float y);
+void Gfx_PathQuadTo(GfxPath *p, float x1, float y1, float x, float y);
+void Gfx_PathArcTo(GfxPath *p, float rx, float ry, float rotDeg,
+	int largeArc, int sweep, float x, float y);
+void Gfx_PathClose(GfxPath *p);
+
+/* 几何包围盒 (D2D 结果, 不含描边). 注意: D2D 对圆弧返回整椭圆包围盒,
+ * 需要紧包围盒的调用方 (SVG 编辑器) 自行按展平点计算. 空路径返回全 0. */
+GfxRect Gfx_PathBounds(Gfx *g, GfxPath *p);
+
+/* 画刷: 纯描述对象 (不含设备资源), 可在设备重建后继续使用.
+ * 渐变为线性, 起点/终点由 box + angleDeg 决定 (0° = 左→右, 90° = 上→下),
+ * 坐标属于 box 所在空间 (元素局部); 与几何一起受变换栈影响. */
+enum { GFX_BRUSH_SOLID = 0, GFX_BRUSH_LINEAR };
+GfxBrush *Gfx_SolidBrush(Gfx *g, GfxColor c);
+GfxBrush *Gfx_LinearGradientBrush(Gfx *g, GfxRect boxLocal, float angleDeg,
+	const GfxGradStop *stops, int count);
+void Gfx_BrushDestroy(Gfx *g, GfxBrush *b);
+
+void Gfx_FillPath(Gfx *g, GfxPath *p, GfxColor c);
+void Gfx_FillPathBrush(Gfx *g, GfxPath *p, GfxBrush *brush);
+/* 描边: st=NULL 用圆头/圆角实线; brush=NULL 不画. */
+void Gfx_StrokePath(Gfx *g, GfxPath *p, GfxBrush *brush, float width,
+	const GfxStrokeStyle *st);
+
 /* 裁剪（必须成对） */
 void Gfx_PushClip(Gfx *g, GfxRect r);
 void Gfx_PopClip(Gfx *g);
@@ -127,6 +180,9 @@ void Gfx_PopClip(Gfx *g);
 /* 旋转变换（必须成对; 最多 8 层）。deg 为角度, 正方向在屏幕坐标系顺时针;
  * (cx,cy) 是 DIP 旋转中心. 仅影响之后的绘制, 不影响已压入的裁剪/脏区. */
 void Gfx_PushRotate(Gfx *g, float cx, float cy, float deg);
+/* 等比缩放 + 平移 (视口变换): 世界坐标 → DIP, screen = world*scale + t.
+ * 与 Gfx_PushRotate 共用栈与 Gfx_PopTransform. */
+void Gfx_PushScaleTranslate(Gfx *g, float scale, float tx, float ty);
 void Gfx_PopTransform(Gfx *g);
 
 /* 文本 */

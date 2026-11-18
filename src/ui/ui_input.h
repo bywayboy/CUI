@@ -52,6 +52,6 @@ int  UiInput_Key(UiInput *in, HWND hwnd, UINT vk);
 int  UiInput_Char(UiInput *in, wchar_t ch);
 void UiInput_OnIme(UiInput *in);               /* IME 组合变化: 失效聚焦字段 */
 void UiInput_Blink(UiInput *in);               /* 530ms 定时器调用 */
-int  UiInput_Focused(const UiInput *in);
+int  UiInput_Focused(const UiInput *in);   /* 聚焦字段索引; <0 = 无 */
 
 #endif /* CUI_UI_INPUT_H */
