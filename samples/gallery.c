@@ -253,12 +253,23 @@ typedef struct Gallery {
 		int first, last, drawn;
 	} scroll;
 
-	/* Layout */
+	/* Layout (Stack 游标流 + 对齐) */
 	struct {
-		UiSlider gap, w2, w3, headH;
-		UiCheckbox wide, tall, dense;
+		UiSlider headH;
 		UiButtonGroup align;
 	} layout;
+
+	/* Flex (水平/垂直弹性) */
+	struct {
+		UiSlider gap, w2, w3, cross;
+		UiButtonGroup dir;         /* 0=水平 ROW, 1=垂直 COLUMN */
+	} flex;
+
+	/* Grid */
+	struct {
+		UiSlider gap;
+		UiCheckbox wide, tall, dense;
+	} grid;
 
 	/* Dialog */
 	struct {
@@ -601,6 +612,8 @@ static const SideRow kSide[] = {
 	{ NULL, PG_NAV },
 	{ NULL, PG_SCROLL },
 	{ NULL, PG_LAYOUT },
+	{ NULL, PG_FLEX },
+	{ NULL, PG_GRID },
 	{ "弹层与反馈", -1 },
 	{ NULL, PG_DIALOG },
 	{ NULL, PG_MENU },
@@ -4056,11 +4069,7 @@ static void layout_demo(Gallery *g, UiRect rc)
 	UiTheme *t = &app->theme;
 	Gfx *gfx = app->gfx;
 	UiStack col;
-	UiRect stackArea, alignArea, flexRc, gridRc;
-	float gap = 4.0f + g->layout.gap.value * 24.0f;
-	UiFixedSize fx[3];
-	UiMeasureItem items[3];
-	UiRect outs[3];
+	UiRect stackArea, alignArea, moreArea;
 	char buf[64];
 	int i;
 
@@ -4078,16 +4087,10 @@ static void layout_demo(Gallery *g, UiRect rc)
 	alignArea = Ui_StackTake(&col, 84.0f);
 	Ui_StackSkip(&col, 10.0f);
 
-	lbl(gfx, t, Ui_StackTake(&col, 18.0f),
-		"Ui_FlexLayout: 固定 + 弹簧 (grow) · 轻量版 Ui_FlexRow/Col 见文档");
-	Ui_StackSkip(&col, 4.0f);
-	flexRc = Ui_StackTake(&col, 56.0f);
-	Ui_StackSkip(&col, 12.0f);
-
-	lbl(gfx, t, Ui_StackTake(&col, 18.0f),
-		"Ui_GridLayout: fixed / auto / fr · span · dense 回填");
-	Ui_StackSkip(&col, 4.0f);
-	gridRc = Ui_StackTakeFill(&col);
+	moreArea = Ui_StackTakeFill(&col);
+	note_txt(gfx, t, moreArea,
+		"Flex 弹性布局与 Grid 网格布局已拆为独立页面 (左侧导航「导航与容器」分组),\n"
+		"本页专注 UiStack 游标流与对齐 —— 全画廊每个页面的骨架都由它搭起。");
 
 	/* ── Stack 游标流解剖: 左侧卡片, 右侧读数 ── */
 	{
@@ -4201,79 +4204,6 @@ static void layout_demo(Gallery *g, UiRect rc)
 			layout_block(gfx, t, b, accs[i], kAlBlk[i], t->text);
 		}
 	}
-
-	/* ── Flex: 固定 + 弹簧 ── */
-	fx[0].w = 110.0f; fx[0].h = 0.0f;
-	fx[1].w = 0.0f;   fx[1].h = 0.0f;
-	fx[2].w = 0.0f;   fx[2].h = 0.0f;
-	items[0] = Ui_FixedItem(&fx[0], 0.0f);
-	items[1] = Ui_FixedItem(&fx[1], 1.0f + g->layout.w2.value * 3.0f);
-	items[2] = Ui_FixedItem(&fx[2], 1.0f + g->layout.w3.value * 3.0f);
-	if (Ui_FlexLayout(flexRc, UI_ROW, gap, items, 3, outs)) {
-		UiColor accents[3];
-		accents[0] = t->primary.base;
-		accents[1] = t->success.base;
-		accents[2] = t->warning.base;
-		for (i = 0; i < 3; i++) {
-			LayoutCard c;
-			c.label = i == 0 ? "固定 110" : (i == 1 ? "弹簧 2" : "弹簧 3");
-			c.sub = NULL;
-			c.minW = 60.0f;
-			c.prefH = 40.0f;
-			layout_draw_cell(g, outs[i], &c, accents[i]);
-			{
-				int gv = i == 0 ? 0
-					: (int)((i == 1
-						? 1.0f + g->layout.w2.value * 3.0f
-						: 1.0f + g->layout.w3.value * 3.0f) * 10.0f + 0.5f);
-				wsprintfA(buf, "grow=%d.%d", gv / 10, gv % 10);
-			}
-			Gfx_Text(gfx, t->fMini, buf,
-				Ui_Rect(outs[i].x + 10.0f, outs[i].y + 28.0f,
-					outs[i].w - 20.0f, 16.0f),
-				t->text3, GFX_TEXT_VCENTER);
-		}
-	}
-
-	/* ── Grid: 轨道 + span + dense ── */
-	{
-		UiGrid grid;
-		UiGridTrack cols[3];
-		UiGridItem gridItems[6];
-		UiRect cell[6];
-		int wide = g->layout.wide.checked;
-		int tall = g->layout.tall.checked;
-		grid.rows = 0;
-		grid.cols = 3;
-		grid.rowGap = gap;
-		grid.colGap = gap;
-		grid.dense = g->layout.dense.checked;
-		cols[0].kind = UI_GRID_FIXED; cols[0].value = 110.0f;
-		cols[0].minSize = 0.0f; cols[0].maxSize = 0.0f;
-		cols[1].kind = UI_GRID_AUTO;  cols[1].value = 0.0f;
-		cols[1].minSize = 90.0f; cols[1].maxSize = 190.0f;
-		cols[2].kind = UI_GRID_FR;    cols[2].value = 1.0f;
-		cols[2].minSize = 80.0f; cols[2].maxSize = 0.0f;
-
-		gridItems[0] = layout_item(&kLcHead, 0, 0, 1, 3);
-		gridItems[1] = layout_item(&kLcA, 1, 0, 1, wide ? 2 : 1);
-		gridItems[2] = layout_item(&kLcB, 1, wide ? 2 : 1, tall ? 2 : 1, 1);
-		gridItems[3] = layout_item(&kLcC, 2, 0, 1, 1);
-		gridItems[4] = layout_item(&kLcD, 2, 1, 1, 1);
-		gridItems[5] = layout_item(&kLcE, -1, -1, 1, 1);
-		if (Ui_GridLayout(gridRc, &grid, cols, NULL, gridItems, 6, cell)) {
-			UiColor accents[6];
-			accents[0] = t->blue;
-			accents[1] = t->primary.base;
-			accents[2] = t->warning.base;
-			accents[3] = t->success.base;
-			accents[4] = t->red;
-			accents[5] = t->blue2;
-			for (i = 0; i < 6; i++)
-				layout_draw_cell(g, cell[i],
-					(LayoutCard *)gridItems[i].user, accents[i]);
-		}
-	}
 }
 
 static const char *const kLayAlignLabels[3] = { "起点", "居中", "终点" };
@@ -4309,26 +4239,11 @@ static void layout_props(Gallery *g, UiRect rc)
 			"\n"
 			"/* 对齐: 交叉轴 */\n"
 			"UiRect a = Ui_StackTakeAligned(&row,\n"
-			"    76.0f, 32.0f, %s);\n"
-			"\n"
-			"/* Flex: 固定 110 + 弹簧 grow %.1f / %.1f */\n"
-			"UiFixedSize fx[3];\n"
-			"items[0] = Ui_FixedItem(&fx[0], 0.0f);\n"
-			"items[1] = Ui_FixedItem(&fx[1], %.1ff);\n"
-			"items[2] = Ui_FixedItem(&fx[2], %.1ff);\n"
-			"Ui_FlexLayout(flexRc, UI_ROW, %.0ff, items, 3, outs);\n"
-			"/* Grid: cols[3] + dense=%d */\n",
+			"    76.0f, 32.0f, %s);\n",
 			hh,
 			kLayAlignNames[g->layout.align.selected < 0 ||
-				g->layout.align.selected > 2 ? 1 : g->layout.align.selected],
-			1.0f + g->layout.w2.value * 3.0f,
-			1.0f + g->layout.w3.value * 3.0f,
-			1.0f + g->layout.w2.value * 3.0f,
-			1.0f + g->layout.w3.value * 3.0f,
-			4.0f + g->layout.gap.value * 24.0f,
-			g->layout.dense.checked);
+				g->layout.align.selected > 2 ? 1 : g->layout.align.selected]);
 	}
-	char buf[64];
 
 	props_split(g, ui, rc, &ed, &pv);
 	Ui_StackBeginPad(&col, pane_in(ed, 16.0f), UI_COLUMN, 0.0f,
@@ -4348,34 +4263,6 @@ static void layout_props(Gallery *g, UiRect rc)
 	if (g->layout.align.changed) UiApp_Invalidate(app);
 	Ui_StackSkip(&col, 10.0f);
 
-	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "间距 (gap)");
-	Ui_StackSkip(&col, 4.0f);
-	Ui_Slider(&g->layout.gap, ui, Ui_StackTake(&col, 30.0f), NULL, 1);
-	Ui_StackSkip(&col, 10.0f);
-	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "弹簧 2 权重");
-	Ui_StackSkip(&col, 4.0f);
-	Ui_Slider(&g->layout.w2, ui, Ui_StackTake(&col, 30.0f), NULL, 1);
-	Ui_StackSkip(&col, 8.0f);
-	{
-		int gv = (int)((1.0f + g->layout.w2.value * 3.0f) * 10.0f + 0.5f);
-		wsprintfA(buf, "grow = %d.%d", gv / 10, gv % 10);
-	}
-	small_txt(gfx, t, Ui_StackTake(&col, 18.0f), buf);
-	Ui_StackSkip(&col, 10.0f);
-	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "弹簧 3 权重");
-	Ui_StackSkip(&col, 4.0f);
-	Ui_Slider(&g->layout.w3, ui, Ui_StackTake(&col, 30.0f), NULL, 1);
-	Ui_StackSkip(&col, 10.0f);
-
-	Ui_Checkbox(&g->layout.wide, ui, Ui_StackTake(&col, 26.0f),
-		"卡片 A 跨两列 (colSpan=2)", 1);
-	Ui_StackSkip(&col, 6.0f);
-	Ui_Checkbox(&g->layout.tall, ui, Ui_StackTake(&col, 26.0f),
-		"高卡片 B 跨两行 (rowSpan=2)", 1);
-	Ui_StackSkip(&col, 6.0f);
-	Ui_Checkbox(&g->layout.dense, ui, Ui_StackTake(&col, 26.0f),
-		"dense 紧凑回填 (E 抢占空位)", 1);
-
 	{
 		UiRect area = pane_in(pv, 12.0f);
 		layout_demo(g, area);
@@ -4384,16 +4271,384 @@ static void layout_props(Gallery *g, UiRect rc)
 
 static void layout_init(Gallery *g)
 {
-	UiSlider_Init(&g->layout.gap, Ui_Id("gl.lay.gap", 0, 0), 0.35f);
-	UiSlider_Init(&g->layout.w2, Ui_Id("gl.lay.w2", 0, 0), 0.0f);
-	UiSlider_Init(&g->layout.w3, Ui_Id("gl.lay.w3", 0, 0), 0.0f);
 	UiSlider_Init(&g->layout.headH, Ui_Id("gl.lay.hh", 0, 0), 0.15f);
-	UiCheckbox_Init(&g->layout.wide, Ui_Id("gl.lay.wide", 0, 0), 1);
-	UiCheckbox_Init(&g->layout.tall, Ui_Id("gl.lay.tall", 0, 0), 1);
-	UiCheckbox_Init(&g->layout.dense, Ui_Id("gl.lay.dense", 0, 0), 0);
 	UiButtonGroup_Init(&g->layout.align, Ui_Id("gl.lay.align", 0, 0),
 		UI_BG_SINGLE, 3);
 	UiButtonGroup_SetSelected(&g->layout.align, 1);
+}
+
+/* ── Flex 弹性布局 (独立页: 水平 / 垂直双模式) ───────────────────── */
+
+static const char *const kFlexDirLabels[2] = { "水平 (UI_ROW)", "垂直 (UI_COLUMN)" };
+
+static void flex_demo(Gallery *g, UiRect rc)
+{
+	UiApp *app = g->app;
+	UiTheme *t = &app->theme;
+	Gfx *gfx = app->gfx;
+	UiContext *ui = &app->ui;
+	UiStack col;
+	UiRect rowArea, colArea, liteArea;
+	float gap = 4.0f + g->flex.gap.value * 20.0f;
+	float gr2 = 1.0f + g->flex.w2.value * 3.0f;
+	float gr3 = 1.0f + g->flex.w3.value * 3.0f;
+	char buf[64];
+	int i;
+
+	Ui_StackBeginPad(&col, rc, UI_COLUMN, 0.0f, 4.0f, 10.0f, 4.0f, 10.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f),
+		"水平模式 (UI_ROW): measure 协议 Ui_FlexLayout");
+	Ui_StackSkip(&col, 4.0f);
+	rowArea = Ui_StackTake(&col, 76.0f);
+	Ui_StackSkip(&col, 8.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f),
+		"垂直模式 (UI_COLUMN): 同参数, 方向切到列");
+	Ui_StackSkip(&col, 4.0f);
+	colArea = Ui_StackTakeFill(&col);
+	Ui_StackSkip(&col, 8.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f),
+		"轻量版 Ui_FlexRow / Ui_FlexCol (basis+grow, 无测量回调)");
+	Ui_StackSkip(&col, 4.0f);
+	liteArea = Ui_StackTake(&col, 56.0f);
+
+	/* 演示用的模式开关由属性页控制; 两区块同时显示, 方向按钮组即时对比 */
+	{
+		int dir = g->flex.dir.selected;      /* 0=水平 1=垂直 */
+		UiColor accs[3];
+		accs[0] = t->primary.base;
+		accs[1] = t->success.base;
+		accs[2] = t->warning.base;
+
+		/* 水平: measure 协议 */
+		{
+			UiFixedSize fx[3];
+			UiMeasureItem items[3];
+			UiRect outs[3];
+			float g2 = dir == 0 ? gr2 : gr2;
+			fx[0].w = 110.0f; fx[0].h = 0.0f;
+			fx[1].w = 0.0f;   fx[1].h = 0.0f;
+			fx[2].w = 0.0f;   fx[2].h = 0.0f;
+			items[0] = Ui_FixedItem(&fx[0], 0.0f);
+			items[1] = Ui_FixedItem(&fx[1], g2);
+			items[2] = Ui_FixedItem(&fx[2], gr3);
+			if (Ui_FlexLayout(rowArea, UI_ROW, gap, items, 3, outs)) {
+				static const char *const kTags[3] = {
+					"固定 110", "弹簧 A", "弹簧 B"
+				};
+				for (i = 0; i < 3; i++) {
+					LayoutCard c;
+					c.label = kTags[i];
+					c.sub = NULL;
+					c.minW = 60.0f;
+					c.prefH = 40.0f;
+					layout_draw_cell(g, outs[i], &c, accs[i]);
+					if (i > 0) {
+						int gv = (int)((i == 1 ? g2 : gr3) * 10.0f + 0.5f);
+						wsprintfA(buf, "grow=%d.%d", gv / 10, gv % 10);
+						Gfx_Text(gfx, t->fMini, buf,
+							Ui_Rect(outs[i].x + 10.0f, outs[i].y + 28.0f,
+								outs[i].w - 20.0f, 16.0f),
+							t->text3, GFX_TEXT_VCENTER);
+					}
+				}
+			}
+		}
+
+		/* 垂直: 同参数 UI_COLUMN */
+		{
+			UiFixedSize fx[3];
+			UiMeasureItem items[3];
+			UiRect outs[3];
+			UiRect vArea;
+			float g2 = gr2;
+			/* 垂直区块里再分左右: 左列演示, 右侧留说明 */
+			vArea = Ui_Rect(colArea.x, colArea.y,
+				colArea.w * 0.44f, colArea.h);
+			fx[0].w = 0.0f; fx[0].h = 34.0f;   /* 垂直时 basis 用 h */
+			fx[1].w = 0.0f; fx[1].h = 0.0f;
+			fx[2].w = 0.0f; fx[2].h = 0.0f;
+			items[0] = Ui_FixedItem(&fx[0], 0.0f);
+			items[1] = Ui_FixedItem(&fx[1], g2);
+			items[2] = Ui_FixedItem(&fx[2], gr3);
+			if (Ui_FlexLayout(vArea, UI_COLUMN, gap, items, 3, outs)) {
+				static const char *const kTags[3] = {
+					"固定 34", "弹簧 A", "弹簧 B"
+				};
+				for (i = 0; i < 3; i++) {
+					LayoutCard c;
+					c.label = kTags[i];
+					c.sub = NULL;
+					c.minW = 60.0f;
+					c.prefH = 30.0f;
+					layout_draw_cell(g, outs[i], &c, accs[i]);
+					if (i > 0) {
+						int gv = (int)((i == 1 ? g2 : gr3) * 10.0f + 0.5f);
+						wsprintfA(buf, "grow=%d.%d", gv / 10, gv % 10);
+						Gfx_Text(gfx, t->fMini, buf,
+							Ui_Rect(outs[i].x + 10.0f, outs[i].y + 26.0f,
+								outs[i].w - 20.0f, 14.0f),
+							t->text3, GFX_TEXT_VCENTER);
+					}
+				}
+			}
+			Gfx_Text(gfx, t->fMini,
+				"垂直方向: 主轴是高, basis/grow 作用于高度;\n"
+				"弹簧项认领剩余高度, 固定项不受影响。",
+				Ui_Rect(colArea.x + colArea.w * 0.46f + 12.0f, colArea.y,
+					colArea.w * 0.54f - 12.0f, colArea.h), t->hint,
+				GFX_TEXT_WRAP);
+		}
+
+		/* 轻量版: Ui_FlexRow (水平, UiFlexItem basis+grow) */
+		{
+			UiFlexItem it[3];
+			UiRect outs[3];
+			it[0].basis = 96.0f; it[0].grow = 0.0f;
+			it[0].minSize = 0.0f; it[0].maxSize = 0.0f;
+			it[1].basis = 0.0f;  it[1].grow = 2.0f;
+			it[1].minSize = 0.0f; it[1].maxSize = 0.0f;
+			it[2].basis = 0.0f;  it[2].grow = 1.0f;
+			it[2].minSize = 0.0f; it[2].maxSize = 0.0f;
+			if (Ui_FlexRow(liteArea, 8.0f, it, 3, outs)) {
+				static const char *const kTags[3] = {
+					"basis 96", "grow 2", "grow 1"
+				};
+				UiColor acc2[3];
+				acc2[0] = t->blue;
+				acc2[1] = t->blue2;
+				acc2[2] = t->text3;
+				for (i = 0; i < 3; i++) {
+					LayoutCard c;
+					c.label = kTags[i];
+					c.sub = NULL;
+					c.minW = 60.0f;
+					c.prefH = 40.0f;
+					layout_draw_cell(g, outs[i], &c, acc2[i]);
+				}
+				Gfx_Text(gfx, t->fMini, "Ui_FlexCol 同参数即垂直 (样例见属性页代码)",
+					Ui_Rect(liteArea.x + liteArea.w - 240.0f,
+						liteArea.y - 20.0f, 240.0f, 16.0f),
+					t->hint, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+			}
+		}
+	}
+	(void)ui;
+}
+
+static void flex_props(Gallery *g, UiRect rc)
+{
+	UiApp *app = g->app;
+	UiTheme *t = &app->theme;
+	UiContext *ui = &app->ui;
+	Gfx *gfx = app->gfx;
+	UiRect ed, pv;
+	UiStack col;
+	float gr2 = 1.0f + g->flex.w2.value * 3.0f;
+	float gr3 = 1.0f + g->flex.w3.value * 3.0f;
+	char buf[64];
+
+	/* 实时代码 */
+	{
+		snprintf(g->codeText, sizeof(g->codeText),
+			"/* Flex 水平: measure 协议 */\n"
+			"UiFixedSize fx[3] = { {110,0}, {0,0}, {0,0} };\n"
+			"UiMeasureItem it[3] = {\n"
+			"    Ui_FixedItem(&fx[0], 0.0f),   /* 固定 */\n"
+			"    Ui_FixedItem(&fx[1], %.1ff),   /* 弹簧 */\n"
+			"    Ui_FixedItem(&fx[2], %.1ff) };\n"
+			"Ui_FlexLayout(rowRc, UI_ROW, %.0ff, it, 3, out);\n"
+			"\n"
+			"/* 垂直: 同参数换 UI_COLUMN */\n"
+			"Ui_FlexLayout(sideRc, UI_COLUMN, %.0ff, it, 3, out);\n"
+			"\n"
+			"/* 轻量版: UiFlexItem basis+grow */\n"
+			"UiFlexItem lite[3] = {\n"
+			"    { 96, 0, 0, 0 }, { 0, 2, 0, 0 }, { 0, 1, 0, 0 } };\n"
+			"Ui_FlexRow(barRc, 8.0f, lite, 3, out);   /* 或 Ui_FlexCol */\n",
+			gr2, gr3,
+			4.0f + g->flex.gap.value * 20.0f,
+			4.0f + g->flex.gap.value * 20.0f);
+	}
+
+	props_split(g, ui, rc, &ed, &pv);
+	Ui_StackBeginPad(&col, pane_in(ed, 16.0f), UI_COLUMN, 0.0f,
+		16.0f, 14.0f, 16.0f, 14.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "方向 (主轴)");
+	Ui_StackSkip(&col, 4.0f);
+	UiButtonGroup_Draw(ui, &g->flex.dir, Ui_StackTake(&col, 34.0f),
+		kFlexDirLabels, NULL, NULL, 1);
+	if (g->flex.dir.changed) UiApp_Invalidate(app);
+	Ui_StackSkip(&col, 10.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "间距 (gap)");
+	Ui_StackSkip(&col, 4.0f);
+	Ui_Slider(&g->flex.gap, ui, Ui_StackTake(&col, 30.0f), NULL, 1);
+	Ui_StackSkip(&col, 10.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "弹簧 A 权重 (grow)");
+	Ui_StackSkip(&col, 4.0f);
+	Ui_Slider(&g->flex.w2, ui, Ui_StackTake(&col, 30.0f), NULL, 1);
+	Ui_StackSkip(&col, 8.0f);
+	{
+		int gv = (int)(gr2 * 10.0f + 0.5f);
+		wsprintfA(buf, "弹簧 A grow = %d.%d", gv / 10, gv % 10);
+	}
+	small_txt(gfx, t, Ui_StackTake(&col, 18.0f), buf);
+	Ui_StackSkip(&col, 10.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "弹簧 B 权重 (grow)");
+	Ui_StackSkip(&col, 4.0f);
+	Ui_Slider(&g->flex.w3, ui, Ui_StackTake(&col, 30.0f), NULL, 1);
+	Ui_StackSkip(&col, 8.0f);
+	{
+		int gv = (int)(gr3 * 10.0f + 0.5f);
+		wsprintfA(buf, "弹簧 B grow = %d.%d", gv / 10, gv % 10);
+	}
+	small_txt(gfx, t, Ui_StackTake(&col, 18.0f), buf);
+	Ui_StackSkip(&col, 10.0f);
+
+	{
+		UiRect area = pane_in(pv, 12.0f);
+		flex_demo(g, area);
+	}
+}
+
+static void flex_init(Gallery *g)
+{
+	UiSlider_Init(&g->flex.gap, Ui_Id("gl.fx.gap", 0, 0), 0.35f);
+	UiSlider_Init(&g->flex.w2, Ui_Id("gl.fx.w2", 0, 0), 0.0f);
+	UiSlider_Init(&g->flex.w3, Ui_Id("gl.fx.w3", 0, 0), 0.0f);
+	UiButtonGroup_Init(&g->flex.dir, Ui_Id("gl.fx.dir", 0, 0),
+		UI_BG_SINGLE, 2);
+	UiButtonGroup_SetSelected(&g->flex.dir, 0);
+}
+
+/* ── Grid 网格布局 (独立页) ──────────────────────────────────────── */
+
+static void grid_demo(Gallery *g, UiRect rc)
+{
+	UiApp *app = g->app;
+	UiTheme *t = &app->theme;
+	Gfx *gfx = app->gfx;
+	UiStack col;
+	UiRect gridRc, trackRc;
+	float gap = 4.0f + g->grid.gap.value * 24.0f;
+	int i;
+
+	Ui_StackBeginPad(&col, rc, UI_COLUMN, 0.0f, 4.0f, 10.0f, 4.0f, 10.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f),
+		"Ui_GridLayout: fixed / auto / fr 轨道 · span · dense");
+	Ui_StackSkip(&col, 4.0f);
+	gridRc = Ui_StackTakeFill(&col);
+	Ui_StackSkip(&col, 8.0f);
+
+	trackRc = Ui_StackTake(&col, 44.0f);
+	Gfx_Text(gfx, t->fMini,
+		"轨道: [FIXED 110] [AUTO minmax(90,190)] [FR 1·min 80]   "
+		"自动放置 row=-1 col=-1 · dense 时 E 抢占最早空位",
+		trackRc, t->hint, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+
+	{
+		UiGrid grid;
+		UiGridTrack cols[3];
+		UiGridItem gridItems[6];
+		UiRect cell[6];
+		int wide = g->grid.wide.checked;
+		int tall = g->grid.tall.checked;
+		grid.rows = 0;
+		grid.cols = 3;
+		grid.rowGap = gap;
+		grid.colGap = gap;
+		grid.dense = g->grid.dense.checked;
+		cols[0].kind = UI_GRID_FIXED; cols[0].value = 110.0f;
+		cols[0].minSize = 0.0f; cols[0].maxSize = 0.0f;
+		cols[1].kind = UI_GRID_AUTO;  cols[1].value = 0.0f;
+		cols[1].minSize = 90.0f; cols[1].maxSize = 190.0f;
+		cols[2].kind = UI_GRID_FR;    cols[2].value = 1.0f;
+		cols[2].minSize = 80.0f; cols[2].maxSize = 0.0f;
+
+		gridItems[0] = layout_item(&kLcHead, 0, 0, 1, 3);
+		gridItems[1] = layout_item(&kLcA, 1, 0, 1, wide ? 2 : 1);
+		gridItems[2] = layout_item(&kLcB, 1, wide ? 2 : 1, tall ? 2 : 1, 1);
+		gridItems[3] = layout_item(&kLcC, 2, 0, 1, 1);
+		gridItems[4] = layout_item(&kLcD, 2, 1, 1, 1);
+		gridItems[5] = layout_item(&kLcE, -1, -1, 1, 1);
+		if (Ui_GridLayout(gridRc, &grid, cols, NULL, gridItems, 6, cell)) {
+			UiColor accents[6];
+			accents[0] = t->blue;
+			accents[1] = t->primary.base;
+			accents[2] = t->warning.base;
+			accents[3] = t->success.base;
+			accents[4] = t->red;
+			accents[5] = t->blue2;
+			for (i = 0; i < 6; i++)
+				layout_draw_cell(g, cell[i],
+					(LayoutCard *)gridItems[i].user, accents[i]);
+		}
+	}
+}
+
+static void grid_props(Gallery *g, UiRect rc)
+{
+	UiApp *app = g->app;
+	UiTheme *t = &app->theme;
+	UiContext *ui = &app->ui;
+	Gfx *gfx = app->gfx;
+	UiRect ed, pv;
+	UiStack col;
+
+	/* 实时代码 */
+	{
+		snprintf(g->codeText, sizeof(g->codeText),
+			"/* Grid: 显式轨道 + minmax + span + dense */\n"
+			"UiGrid g = { .rows=0, .cols=3,\n"
+			"    .rowGap=%.0f, .colGap=%.0f, .dense=%d };\n"
+			"UiGridTrack cols[3] = {\n"
+			"    { UI_GRID_FIXED, 110, 0, 0 },\n"
+			"    { UI_GRID_AUTO, 0, 90, 190 },   /* minmax */\n"
+			"    { UI_GRID_FR, 1, 80, 0 } };\n"
+			"UiGridItem items[6];   /* row/col=-1 自动放置 */\n"
+			"Ui_GridLayout(inner, &g, cols, NULL, items, 6, out);\n",
+			4.0f + g->grid.gap.value * 24.0f,
+			4.0f + g->grid.gap.value * 24.0f,
+			g->grid.dense.checked);
+	}
+
+	props_split(g, ui, rc, &ed, &pv);
+	Ui_StackBeginPad(&col, pane_in(ed, 16.0f), UI_COLUMN, 0.0f,
+		16.0f, 14.0f, 16.0f, 14.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "轨道间距 (gap)");
+	Ui_StackSkip(&col, 4.0f);
+	Ui_Slider(&g->grid.gap, ui, Ui_StackTake(&col, 30.0f), NULL, 1);
+	Ui_StackSkip(&col, 10.0f);
+
+	Ui_Checkbox(&g->grid.wide, ui, Ui_StackTake(&col, 26.0f),
+		"卡片 A 跨两列 (colSpan=2)", 1);
+	Ui_StackSkip(&col, 6.0f);
+	Ui_Checkbox(&g->grid.tall, ui, Ui_StackTake(&col, 26.0f),
+		"高卡片 B 跨两行 (rowSpan=2)", 1);
+	Ui_StackSkip(&col, 6.0f);
+	Ui_Checkbox(&g->grid.dense, ui, Ui_StackTake(&col, 26.0f),
+		"dense 紧凑回填 (E 抢占空位)", 1);
+
+	{
+		UiRect area = pane_in(pv, 12.0f);
+		grid_demo(g, area);
+	}
+}
+
+static void grid_init(Gallery *g)
+{
+	UiSlider_Init(&g->grid.gap, Ui_Id("gl.gr.gap", 0, 0), 0.35f);
+	UiCheckbox_Init(&g->grid.wide, Ui_Id("gl.gr.wide", 0, 0), 1);
+	UiCheckbox_Init(&g->grid.tall, Ui_Id("gl.gr.tall", 0, 0), 1);
+	UiCheckbox_Init(&g->grid.dense, Ui_Id("gl.gr.dense", 0, 0), 0);
 }
 
 /* ── Dialog ────────────────────────────────────────────────────────── */
@@ -6889,8 +7144,16 @@ static const GalleryPage kPages[PG_COUNT] = {
 		scroll_init, scroll_demo, scroll_props, NULL, NULL, NULL, NULL, NULL,
 		scroll_tick, NULL, scroll_anim },
 	/* PG_LAYOUT */
-	{ "Layout 布局", "Layout 布局", "Stack 游标流 / 对齐 / Flex / Grid 矩形数学",
+	{ "Layout 布局", "Layout 布局", "Stack 游标流 · 对齐 · 矩形数学",
 		layout_init, layout_demo, layout_props, NULL, NULL, NULL, NULL,
+		NULL, NULL, NULL, NULL },
+	/* PG_FLEX */
+	{ "Flex 弹性布局", "Flex 弹性布局", "水平 / 垂直 · flex-lite 与 measure 协议",
+		flex_init, flex_demo, flex_props, NULL, NULL, NULL, NULL,
+		NULL, NULL, NULL, NULL },
+	/* PG_GRID */
+	{ "Grid 网格布局", "Grid 网格布局", "fixed / auto / fr · span · dense",
+		grid_init, grid_demo, grid_props, NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, NULL },
 	/* PG_DIALOG */
 	{ "Dialog 对话框", "Dialog 对话框", "窗内模态 · 焦点循环 · 危险确认",
@@ -7200,7 +7463,8 @@ static int page_from_cmd(const char *name)
 		{ "select", PG_SELECT }, { "datepicker", PG_DATEPICKER },
 		{ "tabs", PG_TABS }, { "nav", PG_NAV },
 		{ "pagination", PG_PAGINATION }, { "scroll", PG_SCROLL },
-		{ "layout", PG_LAYOUT }, { "dialog", PG_DIALOG },
+		{ "layout", PG_LAYOUT }, { "flex", PG_FLEX },
+		{ "grid", PG_GRID }, { "dialog", PG_DIALOG },
 		{ "menu", PG_MENU }, { "toast", PG_TOAST },
 		{ "tooltip", PG_TOOLTIP }, { "progress", PG_PROGRESS },
 		{ "image", PG_IMAGE }, { "markdown", PG_MARKDOWN },

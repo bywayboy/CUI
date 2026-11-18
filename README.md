@@ -57,7 +57,7 @@ CUI 是安装器界面层（`installer/src/ui` + `gfx` + 自绘 `UiEdit`）的�
   后重抽，单步撤销；工程自动保存到 exe 旁 `theme_editor.palette`，一键生成
   可回贴 `ui_theme.c` 的 `theme_apply_preset()` 并保存/复制。
 - `samples/gallery.c` + `samples/gallery_docs.c` + `samples/gallery_icons.c`：**综合组件画廊（约 6900 行）**。
-  左侧导航列出全部 29 页（28 个组件/能力页 + 欢迎页），每页六个标签：**演示**（真实可
+  左侧导航列出全部 31 页（30 个组件/能力页 + 欢迎页），每页六个标签：**演示**（真实可
   操作组件）、**属性**（改参数右侧预览实时变化，**右下角同步生成可复制的创建
   代码**，Consolas 深色代码面板随属性逐项刷新）、**文档 / API / 最佳实践**（由
   内置 `UiMarkdown` 组件渲染的 GFM 文档）、**事件**（该组件的事件模型 + 接线
@@ -228,7 +228,7 @@ bin\cui_md_math_test.exe REM 数学公式排版断言
 bin\cui_gfx_rich_test.exe REM 多 run 富文本层断言
 bin\cui_theme_editor.exe  REM 主题编辑器：基础/高级令牌 / 预览点选 / 导出预设
 bin\cui_theme_edit_test.exe REM 主题令牌与代码生成断言
-bin\cui_gallery.exe     REM 组件画廊：29 页 / 演示+属性+实时代码+文档+API+事件日志+最佳实践 / WS 客户端与服务端联调 / App 框架回调监视器
+bin\cui_gallery.exe     REM 组件画廊：31 页 / 演示+属性+实时代码+文档+API+事件日志+最佳实践 / WS 客户端与服务端联调 / App 框架回调监视器
 ```
 
 构建是 **增量** 的：`build.cmd` 生成头文件清单后调用 `nmake`，只重编比

@@ -1262,6 +1262,186 @@ static const char API_LAYOUT[] =
 	"\n"
 	"≤32 项 Flex / ≤24 轨道 Grid 全部**零堆分配**; 超出自动回退堆。\n";
 
+/* ── 16b Flex ─────────────────────────────────────────────────────── */
+
+static const char DOC_FLEX[] =
+	"# Flex 弹性布局\n"
+	"\n"
+	"Flex 有两层: **flex-lite**(`Ui_FlexRow` / `Ui_FlexCol`, basis+grow,\n"
+	"≤32 项零堆分配)和 **measure 协议**(`Ui_FlexLayout`, 支持自定义测量\n"
+	"回调、min/max 硬限制、对齐)。两者都支持**水平**(`UI_ROW`)与\n"
+	"**垂直**(`UI_COLUMN`)两个方向 —— 本页可实时切换对比。\n"
+	"\n"
+	"## 水平: 按钮行 / 工具栏\n"
+	"\n"
+	"```c\n"
+	"UiFlexItem it[3] = {\n"
+	"    { 110, 0, 0, 0 },   /* basis=110 固定 */\n"
+	"    { 0, 1, 60, 0 },    /* 弹簧 grow=1 */\n"
+	"    { 92, 0, 0, 0 } };\n"
+	"UiRect out[3];\n"
+	"Ui_FlexRow(rowRc, 8.0f, it, 3, out);\n"
+	"```\n"
+	"\n"
+	"## 垂直: 侧栏 / 堆叠卡片\n"
+	"\n"
+	"```c\n"
+	"/* 同样数据, 换列方向: */\n"
+	"Ui_FlexCol(sideRc, 10.0f, it, 3, out);\n"
+	"```\n"
+	"\n"
+	"## measure 协议版\n"
+	"\n"
+	"```c\n"
+	"UiFixedSize fx[3] = { {110,0}, {0,0}, {0,0} };\n"
+	"UiMeasureItem items[3] = {\n"
+	"    Ui_FixedItem(&fx[0], 0.0f),   /* 固定 */\n"
+	"    Ui_FixedItem(&fx[1], 1.0f),   /* 弹簧 */\n"
+	"    Ui_FixedItem(&fx[2], 2.0f) };\n"
+	"Ui_FlexLayout(inner, UI_ROW /* 或 UI_COLUMN */, gap,\n"
+	"    items, 3, out);\n"
+	"```\n"
+	"\n"
+	"空间不足时: 先把各项压到硬下限并允许溢出, 富余按 grow 权重分配。\n";
+
+static const char API_FLEX[] =
+	"# Flex API\n"
+	"\n"
+	"```c\n"
+	"#include \"ui/ui_layout.h\"\n"
+	"```\n"
+	"\n"
+	"| 函数 | 说明 |\n"
+	"|:--|:--|\n"
+	"| `Ui_FlexRow(inner, gap, items, count, out)` | 水平 flex-lite |\n"
+	"| `Ui_FlexCol(inner, gap, items, count, out)` | 垂直 flex-lite |\n"
+	"| `Ui_FlexLayout(inner, dir, gap, items, count, out)` | measure 协议(两遍求解) |\n"
+	"| `Ui_FlexMeasure(dir, gap, items, count, out)` | 容器自然尺寸(嵌套) |\n"
+	"| `Ui_FixedItem(&sz, grow)` | 固定/弹簧项适配器 |\n"
+	"| `Ui_MeasureNormalize(m)` | 自定义 measure 字段归一化 |\n"
+	"\n"
+	"## UiFlexItem 字段\n"
+	"\n"
+	"| 字段 | 含义 |\n"
+	"|:--|:--|\n"
+	"| `basis` | 固定基础尺寸(DIP), 0 = 无 |\n"
+	"| `grow` | 剩余空间权重, 0 = 不拉伸 |\n"
+	"| `minSize / maxSize` | 主轴硬限制(仅 measure 版生效) |\n"
+	"\n"
+	"## UiMeasureItem 额外能力(measure 协议)\n"
+	"\n"
+	"- `measure` 回调: 内容自己报告 min/pref 尺寸(文字/图片/嵌套容器);\n"
+	"- `minCross / maxCross / crossSize`: 交叉轴硬限制或固定值;\n"
+	"- `stretch` / `align`: 交叉轴铺满或对齐。\n"
+	"\n"
+	"≤32 项**零堆分配**; 超出自动回退堆。\n";
+
+static const char BEST_FLEX[] =
+	"# Flex 最佳实践\n"
+	"\n"
+	"- [x] 简单行/列用 flex-lite(`Ui_FlexRow/Col`), 需要内容测量才上 measure 版;\n"
+	"- [x] 弹簧项至少给一个 minSize, 防止窗口缩小后压没;\n"
+	"- [x] 按钮行惯用法: 固定 + 弹簧 + 固定(右贴), 与 Stack 版二选一;\n"
+	"- [ ] 不要假设 shrink: Flex 不压缩超出 min 的内容, 只会溢出;\n"
+	"- [ ] 不要全部设 grow=0 又指望它自适应 —— 富余没人认领就是空白。\n";
+
+static const char EVENTS_FLEX[] =
+	"## 事件\n"
+	"\n"
+	"Flex 家族(`Ui_FlexRow / Ui_FlexCol / Ui_FlexLayout / Ui_FixedItem`)\n"
+	"是**纯函数**: 输入矩形 + 描述, 输出子矩形, **没有事件、没有状态**。\n"
+	"\n"
+	"交互性来自你摆进矩形里的控件, 与布局本身无关。\n"
+	"\n"
+	"::: warning 方向口诀\n"
+	"`UI_ROW` 主轴是宽(水平), `UI_COLUMN` 主轴是高(垂直);\n"
+	"basis/grow/min/max 作用在**主轴**上, 交叉轴由 stretch/align 或测量值决定。\n"
+	":::\n";
+
+/* ── 16c Grid ──────────────────────────────────────────────────────── */
+
+static const char DOC_GRID[] =
+	"# Grid 网格布局\n"
+	"\n"
+	"`Ui_GridLayout` 是显式轨道网格: **fixed / auto / fr** 三种轨道,\n"
+	"minmax 夹取、行列 span、自动放置与 **dense** 紧凑回填。\n"
+	"\n"
+	"## 基本用法\n"
+	"\n"
+	"```c\n"
+	"UiGrid g = { .rows=0, .cols=3, .rowGap=10, .colGap=10, .dense=0 };\n"
+	"UiGridTrack cols[3] = {\n"
+	"    { UI_GRID_FIXED, 120, 0, 0 },\n"
+	"    { UI_GRID_AUTO, 0, 150, 260 },   /* minmax */\n"
+	"    { UI_GRID_FR, 1, 200, 0 } };\n"
+	"UiGridItem items[6];   /* row/col=-1 自动放置 */\n"
+	"Ui_GridLayout(inner, &g, cols, NULL, items, 6, out);\n"
+	"```\n"
+	"\n"
+	"## 轨道类型\n"
+	"\n"
+	"| kind | value | 说明 |\n"
+	"|:--|:--|:--|\n"
+	"| `UI_GRID_FIXED` | DIP | 固定宽度 |\n"
+	"| `UI_GRID_AUTO` | 忽略 | 内容自适应(minmax 夹取) |\n"
+	"| `UI_GRID_FR` | 权重 | 以内容 min 为基分配富余 |\n"
+	"\n"
+	"## span 与 dense\n"
+	"\n"
+	"- `colSpan=2` 跨两列、`rowSpan=2` 跨两行(尺寸贡献均分到跨过的\n"
+	"  auto/fr 轨道);\n"
+	"- `row=-1, col=-1` 自动放置(行优先);\n"
+	"- `dense=1` 时每个自动项从 (0,0) 重新找**最早空位**, 消灭早期空洞\n"
+	"  —— 演示页勾选后观察「自动回填 E」的位置变化。\n";
+
+static const char API_GRID[] =
+	"# Grid API\n"
+	"\n"
+	"```c\n"
+	"#include \"ui/ui_layout.h\"\n"
+	"```\n"
+	"\n"
+	"| 函数 | 说明 |\n"
+	"|:--|:--|\n"
+	"| `Ui_GridMeasure(g, colTracks, rowTracks, items, count, out)` | 网格测量(嵌套/换行) |\n"
+	"| `Ui_GridLayout(inner, g, colTracks, rowTracks, items, count, out)` | 在 inner 内摆放 |\n"
+	"\n"
+	"## UiGrid 字段\n"
+	"\n"
+	"| 字段 | 说明 |\n"
+	"|:--|:--|\n"
+	"| `rows / cols` | 显式轨道数; 0 = 由显式项推断/全部隐式 |\n"
+	"| `rowGap / colGap` | 轨道间距(DIP) |\n"
+	"| `dense` | 1 = 紧凑回填(自动项找最早空位) |\n"
+	"\n"
+	"## UiGridItem 字段\n"
+	"\n"
+	"| 字段 | 说明 |\n"
+	"|:--|:--|\n"
+	"| `row / col` | 显式位置; -1 = 自动放置 |\n"
+	"| `rowSpan / colSpan` | 跨格数(<=0 视为 1) |\n"
+	"| `stretch` | 1 = 填满单元格; 0 = 自然尺寸 + align |\n"
+	"\n"
+	"≤24 轨道**零堆分配**; 超出自动回退堆。\n";
+
+static const char BEST_GRID[] =
+	"# Grid 最佳实践\n"
+	"\n"
+	"- [x] 卡片仪表盘: fixed 侧栏 + auto 标签 + fr 主区;\n"
+	"- [x] 侧栏+主内容两栏: `{ FIXED, 240, 0, 0 } + { FR, 1, 0, 0 }`;\n"
+	"- [x] 图标/相册墙: 全 auto 轨道 + dense=1 回填;\n"
+	"- [x] 布局只算矩形不绘制 —— 先 `Ui_Panel(rc)` 再往里放控件;\n"
+	"- [ ] 不要嵌套过深(>3 层) —— 先拆页面;\n"
+	"- [ ] 不要给 fixed 轨道指望它吸收内容 —— 固定轨道不吃内容贡献。\n";
+
+static const char EVENTS_GRID[] =
+	"## 事件\n"
+	"\n"
+	"Grid(`Ui_GridMeasure / Ui_GridLayout`)是**纯函数**:\n"
+	"输入矩形 + 轨道描述, 输出单元格矩形, **没有事件、没有状态**。\n"
+	"\n"
+	"交互性来自你摆进单元格的控件, 与布局本身无关。\n";
+
 static const char BEST_LAYOUT[] =
 	"# Layout 最佳实践\n"
 	"\n"
@@ -2930,6 +3110,8 @@ static const GalleryDocText kDocs[PG_COUNT] = {
 	/* PG_PAGINATION*/ { 0, DOC_PAGINATION, API_PAGINATION, BEST_PAGINATION, EVENTS_PAGINATION },
 	/* PG_SCROLL    */ { 0, DOC_SCROLL, API_SCROLL, BEST_SCROLL, EVENTS_SCROLL },
 	/* PG_LAYOUT    */ { 0, DOC_LAYOUT, API_LAYOUT, BEST_LAYOUT, EVENTS_LAYOUT },
+	/* PG_FLEX      */ { 0, DOC_FLEX, API_FLEX, BEST_FLEX, EVENTS_FLEX },
+	/* PG_GRID      */ { 0, DOC_GRID, API_GRID, BEST_GRID, EVENTS_GRID },
 	/* PG_DIALOG    */ { 0, DOC_DIALOG, API_DIALOG, BEST_DIALOG, EVENTS_DIALOG },
 	/* PG_MENU      */ { 0, DOC_MENU, API_MENU, BEST_MENU, EVENTS_MENU },
 	/* PG_TOAST     */ { 0, DOC_TOAST, API_TOAST, BEST_TOAST, EVENTS_TOAST },
