@@ -255,8 +255,9 @@ typedef struct Gallery {
 
 	/* Layout */
 	struct {
-		UiSlider gap, w2, w3;
-		UiCheckbox wide, tall;
+		UiSlider gap, w2, w3, headH;
+		UiCheckbox wide, tall, dense;
+		UiButtonGroup align;
 	} layout;
 
 	/* Dialog */
@@ -3996,7 +3997,7 @@ static LayoutCard kLcA = { "卡片 A", "auto 内容", 80.0f, 64.0f };
 static LayoutCard kLcB = { "高卡片 B", "rowSpan 2", 80.0f, 64.0f };
 static LayoutCard kLcC = { "卡片 C", NULL, 80.0f, 64.0f };
 static LayoutCard kLcD = { "卡片 D", NULL, 80.0f, 64.0f };
-static LayoutCard kLcE = { "自动回填 E", "row=-1 col=-1", 80.0f, 64.0f };
+static LayoutCard kLcE = { "自动回填 E", "row=-1 (dense 回填)", 80.0f, 64.0f };
 
 static void layout_measure(void *user, UiMeasure *m)
 {
@@ -4036,13 +4037,26 @@ static void layout_draw_cell(Gallery *g, UiRect rc, LayoutCard *c, UiColor accen
 			t->text3, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 }
 
+/* Stack 演示块: 圆角色块 + 居中标注 (标注可用 NULL) */
+static void layout_block(Gfx *gfx, UiTheme *t, UiRect rc, UiColor accent,
+	const char *tag, UiColor fg)
+{
+	if (rc.w <= 1.0f || rc.h <= 1.0f) return;
+	Gfx_FillRoundRect(gfx, rc, 6.0f, Ui_ColorAlpha(accent, 40));
+	Gfx_StrokeRoundRect(gfx, rc, 6.0f, Ui_ColorAlpha(accent, 150), 1.0f);
+	if (tag)
+		Gfx_Text(gfx, t->fMini, tag,
+			Ui_Rect(rc.x + 4.0f, rc.y, rc.w - 8.0f, rc.h), fg,
+			GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+}
+
 static void layout_demo(Gallery *g, UiRect rc)
 {
 	UiApp *app = g->app;
 	UiTheme *t = &app->theme;
 	Gfx *gfx = app->gfx;
 	UiStack col;
-	UiRect flexRc, gridRc, rowRc;
+	UiRect stackArea, alignArea, flexRc, gridRc;
 	float gap = 4.0f + g->layout.gap.value * 24.0f;
 	UiFixedSize fx[3];
 	UiMeasureItem items[3];
@@ -4052,14 +4066,143 @@ static void layout_demo(Gallery *g, UiRect rc)
 
 	Ui_StackBeginPad(&col, rc, UI_COLUMN, 0.0f, 4.0f, 10.0f, 4.0f, 10.0f);
 
-	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "Ui_FlexLayout: 固定 + 弹簧 (grow)");
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f),
+		"UiStack 游标流: Take / Skip / TakeFill / TakeRight (右侧实时读数)");
+	Ui_StackSkip(&col, 4.0f);
+	stackArea = Ui_StackTake(&col, 190.0f);
+	Ui_StackSkip(&col, 10.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f),
+		"Ui_StackTakeAligned: 交叉轴对齐 (属性页切换)");
+	Ui_StackSkip(&col, 4.0f);
+	alignArea = Ui_StackTake(&col, 84.0f);
+	Ui_StackSkip(&col, 10.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f),
+		"Ui_FlexLayout: 固定 + 弹簧 (grow) · 轻量版 Ui_FlexRow/Col 见文档");
 	Ui_StackSkip(&col, 4.0f);
 	flexRc = Ui_StackTake(&col, 56.0f);
 	Ui_StackSkip(&col, 12.0f);
-	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "Ui_GridLayout: fixed / auto / fr + span");
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f),
+		"Ui_GridLayout: fixed / auto / fr · span · dense 回填");
 	Ui_StackSkip(&col, 4.0f);
 	gridRc = Ui_StackTakeFill(&col);
 
+	/* ── Stack 游标流解剖: 左侧卡片, 右侧读数 ── */
+	{
+		UiStack s, rrow;
+		UiRect card, inner, head, f1, fill, brow;
+		UiRect rest;
+		float cardW = stackArea.w * 0.55f;
+		float hh = 26.0f + g->layout.headH.value * 26.0f;
+		if (cardW > 380.0f) cardW = 380.0f;
+		if (cardW < 240.0f) cardW = 240.0f;
+		card = Ui_Rect(stackArea.x, stackArea.y, cardW, stackArea.h);
+		rest = Ui_Rect(stackArea.x + cardW + 18.0f, stackArea.y,
+			stackArea.w - cardW - 18.0f, stackArea.h);
+
+		Gfx_FillRoundRect(gfx, card, 10.0f, Ui_ColorAlpha(t->text3, 10));
+		Gfx_StrokeRoundRect(gfx, card, 10.0f,
+			Ui_ColorAlpha(t->text3, 90), 1.0f);
+		Gfx_Text(gfx, t->fMini,
+			"Ui_StackBeginPad(&s, card, UI_COLUMN, 0, 14,14,14,14)",
+			Ui_Rect(card.x + 10.0f, card.y + 4.0f, card.w - 20.0f, 14.0f),
+			t->hint, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+
+		inner = pane_in(card, 14.0f);
+		Ui_StackBegin(&s, inner, UI_COLUMN, 0.0f, 0.0f);
+		head = Ui_StackTake(&s, hh);
+		Ui_StackSkip(&s, 10.0f);
+		f1 = Ui_StackTake(&s, 28.0f);
+		Ui_StackSkip(&s, 10.0f);
+		fill = Ui_StackTakeFill(&s);
+		Ui_StackSkip(&s, 10.0f);
+		brow = Ui_StackTake(&s, 28.0f);
+
+		{
+			UiColor acc[4];
+			acc[0] = t->primary.base;
+			acc[1] = t->blue;
+			acc[2] = t->success.base;
+			acc[3] = t->warning.base;
+			wsprintfA(buf, "Take(%.0f)", hh);
+			layout_block(gfx, t, head, acc[0], buf, t->text);
+			layout_block(gfx, t, f1, acc[1], "Take(28)", t->text);
+			layout_block(gfx, t, fill, acc[2], "TakeFill()", t->text);
+		}
+
+		/* 行内: Take + TakeFill 弹簧 + TakeRight 右贴 */
+		Ui_StackBegin(&rrow, brow, UI_ROW, 8.0f, 0.0f);
+		{
+			UiRect b1, sp, b2;
+			b1 = Ui_StackTake(&rrow, 80.0f);
+			sp = Ui_StackTakeFill(&rrow);
+			b2 = Ui_StackTakeRight(&rrow, 92.0f);
+			layout_block(gfx, t, b1, t->warning.base, "Take(80)", t->text);
+			Gfx_Text(gfx, t->fMini, "TakeFill 弹簧",
+				Ui_Rect(sp.x, sp.y, sp.w, sp.h), t->hint,
+				GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+			layout_block(gfx, t, b2, t->red, "TakeRight(92)", t->text);
+		}
+
+		/* 右侧: 游标实时读数 + 调用一览 */
+		if (rest.w > 120.0f) {
+			static const char *const kStackCalls[4] = {
+				"Take(n)   取固定尺寸",
+				"Skip(n)   推进空隙",
+				"TakeFill() 吃掉全部剩余",
+				"TakeRight(n) 行内右贴"
+			};
+			Gfx_Text(gfx, t->fSmall, "游标状态 (每帧刷新)",
+				Ui_Rect(rest.x, rest.y, rest.w, 16.0f), t->text2,
+				GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+			wsprintfA(buf, "cursor=%.0f  remaining=%.0f  count=%d",
+				s.cursor, Ui_StackRemaining(&s), s.count);
+			Gfx_Text(gfx, g->fCode ? g->fCode : t->fMini, buf,
+				Ui_Rect(rest.x, rest.y + 18.0f, rest.w, 15.0f),
+				t->primary.base, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+			for (i = 0; i < 4; i++)
+				Gfx_Text(gfx, t->fMini, kStackCalls[i],
+					Ui_Rect(rest.x, rest.y + 42.0f + (float)i * 16.0f,
+						rest.w, 14.0f), t->text3,
+					GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+			Gfx_Text(gfx, t->fMini,
+				"固定项在前、TakeFill 只能收尾 —— 顺序即布局",
+				Ui_Rect(rest.x, rest.y + 112.0f, rest.w, 14.0f), t->hint,
+				GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS | GFX_TEXT_WRAP);
+		}
+	}
+
+	/* ── TakeAligned 对齐演示 ── */
+	{
+		UiStack row;
+		UiRect area = pane_in(alignArea, 12.0f);
+		int al = g->layout.align.selected;
+		static const char *const kAlNames[3] = {
+			"align = UI_ALIGN_START", "align = UI_ALIGN_CENTER",
+			"align = UI_ALIGN_END"
+		};
+		UiColor accs[3];
+		accs[0] = t->primary.base;
+		accs[1] = t->success.base;
+		accs[2] = t->warning.base;
+		Gfx_FillRoundRect(gfx, alignArea, 8.0f, Ui_ColorAlpha(t->text3, 8));
+		Gfx_StrokeRoundRect(gfx, alignArea, 8.0f,
+			Ui_ColorAlpha(t->text3, 80), 1.0f);
+		Gfx_Text(gfx, t->fMini, kAlNames[al],
+			Ui_Rect(alignArea.x + 10.0f, alignArea.y + 2.0f,
+				alignArea.w - 20.0f, 14.0f), t->hint,
+			GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+		Ui_StackBegin(&row, area, UI_ROW, 12.0f, 0.0f);
+		for (i = 0; i < 3; i++) {
+			static const char *const kAlBlk[3] = { "块 A", "块 B", "块 C" };
+			UiRect b = Ui_StackTakeAligned(&row, 76.0f, 32.0f, al);
+			layout_block(gfx, t, b, accs[i], kAlBlk[i], t->text);
+		}
+	}
+
+	/* ── Flex: 固定 + 弹簧 ── */
 	fx[0].w = 110.0f; fx[0].h = 0.0f;
 	fx[1].w = 0.0f;   fx[1].h = 0.0f;
 	fx[2].w = 0.0f;   fx[2].h = 0.0f;
@@ -4092,6 +4235,7 @@ static void layout_demo(Gallery *g, UiRect rc)
 		}
 	}
 
+	/* ── Grid: 轨道 + span + dense ── */
 	{
 		UiGrid grid;
 		UiGridTrack cols[3];
@@ -4103,7 +4247,7 @@ static void layout_demo(Gallery *g, UiRect rc)
 		grid.cols = 3;
 		grid.rowGap = gap;
 		grid.colGap = gap;
-		grid.dense = 0;
+		grid.dense = g->layout.dense.checked;
 		cols[0].kind = UI_GRID_FIXED; cols[0].value = 110.0f;
 		cols[0].minSize = 0.0f; cols[0].maxSize = 0.0f;
 		cols[1].kind = UI_GRID_AUTO;  cols[1].value = 0.0f;
@@ -4130,8 +4274,12 @@ static void layout_demo(Gallery *g, UiRect rc)
 					(LayoutCard *)gridItems[i].user, accents[i]);
 		}
 	}
-	(void)rowRc;
 }
+
+static const char *const kLayAlignLabels[3] = { "起点", "居中", "终点" };
+static const char *const kLayAlignNames[3] = {
+	"UI_ALIGN_START", "UI_ALIGN_CENTER", "UI_ALIGN_END"
+};
 
 static void layout_props(Gallery *g, UiRect rc)
 {
@@ -4141,40 +4289,64 @@ static void layout_props(Gallery *g, UiRect rc)
 	Gfx *gfx = app->gfx;
 	UiRect ed, pv;
 	UiStack col;
+	float hh = 26.0f + g->layout.headH.value * 26.0f;
 
 	/* 实时代码 */
 	{
 		snprintf(g->codeText, sizeof(g->codeText),
-			"/* Stack: 固定行在前, TakeFill 最后! */\n"
-			"UiStack col;\n"
+			"/* UiStack 游标流: 固定项在前, TakeFill 收尾 */\n"
 			"Ui_StackBeginPad(&col, card, UI_COLUMN, 0.0f,\n"
-			"    16, 14, 16, 14);\n"
-			"UiRect head = Ui_StackTake(&col, 30.0f);\n"
-			"Ui_StackSkip(&col, %.0ff);\n"
+			"    14, 14, 14, 14);\n"
+			"UiRect head = Ui_StackTake(&col, %.0ff);\n"
+			"Ui_StackSkip(&col, 10.0f);\n"
 			"UiRect body = Ui_StackTakeFill(&col);\n"
+			"\n"
+			"/* 行内右贴: Take + 弹簧 + TakeRight */\n"
+			"Ui_StackBegin(&row, brow, UI_ROW, 8.0f, 0.0f);\n"
+			"UiRect ok = Ui_StackTake(&row, 80.0f);\n"
+			"Ui_StackTakeFill(&row);\n"
+			"UiRect cancel = Ui_StackTakeRight(&row, 92.0f);\n"
+			"\n"
+			"/* 对齐: 交叉轴 */\n"
+			"UiRect a = Ui_StackTakeAligned(&row,\n"
+			"    76.0f, 32.0f, %s);\n"
 			"\n"
 			"/* Flex: 固定 110 + 弹簧 grow %.1f / %.1f */\n"
 			"UiFixedSize fx[3];\n"
-			"fx[0].w = 110.0f;              /* 固定项 */\n"
-			"fx[1].w = 0.0f;  fx[2].w = 0.0f;   /* 弹簧 */\n"
 			"items[0] = Ui_FixedItem(&fx[0], 0.0f);\n"
 			"items[1] = Ui_FixedItem(&fx[1], %.1ff);\n"
 			"items[2] = Ui_FixedItem(&fx[2], %.1ff);\n"
 			"Ui_FlexLayout(flexRc, UI_ROW, %.0ff, items, 3, outs);\n"
-			"/* Grid: UiGridTrack cols[3] + Ui_GridLayout(gridRc,\n"
-			"   &grid, cols, NULL, gridItems, 6, cell); */\n",
-			4.0f + g->layout.gap.value * 12.0f,
+			"/* Grid: cols[3] + dense=%d */\n",
+			hh,
+			kLayAlignNames[g->layout.align.selected < 0 ||
+				g->layout.align.selected > 2 ? 1 : g->layout.align.selected],
 			1.0f + g->layout.w2.value * 3.0f,
 			1.0f + g->layout.w3.value * 3.0f,
 			1.0f + g->layout.w2.value * 3.0f,
 			1.0f + g->layout.w3.value * 3.0f,
-			4.0f + g->layout.gap.value * 24.0f);
+			4.0f + g->layout.gap.value * 24.0f,
+			g->layout.dense.checked);
 	}
 	char buf[64];
 
 	props_split(g, ui, rc, &ed, &pv);
 	Ui_StackBeginPad(&col, pane_in(ed, 16.0f), UI_COLUMN, 0.0f,
 		16.0f, 14.0f, 16.0f, 14.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "Stack 标题块高度 (Take)");
+	Ui_StackSkip(&col, 4.0f);
+	Ui_Slider(&g->layout.headH, ui, Ui_StackTake(&col, 30.0f), NULL, 1);
+	if (g->layout.headH.changed || g->layout.headH.committed)
+		UiApp_Invalidate(app);
+	Ui_StackSkip(&col, 10.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "对齐 (TakeAligned)");
+	Ui_StackSkip(&col, 4.0f);
+	UiButtonGroup_Draw(ui, &g->layout.align, Ui_StackTake(&col, 34.0f),
+		kLayAlignLabels, NULL, NULL, 1);
+	if (g->layout.align.changed) UiApp_Invalidate(app);
+	Ui_StackSkip(&col, 10.0f);
 
 	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "间距 (gap)");
 	Ui_StackSkip(&col, 4.0f);
@@ -4200,6 +4372,9 @@ static void layout_props(Gallery *g, UiRect rc)
 	Ui_StackSkip(&col, 6.0f);
 	Ui_Checkbox(&g->layout.tall, ui, Ui_StackTake(&col, 26.0f),
 		"高卡片 B 跨两行 (rowSpan=2)", 1);
+	Ui_StackSkip(&col, 6.0f);
+	Ui_Checkbox(&g->layout.dense, ui, Ui_StackTake(&col, 26.0f),
+		"dense 紧凑回填 (E 抢占空位)", 1);
 
 	{
 		UiRect area = pane_in(pv, 12.0f);
@@ -4212,8 +4387,13 @@ static void layout_init(Gallery *g)
 	UiSlider_Init(&g->layout.gap, Ui_Id("gl.lay.gap", 0, 0), 0.35f);
 	UiSlider_Init(&g->layout.w2, Ui_Id("gl.lay.w2", 0, 0), 0.0f);
 	UiSlider_Init(&g->layout.w3, Ui_Id("gl.lay.w3", 0, 0), 0.0f);
+	UiSlider_Init(&g->layout.headH, Ui_Id("gl.lay.hh", 0, 0), 0.15f);
 	UiCheckbox_Init(&g->layout.wide, Ui_Id("gl.lay.wide", 0, 0), 1);
 	UiCheckbox_Init(&g->layout.tall, Ui_Id("gl.lay.tall", 0, 0), 1);
+	UiCheckbox_Init(&g->layout.dense, Ui_Id("gl.lay.dense", 0, 0), 0);
+	UiButtonGroup_Init(&g->layout.align, Ui_Id("gl.lay.align", 0, 0),
+		UI_BG_SINGLE, 3);
+	UiButtonGroup_SetSelected(&g->layout.align, 1);
 }
 
 /* ── Dialog ────────────────────────────────────────────────────────── */
@@ -6709,7 +6889,7 @@ static const GalleryPage kPages[PG_COUNT] = {
 		scroll_init, scroll_demo, scroll_props, NULL, NULL, NULL, NULL, NULL,
 		scroll_tick, NULL, scroll_anim },
 	/* PG_LAYOUT */
-	{ "Layout 布局", "Layout 布局", "Stack / Flex / Grid 矩形数学",
+	{ "Layout 布局", "Layout 布局", "Stack 游标流 / 对齐 / Flex / Grid 矩形数学",
 		layout_init, layout_demo, layout_props, NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, NULL },
 	/* PG_DIALOG */
