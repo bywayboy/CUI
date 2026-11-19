@@ -133,4 +133,11 @@ int  Ui_SvgEdit_CanRedo(const UiSvgEdit *ed);
 /* 状态栏提示 (UTF-8, 随工具/会话变化) */
 const char *Ui_SvgEdit_Hint(const UiSvgEdit *ed);
 
+/* 坐标与渐变手柄查询 (屏幕 DIP; 供宿主覆盖层/测试使用). */
+void Ui_SvgEdit_WorldToScreen(const UiSvgEdit *ed, float wx, float wy,
+	float *sx, float *sy);
+/* 当前单选元素若有渐变填充, 返回 1 并输出两端手柄屏幕坐标. */
+int  Ui_SvgEdit_GradientHandles(const UiSvgEdit *ed, float *x0, float *y0,
+	float *x1, float *y1, int *radial);
+
 #endif /* CUI_UI_SVG_EDIT_H */

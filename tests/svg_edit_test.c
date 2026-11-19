@@ -7,10 +7,13 @@
  */
 #include <windows.h>
 #include "gfx/gfx.h"
+#include "ui/ui_color_select.h"
+#include "ui/ui_frame.h"
 #include "ui/ui_context.h"
 #include "ui/ui_input.h"
 #include "ui/ui_theme.h"
 #include "ui/ui_svg_edit.h"
+#include "edit.h"
 
 int sprintf(char *buf, const char *fmt, ...);
 size_t strlen(const char *s);
@@ -52,6 +55,7 @@ static int count_(const char *s, const char *sub)
 }
 
 static UiRect g_vp;
+static UiId g_edit_id;
 
 static void frame_(UiSvgEdit *ed)
 {
@@ -66,6 +70,12 @@ static void frame_(UiSvgEdit *ed)
 static void press_at(UiSvgEdit *ed, float x, float y)
 {
 	Ui_OnMouseDown(&g_ctx, x, y);
+	/* 隐藏测试窗口没有真实光标; 强制命中画布, 避免外层命中波动. */
+	if (g_edit_id && g_ctx.down != g_edit_id) {
+		g_ctx.down = g_edit_id;
+		g_ctx.pressed = g_edit_id;
+		g_ctx.mouseDown = 1;
+	}
 	frame_(ed);
 }
 
@@ -83,7 +93,6 @@ static void test_gradient_selection_reset(void)
 	UiId id = Ui_Id("svg.grad.sel", 0, 0);
 	SvgElement *r, *el;
 	SvgGradStop gs[2];
-	float tx, ty;
 	int ridx, eidx;
 	if (!doc) return;
 	r = SvgDoc_Add(doc, SVG_EL_RECT);
@@ -101,33 +110,180 @@ static void test_gradient_selection_reset(void)
 	ed = Ui_SvgEdit_Create(doc, id);
 	CHECK(ed != NULL);
 	if (!ed) { SvgDoc_Destroy(doc); return; }
+	g_edit_id = id;
 	Ui_SvgEdit_ZoomReset(ed, vp);
 	frame_(ed);
-	/* view_reset: world→screen = world + tx/ty */
-	tx = vp.x + (vp.w - doc->width) * 0.5f;
-	ty = vp.y + (vp.h - doc->height) * 0.5f;
 
-	press_at(ed, tx + 90.0f, ty + 80.0f);
-	release_at(ed, tx + 90.0f, ty + 80.0f);
+	{
+		float sx = 0.0f, sy = 0.0f;
+		Ui_SvgEdit_WorldToScreen(ed, 90.0f, 80.0f, &sx, &sy);
+		press_at(ed, sx, sy);
+		release_at(ed, sx, sy);
+	}
 	CHECK(Ui_SvgEdit_SelIndex(ed, 0) == ridx);
 
-	/* 拖径向手柄: 中心 (90,80) → 边缘 0.707r 方向 */
-	press_at(ed, tx + 90.0f + 25.0f, ty + 80.0f + 20.0f);
-	frame_(ed);
-	Ui_OnMouseMove(&g_ctx, tx + 105.0f, ty + 95.0f);
-	frame_(ed);
-	release_at(ed, tx + 105.0f, ty + 95.0f);
+	/* 拖径向边缘手柄: 沿原方向拉长半径 */
+	{
+		float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+		int rd = 0;
+		float r0 = doc->els[0].style.fill.r;
+		CHECK(Ui_SvgEdit_GradientHandles(ed, &x0, &y0, &x1, &y1, &rd) == 1);
+		CHECK(rd == 1);
+		press_at(ed, x1, y1);
+		Ui_OnMouseMove(&g_ctx, x0 + (x1 - x0) * 1.5f,
+			y0 + (y1 - y0) * 1.5f);
+		frame_(ed);
+		release_at(ed, x0 + (x1 - x0) * 1.5f, y0 + (y1 - y0) * 1.5f);
+		CHECK(doc->els[0].style.fill.r > r0 + 0.01f);
+	}
 	CHECK(Ui_SvgEdit_SelIndex(ed, 0) == ridx);
 
 	/* 拖完后应能点选圆 (渐变手柄不得抢走元素外的点选) */
-	press_at(ed, tx + 320.0f, ty + 220.0f);
-	release_at(ed, tx + 320.0f, ty + 220.0f);
+	{
+		float sx = 0.0f, sy = 0.0f;
+		Ui_SvgEdit_WorldToScreen(ed, 320.0f, 220.0f, &sx, &sy);
+		press_at(ed, sx, sy);
+		release_at(ed, sx, sy);
+	}
 	CHECK(Ui_SvgEdit_SelIndex(ed, 0) == eidx);
 
 	/* 再点回矩形 (渐变填充) 也应可选 */
-	press_at(ed, tx + 90.0f, ty + 80.0f);
-	release_at(ed, tx + 90.0f, ty + 80.0f);
+	{
+		float sx = 0.0f, sy = 0.0f;
+		Ui_SvgEdit_WorldToScreen(ed, 90.0f, 80.0f, &sx, &sy);
+		press_at(ed, sx, sy);
+		release_at(ed, sx, sy);
+	}
 	CHECK(Ui_SvgEdit_SelIndex(ed, 0) == ridx);
+
+	/* 线性渐变: 拖端点改方向 */
+	doc->els[0].style.fill.kind = SVG_PAINT_LINEAR;
+	doc->els[0].style.fill.angleDeg = 0.0f;
+	Svg_ElementTouch(&doc->els[0]);
+	frame_(ed);
+	{
+		float a0 = doc->els[0].style.fill.angleDeg;
+		float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+		int rd = 0;
+		float mx, my;
+		CHECK(Ui_SvgEdit_GradientHandles(ed, &x0, &y0, &x1, &y1, &rd) == 1);
+		press_at(ed, x1, y1);
+		/* 绕中心旋转 90° 的落点 */
+		mx = x0 - (y1 - y0);
+		my = y0 + (x1 - x0);
+		Ui_OnMouseMove(&g_ctx, mx, my);
+		frame_(ed);
+		release_at(ed, mx, my);
+		CHECK(doc->els[0].style.fill.angleDeg != a0);
+		CHECK(Ui_SvgEdit_SelIndex(ed, 0) == ridx);
+	}
+
+	Ui_SvgEdit_Destroy(ed);
+	SvgDoc_Destroy(doc);
+}
+
+static void cs_frame_(UiColorSelect *cs, UiPopupManager *pm)
+{
+	Gfx_Begin(g_gfx);
+	Gfx_Clear(g_gfx, 0xFFFFFFFF);
+	Ui_BeginFrame(&g_ctx);
+	UiColorSelect_Draw(cs, pm, &g_ctx, Ui_Rect(20, 20, 140, 32), 1);
+	UiColorSelect_DrawPopup(cs, pm, &g_ctx);
+	Ui_EndFrame(&g_ctx);
+	Gfx_End(g_gfx);
+	UiColorSelect_EndFrame(cs, UiFrame_Now());
+}
+
+static void test_color_focus(void)
+{
+	UiPopupManager pm;
+	UiColorSelect cs;
+	char hex[32];
+	UiPopupManager_Init(&pm);
+	UiColorSelect_Init(&cs, Ui_Id("test.cs.focus", 0, 0), 0xFF3366CCu);
+	cs_frame_(&cs, &pm);
+	/* 打开弹层 */
+	Ui_OnMouseDown(&g_ctx, 60.0f, 36.0f);
+	cs_frame_(&cs, &pm);
+	Ui_OnMouseUp(&g_ctx, 60.0f, 36.0f);
+	cs_frame_(&cs, &pm);
+	CHECK(UiColorSelect_IsOpen(&pm, &cs) == 1);
+	cs_frame_(&cs, &pm);
+	cs_frame_(&cs, &pm);
+	CHECK(cs.hexRc.w > 0.0f && cs.aEditRc.w > 0.0f);
+	/* 点击 HEX 输入框 -> 聚焦 */
+	Ui_OnMouseDown(&g_ctx, cs.hexRc.x + 12.0f,
+		cs.hexRc.y + cs.hexRc.h * 0.5f);
+	cs_frame_(&cs, &pm);
+	CHECK(cs.focusField == 1);
+	/* 输入字符应写入编辑框 */
+	UiColorSelect_Char(&cs, &g_ctx, L'1');
+	UiColorSelect_Char(&cs, &g_ctx, L'2');
+	Edit_TextUtf8(&cs.editHex, hex, (int)sizeof(hex));
+	CHECK(hex[0] != 0);
+	Ui_OnMouseUp(&g_ctx, cs.hexRc.x + 12.0f, cs.hexRc.y + 8.0f);
+	cs_frame_(&cs, &pm);
+	/* 交互条 layer 必须包含手柄外扩区域 */
+	CHECK(cs.barsRc.x < cs.svRc.x);
+	CHECK(cs.barsRc.y < cs.svRc.y);
+	CHECK(cs.barsRc.x + cs.barsRc.w > cs.hueRc.x + cs.hueRc.w);
+	CHECK(cs.barsRc.y + cs.barsRc.h > cs.alphaRc.y + cs.alphaRc.h);
+	UiColorSelect_Shutdown(&cs);
+}
+
+static void test_text_transform(void)
+{
+	UiRect vp = g_vp = Ui_Rect(0.0f, 0.0f, 800.0f, 600.0f);
+	SvgDoc *doc = SvgDoc_Create(400.0f, 300.0f);
+	UiSvgEdit *ed;
+	UiId id = Ui_Id("svg.text.xf", 0, 0);
+	SvgElement *te;
+	GfxRect b;
+	float sx, sy;
+	if (!doc) return;
+	te = SvgDoc_Add(doc, SVG_EL_TEXT);
+	te->p.text.x = 100.0f; te->p.text.y = 100.0f;
+	te->fontSize = 40.0f;
+	te->style.fill.kind = SVG_PAINT_SOLID;
+	te->style.fill.color = 0xFF202020u;
+	SvgDoc_SetText(doc, 0, "Abc");
+	ed = Ui_SvgEdit_Create(doc, id);
+	CHECK(ed != NULL);
+	if (!ed) { SvgDoc_Destroy(doc); return; }
+	g_edit_id = id;
+	Ui_SvgEdit_ZoomReset(ed, vp);
+	frame_(ed);
+	frame_(ed);
+	Ui_SvgEdit_SelectIndex(ed, 0);
+	frame_(ed);
+	CHECK(Ui_SvgEdit_SelIndex(ed, 0) == 0);
+
+	/* 拖动文本 */
+	b = SvgDoc_ElementBounds(doc, 0);
+	Ui_SvgEdit_WorldToScreen(ed, b.x + b.w * 0.5f, b.y + b.h * 0.5f, &sx, &sy);
+	press_at(ed, sx, sy);
+	Ui_OnMouseMove(&g_ctx, sx + 30.0f, sy + 20.0f);
+	frame_(ed);
+	release_at(ed, sx + 30.0f, sy + 20.0f);
+	CHECK(doc->els[0].xf.tx != 0.0f || doc->els[0].xf.ty != 0.0f);
+
+	/* 缩放文本 (右下角手柄) */
+	b = SvgDoc_ElementBounds(doc, 0);
+	Ui_SvgEdit_WorldToScreen(ed, b.x + b.w, b.y + b.h, &sx, &sy);
+	press_at(ed, sx, sy);
+	Ui_OnMouseMove(&g_ctx, sx + 60.0f, sy + 40.0f);
+	frame_(ed);
+	release_at(ed, sx + 60.0f, sy + 40.0f);
+	CHECK(doc->els[0].xf.sx > 1.02f || doc->els[0].xf.sy > 1.02f);
+
+	/* 旋转文本 (顶部旋转手柄) */
+	b = SvgDoc_ElementBounds(doc, 0);
+	Ui_SvgEdit_WorldToScreen(ed, b.x + b.w * 0.5f, b.y, &sx, &sy);
+	press_at(ed, sx, sy - 26.0f);
+	Ui_OnMouseMove(&g_ctx, sx + 100.0f, sy + 30.0f);
+	frame_(ed);
+	release_at(ed, sx + 100.0f, sy + 30.0f);
+	CHECK(doc->els[0].xf.rot != 0.0f);
 
 	Ui_SvgEdit_Destroy(ed);
 	SvgDoc_Destroy(doc);
@@ -294,6 +450,8 @@ void __stdcall startup(void)
 	CHECK(Gfx_End(g_gfx) == 1);
 
 	test_gradient_selection_reset();
+	test_color_focus();
+	test_text_transform();
 
 	CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
 

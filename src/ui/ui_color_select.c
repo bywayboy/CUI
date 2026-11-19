@@ -687,14 +687,19 @@ void UiColorSelect_DrawPopup(UiColorSelect *cs, UiPopupManager *pm,
 	cs->aEditRc = aRc;
 	r = CS_RADIUS;
 	cs->ui = ui;
-	/* layer 覆盖区域 = SV+色相(+透明度条), 局部坐标供合成器重绘 */
-	cs->barsRc = Ui_Rect(sv.x, sv.y, innerW, svH
-		+ (cs->alphaEnabled ? CS_GAP + CS_BAR_H : 0.0f));
-	cs->lSv = Ui_Rect(0.0f, 0.0f, svW, svH);
-	cs->lHue = Ui_Rect(svW + CS_HUE_GAP, 0.0f, CS_HUE_W, svH);
-	cs->lAlpha = cs->alphaEnabled
-		? Ui_Rect(0.0f, svH + CS_GAP, innerW, CS_BAR_H)
-		: Ui_Rect(0, 0, 0, 0);
+	/* layer 覆盖区域 = SV+色相(+透明度条) + 四周留白, 给滑块手柄
+	 * (顶部/底部/左右各伸出 3px) 留出绘制空间, 避免被 layer 边缘剪裁. */
+	{
+		float pad = 4.0f;
+		float barsH = svH + (cs->alphaEnabled ? CS_GAP + CS_BAR_H : 0.0f);
+		cs->barsRc = Ui_Rect(sv.x - pad, sv.y - pad,
+			innerW + pad * 2.0f, barsH + pad * 2.0f);
+		cs->lSv = Ui_Rect(pad, pad, svW, svH);
+		cs->lHue = Ui_Rect(pad + svW + CS_HUE_GAP, pad, CS_HUE_W, svH);
+		cs->lAlpha = cs->alphaEnabled
+			? Ui_Rect(pad, pad + svH + CS_GAP, innerW, CS_BAR_H)
+			: Ui_Rect(0, 0, 0, 0);
+	}
 	cs->lAlphaOn = cs->alphaEnabled;
 
 	if (cs->panelFx && Ui_FxActive(ui)) {
@@ -908,6 +913,33 @@ int UiColorSelect_Mouse(UiColorSelect *cs, UiContext *ui, int msg,
 	if (!cs || !ui) return 0;
 	if (!cs->wasOpen || cs->fallback) return 0;
 	if (msg == UI_COLOR_MOUSE_DOWN) {
+		/* 输入框焦点在原始鼠标事件里落实: 面板帧可能尚未绘制,
+		 * 等帧内命中会丢焦点 (尤其是连续点击 HEX/透明度框). */
+		if (cs->hexRc.w > 0.0f && Ui_RectContains(cs->hexRc, x, y)) {
+			if (cs->focusField && cs->focusField != 1)
+				cs_apply_edits_(cs);
+			if (cs->focusField != 1) {
+				cs->focusField = 1;
+				if (cs->ime) UiIme_SetFocus(cs->ime, &cs->editHex);
+			}
+			Edit_PlaceCaret(&cs->editHex, ui->gfx, ui->theme->fInput,
+				cs->hexRc, x);
+			Ui_InvalidateRectPad(ui, cs->panelRc, 8.0f);
+			return 1;
+		}
+		if (cs->alphaEnabled && cs->aEditRc.w > 0.0f &&
+			Ui_RectContains(cs->aEditRc, x, y)) {
+			if (cs->focusField && cs->focusField != 2)
+				cs_apply_edits_(cs);
+			if (cs->focusField != 2) {
+				cs->focusField = 2;
+				if (cs->ime) UiIme_SetFocus(cs->ime, &cs->editA);
+			}
+			Edit_PlaceCaret(&cs->editA, ui->gfx, ui->theme->fInput,
+				cs->aEditRc, x);
+			Ui_InvalidateRectPad(ui, cs->panelRc, 8.0f);
+			return 1;
+		}
 		if (Ui_RectContains(cs->svRc, x, y)) kind = 1;
 		else if (Ui_RectContains(cs->hueRc, x, y)) kind = 2;
 		else if (cs->alphaEnabled && cs->alphaRc.w > 0.0f &&

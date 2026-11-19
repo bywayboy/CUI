@@ -168,6 +168,7 @@ struct UiSvgEdit {
 static float s_abs(float v) { return v < 0.0f ? -v : v; }
 static float s_min(float a, float b) { return a < b ? a : b; }
 static float s_max(float a, float b) { return a > b ? a : b; }
+static float pt_dist2(float x0, float y0, float x1, float y1);
 
 static float s_sqrt(float x)
 {
@@ -1259,15 +1260,21 @@ static int grad_handle_hit_(UiSvgEdit *ed, int *part)
 	int idx = ed->selCount == 1 ? ed->sel[0] : -1;
 	GfxRect wb;
 	if (!grad_handle_(ed, idx, &x0, &y0, &x1, &y1, &radial)) return -1;
-	/* 只允许在选中元素范围内抓渐变手柄: 手柄/半径可能伸出元素外,
-	 * 若跨到其它对象上会抢走点选 (用户无法再选中被覆盖的元素). */
+	/* 元素外的手柄仅在空白处可抓; 若压住其它元素, 优先让点选生效
+	 * (手柄/半径可能伸出元素外, 不能抢走相邻对象的命中). */
 	s2w(ed, ed->mx, ed->my, &wx, &wy);
 	wb = SvgDoc_ElementBounds(ed->doc, idx);
 	if (wx < wb.x || wy < wb.y ||
-		wx > wb.x + wb.w || wy > wb.y + wb.h)
-		return -1;
-	if (pt_dist2(ed->mx, ed->my, x0, y0) <= 100.0f) { *part = 0; return idx; }
-	if (pt_dist2(ed->mx, ed->my, x1, y1) <= 100.0f) { *part = 1; return idx; }
+		wx > wb.x + wb.w || wy > wb.y + wb.h) {
+		int hit = Svg_DocHit(ed->doc, wx, wy, SE_TOL_PX / ed->view.scale);
+		if (hit >= 0 && hit != idx) return -1;
+	}
+	{
+		float d0 = pt_dist2(ed->mx, ed->my, x0, y0);
+		float d1 = pt_dist2(ed->mx, ed->my, x1, y1);
+		if (d0 <= 100.0f) { *part = 0; return idx; }
+		if (d1 <= 100.0f) { *part = 1; return idx; }
+	}
 	return -1;
 }
 
@@ -2154,7 +2161,8 @@ static int elem_needs_xf_(const UiSvgEdit *ed, int idx)
 	const SvgElement *e;
 	if (!ed || idx < 0 || idx >= ed->doc->count) return 0;
 	e = &ed->doc->els[idx];
-	return e->type == SVG_EL_GROUP || e->parent >= 0 || e->xf.has;
+	return e->type == SVG_EL_GROUP || e->type == SVG_EL_TEXT ||
+		e->parent >= 0 || e->xf.has;
 }
 
 static void snap_axis_(UiSvgEdit *ed, int axisY, float p0, float p1,
@@ -3591,6 +3599,8 @@ void Ui_SvgEdit_SelectIndex(UiSvgEdit *ed, int idx)
 	sel_clear(ed);
 	sel_add(ed, idx);
 	ed->nodeSel = -1;
+	if (!ed->penActive && ed->drag == SE_DRAG_NONE)
+		ed->tool = UI_SVG_TOOL_SELECT;
 	ed_invalidate(ed);
 }
 
@@ -3884,6 +3894,8 @@ static void set_style_(UiSvgEdit *ed, UiContext *ui, const SvgStyle *style,
 		Svg_ElementTouch(&ed->doc->els[idx]);
 	}
 	if (commit && ed->selCount > 0) Svg_History_Commit(ed->doc);
+	if (ed->selCount > 0 && !ed->penActive && ed->drag == SE_DRAG_NONE)
+		ed->tool = UI_SVG_TOOL_SELECT;   /* 样式编辑后可直接调手柄 */
 	ed_invalidate(ed);
 	(void)ui;
 }
@@ -3939,4 +3951,25 @@ int Ui_SvgEdit_CanRedo(const UiSvgEdit *ed)
 const char *Ui_SvgEdit_Hint(const UiSvgEdit *ed)
 {
 	return ed ? ed->hint : "";
+}
+
+void Ui_SvgEdit_WorldToScreen(const UiSvgEdit *ed, float wx, float wy,
+	float *sx, float *sy)
+{
+	if (!ed || !ed->viewValid) {
+		if (sx) *sx = wx;
+		if (sy) *sy = wy;
+		return;
+	}
+	w2s(ed, wx, wy, sx, sy);
+}
+
+int Ui_SvgEdit_GradientHandles(const UiSvgEdit *ed, float *x0, float *y0,
+	float *x1, float *y1, int *radial)
+{
+	int r = 0;
+	if (!ed) return 0;
+	return grad_handle_((UiSvgEdit *)ed,
+		ed->selCount == 1 ? ed->sel[0] : -1, x0, y0, x1, y1,
+		radial ? radial : &r);
 }

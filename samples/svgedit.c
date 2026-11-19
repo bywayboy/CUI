@@ -11,6 +11,7 @@
 #include "ui/ui_color_select.h"
 #include "ui/ui_frame.h"
 #include "ui/ui_input.h"
+#include "ui/ui_menu.h"
 #include "ui/ui_paint.h"
 #include "ui/ui_popup.h"
 #include "ui/ui_svg_edit.h"
@@ -36,12 +37,11 @@ typedef struct EdDemo {
 
 	int wantExport;
 	int wantCopy;
-	int ctxOpen;
-	float ctxX, ctxY;
-	UiRect ctxRc;
+	UiMenu ctxMenu;
 
 	UiPopupManager pm;
 	UiColorSelect csFill, csStroke;
+	UiColor csFillLast, csStrokeLast;
 	long csKey;
 	int lastSelIdx, lastSelCount;
 	char msg[192];
@@ -52,6 +52,20 @@ typedef struct EdDemo {
 } EdDemo;
 
 static EdDemo g_demo;
+
+static const UiMenuItem kCtxItems[] = {
+	{ "复制", "Ctrl+C", 0 },
+	{ "粘贴", "Ctrl+V", 0 },
+	{ "副本", "Ctrl+D", 0 },
+	{ "删除", "Delete", 0 },
+	{ "", "", UI_MENU_DIVIDER },
+	{ "置顶", NULL, 0 },
+	{ "置底", NULL, 0 },
+	{ "", "", UI_MENU_DIVIDER },
+	{ "组合", "Ctrl+G", 0 },
+	{ "解组", "Ctrl+Shift+G", 0 }
+};
+#define ED_CTX_N ((int)(sizeof(kCtxItems) / sizeof(kCtxItems[0])))
 
 /* ── 文本/数字工具 (0CRT: 无 sprintf %f) ─────────────────────────── */
 
@@ -502,11 +516,13 @@ static void on_init(UiApp *app, void *user)
 
 	UiInput_Init(&d->form, &app->ui, &app->ime);
 	UiPopupManager_Init(&d->pm);
+	UiMenu_Init(&d->ctxMenu, Ui_Id("svgedit.ctxmenu", 0, 0));
+	UiMenu_SetItems(&d->ctxMenu, kCtxItems, ED_CTX_N);
 	UiColorSelect_Init(&d->csFill, Ui_Id("svgedit.cs.fill", 0, 0), 0xFF3B82F6u);
 	UiColorSelect_Init(&d->csStroke, Ui_Id("svgedit.cs.stroke", 0, 0), 0xFFE0A33Eu);
 	UiColorSelect_AttachIme(&d->csFill, &app->ime);
 	UiColorSelect_AttachIme(&d->csStroke, &app->ime);
-	d->csKey = 0;
+	d->csKey = -1;
 	d->lastSelIdx = -2;
 	d->lastSelCount = -1;
 	d->fX = UiInput_Add(&d->form, Ui_Id("svgedit.x", 0, 0), 16, 0,
@@ -619,7 +635,37 @@ static void cs_sync(EdDemo *d)
 		UiColorSelect_SetColor(&d->csFill, st.fill.color);
 	UiColorSelect_SetColor(&d->csStroke, st.stroke.kind == SVG_PAINT_NONE
 		? 0xFF9AA3AFu : st.stroke.color);
+	d->csFillLast = UiColorSelect_GetColor(&d->csFill);
+	d->csStrokeLast = UiColorSelect_GetColor(&d->csStroke);
 	Svg_StyleFree(&st);
+}
+
+/* 面板内拖动/输入不会立即回到 Draw 调用点 (changed 会在下一帧被清零),
+ * 因此在鼠标事件与帧末按当前颜色主动同步到选中元素. */
+static void cs_apply(EdDemo *d, int stroke, UiColor c);
+
+static void cs_live(EdDemo *d)
+{
+	if (UiColorSelect_IsOpen(&d->pm, &d->csFill)) {
+		UiColor c = UiColorSelect_GetColor(&d->csFill);
+		if (c != d->csFillLast) {
+			d->csFillLast = c;
+			cs_apply(d, 0, c);
+			UiApp_Invalidate(d->app);
+		}
+	} else {
+		d->csFillLast = UiColorSelect_GetColor(&d->csFill);
+	}
+	if (UiColorSelect_IsOpen(&d->pm, &d->csStroke)) {
+		UiColor c = UiColorSelect_GetColor(&d->csStroke);
+		if (c != d->csStrokeLast) {
+			d->csStrokeLast = c;
+			cs_apply(d, 1, c);
+			UiApp_Invalidate(d->app);
+		}
+	} else {
+		d->csStrokeLast = UiColorSelect_GetColor(&d->csStroke);
+	}
 }
 
 static void cs_apply(EdDemo *d, int stroke, UiColor c)
@@ -1140,44 +1186,23 @@ static void inspector2(EdDemo *d, UiContext *ui, UiRect panel)
 
 /* ── 帧 ───────────────────────────────────────────────────────────── */
 
-static void ctx_menu(EdDemo *d, UiApp *app, UiContext *ui)
+static void ctx_consume(EdDemo *d, UiContext *ui)
 {
-	UiButtonStyle plain = btn_plain();
-	float w = 140.0f, h = 8 * 30.0f + 8.0f;
-	float x = d->ctxX, y = d->ctxY;
-	int i;
-	if (!d->ctxOpen) return;
-	if (x + w > app->w - 8.0f) x = app->w - w - 8.0f;
-	if (y + h > app->h - 8.0f) y = app->h - h - 8.0f;
-	if (x < 8.0f) x = 8.0f;
-	if (y < 8.0f) y = 8.0f;
-	d->ctxRc = Ui_Rect(x, y, w, h);
-	Ui_Panel(ui, d->ctxRc);
-	{
-		static const char *items[8] = {
-			"复制", "粘贴", "副本", "删除", "置顶", "置底", "组合", "解组"
-		};
-		for (i = 0; i < 8; i++) {
-			if (!Ui_ButtonEx(ui, Ui_Id("svgedit.ctx", i, 0),
-				Ui_Rect(x + 4, y + 4 + (float)i * 30, w - 8, 28),
-				items[i], &plain, 1))
-				continue;
-			switch (i) {
-			case 0: Ui_SvgEdit_CopySel(d->ed); break;
-			case 1: Ui_SvgEdit_Paste(d->ed, ui); break;
-			case 2: Ui_SvgEdit_DuplicateSel(d->ed, ui); break;
-			case 3: Ui_SvgEdit_DeleteSel(d->ed, ui); break;
-			case 4: Ui_SvgEdit_Reorder(d->ed, ui, 1); break;
-			case 5: Ui_SvgEdit_Reorder(d->ed, ui, -1); break;
-			case 6: Ui_SvgEdit_Group(d->ed, ui); break;
-			case 7: Ui_SvgEdit_Ungroup(d->ed, ui); break;
-			default: break;
-			}
-			d->ctxOpen = 0;
-			UiApp_Invalidate(app);
-			return;
-		}
+	UiMenu *m = &d->ctxMenu;
+	if (!m->changed) return;
+	m->changed = 0;
+	switch (m->item) {
+	case 0: Ui_SvgEdit_CopySel(d->ed); break;
+	case 1: Ui_SvgEdit_Paste(d->ed, ui); break;
+	case 2: Ui_SvgEdit_DuplicateSel(d->ed, ui); break;
+	case 3: Ui_SvgEdit_DeleteSel(d->ed, ui); break;
+	case 5: Ui_SvgEdit_Reorder(d->ed, ui, 1); break;
+	case 6: Ui_SvgEdit_Reorder(d->ed, ui, -1); break;
+	case 8: Ui_SvgEdit_Group(d->ed, ui); break;
+	case 9: Ui_SvgEdit_Ungroup(d->ed, ui); break;
+	default: break;
 	}
+	UiApp_Invalidate(d->app);
 }
 
 static void on_frame(UiApp *app, void *user)
@@ -1283,8 +1308,7 @@ static void on_frame(UiApp *app, void *user)
 		}
 	}
 
-	Ui_SvgEdit_SetInputBlock(d->ed,
-		d->ctxOpen || UiPopupManager_AnyOpen(&d->pm));
+	Ui_SvgEdit_SetInputBlock(d->ed, UiPopupManager_AnyOpen(&d->pm));
 	Ui_SvgEdit_Frame(d->ed, ui, d->canvasRc);
 
 	inspector2(d, ui, Ui_Rect(app->w - insW - 16.0f, top + 8.0f,
@@ -1327,14 +1351,16 @@ static void on_frame(UiApp *app, void *user)
 		Ui_Rect(d->statusRc.x + d->statusRc.w - 360, d->statusRc.y,
 			350, d->statusRc.h), t->text3,
 		GFX_TEXT_RIGHT | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
-	ctx_menu(d, app, ui);
 	UiColorSelect_DrawPopup(&d->csFill, &d->pm, ui);
 	UiColorSelect_DrawPopup(&d->csStroke, &d->pm, ui);
+	UiMenu_Draw(&d->ctxMenu, &d->pm, ui);
+	ctx_consume(d, ui);
 }
 
 static void on_after_frame(UiApp *app, void *user)
 {
 	EdDemo *d = (EdDemo *)user;
+	cs_live(d);
 	if (d->csFill.committed || d->csStroke.committed) {
 		d->csFill.committed = 0;
 		d->csStroke.committed = 0;
@@ -1367,26 +1393,25 @@ static void on_mouse(UiApp *app, int msg, float x, float y, void *user)
 			double now = UiFrame_Now();
 			UiColorSelect_EndFrame(&d->csFill, now);
 			UiColorSelect_EndFrame(&d->csStroke, now);
+			cs_live(d);
 		}
 	}
-	if (msg == UI_APP_MOUSE_DOWN) {
-		if (d->ctxOpen) {
-			UiRect r = d->ctxRc;
-			if (x < r.x || y < r.y || x > r.x + r.w || y > r.y + r.h)
-				d->ctxOpen = 0;
+	if (!UiPopupManager_AnyOpen(&d->pm)) {
+		if (msg == UI_APP_MOUSE_DOWN) {
+			UiInput_MouseDown(&d->form, Ui_HitTest(&app->ui, x, y), x);
+		} else if (msg == UI_APP_MOUSE_MOVE) {
+			UiInput_MouseMove(&d->form, x);
+			UiApp_InvalidateRect(app, d->statusRc, 2.0f);
+		} else if (msg == UI_APP_MOUSE_UP) {
+			UiInput_MouseUp(&d->form);
 		}
-		UiInput_MouseDown(&d->form, Ui_HitTest(&app->ui, x, y), x);
-	} else if (msg == UI_APP_MOUSE_MOVE) {
-		UiInput_MouseMove(&d->form, x);
-		UiApp_InvalidateRect(app, d->statusRc, 2.0f);
-	} else if (msg == UI_APP_MOUSE_UP) {
-		UiInput_MouseUp(&d->form);
-	} else if (msg == UI_APP_MOUSE_RDOWN) {
+	}
+	if (msg == UI_APP_MOUSE_RDOWN) {
 		Ui_SvgEdit_RightDown(d->ed, x, y);
-		if (Ui_SvgEdit_SelCount(d->ed) > 0) {
-			d->ctxOpen = 1;
-			d->ctxX = x;
-			d->ctxY = y;
+		if (Ui_SvgEdit_SelCount(d->ed) > 0 &&
+			!UiPopupManager_AnyOpen(&d->pm)) {
+			UiMenu_OpenAt(&d->ctxMenu, &d->pm, &app->ui, UI_ID_NONE,
+				Ui_Rect(x, y, 0.0f, 0.0f), 0);
 			UiApp_Invalidate(app);
 		}
 	}
@@ -1396,8 +1421,7 @@ static int on_key(UiApp *app, UINT vk, void *user)
 {
 	EdDemo *d = (EdDemo *)user;
 	int focused = UiInput_Focused(&d->form) >= 0;
-	if (d->ctxOpen && vk == VK_ESCAPE) {
-		d->ctxOpen = 0;
+	if (UiMenu_Key(&d->ctxMenu, &d->pm, &app->ui, vk)) {
 		UiApp_Invalidate(app);
 		return 1;
 	}
@@ -1410,6 +1434,7 @@ static int on_key(UiApp *app, UINT vk, void *user)
 			return 1;
 		}
 		if (csOpen) return 1;   /* 面板打开时屏蔽编辑器快捷键 */
+		if (UiPopupManager_AnyOpen(&d->pm)) return 1;   /* 右键菜单 */
 	}
 	if (UiInput_Key(&d->form, app->hwnd, vk)) {
 		UiApp_Invalidate(app);
@@ -1441,19 +1466,19 @@ static int on_key(UiApp *app, UINT vk, void *user)
 static int on_char(UiApp *app, wchar_t ch, void *user)
 {
 	EdDemo *d = (EdDemo *)user;
-	(void)app;
+	int popup = UiPopupManager_AnyOpen(&d->pm);
 	if (UiColorSelect_Char(&d->csFill, &app->ui, ch)) return 1;
 	if (UiColorSelect_Char(&d->csStroke, &app->ui, ch)) return 1;
+	if (popup) return 0;   /* 弹层聚焦时不给底层输入框 */
 	return UiInput_Char(&d->form, ch);
 }
 
 static void on_ime(UiApp *app, void *user)
 {
 	EdDemo *d = (EdDemo *)user;
-	(void)app;
 	UiColorSelect_OnIme(&d->csFill, &app->ui);
 	UiColorSelect_OnIme(&d->csStroke, &app->ui);
-	UiInput_OnIme(&d->form);
+	if (!UiPopupManager_AnyOpen(&d->pm)) UiInput_OnIme(&d->form);
 }
 
 static void on_timer(UiApp *app, void *user)
