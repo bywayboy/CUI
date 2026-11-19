@@ -93,7 +93,17 @@ TARGETS = $(BIN)\cui_demo.exe $(BIN)\cui_minimal.exe $(BIN)\cui_advanced.exe \
 !INCLUDE build\headers.mk
 !ENDIF
 
-all: $(TARGETS)
+# 并行编译: nmake 没有 -j. 先由 pcompile.ps1 按 mtime 找出陈旧源文件,
+# 用 cl /MP 分组并发编译; 随后各目标发现对象已最新, 只做链接.
+# 找不到 cl.exe / 需要串行时: 直接 nmake <目标> 仍走下方单文件规则.
+pcompile: build\grain_cso.h
+	@powershell -NoProfile -ExecutionPolicy Bypass -File tools\pcompile.ps1
+
+# 并行编译后由 build.cmd 另起一次 nmake 只做链接: 新进程重新读取
+# 对象时间戳, 避免本进程在 pcompile 之前缓存的旧时间戳导致漏链接.
+all: pcompile
+
+link: $(TARGETS)
 
 # Rebuild every object when any header or this makefile changes.
 COMPILED_OBJS = $(CORE_OBJS) $(OPT_OBJS) $(THEME_EDIT_OBJS) \

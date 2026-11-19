@@ -1110,10 +1110,12 @@ static const char DOC_COLORSEL[] =
 	"\n"
 	"## 面板\n"
 	"\n"
+	"- 顶部: HEX(6 位) 与透明度(0..255) 输入框, 回车/失焦生效;\n"
 	"- SV: 横向 白→纯色相, 纵向 透明→黑; 拖动改 s/v;\n"
-	"- 色相条: 红色胶囊底 + 54 段实色; 拖动改 h (0..360);\n"
-	"- 透明度条: 棋盘格 + 透明→不透明渐变; 拖动改 a;\n"
-	"- Esc / 点面板外关闭, 关闭时若有改动置 `committed`.\n";
+	"- 色相条在 **右侧竖直**, 底部是 **透明度条** (棋盘格+渐变);\n"
+	"- Esc / 点面板外关闭, 关闭时若有改动置 `committed`;\n"
+	"- `UiColorSelect_SetAlphaEnabled(cs, 0)`: 不提供透明度, alpha 固定 255,\n"
+	"  面板隐藏透明度条与对应输入框。\n";
 
 static const char API_COLORSEL[] =
 	"# ColorSelect API\n"
@@ -1129,7 +1131,9 @@ static const char API_COLORSEL[] =
 	"| `UiColorSelect_GetColor / GetHSVA` | 读出 RGBA / HSVA |\n"
 	"| `UiColorSelect_Draw(cs, pm, ui, rc, enabled)` | 触发器 + 开/关; 返回 changed |\n"
 	"| `UiColorSelect_DrawPopup(cs, pm, ui)` | 帧末面板绘制与拖拽 |\n"
-	"| `UiColorSelect_Key(cs, pm, ui, vk)` | Esc 关面板 |\n"
+	"| `UiColorSelect_Key/Char/OnIme/Blink` | 键盘/字符/IME/光标闪烁转发 |\n"
+	"| `UiColorSelect_AttachIme(cs, ime)` | HEX/透明度输入框接 IME |\n"
+	"| `UiColorSelect_SetAlphaEnabled(on)` | 0 = 固定不透明并隐藏透明 UI |\n"
 	"| `UiColorSelect_IsOpen(pm, cs)` | 面板是否打开 |\n"
 	"| `UiColor_HsvToRgb / RgbToHsv` | 纯函数 (h 0..360, s/v/a 0..1) |\n"
 	"\n"

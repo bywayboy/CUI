@@ -47,7 +47,10 @@ SET "HDRS="
 FOR /R src %%H IN (*.h *.hpp) DO SET "HDRS=!HDRS! %%H"
 > "build\headers.mk" ECHO HEADERS =!HDRS!
 
-nmake /NOLOGO /f build.mk "FXC=%FXC%" || GOTO :err
+REM 第一阶段: 并行编译 (pcompile 内部用 cl /MP 并发).
+REM 第二阶段: 新 nmake 进程只做链接, 重新读取对象时间戳.
+nmake /NOLOGO /f build.mk "FXC=%FXC%" pcompile || GOTO :err
+nmake /NOLOGO /f build.mk "FXC=%FXC%" link || GOTO :err
 
 ECHO.
 FOR %%E IN (bin\cui_demo.exe bin\cui_minimal.exe bin\cui_advanced.exe bin\cui_multi.exe bin\cui_mvvm.exe bin\cui_scroll.exe bin\cui_tabs.exe bin\cui_icons.exe bin\cui_controls.exe bin\cui_overlays.exe bin\cui_textarea.exe bin\cui_datepicker.exe bin\cui_net.exe bin\cui_net_test.exe bin\cui_image.exe bin\cui_ws_server.exe bin\cui_gfx_rich_test.exe bin\cui_md_test.exe bin\cui_md_ui_test.exe bin\cui_md_math_test.exe bin\cui_gfx_math_test.exe bin\cui_markdown.exe bin\cui_nav.exe bin\cui_nav_test.exe bin\cui_pagination.exe bin\cui_pagination_test.exe bin\cui_layout_test.exe bin\cui_grid.exe bin\cui_grid_test.exe bin\cui_color_test.exe bin\cui_theme_editor.exe bin\cui_theme_edit_test.exe bin\cui_gallery.exe bin\cui_webview.exe bin\cui_svgedit.exe bin\cui_gfx_path_test.exe bin\cui_svg_test.exe) DO (

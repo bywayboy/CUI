@@ -10,13 +10,15 @@
 一个下拉式颜色选择控件：
 
 - 触发器显示当前色块 + `#RRGGBBAA` 文本 + chevron，点击弹出取色面板；
-- 面板由 **SV 方形（饱和度×明度）+ 色相条 + 透明度条** 组成，全部可拖拽；
+- 面板：顶部 **HEX / 透明度输入框**，左侧 **SV 方形**，右侧 **竖直色相条**，
+  底部 **透明度条**；全部拖拽可用；
+- `SetAlphaEnabled(0)` 可关闭透明度：隐藏透明条与输入框，alpha 固定 255；
 - 组件**自持 h/s/v/a 四个状态**：灰色（S=0）或全黑（V=0）时不丢色相，
   拖动不会出现色相跳变；
 - 输出 `UiColor`（`0xAARRGGBB`），同时提供 HSVA 双向读写接口；
 - 与 `UiSelect` 相同的弹层语义：PopupManager 打开/关闭、点外面关闭、Esc 关闭。
 
-非目标：hex 文本输入、预设色板、新旧色对比、屏幕吸管、渐变/多色标编辑、
+非目标：预设色板、新旧色对比、屏幕吸管、渐变/多色标编辑、
 CMYK/HSL 输出、键盘方向键微调（后续可按需补）。
 
 ## 2. 状态模型
@@ -83,6 +85,12 @@ int  UiColorSelect_Key(UiColorSelect *cs, UiPopupManager *pm,
 	UiContext *ui, UINT vk);
 
 int  UiColorSelect_IsOpen(const UiPopupManager *pm, const UiColorSelect *cs);
+
+/* 交互条 layer: Gfx_End 之后调用; 拖动期在 Mouse 后紧跟一次. */
+void UiColorSelect_EndFrame(UiColorSelect *cs, double nowMs);
+/* 原始鼠标事件 (on_mouse 转发): 拖动即时更新, 不依赖主窗出帧. */
+int  UiColorSelect_Mouse(UiColorSelect *cs, UiContext *ui, int msg,
+	float x, float y);   /* UI_COLOR_MOUSE_MOVE/DOWN/UP */
 ```
 
 用法（与 Select 一致）：
@@ -109,12 +117,14 @@ if (color.committed) { save(color 的 GetColor()); color.committed = 0; }
 
 | 部件 | 尺寸 | 绘制 |
 |:--|:--|:--|
-| 面板 | 宽 240，内边距 12，圆角 10 | `toastBg`/`toastBorder` + 面板淡入 |
-| SV 方块 | 216 × 136，圆角 8 | 横：白→纯色相 `GradH`；竖叠：透明→黑 `GradV` |
-| 色相条 | 216 × 14，圆角 7 | 7 档线性渐变 (红/黄/绿/青/蓝/品/红) |
-| 透明度条 | 216 × 14，圆角 7 | 棋盘格 + 透明→不透明 `GradH` |
-| 间距 | 12 / 10 / 8 / 12 | |
-| 面板总高 | 206 | 12+136+10+14+8+14+12 |
+| 面板 | 宽 252，内边距 12，圆角 10 | `toastBg`/`toastBorder` + 面板淡入 |
+| HEX 输入 | 高 26（透明度开时右侧留 52+8） | `Edit_Draw` 主题表面 |
+| 透明度输入 | 52 × 26 | 十进制 0..255，随输入即时生效 |
+| SV 方块 | (228-16-10) × 0.66，圆角 8 | 横：白→纯色相；竖叠：透明→黑 |
+| 色相条 | **16 × SV 高（右侧竖直）**，圆角 8 | 红色胶囊底 + 内矩形裁剪 6 段 `GradV`，端帽纯红 |
+| 透明度条 | 228 × 14（底部），圆角 7 | 棋盘格 + 透明→不透明 `GradH` |
+| 间距 | 12 / 10 / 8 / 10 / 12 | |
+| 面板总高 | 顶行 26 + SV 133 + 透明条 14 ≈ 217（无透明时 -24） | |
 
 指示标：
 
@@ -129,10 +139,12 @@ if (color.committed) { save(color 的 GetColor()); color.committed = 0; }
 
 - 触发器点击：`UiPopupManager_Open(pm, ui, id, id, focusOnClose)`；
   已打开则关闭。面板首帧登记 `panelFx` 淡入（与 Select 相同写法）。
-- 打开后指针在面板内按下：
+- 打开后指针在面板内按下（用持久的 `pressed` + 按下坐标兜底，事件合并不丢拖）：
   - SV：`s = clamp((x-svRc.x)/w)`, `v = clamp(1-(y-svRc.y)/h)`；
-  - 色相：`h = clamp(x/w)*360`；
+  - 色相（竖直）：`h = clamp((y-hueRc.y)/hueH)*360`；
   - 透明度：`a = clamp(x/w)`。
+- HEX 框输入 6 位 hex（`#` 可省），透明度框输入 0..255；
+  回车/失焦/点其它条生效，聚焦字段不回写。
 - 按下即生效并进入 `drag=kind`；拖动允许移出条外（坐标夹紧），
   直到 `ui->mouseDown == 0` 结束并置 `committed=1`。
 - 每帧仅在值变化（>1e-4）时 `changed=1` 并 `Ui_InvalidateRectPad` 面板；
@@ -144,8 +156,11 @@ if (color.committed) { save(color 的 GetColor()); color.committed = 0; }
 
 ## 6. 绘制与性能
 
-- 面板在帧末 overlay 绘制（Select 模式），无额外 DComp layer：
-  拖拽期本来每帧都在变，合成器层的"只画一次"收益不成立。
+- 面板主体（背景/HEX/透明度输入）画在主表面，只在打开/松手/输入时刷新；
+  **SV/色相/透明度条画在独立 GfxLayer 上**（`UiColorSelect_EndFrame`，
+  Gfx_End 之后同步）。拖动期由 `UiColorSelect_Mouse` 直接更新并重绘这一小块
+  layer，主窗口零重绘；松手才失效主窗刷新触发器/预览/输入框。
+- ULW 或 layer 创建失败时整块回退主表面绘制（拖动期逐帧失效面板）。
 - SV 两个渐变、色相条 7 档渐变用现有 `Gfx_FillRoundRectGradH/V` 与
   `Gfx_LinearGradientBrush`；透明度条棋盘格在帧内画（约 27×2 个小方块，
   仅面板区域受影响）。
@@ -171,10 +186,11 @@ if (color.committed) { save(color 的 GetColor()); color.committed = 0; }
   hex/HSVA 只读回显 + 两三个实例）、四段文档（文档/API/事件/最佳实践）、
   全量回归、提交。
 
-进度：M1–M3 已完成（2026-11-19）。已验证：面板开合与淡入、SV/色相/透明度
-三处拖拽、松手一次 committed、Esc/点外关闭、双实例互不影响、触发器 hex
-回显与窄宽度省略、合成器 chevron 旋转；`ui_color_test` 161 项（HSV 已知值/
-往返/灰黑保留色相/夹取）全通过。
+进度：M1–M3 已完成（2026-11-19）。已验证：面板开合、HEX/透明度输入、
+SV/竖直色相/底部透明度三处拖拽、松手一次 committed、Esc/点外关闭、
+双实例、窄宽度省略 hex、合成器 chevron 旋转；交互条 layer 拖动期主窗
+不再出帧（实测一次按下仅 +1 帧，移动全走 layer），松手后刷新触发器/回显；
+`ui_color_test` 161 项全通过。
 
 ## 9. 验收
 

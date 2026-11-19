@@ -3775,6 +3775,10 @@ static void cs_init(Gallery *g)
 		0xFF3B82F6u);
 	UiColorSelect_Init(&g->color.line, Ui_Id("gl.cs.line", 0, 0),
 		0xFFE0A33Eu);
+	UiColorSelect_AttachIme(&g->color.main, &g->app->ime);
+	UiColorSelect_AttachIme(&g->color.line, &g->app->ime);
+	/* 第二个实例演示"不提供透明度": alpha 固定 255, 面板隐藏透明条/输入框 */
+	UiColorSelect_SetAlphaEnabled(&g->color.line, 0);
 }
 
 static void cs_demo(Gallery *g, UiRect rc)
@@ -3797,7 +3801,7 @@ static void cs_demo(Gallery *g, UiRect rc)
 		set_status(g, "主色调整中...");
 	Ui_StackSkip(&col, 12.0f);
 
-	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "描边色");
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "描边色 (无透明度选项)");
 	Ui_StackSkip(&col, 6.0f);
 	if (UiColorSelect_Draw(&g->color.line, &g->pm, ui,
 			Ui_StackTakeAligned(&col, 34.0f, 360.0f, UI_ALIGN_START), 1))
@@ -3832,9 +3836,9 @@ static void cs_demo(Gallery *g, UiRect rc)
 	Ui_StackSkip(&col, 10.0f);
 
 	note_txt(gfx, t, Ui_StackTakeFill(&col),
-		"点击触发器展开面板: SV 方形 / 色相条 / 透明度条都可拖动.\n"
-		"组件自持 HSVA, 灰色或全黑时色相不丢; 松手/关闭只提交一次\n"
-		"(committed), 实时变化见状态栏与上方回显.");
+		"面板: 顶部 HEX/透明度输入, 左侧 SV, 右侧色相条, 底部透明度条.\n"
+		"组件自持 HSVA, 灰色或全黑时色相不丢; 描边色关闭了透明度选项,\n"
+		"alpha 固定 255 且面板不显示透明条. 松手/关闭只提交一次.");
 }
 
 static int cs_key(Gallery *g, UINT vk)
@@ -3842,6 +3846,38 @@ static int cs_key(Gallery *g, UINT vk)
 	if (UiColorSelect_Key(&g->color.main, &g->pm, &g->app->ui, vk)) return 1;
 	if (UiColorSelect_Key(&g->color.line, &g->pm, &g->app->ui, vk)) return 1;
 	return 0;
+}
+
+static int cs_chr(Gallery *g, wchar_t ch)
+{
+	if (UiColorSelect_Char(&g->color.main, &g->app->ui, ch)) return 1;
+	if (UiColorSelect_Char(&g->color.line, &g->app->ui, ch)) return 1;
+	return 0;
+}
+
+static void cs_ime(Gallery *g)
+{
+	UiColorSelect_OnIme(&g->color.main, &g->app->ui);
+	UiColorSelect_OnIme(&g->color.line, &g->app->ui);
+}
+
+/* 拖动条走原始鼠标事件: 不依赖主窗出帧, layer 立即重绘 */
+static void cs_mouse(Gallery *g, int msg, float x, float y)
+{
+	int used = 0;
+	used |= UiColorSelect_Mouse(&g->color.main, &g->app->ui, msg, x, y);
+	used |= UiColorSelect_Mouse(&g->color.line, &g->app->ui, msg, x, y);
+	if (used) {
+		double now = UiFrame_Now();
+		UiColorSelect_EndFrame(&g->color.main, now);
+		UiColorSelect_EndFrame(&g->color.line, now);
+	}
+}
+
+static void cs_blink(Gallery *g)
+{
+	UiColorSelect_Blink(&g->color.main, &g->app->ui);
+	UiColorSelect_Blink(&g->color.line, &g->app->ui);
 }
 
 static void cs_popups(Gallery *g)
@@ -7643,8 +7679,8 @@ static const GalleryPage kPages[PG_COUNT] = {
 		pag_init, pag_demo, pag_props, pag_key, NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL },
 	/* PG_COLORSEL */
-	{ "ColorSelect 取色", "ColorSelect 颜色选择", "下拉取色 · 自持 HSVA · SV/色相/透明度",
-		cs_init, cs_demo, NULL, cs_key, NULL, NULL, NULL, NULL,
+	{ "ColorSelect 取色", "ColorSelect 颜色选择", "下拉取色 · 自持 HSVA · HEX/透明度编辑",
+		cs_init, cs_demo, NULL, cs_key, cs_chr, cs_ime, cs_blink, cs_mouse,
 		NULL, cs_popups, NULL },
 	/* PG_SCROLL */
 	{ "ScrollView", "ScrollView 滚动", "虚拟列表 · 变高缓存 · 惯性/回弹",
@@ -7829,6 +7865,8 @@ static void on_after_frame(UiApp *app, void *user)
 		UiApp_Invalidate(app);
 	}
 	UiLoading_EndFrame(&g->load.ld, UiFrame_Now());
+	UiColorSelect_EndFrame(&g->color.main, UiFrame_Now());
+	UiColorSelect_EndFrame(&g->color.line, UiFrame_Now());
 	UiToast_EndFrame(&g->toast, UiFrame_Now(), app->w, app->h);
 	UiProgress_EndFrame(&g->prog.prog);
 }
