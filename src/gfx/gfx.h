@@ -158,17 +158,36 @@ void Gfx_PathClose(GfxPath *p);
  * 需要紧包围盒的调用方 (SVG 编辑器) 自行按展平点计算. 空路径返回全 0. */
 GfxRect Gfx_PathBounds(Gfx *g, GfxPath *p);
 
+/* 文本轮廓提取: 用 DWrite 字形轮廓喂给回调 (坐标为元素局部 DIP,
+ * (x,y) 为文本布局左上角). 每个闭合轮廓回调一次 move/line/cubic/close.
+ * 返回轮廓数; 无字形或失败返回 0. */
+typedef struct GfxPathSink {
+	void *user;
+	void (*move_to)(void *user, float x, float y);
+	void (*line_to)(void *user, float x, float y);
+	void (*cubic_to)(void *user, float x1, float y1, float x2, float y2,
+		float x, float y);
+	void (*close)(void *user);
+} GfxPathSink;
+int Gfx_TextOutline(Gfx *g, GfxFont *f, const char *utf8, float x, float y,
+	GfxPathSink *sink);
+
 /* 画刷: 纯描述对象 (不含设备资源), 可在设备重建后继续使用.
  * 渐变为线性, 起点/终点由 box + angleDeg 决定 (0° = 左→右, 90° = 上→下),
  * 坐标属于 box 所在空间 (元素局部); 与几何一起受变换栈影响. */
-enum { GFX_BRUSH_SOLID = 0, GFX_BRUSH_LINEAR };
+enum { GFX_BRUSH_SOLID = 0, GFX_BRUSH_LINEAR, GFX_BRUSH_RADIAL };
 GfxBrush *Gfx_SolidBrush(Gfx *g, GfxColor c);
 GfxBrush *Gfx_LinearGradientBrush(Gfx *g, GfxRect boxLocal, float angleDeg,
 	const GfxGradStop *stops, int count);
+/* 径向渐变: (cx,cy,r) 在包围盒归一化空间 [0,1]; r=0.5 内切椭圆. */
+GfxBrush *Gfx_RadialGradientBrush(Gfx *g, GfxRect boxLocal,
+	float cx, float cy, float r, const GfxGradStop *stops, int count);
 void Gfx_BrushDestroy(Gfx *g, GfxBrush *b);
 
 void Gfx_FillPath(Gfx *g, GfxPath *p, GfxColor c);
 void Gfx_FillPathBrush(Gfx *g, GfxPath *p, GfxBrush *brush);
+/* 填充规则: evenOdd=0 非零(winding), 1 奇偶. 变更后下一次绘制重建几何. */
+void Gfx_PathSetFillRule(GfxPath *p, int evenOdd);
 /* 描边: st=NULL 用圆头/圆角实线; brush=NULL 不画. */
 void Gfx_StrokePath(Gfx *g, GfxPath *p, GfxBrush *brush, float width,
 	const GfxStrokeStyle *st);

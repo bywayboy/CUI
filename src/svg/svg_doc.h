@@ -40,6 +40,7 @@ typedef struct {
 	float x, y;
 	float inX, inY, outX, outY;
 	uint8_t type, hasIn, hasOut;
+	uint8_t subStart;   /* 1 = 新子路径起点 (复合路径/字形轮廓) */
 } SvgNode;
 
 /* 段: nodes[i] -> nodes[i+1]; 闭合时 seg[count-1] 是回到 nodes[0] 的段 */
@@ -58,7 +59,9 @@ typedef struct {
 	uint8_t closed;
 } SvgPath;
 
-typedef enum { SVG_PAINT_NONE, SVG_PAINT_SOLID, SVG_PAINT_LINEAR } SvgPaintKind;
+typedef enum {
+	SVG_PAINT_NONE, SVG_PAINT_SOLID, SVG_PAINT_LINEAR, SVG_PAINT_RADIAL
+} SvgPaintKind;
 
 typedef struct { float offset; GfxColor color; } SvgGradStop;
 
@@ -66,7 +69,8 @@ typedef struct {
 	SvgPaintKind kind;
 	GfxColor color;                 /* SOLID */
 	float angleDeg;                 /* LINEAR: 屏幕坐标系角度, 0=左→右 */
-	SvgGradStop *stops;             /* LINEAR, N 色标 (调用方保证有序) */
+	float cx, cy, r;                /* RADIAL: 包围盒归一化 (默认 .5/.5/.5) */
+	SvgGradStop *stops;             /* 渐变, N 色标 (调用方保证有序) */
 	int stopCount;
 } SvgPaint;
 
@@ -81,7 +85,8 @@ enum {
 	SVG_STYLE_CAPJOIN = 1u << 3,
 	SVG_STYLE_DASH   = 1u << 4,
 	SVG_STYLE_OPACITY = 1u << 5,
-	SVG_STYLE_ALL    = 0x3Fu
+	SVG_STYLE_FILLRULE = 1u << 6,
+	SVG_STYLE_ALL    = 0x7Fu
 };
 
 typedef struct {
@@ -89,6 +94,7 @@ typedef struct {
 	float strokeWidth;              /* 世界单位, 默认 2 */
 	float dash[8]; int dashCount;   /* 空 = 实线 */
 	int cap, join;
+	int fillRule;                   /* 0 非零(winding) / 1 奇偶 */
 	float opacity;                  /* 0..1 */
 	unsigned setMask;               /* SVG_STYLE_*; 叶子默认全开 */
 } SvgStyle;
@@ -123,6 +129,7 @@ typedef struct {
 	SvgTransform xf;                /* 新模型; 组合根/组/嵌套变换 */
 	float rot;                      /* 一期兼容: 叶子自转 (xf 未启用时使用) */
 	uint8_t visible, locked;
+	uint8_t compound;               /* PATH: 多子路径 (文本转路径), 禁节点编辑 */
 	int version;                    /* 几何/样式变更 +1 (UI 缓存键) */
 } SvgElement;
 
@@ -143,6 +150,15 @@ SvgElement *SvgDoc_Add(SvgDoc *d, SvgElType type);   /* 置顶, 默认样式 */
 void SvgDoc_Remove(SvgDoc *d, int index);
 int  SvgDoc_Duplicate(SvgDoc *d, int index);         /* 返回新索引, -1 失败 */
 void SvgDoc_MoveZ(SvgDoc *d, int index, int dir);    /* 同父内 dir>0 上移 */
+
+/* ── 内部剪贴板 (跨删除保留深拷贝子树) ───────────────────────────── */
+typedef struct SvgClip SvgClip;
+SvgClip *SvgDoc_ClipCopy(SvgDoc *d, const int *idx, int n);
+void     SvgDoc_ClipFree(SvgClip *c);
+/* 粘贴: 新元素追加到末尾并平移 (dx,dy); roots 返回新根索引.
+ * 返回新元素个数, 0 = 失败/空. */
+int      SvgDoc_ClipPaste(SvgDoc *d, const SvgClip *c, float dx, float dy,
+	int *roots, int cap);
 
 /* ── 树 (M7) ─────────────────────────────────────────────────────── */
 SvgElement *SvgDoc_AddChild(SvgDoc *d, int parent, SvgElType type);
@@ -197,6 +213,7 @@ void Svg_PathInit(SvgPath *p);
 void Svg_PathFree(SvgPath *p);
 int  Svg_PathCopy(SvgPath *dst, const SvgPath *src);
 int  Svg_PathAddNode(SvgPath *p, float x, float y, SvgNodeType type);
+int  Svg_PathMoveTo(SvgPath *p, float x, float y);
 /* 在 segIndex 段参数 t (0..1) 处插入节点; 返回新节点索引, -1 失败.
  * 直线切分 / 贝塞尔 De Casteljau / 圆弧按同一圆心半径切成两段 A. */
 int  Svg_PathInsertNode(SvgPath *p, int segIndex, float t);

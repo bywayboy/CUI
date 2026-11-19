@@ -177,6 +177,32 @@ M9（文本 v1）已实现：`SVG_EL_TEXT` 模型（内容/字体族/字号/字�
 单行（模型/导出已支持 `\n`）；自动化脚本对 UI 创建/编辑的验证受
 合成输入限制，模型层由 11 项新单测覆盖（`svg_test` 191）。
 
+M10（文本转路径）第一版已实现：gfx 新增 `Gfx_TextOutline`（IDWriteTextLayout
+逐 run 调 `IDWriteFontFace::GetGlyphRunOutline`，经自定义
+`ID2D1SimplifiedGeometrySink` 回调 move/line/cubic/close）；路径模型支持
+多子路径（`SvgNode.subStart` + 全局 `closed`，展平/绘制/导出按子路径逐段
+闭合）；`Svg_PathMoveTo` 开启新轮廓；`Ui_SvgEdit_TextToPath` 按文本对齐/
+锚点/行高逐行转换并原位替换为复合 PATH（样式与变换保留，`compound` 禁止
+节点编辑）；检查器文本页新增「转路径」，可撤销。Winding 填充天然按字形
+轮廓方向保留孔洞。新增 `cui_svg_edit_test`（DWrite「O」→ ≥2 轮廓、导出
+多 M/Z、转换后绘帧）与 `cui_gfx_path_test` 轮廓提取用例。
+已知：转路径后节点编辑不可用；多行/跨字体回退仍按行转换，不做连字。
+
+M11（渐变/描边）已实现：`SVG_PAINT_RADIAL` + 归一化 `cx/cy/r`，gfx 新增
+`Gfx_RadialGradientBrush`（D2D 径向椭圆，参数化缓存复用线性槽）与
+`Gfx_PathSetFillRule`（nonzero/evenodd，重建几何）；导出
+`<radialGradient>` 与 `fill-rule="evenodd"`；编辑器画布提供线性/径向渐变
+手柄（拖中心/端点改中心、半径、角度）；样式检查器支持填充循环
+无→纯色→线→径、色标增删（2–16）、填充规则、虚线/端点/连接。
+
+M12（效率收尾）第一版已实现：移动时吸附画板与其它根元素的边/中心，
+拖拽期间绘制参考线（Alt 临时关闭，Shift 锁定单轴）；方向键 1 DIP /
+Shift+10 DIP 微移；`SvgDoc_ClipCopy/ClipPaste` 深拷贝子树内部剪贴板
+（跨删除可用），Ctrl+C/V/D 与检查器复制/粘贴/副本；多选对齐
+左/横中/右/上/纵中/下与水平/垂直等距；画布右键菜单（复制/粘贴/副本/
+删除/置顶/置底/组合/解组），菜单打开时暂停画布输入；Esc 关闭菜单。
+仍待办：PNG 导出（可选）、吸附阈值可配置、参考线自定义。
+
 ## 5. 性能与内存
 
 - 渲染：视口裁剪 + 元素 bounds 缓存（一期已有）扩展到树；

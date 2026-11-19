@@ -173,7 +173,9 @@ static int paint_copy(SvgPaint *dst, const SvgPaint *src)
 	dst->kind = src->kind;
 	dst->color = src->color;
 	dst->angleDeg = src->angleDeg;
-	if (src->kind == SVG_PAINT_LINEAR && src->stops && src->stopCount > 0) {
+	dst->cx = src->cx; dst->cy = src->cy; dst->r = src->r;
+	if ((src->kind == SVG_PAINT_LINEAR || src->kind == SVG_PAINT_RADIAL) &&
+		src->stops && src->stopCount > 0) {
 		dst->stops = (SvgGradStop *)x_alloc((size_t)src->stopCount * sizeof(SvgGradStop));
 		if (!dst->stops) return 0;
 		memcpy(dst->stops, src->stops, (size_t)src->stopCount * sizeof(SvgGradStop));
@@ -196,6 +198,7 @@ int Svg_StyleCopy(SvgStyle *dst, const SvgStyle *src)
 	memcpy(dst->dash, src->dash, sizeof(dst->dash));
 	dst->cap = src->cap;
 	dst->join = src->join;
+	dst->fillRule = src->fillRule;
 	dst->opacity = src->opacity;
 	dst->setMask = src->setMask;
 	return 1;
@@ -796,6 +799,7 @@ int SvgDoc_ResolveStyle(const SvgDoc *d, int idx, SvgStyle *out)
 			memcpy(out->dash, s->dash, sizeof(out->dash));
 		}
 		if (s->setMask & SVG_STYLE_OPACITY) out->opacity = s->opacity;
+		if (s->setMask & SVG_STYLE_FILLRULE) out->fillRule = s->fillRule;
 	}
 	out->setMask = SVG_STYLE_ALL;
 	return 1;
@@ -1249,30 +1253,58 @@ static void flatten_arc(PolyBuild *b, float x0, float y0, float x1, float y1,
 	}
 }
 
+int Svg_PathMoveTo(SvgPath *p, float x, float y)
+{
+	int idx = Svg_PathAddNode(p, x, y, SVG_NODE_CORNER);
+	if (idx > 0) p->nodes[idx].subStart = 1;
+	return idx;
+}
+
 static int flatten_path(PolyBuild *b, const SvgPath *p, float tol)
 {
-	int i, sc;
+	int start = 0, count;
 	if (!p || p->count <= 0) return 1;
-	sc = path_seg_count(p);
-	if (!pb_contour(b, p->closed)) return 0;
-	if (!pb_pt(b, p->nodes[0].x, p->nodes[0].y)) return 0;
-	for (i = 0; i < sc; i++) {
-		int j = (i + 1) % p->count;
-		const SvgNode *n0 = &p->nodes[i];
-		const SvgNode *n1 = &p->nodes[j];
-		SvgSegType t = p->seg[i];
-		if (t == SVG_SEG_LINE) {
-			if (!pb_pt(b, n1->x, n1->y)) return 0;
-		} else if (t == SVG_SEG_CUBIC) {
-			float c1x = n0->x + (n0->hasOut ? n0->outX : 0.0f);
-			float c1y = n0->y + (n0->hasOut ? n0->outY : 0.0f);
-			float c2x = n1->x + (n1->hasIn ? n1->inX : 0.0f);
-			float c2y = n1->y + (n1->hasIn ? n1->inY : 0.0f);
-			flatten_cubic(b, n0->x, n0->y, c1x, c1y, c2x, c2y,
-				n1->x, n1->y, tol, 0);
-		} else {
-			flatten_arc(b, n0->x, n0->y, n1->x, n1->y, &p->arc[i], tol);
+	count = p->count;
+	while (start < count) {
+		int end = start + 1, k;
+		while (end < count && !p->nodes[end].subStart) end++;
+		if (!pb_contour(b, p->closed)) return 0;
+		if (!pb_pt(b, p->nodes[start].x, p->nodes[start].y)) return 0;
+		for (k = start; k < end - 1; k++) {
+			const SvgNode *n0 = &p->nodes[k];
+			const SvgNode *n1 = &p->nodes[k + 1];
+			SvgSegType t = p->seg[k];
+			if (t == SVG_SEG_LINE) {
+				if (!pb_pt(b, n1->x, n1->y)) return 0;
+			} else if (t == SVG_SEG_CUBIC) {
+				float c1x = n0->x + (n0->hasOut ? n0->outX : 0.0f);
+				float c1y = n0->y + (n0->hasOut ? n0->outY : 0.0f);
+				float c2x = n1->x + (n1->hasIn ? n1->inX : 0.0f);
+				float c2y = n1->y + (n1->hasIn ? n1->inY : 0.0f);
+				flatten_cubic(b, n0->x, n0->y, c1x, c1y, c2x, c2y,
+					n1->x, n1->y, tol, 0);
+			} else {
+				flatten_arc(b, n0->x, n0->y, n1->x, n1->y, &p->arc[k], tol);
+			}
 		}
+		if (p->closed) {
+			const SvgNode *n0 = &p->nodes[end - 1];
+			const SvgNode *n1 = &p->nodes[start];
+			SvgSegType t = p->seg[end - 1];
+			if (t == SVG_SEG_LINE) {
+				if (!pb_pt(b, n1->x, n1->y)) return 0;
+			} else if (t == SVG_SEG_CUBIC) {
+				float c1x = n0->x + (n0->hasOut ? n0->outX : 0.0f);
+				float c1y = n0->y + (n0->hasOut ? n0->outY : 0.0f);
+				float c2x = n1->x + (n1->hasIn ? n1->inX : 0.0f);
+				float c2y = n1->y + (n1->hasIn ? n1->inY : 0.0f);
+				flatten_cubic(b, n0->x, n0->y, c1x, c1y, c2x, c2y,
+					n1->x, n1->y, tol, 0);
+			} else {
+				flatten_arc(b, n0->x, n0->y, n1->x, n1->y, &p->arc[end - 1], tol);
+			}
+		}
+		start = end;
 	}
 	return 1;
 }
@@ -1787,6 +1819,152 @@ static int doc_reserve(SvgDoc *d, int want)
 	d->els = n;
 	d->cap = cap;
 	return 1;
+}
+
+/* ── 内部剪贴板 ───────────────────────────────────────────────────── */
+
+struct SvgClip {
+	SvgElement *els;
+	int *oldIdx;      /* 局部 → 源文档下标 */
+	int count;
+	int *roots;       /* 局部根下标 */
+	int rootCount;
+};
+
+static int clip_contains_(const int *sel, int n, int idx)
+{
+	int i;
+	for (i = 0; i < n; i++) if (sel[i] == idx) return 1;
+	return 0;
+}
+
+static int clip_count_sub_(const SvgDoc *d, int idx)
+{
+	int n = 1, i;
+	const SvgElement *e = &d->els[idx];
+	for (i = 0; i < e->childCount; i++)
+		n += clip_count_sub_(d, e->children[i]);
+	return n;
+}
+
+typedef struct ClipBuild {
+	const SvgDoc *d;
+	SvgClip *c;
+	int *map;      /* 源下标 → 局部 */
+} ClipBuild;
+
+static int clip_emit_(ClipBuild *b, int oldIdx, int localParent)
+{
+	const SvgElement *src = &b->d->els[oldIdx];
+	int local = b->c->count, i;
+	if (!element_copy(&b->c->els[local], src)) return 0;
+	b->c->els[local].parent = localParent;
+	b->c->oldIdx[local] = oldIdx;
+	b->map[oldIdx] = local;
+	b->c->count++;
+	for (i = 0; i < src->childCount; i++) {
+		if (!clip_emit_(b, src->children[i], local)) return 0;
+	}
+	return 1;
+}
+
+SvgClip *SvgDoc_ClipCopy(SvgDoc *d, const int *idx, int n)
+{
+	SvgClip *c;
+	ClipBuild b;
+	int i, total = 0, nroots = 0;
+	int *roots = NULL;
+	if (!d || !idx || n <= 0) return NULL;
+	roots = (int *)x_alloc((size_t)n * sizeof(int));
+	if (!roots) return NULL;
+	for (i = 0; i < n; i++) {
+		int k = idx[i], p, skip = 0;
+		if (k < 0 || k >= d->count) continue;
+		for (p = d->els[k].parent; p >= 0; p = d->els[p].parent) {
+			if (clip_contains_(idx, n, p)) { skip = 1; break; }
+		}
+		if (skip) continue;
+		roots[nroots++] = k;
+		total += clip_count_sub_(d, k);
+	}
+	if (nroots <= 0 || total <= 0) { x_free(roots); return NULL; }
+	c = (SvgClip *)x_alloc(sizeof(SvgClip));
+	if (!c) { x_free(roots); return NULL; }
+	memset(c, 0, sizeof(*c));
+	c->els = (SvgElement *)x_alloc((size_t)total * sizeof(SvgElement));
+	c->oldIdx = (int *)x_alloc((size_t)total * sizeof(int));
+	c->roots = (int *)x_alloc((size_t)nroots * sizeof(int));
+	memset(&b, 0, sizeof(b));
+	b.map = (int *)x_alloc((size_t)d->count * sizeof(int));
+	if (!c->els || !c->oldIdx || !c->roots || !b.map) goto fail;
+	for (i = 0; i < d->count; i++) b.map[i] = -1;
+	b.d = d; b.c = c;
+	for (i = 0; i < nroots; i++) {
+		int local = c->count;
+		if (!clip_emit_(&b, roots[i], -1)) goto fail;
+		c->roots[c->rootCount++] = local;
+	}
+	/* children 重映射到局部; parent 已经是局部下标 */
+	for (i = 0; i < c->count; i++) {
+		SvgElement *e = &c->els[i];
+		int k;
+		for (k = 0; k < e->childCount; k++)
+			e->children[k] = b.map[e->children[k]];
+	}
+	x_free(b.map);
+	x_free(roots);
+	return c;
+fail:
+	if (b.map) x_free(b.map);
+	if (c) {
+		for (i = 0; i < c->count; i++) element_free(&c->els[i]);
+		x_free(c->els); x_free(c->oldIdx); x_free(c->roots);
+		x_free(c);
+	}
+	x_free(roots);
+	return NULL;
+}
+
+void SvgDoc_ClipFree(SvgClip *c)
+{
+	int i;
+	if (!c) return;
+	for (i = 0; i < c->count; i++) element_free(&c->els[i]);
+	x_free(c->els);
+	x_free(c->oldIdx);
+	x_free(c->roots);
+	x_free(c);
+}
+
+int SvgDoc_ClipPaste(SvgDoc *d, const SvgClip *c, float dx, float dy,
+	int *roots, int cap)
+{
+	int base, i, k;
+	if (!d || !c || c->count <= 0) return 0;
+	base = d->count;
+	if (!doc_reserve(d, base + c->count)) return 0;
+	for (i = 0; i < c->count; i++) {
+		if (!element_copy(&d->els[base + i], &c->els[i])) {
+			for (k = 0; k < i; k++) element_free(&d->els[base + k]);
+			return 0;
+		}
+	}
+	for (i = 0; i < c->count; i++) {
+		SvgElement *e = &d->els[base + i];
+		int j;
+		if (e->parent >= 0) e->parent += base;
+		for (j = 0; j < e->childCount; j++) e->children[j] += base;
+		e->uid = d->nextUid++;
+		e->version++;
+	}
+	d->count += c->count;
+	for (i = 0; i < c->rootCount; i++) {
+		int ni = base + c->roots[i];
+		if (i < cap) roots[i] = ni;
+		if (dx != 0.0f || dy != 0.0f)
+			SvgDoc_Translate(d, ni, dx, dy);
+	}
+	return c->count;
 }
 
 /* ── 历史 ─────────────────────────────────────────────────────────── */
@@ -2504,13 +2682,15 @@ static const char *join_name(int join)
 
 static int paint_is_gradient(const SvgPaint *p)
 {
-	return p->kind == SVG_PAINT_LINEAR && p->stops && p->stopCount >= 2;
+	return (p->kind == SVG_PAINT_LINEAR || p->kind == SVG_PAINT_RADIAL) &&
+		p->stops && p->stopCount >= 2;
 }
 
 static int grad_equal(const SvgPaint *a, const SvgPaint *b)
 {
 	int i;
 	if (a->kind != b->kind || a->angleDeg != b->angleDeg ||
+		a->cx != b->cx || a->cy != b->cy || a->r != b->r ||
 		a->stopCount != b->stopCount)
 		return 0;
 	for (i = 0; i < a->stopCount; i++) {
@@ -2541,21 +2721,29 @@ static int grad_id(GradDefs *gd, const SvgPaint *p)
 
 static void export_gradient(SB *b, int id, const SvgPaint *p)
 {
-	float dirx = cos_r(deg_r(p->angleDeg));
-	float diry = sin_r(deg_r(p->angleDeg));
-	float half = (f_abs(dirx) + f_abs(diry)) * 0.5f;
 	int i;
-	sb_put(b, "    <linearGradient id=\"g");
+	int radial = p->kind == SVG_PAINT_RADIAL;
+	sb_put(b, radial ? "    <radialGradient id=\"g"
+		: "    <linearGradient id=\"g");
 	{
 		char nb[16];
 		fmt_num(nb, (int)sizeof(nb), (float)id);
 		sb_put(b, nb);
 	}
 	sb_put(b, "\" gradientUnits=\"objectBoundingBox\"");
-	sb_attr_num(b, " x1", 0.5f - dirx * half);
-	sb_attr_num(b, " y1", 0.5f - diry * half);
-	sb_attr_num(b, " x2", 0.5f + dirx * half);
-	sb_attr_num(b, " y2", 0.5f + diry * half);
+	if (radial) {
+		sb_attr_num(b, " cx", p->cx);
+		sb_attr_num(b, " cy", p->cy);
+		sb_attr_num(b, " r", p->r);
+	} else {
+		float dirx = cos_r(deg_r(p->angleDeg));
+		float diry = sin_r(deg_r(p->angleDeg));
+		float half = (f_abs(dirx) + f_abs(diry)) * 0.5f;
+		sb_attr_num(b, " x1", 0.5f - dirx * half);
+		sb_attr_num(b, " y1", 0.5f - diry * half);
+		sb_attr_num(b, " x2", 0.5f + dirx * half);
+		sb_attr_num(b, " y2", 0.5f + diry * half);
+	}
 	sb_put(b, ">\n");
 	for (i = 0; i < p->stopCount; i++) {
 		float off = p->stops[i].offset;
@@ -2570,7 +2758,7 @@ static void export_gradient(SB *b, int id, const SvgPaint *p)
 		if ((c >> 24) != 0xFF) sb_attr_num(b, " stop-opacity", (float)((c >> 24) & 0xFF) / 255.0f);
 		sb_put(b, "/>\n");
 	}
-	sb_put(b, "    </linearGradient>\n");
+	sb_put(b, radial ? "    </radialGradient>\n" : "    </linearGradient>\n");
 }
 
 static void export_paint_attr(SB *b, const char *name, const SvgPaint *p,
@@ -2657,6 +2845,8 @@ static void export_style(SB *b, const SvgElement *e, GradDefs *gd)
 	} else {
 		sb_attr_str(b, "stroke", "none");
 	}
+	if ((m & SVG_STYLE_FILLRULE) && st->fillRule)
+		sb_attr_str(b, "fill-rule", "evenodd");
 	if ((m & SVG_STYLE_OPACITY) && st->opacity < 0.999f)
 		sb_attr_num(b, "opacity", st->opacity);
 }
@@ -2710,27 +2900,21 @@ static void export_transform(SB *b, const SvgElement *e)
 	sb_put(b, ")\"");
 }
 
-static void export_path_d(SB *b, const SvgPath *p)
+static void export_path_contour_(SB *b, const SvgPath *p, int start, int end, int first)
 {
-	int i, sc;
-	if (!p || p->count <= 0) return;
-	sc = path_seg_count(p);
+	int k;
+	if (!first) sb_ch(b, ' ');
 	sb_put(b, "M ");
-	sb_num(b, p->nodes[0].x);
+	sb_num(b, p->nodes[start].x);
 	sb_ch(b, ' ');
-	sb_num(b, p->nodes[0].y);
-	for (i = 0; i < sc; i++) {
-		int j = (i + 1) % p->count;
-		const SvgNode *n0 = &p->nodes[i];
-		const SvgNode *n1 = &p->nodes[j];
-		SvgSegType t = p->seg[i];
-		/* 闭合直线段由 Z 隐含, 不再写 L 到首点 (避免解析回来多一个节点) */
-		if (p->closed && i == sc - 1 && t == SVG_SEG_LINE) continue;
+	sb_num(b, p->nodes[start].y);
+	for (k = start; k < end - 1; k++) {
+		const SvgNode *n0 = &p->nodes[k];
+		const SvgNode *n1 = &p->nodes[k + 1];
+		SvgSegType t = p->seg[k];
 		if (t == SVG_SEG_LINE) {
 			sb_put(b, " L ");
-			sb_num(b, n1->x);
-			sb_ch(b, ' ');
-			sb_num(b, n1->y);
+			sb_num(b, n1->x); sb_ch(b, ' '); sb_num(b, n1->y);
 		} else if (t == SVG_SEG_CUBIC) {
 			float c1x = n0->x + (n0->hasOut ? n0->outX : 0.0f);
 			float c1y = n0->y + (n0->hasOut ? n0->outY : 0.0f);
@@ -2741,7 +2925,7 @@ static void export_path_d(SB *b, const SvgPath *p)
 			sb_num(b, c2x); sb_ch(b, ' '); sb_num(b, c2y); sb_ch(b, ' ');
 			sb_num(b, n1->x); sb_ch(b, ' '); sb_num(b, n1->y);
 		} else {
-			const SvgArc *a = &p->arc[i];
+			const SvgArc *a = &p->arc[k];
 			sb_put(b, " A ");
 			sb_num(b, a->rx); sb_ch(b, ' ');
 			sb_num(b, a->ry); sb_ch(b, ' ');
@@ -2751,7 +2935,45 @@ static void export_path_d(SB *b, const SvgPath *p)
 			sb_num(b, n1->x); sb_ch(b, ' '); sb_num(b, n1->y);
 		}
 	}
-	if (p->closed) sb_put(b, " Z");
+	if (!p->closed) return;
+	if (p->seg[end - 1] != SVG_SEG_LINE) {
+		const SvgNode *n0 = &p->nodes[end - 1];
+		const SvgNode *n1 = &p->nodes[start];
+		SvgSegType t = p->seg[end - 1];
+		if (t == SVG_SEG_CUBIC) {
+			float c1x = n0->x + (n0->hasOut ? n0->outX : 0.0f);
+			float c1y = n0->y + (n0->hasOut ? n0->outY : 0.0f);
+			float c2x = n1->x + (n1->hasIn ? n1->inX : 0.0f);
+			float c2y = n1->y + (n1->hasIn ? n1->inY : 0.0f);
+			sb_put(b, " C ");
+			sb_num(b, c1x); sb_ch(b, ' '); sb_num(b, c1y); sb_ch(b, ' ');
+			sb_num(b, c2x); sb_ch(b, ' '); sb_num(b, c2y); sb_ch(b, ' ');
+			sb_num(b, n1->x); sb_ch(b, ' '); sb_num(b, n1->y);
+		} else {
+			const SvgArc *a = &p->arc[end - 1];
+			sb_put(b, " A ");
+			sb_num(b, a->rx); sb_ch(b, ' ');
+			sb_num(b, a->ry); sb_ch(b, ' ');
+			sb_num(b, a->rotDeg); sb_ch(b, ' ');
+			sb_ch(b, a->large ? '1' : '0'); sb_ch(b, ' ');
+			sb_ch(b, a->sweep ? '1' : '0'); sb_ch(b, ' ');
+			sb_num(b, n1->x); sb_ch(b, ' '); sb_num(b, n1->y);
+		}
+	}
+	sb_put(b, " Z");
+}
+
+static void export_path_d(SB *b, const SvgPath *p)
+{
+	int start = 0, first = 1;
+	if (!p || p->count <= 0) return;
+	while (start < p->count) {
+		int end = start + 1;
+		while (end < p->count && !p->nodes[end].subStart) end++;
+		export_path_contour_(b, p, start, end, first);
+		first = 0;
+		start = end;
+	}
 }
 
 static void export_indent_(SB *b, int depth)

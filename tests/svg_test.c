@@ -744,6 +744,145 @@ static void test_text_element(void)
 	SvgDoc_Destroy(d);
 }
 
+static void test_compound_path(void)
+{
+	SvgDoc *d = SvgDoc_Create(200, 200);
+	SvgElement *e;
+	SvgPoly poly;
+	char *svg;
+	char pd[1024];
+	if (!d) return;
+
+	e = SvgDoc_Add(d, SVG_EL_PATH);
+	Svg_PathFree(&e->path);
+	Svg_PathInit(&e->path);
+	Svg_PathAddNode(&e->path, 0.0f, 0.0f, SVG_NODE_CORNER);
+	Svg_PathAddNode(&e->path, 100.0f, 0.0f, SVG_NODE_CORNER);
+	Svg_PathAddNode(&e->path, 50.0f, 80.0f, SVG_NODE_CORNER);
+	Svg_PathMoveTo(&e->path, 20.0f, 20.0f);
+	Svg_PathAddNode(&e->path, 40.0f, 20.0f, SVG_NODE_CORNER);
+	Svg_PathAddNode(&e->path, 40.0f, 50.0f, SVG_NODE_CORNER);
+	Svg_PathAddNode(&e->path, 20.0f, 50.0f, SVG_NODE_CORNER);
+	e->path.closed = 1;
+	e->path.seg[2] = SVG_SEG_LINE;
+	e->path.seg[6] = SVG_SEG_LINE;
+	CHECK(e->path.count == 7);
+	CHECK(e->path.nodes[3].subStart == 1);
+	CHECK(e->path.nodes[1].subStart == 0);
+	Svg_ElementTouch(e);
+
+	Svg_PolyInit(&poly);
+	CHECK(Svg_ElementPoly(e, 0.5f, &poly) == 1);
+	CHECK(poly.contourCount == 2);
+	Svg_PolyFree(&poly);
+
+	svg = Svg_Export(d);
+	CHECK(svg != NULL);
+	if (svg) {
+		CHECK(extract_path_d(svg, pd, (int)sizeof(pd)) == 1);
+		CHECK(find_(pd, "M 20 20") != NULL);
+		CHECK(find_(pd, "Z M 20 20") != NULL);
+		Svg_FreeString(svg);
+	}
+	SvgDoc_Destroy(d);
+}
+
+static void test_radial_export(void)
+{
+	SvgDoc *d = SvgDoc_Create(200, 200);
+	SvgElement *e;
+	SvgGradStop stops[2];
+	char *svg;
+	if (!d) return;
+	e = SvgDoc_Add(d, SVG_EL_RECT);
+	e->p.rect.w = 100.0f; e->p.rect.h = 80.0f;
+	e->style.fill.kind = SVG_PAINT_RADIAL;
+	e->style.fill.cx = 0.4f;
+	e->style.fill.cy = 0.6f;
+	e->style.fill.r = 0.45f;
+	stops[0].offset = 0.0f; stops[0].color = 0xFF000000;
+	stops[1].offset = 1.0f; stops[1].color = 0xFFFFFFFF;
+	Svg_StyleSetFillStops(&e->style.fill, stops, 2);
+	e->style.fillRule = 1;
+	e->style.setMask |= SVG_STYLE_FILLRULE;
+	Svg_ElementTouch(e);
+	svg = Svg_Export(d);
+	CHECK(svg != NULL);
+	if (svg) {
+		CHECK(find_(svg, "<radialGradient") != NULL);
+		CHECK(find_(svg, "cx=\"0.4\"") != NULL);
+		CHECK(find_(svg, "cy=\"0.6\"") != NULL);
+		CHECK(find_(svg, "r=\"0.45\"") != NULL);
+		CHECK(find_(svg, "fill-rule=\"evenodd\"") != NULL);
+		CHECK(find_(svg, "fill=\"url(#g0)\"") != NULL);
+		Svg_FreeString(svg);
+	}
+	/* 深拷贝后渐变中心/半径保留 */
+	{
+		int dup = SvgDoc_Duplicate(d, 0);
+		CHECK(dup > 0);
+		if (dup > 0) {
+			CHECK(d->els[dup].style.fill.kind == SVG_PAINT_RADIAL);
+			CHECK(NEAR(d->els[dup].style.fill.cx, 0.4f, 0.001f));
+			CHECK(NEAR(d->els[dup].style.fill.r, 0.45f, 0.001f));
+			CHECK(d->els[dup].style.fillRule == 1);
+		}
+	}
+	SvgDoc_Destroy(d);
+}
+
+static void test_clipboard(void)
+{
+	SvgDoc *d = SvgDoc_Create(300, 300);
+	SvgElement *g, *c, *r;
+	SvgClip *clip;
+	int roots[8];
+	int n, before;
+	if (!d) return;
+	r = SvgDoc_Add(d, SVG_EL_RECT);
+	r->p.rect.w = 20.0f; r->p.rect.h = 10.0f;
+	g = SvgDoc_Add(d, SVG_EL_GROUP);
+	CHECK(g != NULL);
+	if (!g) { SvgDoc_Destroy(d); return; }
+	{
+		int gi0 = (int)(g - d->els);
+		c = SvgDoc_AddChild(d, gi0, SVG_EL_RECT);
+	}
+	CHECK(c != NULL);
+	if (!c) { SvgDoc_Destroy(d); return; }
+	{
+		int ci = (int)(c - d->els);
+		int gi = d->els[ci].parent;
+		before = d->count;
+		{
+			int sel[2];
+			sel[0] = gi; sel[1] = ci;   /* 子元素被父组覆盖, 只应出现一个根 */
+			clip = SvgDoc_ClipCopy(d, sel, 2);
+		}
+		CHECK(clip != NULL);
+		if (!clip) { SvgDoc_Destroy(d); return; }
+		/* 源删除后剪贴板仍可粘贴 (深拷贝) */
+		SvgDoc_Remove(d, gi);
+		n = SvgDoc_ClipPaste(d, clip, 12.0f, 5.0f, roots, 8);
+		CHECK(n == 2);
+		CHECK(d->count == before);   /* 删除组+子, 粘贴组+子 */
+		{
+			int ng = roots[0];
+			CHECK(ng >= 0 && d->els[ng].type == SVG_EL_GROUP);
+			CHECK(d->els[ng].childCount == 1);
+			CHECK(d->els[ng].parent == -1);
+			CHECK(NEAR(d->els[ng].xf.tx, 12.0f, 0.01f));
+			CHECK(NEAR(d->els[ng].xf.ty, 5.0f, 0.01f));
+			{
+				int nc = d->els[ng].children[0];
+				CHECK(nc >= 0 && d->els[nc].parent == ng);
+			}
+		}
+		SvgDoc_ClipFree(clip);
+	}
+	SvgDoc_Destroy(d);
+}
+
 void __stdcall startup(void)
 {
 	test_bounds();
@@ -756,6 +895,9 @@ void __stdcall startup(void)
 	test_view();
 	test_m7_tree();
 	test_text_element();
+	test_compound_path();
+	test_radial_export();
+	test_clipboard();
 
 	{
 		char line[160];

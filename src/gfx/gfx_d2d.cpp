@@ -112,11 +112,13 @@ typedef struct {
 typedef struct {
 	float bx, by, bw, bh;   /* 元素局部包围盒 (0.5 DIP 量化) */
 	float angle;
+	int radial;
+	float rcx, rcy, rr;     /* 径向: 归一化中心/半径 */
 	int count;
 	GfxColor colors[GFX_SVG_GRAD_MAX_STOPS];
 	float positions[GFX_SVG_GRAD_MAX_STOPS];
 	uint32_t lastUse;
-	ID2D1LinearGradientBrush *brush;
+	ID2D1Brush *brush;
 	ID2D1GradientStopCollection *stops;
 } GfxSvgGradCache;
 
@@ -4219,6 +4221,7 @@ struct GfxPath {
 	int count, cap;
 	ID2D1PathGeometry *geo;
 	int built;
+	int evenOdd;
 	int stage;   /* 构建失败诊断: 1=create 2=open 3=close */
 };
 
@@ -4227,6 +4230,7 @@ struct GfxBrush {
 	GfxColor color;
 	float bx, by, bw, bh;   /* 渐变框 (元素局部) */
 	float angle;
+	float rcx, rcy, rr;     /* RADIAL: 归一化中心/半径 */
 	GfxGradStop *stops;
 	int stopCount;
 };
@@ -4273,6 +4277,15 @@ void Gfx_PathReset(GfxPath *p)
 	if (!p) return;
 	PathInvalidate(p);
 	p->count = 0;
+}
+
+void Gfx_PathSetFillRule(GfxPath *p, int evenOdd)
+{
+	if (!p) return;
+	evenOdd = evenOdd ? 1 : 0;
+	if (p->evenOdd == evenOdd) return;
+	p->evenOdd = evenOdd;
+	PathInvalidate(p);
 }
 
 void Gfx_PathDestroy(Gfx *g, GfxPath *p)
@@ -4348,7 +4361,8 @@ static ID2D1PathGeometry *PathBuild(Gfx *g, GfxPath *p)
 	if (!g || !g->d2d || p->count <= 0) return NULL;
 	if (FAILED(g->d2d->CreatePathGeometry(&geo)) || !geo) { p->stage = 1; return NULL; }
 	if (FAILED(geo->Open(&sink)) || !sink) { p->stage = 2; SAFE_RELEASE(geo); return NULL; }
-	sink->SetFillMode(D2D1_FILL_MODE_WINDING);
+	sink->SetFillMode(p->evenOdd ? D2D1_FILL_MODE_ALTERNATE
+		: D2D1_FILL_MODE_WINDING);
 
 	for (int i = 0; i < p->count; i++) {
 		const GfxPathCmd *c = &p->cmds[i];
@@ -4539,6 +4553,27 @@ GfxBrush *Gfx_LinearGradientBrush(Gfx *g, GfxRect boxLocal, float angleDeg,
 	return b;
 }
 
+GfxBrush *Gfx_RadialGradientBrush(Gfx *g, GfxRect boxLocal,
+	float cx, float cy, float r, const GfxGradStop *stops, int count)
+{
+	GfxBrush *b;
+	(void)g;
+	if (!stops || count < 2) return NULL;
+	if (count > GFX_SVG_GRAD_MAX_STOPS) count = GFX_SVG_GRAD_MAX_STOPS;
+	b = (GfxBrush *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(GfxBrush));
+	if (!b) return NULL;
+	b->stops = (GfxGradStop *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+		(SIZE_T)count * sizeof(GfxGradStop));
+	if (!b->stops) { HeapFree(GetProcessHeap(), 0, b); return NULL; }
+	for (int i = 0; i < count; i++) b->stops[i] = stops[i];
+	b->kind = GFX_BRUSH_RADIAL;
+	b->stopCount = count;
+	b->bx = boxLocal.x; b->by = boxLocal.y;
+	b->bw = boxLocal.w; b->bh = boxLocal.h;
+	b->rcx = cx; b->rcy = cy; b->rr = r;
+	return b;
+}
+
 void Gfx_BrushDestroy(Gfx *g, GfxBrush *b)
 {
 	(void)g;
@@ -4552,29 +4587,37 @@ static float QuantizeF(float v, float step)
 	return (float)(int)(v / step + (v >= 0.0f ? 0.5f : -0.5f)) * step;
 }
 
-/* 线性渐变: 方向由角度决定, 起止点取包围盒在该方向上的投影.
- * 参数做 0.5 DIP / 0.1° 量化后缓存, 拖动中包围盒连续变化也不会每帧重建. */
-static ID2D1LinearGradientBrush *GetSvgGradient(Gfx *g, GfxBrush *b)
+/* 线性/径向渐变: 参数量化后缓存. 线性方向由角度决定, 起止点取包围盒
+ * 在该方向上的投影; 径向按 objectBoundingBox 归一化中心/半径映射为椭圆. */
+static ID2D1Brush *GetSvgGradient(Gfx *g, GfxBrush *b)
 {
 	GfxSvgGradCache *slot = NULL;
 	uint32_t oldest = 0xFFFFFFFFu;
-	float bx, by, bw, bh, ang;
+	float bx, by, bw, bh, ang, rcx = 0.0f, rcy = 0.0f, rr = 0.0f;
+	int radial;
 	D2D1_GRADIENT_STOP stops[GFX_SVG_GRAD_MAX_STOPS];
 	GfxGradStop sorted[GFX_SVG_GRAD_MAX_STOPS];
 	int count = b->stopCount;
 
 	if (!g || !g->rt || !b->stops || count < 2) return NULL;
+	radial = b->kind == GFX_BRUSH_RADIAL;
 	bx = QuantizeF(b->bx, 0.5f); by = QuantizeF(b->by, 0.5f);
 	bw = QuantizeF(b->bw, 0.5f); bh = QuantizeF(b->bh, 0.5f);
 	ang = QuantizeF(b->angle, 0.1f);
 	while (ang < 0.0f) ang += 360.0f;
 	while (ang >= 360.0f) ang -= 360.0f;
+	if (radial) {
+		rcx = QuantizeF(b->rcx, 0.001f);
+		rcy = QuantizeF(b->rcy, 0.001f);
+		rr = QuantizeF(b->rr, 0.001f);
+	}
 
 	for (int i = 0; i < GFX_SVG_GRAD_CACHE_MAX; i++) {
 		GfxSvgGradCache *e = &g->svgGrads[i];
 		if (!e->brush) { if (!slot) slot = e; continue; }
 		if (e->bx != bx || e->by != by || e->bw != bw || e->bh != bh ||
-			e->angle != ang || e->count != count)
+			e->angle != ang || e->count != count || e->radial != radial ||
+			e->rcx != rcx || e->rcy != rcy || e->rr != rr)
 			continue;
 		int same = 1;
 		for (int k = 0; k < count; k++) {
@@ -4616,21 +4659,41 @@ static ID2D1LinearGradientBrush *GetSvgGradient(Gfx *g, GfxBrush *b)
 		D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &gs)) || !gs)
 		return NULL;
 
-	float dx = CosDeg(ang), dy = SinDeg(ang);
-	float cx = bx + bw * 0.5f, cy = by + bh * 0.5f;
-	float half = (bw * (dx < 0.0f ? -dx : dx) + bh * (dy < 0.0f ? -dy : dy)) * 0.5f;
-	D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES lp;
-	lp.startPoint = D2D1_POINT_2F{ cx - dx * half, cy - dy * half };
-	lp.endPoint = D2D1_POINT_2F{ cx + dx * half, cy + dy * half };
-	ID2D1LinearGradientBrush *br = NULL;
-	if (FAILED(g->rt->CreateLinearGradientBrush(&lp, NULL, gs, &br)) || !br) {
-		SAFE_RELEASE(gs);
-		return NULL;
+	ID2D1Brush *br = NULL;
+	if (radial) {
+		D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES rp;
+		rp.center = D2D1_POINT_2F{ bx + bw * rcx, by + bh * rcy };
+		rp.gradientOriginOffset = D2D1_POINT_2F{ 0.0f, 0.0f };
+		rp.radiusX = bw * rr;
+		rp.radiusY = bh * rr;
+		if (rp.radiusX < 0.01f) rp.radiusX = 0.01f;
+		if (rp.radiusY < 0.01f) rp.radiusY = 0.01f;
+		ID2D1RadialGradientBrush *rb = NULL;
+		if (FAILED(g->rt->CreateRadialGradientBrush(&rp, NULL, gs, &rb)) || !rb) {
+			SAFE_RELEASE(gs);
+			return NULL;
+		}
+		br = rb;
+	} else {
+		float dx = CosDeg(ang), dy = SinDeg(ang);
+		float cx = bx + bw * 0.5f, cy = by + bh * 0.5f;
+		float half = (bw * (dx < 0.0f ? -dx : dx) + bh * (dy < 0.0f ? -dy : dy)) * 0.5f;
+		D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES lp;
+		lp.startPoint = D2D1_POINT_2F{ cx - dx * half, cy - dy * half };
+		lp.endPoint = D2D1_POINT_2F{ cx + dx * half, cy + dy * half };
+		ID2D1LinearGradientBrush *lb = NULL;
+		if (FAILED(g->rt->CreateLinearGradientBrush(&lp, NULL, gs, &lb)) || !lb) {
+			SAFE_RELEASE(gs);
+			return NULL;
+		}
+		br = lb;
 	}
 	SAFE_RELEASE(slot->brush);
 	SAFE_RELEASE(slot->stops);
 	slot->bx = bx; slot->by = by; slot->bw = bw; slot->bh = bh;
 	slot->angle = ang;
+	slot->radial = radial;
+	slot->rcx = rcx; slot->rcy = rcy; slot->rr = rr;
 	slot->count = count;
 	for (int k = 0; k < count; k++) {
 		slot->colors[k] = b->stops[k].color;
@@ -4660,8 +4723,8 @@ void Gfx_FillPathBrush(Gfx *g, GfxPath *p, GfxBrush *brush)
 	if (!g || !g->rt || !brush) return;
 	geo = PathBuild(g, p);
 	if (!geo) return;
-	if (brush->kind == GFX_BRUSH_LINEAR) {
-		ID2D1LinearGradientBrush *br = GetSvgGradient(g, brush);
+	if (brush->kind == GFX_BRUSH_LINEAR || brush->kind == GFX_BRUSH_RADIAL) {
+		ID2D1Brush *br = GetSvgGradient(g, brush);
 		if (br) g->rt->FillGeometry(geo, br);
 	} else {
 		ID2D1SolidColorBrush *br = GetBrush(g, brush->color);
@@ -4678,8 +4741,8 @@ void Gfx_StrokePath(Gfx *g, GfxPath *p, GfxBrush *brush, float width,
 	geo = PathBuild(g, p);
 	if (!geo) return;
 	style = GetPathStroke(g, st);
-	if (brush->kind == GFX_BRUSH_LINEAR) {
-		ID2D1LinearGradientBrush *br = GetSvgGradient(g, brush);
+	if (brush->kind == GFX_BRUSH_LINEAR || brush->kind == GFX_BRUSH_RADIAL) {
+		ID2D1Brush *br = GetSvgGradient(g, brush);
 		if (br) g->rt->DrawGeometry(geo, br, width, style);
 	} else {
 		ID2D1SolidColorBrush *br = GetBrush(g, brush->color);
@@ -4871,6 +4934,116 @@ static IDWriteTextLayout *CreateLayout(Gfx *g, GfxFont *f, const char *utf8,
 		layout->SetTrimming(&trim, g->ellipsis);
 	}
 	return layout;
+}
+
+/* ---- 字形轮廓提取 (文本转路径) ---- */
+
+class GfxOutlineSink_ : public ID2D1SimplifiedGeometrySink {
+public:
+	GfxPathSink *s;
+	float ox, oy;
+	int contours;
+	LONG ref;
+	GfxOutlineSink_(GfxPathSink *out, float x, float y)
+		: s(out), ox(x), oy(y), contours(0), ref(1) {}
+	STDMETHOD_(ULONG, AddRef)() { return (ULONG)InterlockedIncrement(&ref); }
+	STDMETHOD_(ULONG, Release)() { return (ULONG)InterlockedDecrement(&ref); }
+	STDMETHOD(QueryInterface)(REFIID iid, void **ppv) {
+		if (!ppv) return E_POINTER;
+		if (iid == __uuidof(IUnknown) ||
+			iid == __uuidof(ID2D1SimplifiedGeometrySink)) {
+			*ppv = this; AddRef(); return S_OK;
+		}
+		*ppv = NULL; return E_NOINTERFACE;
+	}
+	STDMETHOD_(void, SetFillMode)(D2D1_FILL_MODE) {}
+	STDMETHOD_(void, SetSegmentFlags)(D2D1_PATH_SEGMENT) {}
+	STDMETHOD_(void, BeginFigure)(D2D1_POINT_2F p, D2D1_FIGURE_BEGIN) {
+		if (s && s->move_to) s->move_to(s->user, p.x + ox, p.y + oy);
+		contours++;
+	}
+	STDMETHOD_(void, AddLines)(const D2D1_POINT_2F *pts, UINT32 n) {
+		if (!s || !s->line_to) return;
+		for (UINT32 i = 0; i < n; i++)
+			s->line_to(s->user, pts[i].x + ox, pts[i].y + oy);
+	}
+	STDMETHOD_(void, AddBeziers)(const D2D1_BEZIER_SEGMENT *bs, UINT32 n) {
+		if (!s || !s->cubic_to) return;
+		for (UINT32 i = 0; i < n; i++)
+			s->cubic_to(s->user, bs[i].point1.x + ox, bs[i].point1.y + oy,
+				bs[i].point2.x + ox, bs[i].point2.y + oy,
+				bs[i].point3.x + ox, bs[i].point3.y + oy);
+	}
+	STDMETHOD_(void, EndFigure)(D2D1_FIGURE_END) {
+		if (s && s->close) s->close(s->user);
+	}
+	STDMETHOD(Close)() { return S_OK; }
+};
+
+class GfxOutlineRenderer_ : public IDWriteTextRenderer {
+public:
+	Gfx *g;
+	GfxPathSink *s;
+	int contours;
+	LONG ref;
+	GfxOutlineRenderer_(Gfx *gfx, GfxPathSink *sink)
+		: g(gfx), s(sink), contours(0), ref(1) {}
+	STDMETHOD_(ULONG, AddRef)() { return (ULONG)InterlockedIncrement(&ref); }
+	STDMETHOD_(ULONG, Release)() { return (ULONG)InterlockedDecrement(&ref); }
+	STDMETHOD(QueryInterface)(REFIID iid, void **ppv) {
+		if (!ppv) return E_POINTER;
+		if (iid == __uuidof(IUnknown) ||
+			iid == __uuidof(IDWriteTextRenderer) ||
+			iid == __uuidof(IDWritePixelSnapping)) {
+			*ppv = this; AddRef(); return S_OK;
+		}
+		*ppv = NULL; return E_NOINTERFACE;
+	}
+	STDMETHOD(IsPixelSnappingDisabled)(void *, BOOL *disabled) {
+		if (disabled) *disabled = TRUE;
+		return S_OK;
+	}
+	STDMETHOD(GetCurrentTransform)(void *, DWRITE_MATRIX *m) {
+		if (m) {
+			m->m11 = 1.0f; m->m12 = 0.0f; m->m21 = 0.0f;
+			m->m22 = 1.0f; m->dx = 0.0f; m->dy = 0.0f;
+		}
+		return S_OK;
+	}
+	STDMETHOD(GetPixelsPerDip)(void *, FLOAT *ppd) {
+		if (ppd) *ppd = 1.0f;
+		return S_OK;
+	}
+	STDMETHOD(DrawGlyphRun)(void *, FLOAT bx, FLOAT by,
+		DWRITE_MEASURING_MODE, const DWRITE_GLYPH_RUN *run,
+		const DWRITE_GLYPH_RUN_DESCRIPTION *, IUnknown *) {
+		if (!run || !run->fontFace) return S_OK;
+		GfxOutlineSink_ sink(s, bx, by);
+		run->fontFace->GetGlyphRunOutline(run->fontEmSize,
+			run->glyphIndices, run->glyphAdvances, run->glyphOffsets,
+			run->glyphCount, run->isSideways, (run->bidiLevel & 1) != 0, &sink);
+		contours += sink.contours;
+		return S_OK;
+	}
+	STDMETHOD(DrawUnderline)(void *, FLOAT, FLOAT,
+		const DWRITE_UNDERLINE *, IUnknown *) { return S_OK; }
+	STDMETHOD(DrawStrikethrough)(void *, FLOAT, FLOAT,
+		const DWRITE_STRIKETHROUGH *, IUnknown *) { return S_OK; }
+	STDMETHOD(DrawInlineObject)(void *, FLOAT, FLOAT,
+		IDWriteInlineObject *, BOOL, BOOL, IUnknown *) { return S_OK; }
+};
+
+int Gfx_TextOutline(Gfx *g, GfxFont *f, const char *utf8, float x, float y,
+	GfxPathSink *sink)
+{
+	IDWriteTextLayout *layout;
+	GfxOutlineRenderer_ renderer(g, sink);
+	if (!g || !g->dw || !f || !sink || !utf8 || !utf8[0]) return 0;
+	layout = CreateLayout(g, f, utf8, 65536.0f, 65536.0f, 0);
+	if (!layout) return 0;
+	layout->Draw(NULL, &renderer, x, y);
+	layout->Release();
+	return renderer.contours;
 }
 
 /* 文本布局缓存: 颜色在绘制时用 brush 设置，布局可跨颜色复用。 */

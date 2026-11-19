@@ -53,6 +53,8 @@ float Ui_SvgEdit_Zoom(const UiSvgEdit *ed);       /* 1 = 100% */
 int   Ui_SvgEdit_PenActive(const UiSvgEdit *ed);
 
 void Ui_SvgEdit_SetGrid(UiSvgEdit *ed, int on, float step);
+/* 弹层/右键菜单打开时暂停画布鼠标输入 (仍正常绘制). */
+void Ui_SvgEdit_SetInputBlock(UiSvgEdit *ed, int blocked);
 int  Ui_SvgEdit_GridOn(const UiSvgEdit *ed);
 int  Ui_SvgEdit_MouseWorld(const UiSvgEdit *ed, float *wx, float *wy);
 
@@ -64,6 +66,13 @@ void Ui_SvgEdit_ClearSel(UiSvgEdit *ed);
 int  Ui_SvgEdit_SelectionBounds(const UiSvgEdit *ed, GfxRect *out);
 void Ui_SvgEdit_DeleteSel(UiSvgEdit *ed, UiContext *ui);
 void Ui_SvgEdit_DuplicateSel(UiSvgEdit *ed, UiContext *ui);
+/* 内部剪贴板: 复制选中子树 (含组), 粘贴平移 (12,12) 并选中新根. */
+int  Ui_SvgEdit_CopySel(UiSvgEdit *ed);
+int  Ui_SvgEdit_Paste(UiSvgEdit *ed, UiContext *ui);
+/* 方向键微移 (世界坐标); 返回 0 = 未处理. */
+int  Ui_SvgEdit_Nudge(UiSvgEdit *ed, UiContext *ui, float dx, float dy);
+/* 对齐 0..5: 左/水平中/右/上/垂直中/下; 6..7: 水平/垂直等距. */
+int  Ui_SvgEdit_Align(UiSvgEdit *ed, UiContext *ui, int mode);
 void Ui_SvgEdit_Reorder(UiSvgEdit *ed, UiContext *ui, int dir);
 /* 组 / 解组 (Ctrl+G / Ctrl+Shift+G); 返回 1 = 成功. */
 int  Ui_SvgEdit_Group(UiSvgEdit *ed, UiContext *ui);
@@ -91,6 +100,9 @@ void Ui_SvgEdit_SetTextFont(UiSvgEdit *ed, UiContext *ui,
 	const char *family, float size, int weight);
 void Ui_SvgEdit_SetTextAlign(UiSvgEdit *ed, UiContext *ui,
 	int align, int anchor);
+/* 文本转路径: 取选中文本, 用 DWrite 字形轮廓替换为复合路径元素 (原位).
+ * 成功返回 1; 无文本/无字形返回 0. */
+int  Ui_SvgEdit_TextToPath(UiSvgEdit *ed, UiContext *ui);
 
 /* ── 节点切线 (角度/力度) ─────────────────────────────────────────── */
 /* 节点工具下当前选中节点; 返回节点索引, -1 = 无. */

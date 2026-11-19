@@ -44,7 +44,8 @@ enum {
 	SE_DRAG_SWALLOW,
 	SE_DRAG_NODE,
 	SE_DRAG_HANDLE,
-	SE_DRAG_ARCMID
+	SE_DRAG_ARCMID,
+	SE_DRAG_GRAD
 };
 
 typedef struct SvgCacheEntry {
@@ -100,6 +101,7 @@ struct UiSvgEdit {
 	SvgGeom *orig;
 	int origCount;
 	int origCap;
+	SvgClip *clip;
 
 	/* 鼠标 */
 	float mx, my, lastMx, lastMy;
@@ -120,11 +122,14 @@ struct UiSvgEdit {
 	int drag;
 	int dragHandle;
 	int dragMoved;
+	int gradPart;
 	int rubberAdd;
 	float pressSX, pressSY;
 	float startWX, startWY;
 	float pivotX, pivotY, startAngle;
 	GfxRect startBox;
+	float snapGX, snapGY;   /* 拖动吸附参考线 (世界坐标) */
+	int snapGXOn, snapGYOn;
 
 	/* 新建 */
 	int createIndex;
@@ -155,6 +160,7 @@ struct UiSvgEdit {
 	float lastClickX, lastClickY;
 
 	char hint[192];
+	int inputBlock;   /* 弹层/菜单打开时暂停画布输入 */
 };
 
 /* ── 基础数学 ─────────────────────────────────────────────────────── */
@@ -597,8 +603,10 @@ static int path_edit_index(const UiSvgEdit *ed)
 		/* M7: 节点编辑暂只支持根级元素 (嵌套路径 M8+) */
 		if (ed->doc->els[idx].parent >= 0) continue;
 		if (ed->doc->els[idx].type == SVG_EL_PATH ||
-			ed->doc->els[idx].type == SVG_EL_POLYGON)
+			ed->doc->els[idx].type == SVG_EL_POLYGON) {
+			if (ed->doc->els[idx].compound) continue;
 			return idx;
+		}
 	}
 	return -1;
 }
@@ -783,7 +791,8 @@ static GfxBrush *make_paint_brush(Gfx *g, const SvgPaint *p,
 	if (!p) return NULL;
 	if (p->kind == SVG_PAINT_SOLID)
 		return Gfx_SolidBrush(g, with_opacity(p->color, st->opacity));
-	if (p->kind == SVG_PAINT_LINEAR && p->stops && p->stopCount >= 2) {
+	if ((p->kind == SVG_PAINT_LINEAR || p->kind == SVG_PAINT_RADIAL) &&
+		p->stops && p->stopCount >= 2) {
 		GfxGradStop stops[SE_MAX_GRAD_STOPS];
 		int i, n = p->stopCount;
 		if (n > SE_MAX_GRAD_STOPS) n = SE_MAX_GRAD_STOPS;
@@ -793,6 +802,9 @@ static GfxBrush *make_paint_brush(Gfx *g, const SvgPaint *p,
 		}
 		if (box.w <= 0.0f) box.w = 1.0f;
 		if (box.h <= 0.0f) box.h = 1.0f;
+		if (p->kind == SVG_PAINT_RADIAL)
+			return Gfx_RadialGradientBrush(g, box, p->cx, p->cy, p->r,
+				stops, n);
 		return Gfx_LinearGradientBrush(g, box, p->angleDeg, stops, n);
 	}
 	return NULL;
@@ -830,13 +842,16 @@ static void build_element_path(GfxPath *p, const SvgElement *e)
 		break;
 	default: {
 		const SvgPath *sp = &e->path;
-		int i, sc;
+		int i;
 		if (sp->count <= 0) break;
-		sc = sp->closed ? sp->count : sp->count - 1;
 		Gfx_PathMoveTo(p, sp->nodes[0].x, sp->nodes[0].y);
-		for (i = 0; i < sc; i++) {
+		for (i = 0; i < sp->count - 1; i++) {
 			const SvgNode *a = &sp->nodes[i];
-			const SvgNode *b = &sp->nodes[(i + 1) % sp->count];
+			const SvgNode *b = &sp->nodes[i + 1];
+			if (b->subStart) {
+				Gfx_PathMoveTo(p, b->x, b->y);
+				continue;
+			}
 			if (sp->seg[i] == SVG_SEG_CUBIC) {
 				Gfx_PathCubicTo(p, a->x + a->outX, a->y + a->outY,
 					b->x + b->inX, b->y + b->inY, b->x, b->y);
@@ -848,7 +863,27 @@ static void build_element_path(GfxPath *p, const SvgElement *e)
 				Gfx_PathLineTo(p, b->x, b->y);
 			}
 		}
-		if (sp->closed) Gfx_PathClose(p);
+		if (sp->closed) {
+			/* 闭合: 逐子路径处理末段 */
+			int start = 0;
+			while (start < sp->count) {
+				int end = start + 1;
+				const SvgNode *a, *b;
+				while (end < sp->count && !sp->nodes[end].subStart) end++;
+				a = &sp->nodes[end - 1];
+				b = &sp->nodes[start];
+				if (sp->seg[end - 1] == SVG_SEG_CUBIC) {
+					Gfx_PathCubicTo(p, a->x + a->outX, a->y + a->outY,
+						b->x + b->inX, b->y + b->inY, b->x, b->y);
+				} else if (sp->seg[end - 1] == SVG_SEG_ARC) {
+					Gfx_PathArcTo(p, sp->arc[end - 1].rx, sp->arc[end - 1].ry,
+						sp->arc[end - 1].rotDeg, sp->arc[end - 1].large,
+						sp->arc[end - 1].sweep, b->x, b->y);
+				}
+				Gfx_PathClose(p);
+				start = end;
+			}
+		}
 		break;
 	}
 	}
@@ -1029,6 +1064,7 @@ static void draw_element(UiSvgEdit *ed, Gfx *g, int idx)
 	}
 	c = cache_ensure(ed, g, idx, e);
 	if (!c->path) { if (xfPush) { e->rot = savedRot; Gfx_PopTransform(g); } return; }
+	Gfx_PathSetFillRule(c->path, e->style.fillRule);
 	fillable = e->type != SVG_EL_LINE;
 	if (fillable && (e->type == SVG_EL_PATH || e->type == SVG_EL_POLYGON)
 		&& !e->path.closed)
@@ -1162,9 +1198,119 @@ static void draw_selection(UiSvgEdit *ed, UiContext *ui, GfxRect worldBox)
 		Gfx_FillEllipse(g, rx, ry, 4.0f, 4.0f, handleBg);
 		Gfx_StrokeEllipse(g, rx, ry, 4.0f, accent, 1.0f);
 	}
+	if (ed->snapGXOn) {
+		float sx, sy;
+		w2s(ed, ed->snapGX, ed->snapGY, &sx, &sy);
+		Gfx_Line(g, sx, ed->vp.y, sx, ed->vp.y + ed->vp.h,
+			Ui_ColorAlpha(accent, 150), 1.0f);
+	}
+	if (ed->snapGYOn) {
+		float sx, sy;
+		w2s(ed, ed->snapGX, ed->snapGY, &sx, &sy);
+		Gfx_Line(g, ed->vp.x, sy, ed->vp.x + ed->vp.w, sy,
+			Ui_ColorAlpha(accent, 150), 1.0f);
+	}
 }
 
-/* 段采样 (元素局部坐标) */
+/* 渐变手柄: 仅选中单元素且自身 fill 为渐变时可用.
+ * p0/p1 为屏幕坐标; radialOut=1 表示径向. 返回 1 = 有手柄. */
+static int grad_handle_(UiSvgEdit *ed, int idx, float *x0, float *y0,
+	float *x1, float *y1, int *radialOut)
+{
+	SvgElement *e;
+	GfxRect b;
+	float cx, cy, dx, dy, lx0, ly0, lx1, ly1, wx, wy;
+	if (!ed || idx < 0 || idx >= ed->doc->count) return 0;
+	e = &ed->doc->els[idx];
+	if (e->type == SVG_EL_GROUP) return 0;
+	if (e->style.fill.kind != SVG_PAINT_LINEAR &&
+		e->style.fill.kind != SVG_PAINT_RADIAL) return 0;
+	if (e->style.fill.stopCount < 2) return 0;
+	b = Svg_ElementLocalBounds(e);
+	if (b.w <= 0.5f || b.h <= 0.5f) return 0;
+	cx = b.x + b.w * 0.5f;
+	cy = b.y + b.h * 0.5f;
+	if (e->style.fill.kind == SVG_PAINT_RADIAL) {
+		lx0 = b.x + e->style.fill.cx * b.w;
+		ly0 = b.y + e->style.fill.cy * b.h;
+		lx1 = lx0 + e->style.fill.r * b.w * 0.7071f;
+		ly1 = ly0 + e->style.fill.r * b.h * 0.7071f;
+		*radialOut = 1;
+	} else {
+		float ang = e->style.fill.angleDeg * SE_DEG;
+		float half = (b.w * s_abs(s_cos(ang)) + b.h * s_abs(s_sin(ang))) * 0.5f;
+		dx = s_cos(ang) * half * 0.4f;
+		dy = s_sin(ang) * half * 0.4f;
+		lx0 = cx - dx; ly0 = cy - dy;
+		lx1 = cx + dx; ly1 = cy + dy;
+		*radialOut = 0;
+	}
+	Svg_DocLocalToWorld(ed->doc, idx, lx0, ly0, &wx, &wy);
+	w2s(ed, wx, wy, x0, y0);
+	Svg_DocLocalToWorld(ed->doc, idx, lx1, ly1, &wx, &wy);
+	w2s(ed, wx, wy, x1, y1);
+	return 1;
+}
+
+static int grad_handle_hit_(UiSvgEdit *ed, int *part)
+{
+	float x0, y0, x1, y1;
+	int radial = 0;
+	int idx = ed->selCount == 1 ? ed->sel[0] : -1;
+	if (!grad_handle_(ed, idx, &x0, &y0, &x1, &y1, &radial)) return -1;
+	if (pt_dist2(ed->mx, ed->my, x0, y0) <= 100.0f) { *part = 0; return idx; }
+	if (pt_dist2(ed->mx, ed->my, x1, y1) <= 100.0f) { *part = 1; return idx; }
+	return -1;
+}
+
+static void draw_grad_handle_(UiSvgEdit *ed, UiContext *ui)
+{
+	float x0, y0, x1, y1;
+	int radial = 0;
+	int idx = ed->selCount == 1 ? ed->sel[0] : -1;
+	UiTheme *t = ui->theme;
+	if (!grad_handle_(ed, idx, &x0, &y0, &x1, &y1, &radial)) return;
+	Gfx_Line(ui->gfx, x0, y0, x1, y1, t->primary.base, 1.0f);
+	Gfx_FillEllipse(ui->gfx, x0, y0, 4.0f, 4.0f, t->card);
+	Gfx_StrokeEllipse(ui->gfx, x0, y0, 4.0f, t->primary.base, 1.0f);
+	Gfx_FillEllipse(ui->gfx, x1, y1, 4.0f, 4.0f, t->warning.base);
+	Gfx_StrokeEllipse(ui->gfx, x1, y1, 4.0f, t->warning.base, 1.0f);
+	(void)radial;
+}
+
+static void grad_drag_update_(UiSvgEdit *ed, int idx, int part)
+{
+	SvgElement *e;
+	GfxRect b;
+	float wx, wy, lx, ly, cx, cy;
+	if (idx < 0 || idx >= ed->doc->count) return;
+	e = &ed->doc->els[idx];
+	b = Svg_ElementLocalBounds(e);
+	if (b.w <= 0.5f || b.h <= 0.5f) return;
+	s2w(ed, ed->mx, ed->my, &wx, &wy);
+	Svg_WorldToLocal(e, wx, wy, &lx, &ly);
+	cx = b.x + e->style.fill.cx * b.w;
+	cy = b.y + e->style.fill.cy * b.h;
+	if (e->style.fill.kind == SVG_PAINT_RADIAL) {
+		if (part == 0) {
+			float ncx = (lx - b.x) / b.w, ncy = (ly - b.y) / b.h;
+			e->style.fill.cx = ncx < 0.0f ? 0.0f : (ncx > 1.0f ? 1.0f : ncx);
+			e->style.fill.cy = ncy < 0.0f ? 0.0f : (ncy > 1.0f ? 1.0f : ncy);
+		} else {
+			float nx = (lx - cx) / b.w, ny = (ly - cy) / b.h;
+			float r = s_sqrt(nx * nx + ny * ny);
+			e->style.fill.r = r < 0.02f ? 0.02f : (r > 4.0f ? 4.0f : r);
+		}
+	} else {
+		float dx = lx - cx, dy = ly - cy;
+		float deg = s_atan2(dy, dx) * (180.0f / SE_PI);
+		if (deg < 0.0f) deg += 360.0f;
+		e->style.fill.angleDeg = deg;
+	}
+	Svg_ElementTouch(e);
+	cache_clear(ed);
+	ed_invalidate(ed);
+}
 static void seg_point(const SvgElement *e, int si, float t, float *x, float *y)
 {
 	const SvgPath *p = &e->path;
@@ -1886,6 +2032,15 @@ static void press_select_tool(UiSvgEdit *ed, UiContext *ui)
 		}
 		return;
 	}
+	{
+		int part = 0;
+		int gi = grad_handle_hit_(ed, &part);
+		if (gi >= 0) {
+			ed->gradPart = part;
+			start_drag(ed, SE_DRAG_GRAD);
+			return;
+		}
+	}
 	s2w(ed, ed->mx, ed->my, &wx, &wy);
 	hit = Svg_DocHit(ed->doc, wx, wy, SE_TOL_PX / ed->view.scale);
 	if (hit >= 0) {
@@ -1991,9 +2146,59 @@ static int elem_needs_xf_(const UiSvgEdit *ed, int idx)
 	return e->type == SVG_EL_GROUP || e->parent >= 0 || e->xf.has;
 }
 
+static void snap_axis_(UiSvgEdit *ed, int axisY, float p0, float p1,
+	float p2, float *adj, float *guide, int *on)
+{
+	float tol = 6.0f / (ed->view.scale > 0.01f ? ed->view.scale : 1.0f);
+	float best = tol, cand[3 * 64 + 6];
+	int n = 0, i, r, rc = SvgDoc_RootCount(ed->doc);
+	float board = axisY ? ed->doc->height : ed->doc->width;
+	cand[n++] = 0.0f;
+	cand[n++] = board * 0.5f;
+	cand[n++] = board;
+	for (r = 0; r < rc && n + 3 <= (int)(sizeof(cand) / sizeof(cand[0])); r++) {
+		int idx = SvgDoc_RootAt(ed->doc, r);
+		GfxRect b;
+		if (idx < 0 || sel_has(ed, idx)) continue;
+		b = SvgDoc_ElementBounds(ed->doc, idx);
+		cand[n++] = axisY ? b.y : b.x;
+		cand[n++] = axisY ? b.y + b.h * 0.5f : b.x + b.w * 0.5f;
+		cand[n++] = axisY ? b.y + b.h : b.x + b.w;
+	}
+	*adj = 0.0f;
+	*on = 0;
+	for (i = 0; i < n; i++) {
+		float c = cand[i];
+		float d0 = c - p0, d1 = c - p1, d2 = c - p2;
+		float d = d0;
+		float ad = s_abs(d0);
+		if (s_abs(d1) < ad) { d = d1; ad = s_abs(d1); }
+		if (s_abs(d2) < ad) { d = d2; ad = s_abs(d2); }
+		if (ad < best) { best = ad; *adj = d; *guide = c; *on = 1; }
+	}
+}
+
+/* 移动吸附: 选区包围盒的边/中心对齐画板与其它根元素. */
+static void snap_move_delta_(UiSvgEdit *ed, float *dx, float *dy)
+{
+	GfxRect b = ed->startBox;
+	float ax, ay, gx, gy;
+	int ox, oy;
+	b.x += *dx;
+	b.y += *dy;
+	snap_axis_(ed, 0, b.x, b.x + b.w * 0.5f, b.x + b.w, &ax, &gx, &ox);
+	snap_axis_(ed, 1, b.y, b.y + b.h * 0.5f, b.y + b.h, &ay, &gy, &oy);
+	if (ox) { *dx += ax; ed->snapGX = gx; }
+	if (oy) { *dy += ay; ed->snapGY = gy; }
+	ed->snapGXOn = ox;
+	ed->snapGYOn = oy;
+}
+
 static void update_drag(UiSvgEdit *ed, UiContext *ui)
 {
 	float wx, wy;
+	ed->snapGXOn = 0;
+	ed->snapGYOn = 0;
 	if (ed->drag == SE_DRAG_PAN) {
 		ed->view.tx += ed->mx - ed->lastMx;
 		ed->view.ty += ed->my - ed->lastMy;
@@ -2003,6 +2208,12 @@ static void update_drag(UiSvgEdit *ed, UiContext *ui)
 	}
 	if (ed->drag == SE_DRAG_NONE) return;
 	s2w(ed, ed->mx, ed->my, &wx, &wy);
+	if (ed->drag == SE_DRAG_GRAD) {
+		int idx = ed->selCount == 1 ? ed->sel[0] : -1;
+		grad_drag_update_(ed, idx, ed->gradPart);
+		ed->dragMoved = 1;
+		return;
+	}
 	if (ed->drag == SE_DRAG_PEN_POINT) {
 		if (pt_dist2(ed->mx, ed->my, ed->pressSX, ed->pressSY) > 9.0f) {
 			ed->penDragging = 1;
@@ -2106,6 +2317,8 @@ static void update_drag(UiSvgEdit *ed, UiContext *ui)
 		if (shift_down()) {
 			if (s_abs(dx) > s_abs(dy)) dy = 0.0f;
 			else dx = 0.0f;
+		} else if (!alt_down()) {
+			snap_move_delta_(ed, &dx, &dy);
 		}
 		for (i = 0; i < ed->origCount; i++) {
 			int idx = ed->sel[i];
@@ -2278,6 +2491,7 @@ static void release_left(UiSvgEdit *ed, UiContext *ui)
 		break;
 	case SE_DRAG_SCALE:
 	case SE_DRAG_ROTATE:
+	case SE_DRAG_GRAD:
 		drag_end_commit(ed, ui);
 		break;
 	case SE_DRAG_NODE:
@@ -2416,6 +2630,11 @@ static void handle_input(UiSvgEdit *ed, UiContext *ui)
 
 	ed->mouseIn = inCanvas;
 	ed->mouseWorldValid = ed->viewValid;
+	if (ed->inputBlock) {
+		ed->lastMx = ed->mx;
+		ed->lastMy = ed->my;
+		return;
+	}
 	if (ed->viewValid) {
 		float wx, wy;
 		s2w(ed, ed->mx, ed->my, &wx, &wy);
@@ -2596,6 +2815,7 @@ void Ui_SvgEdit_Destroy(UiSvgEdit *ed)
 	}
 	for (i = 0; i < ed->origCount; i++) geom_free(&ed->orig[i]);
 	s_free(ed->orig);
+	SvgDoc_ClipFree(ed->clip);
 	s_free(ed->cache);
 	s_free(ed->sel);
 	Svg_StyleFree(&ed->defStyle);
@@ -2737,8 +2957,10 @@ void Ui_SvgEdit_Frame(UiSvgEdit *ed, UiContext *ui, UiRect viewport)
 	/* 选择框 */
 	if (ed->tool == UI_SVG_TOOL_SELECT || ed->tool == UI_SVG_TOOL_NODE) {
 		GfxRect wb;
-		if (!ed->penActive && sel_bounds_cached(ed, &wb) && ed->selCount > 0)
+		if (!ed->penActive && sel_bounds_cached(ed, &wb) && ed->selCount > 0) {
 			draw_selection(ed, ui, wb);
+			if (ed->tool == UI_SVG_TOOL_SELECT) draw_grad_handle_(ed, ui);
+		}
 	}
 
 	/* 节点/钢笔覆盖层 */
@@ -2838,6 +3060,24 @@ int Ui_SvgEdit_Key(UiSvgEdit *ed, UiContext *ui, UINT vk)
 	if (ctrl && vk == 'A') {
 		Ui_SvgEdit_SelectAll(ed);
 		return 1;
+	}
+	if (ctrl && vk == 'C') {
+		Ui_SvgEdit_CopySel(ed);
+		return 1;
+	}
+	if (ctrl && vk == 'V') {
+		Ui_SvgEdit_Paste(ed, ui);
+		return 1;
+	}
+	if (ctrl && vk == 'D') {
+		Ui_SvgEdit_DuplicateSel(ed, ui);
+		return 1;
+	}
+	if (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN) {
+		float step = shift ? 10.0f : 1.0f;
+		float dx = vk == VK_LEFT ? -step : (vk == VK_RIGHT ? step : 0.0f);
+		float dy = vk == VK_UP ? -step : (vk == VK_DOWN ? step : 0.0f);
+		return Ui_SvgEdit_Nudge(ed, ui, dx, dy);
 	}
 	if (ctrl && vk == 'G') {
 		if (shift) Ui_SvgEdit_Ungroup(ed, ui);
@@ -2973,6 +3213,12 @@ void Ui_SvgEdit_SetGrid(UiSvgEdit *ed, int on, float step)
 	ed->gridOn = on;
 	if (step > 0.5f) ed->gridStep = step;
 	ed_invalidate(ed);
+}
+
+void Ui_SvgEdit_SetInputBlock(UiSvgEdit *ed, int blocked)
+{
+	if (!ed) return;
+	ed->inputBlock = blocked ? 1 : 0;
 }
 
 int Ui_SvgEdit_GridOn(const UiSvgEdit *ed)
@@ -3117,6 +3363,163 @@ void Ui_SvgEdit_DuplicateSel(UiSvgEdit *ed, UiContext *ui)
 	Svg_History_Commit(ed->doc);
 	ed_invalidate(ed);
 	(void)ui;
+}
+
+static int sel_ancestor_selected_(const UiSvgEdit *ed, int idx)
+{
+	int p = ed->doc->els[idx].parent;
+	while (p >= 0) {
+		if (sel_has(ed, p)) return 1;
+		p = ed->doc->els[p].parent;
+	}
+	return 0;
+}
+
+static int inv_linear_(const float *m, float *inv)
+{
+	float det = m[0] * m[3] - m[1] * m[2];
+	if (det > -1e-6f && det < 1e-6f) return 0;
+	inv[0] = m[3] / det;
+	inv[1] = -m[1] / det;
+	inv[2] = -m[2] / det;
+	inv[3] = m[0] / det;
+	return 1;
+}
+
+/* 世界位移 → 元素父空间位移 (父变换可能含旋转/缩放). */
+static void move_world_(UiSvgEdit *ed, int idx, float dx, float dy)
+{
+	float pm[6], inv[6], lx = dx, ly = dy;
+	SvgDoc_ParentMatrix(ed->doc, idx, pm);
+	if (inv_linear_(pm, inv)) {
+		lx = inv[0] * dx + inv[2] * dy;
+		ly = inv[1] * dx + inv[3] * dy;
+	}
+	SvgDoc_Translate(ed->doc, idx, lx, ly);
+}
+
+int Ui_SvgEdit_CopySel(UiSvgEdit *ed)
+{
+	SvgClip *c;
+	if (!ed || !ed->doc || ed->selCount <= 0) return 0;
+	c = SvgDoc_ClipCopy(ed->doc, ed->sel, ed->selCount);
+	if (!c) return 0;
+	SvgDoc_ClipFree(ed->clip);
+	ed->clip = c;
+	return 1;
+}
+
+int Ui_SvgEdit_Paste(UiSvgEdit *ed, UiContext *ui)
+{
+	int roots[128];
+	int n, i, base;
+	if (!ed || !ed->clip) return 0;
+	n = SvgDoc_ClipPaste(ed->doc, ed->clip, 12.0f, 12.0f, roots, 128);
+	if (n <= 0) return 0;
+	cache_clear(ed);
+	sel_clear(ed);
+	base = ed->doc->count - n;
+	for (i = base; i < ed->doc->count; i++)
+		if (ed->doc->els[i].parent < 0) sel_add(ed, i);
+	Svg_History_Commit(ed->doc);
+	ed_invalidate(ed);
+	(void)ui; (void)roots;
+	return 1;
+}
+
+int Ui_SvgEdit_Nudge(UiSvgEdit *ed, UiContext *ui, float dx, float dy)
+{
+	int i, any = 0;
+	if (!ed || !ed->doc || ed->selCount <= 0) return 0;
+	for (i = 0; i < ed->selCount; i++) {
+		int idx = ed->sel[i];
+		if (idx < 0 || idx >= ed->doc->count) continue;
+		if (sel_ancestor_selected_(ed, idx)) continue;
+		move_world_(ed, idx, dx, dy);
+		Svg_ElementTouch(&ed->doc->els[idx]);
+		any = 1;
+	}
+	if (!any) return 0;
+	cache_clear(ed);
+	Svg_History_Commit(ed->doc);
+	ed_invalidate(ed);
+	(void)ui;
+	return 1;
+}
+
+typedef struct AlignItem { int idx; float c; } AlignItem;
+
+int Ui_SvgEdit_Align(UiSvgEdit *ed, UiContext *ui, int mode)
+{
+	AlignItem items[256];
+	GfxRect ub;
+	int n = 0, i;
+	if (!ed || !ed->doc || ed->selCount <= 0) return 0;
+	ub = SvgDoc_ElementBounds(ed->doc, ed->sel[0]);
+	ub.x = ub.y = 1e9f;
+	ub.w = ub.h = -1e9f;
+	for (i = 0; i < ed->selCount && n < 256; i++) {
+		int idx = ed->sel[i];
+		GfxRect b;
+		if (idx < 0 || idx >= ed->doc->count) continue;
+		if (sel_ancestor_selected_(ed, idx)) continue;
+		b = SvgDoc_ElementBounds(ed->doc, idx);
+		items[n].idx = idx;
+		items[n].c = mode == 6 ? b.x + b.w * 0.5f
+			: (mode == 7 ? b.y + b.h * 0.5f : 0.0f);
+		n++;
+		if (b.x < ub.x) ub.x = b.x;
+		if (b.y < ub.y) ub.y = b.y;
+		if (b.x + b.w > ub.x + ub.w) ub.w = b.x + b.w - ub.x;
+		if (b.y + b.h > ub.y + ub.h) ub.h = b.y + b.h - ub.y;
+	}
+	if (n <= 0) return 0;
+	if (mode == 6 || mode == 7) {
+		if (n < 3) return 0;
+		/* 按中心排序 (插入排序, 选择集通常很小) */
+		for (i = 0; i < n; i++) {
+			float f = items[i].c;
+			int k = i - 1;
+			while (k >= 0 && items[k].c > f) {
+				AlignItem t = items[k + 1];
+				items[k + 1] = items[k];
+				items[k] = t;
+				k--;
+			}
+		}
+		{
+			float first = items[0].c, last = items[n - 1].c;
+			float step = (last - first) / (float)(n - 1);
+			for (i = 0; i < n; i++) {
+				float d = first + step * (float)i - items[i].c;
+				if (mode == 6) move_world_(ed, items[i].idx, d, 0.0f);
+				else move_world_(ed, items[i].idx, 0.0f, d);
+				Svg_ElementTouch(&ed->doc->els[items[i].idx]);
+			}
+		}
+	} else {
+		for (i = 0; i < n; i++) {
+			GfxRect b = SvgDoc_ElementBounds(ed->doc, items[i].idx);
+			float dx = 0.0f, dy = 0.0f;
+			switch (mode) {
+			case 0: dx = ub.x - b.x; break;
+			case 1: dx = (ub.x + ub.w * 0.5f) - (b.x + b.w * 0.5f); break;
+			case 2: dx = (ub.x + ub.w) - (b.x + b.w); break;
+			case 3: dy = ub.y - b.y; break;
+			case 4: dy = (ub.y + ub.h * 0.5f) - (b.y + b.h * 0.5f); break;
+			case 5: dy = (ub.y + ub.h) - (b.y + b.h); break;
+			default: break;
+			}
+			if (dx == 0.0f && dy == 0.0f) continue;
+			move_world_(ed, items[i].idx, dx, dy);
+			Svg_ElementTouch(&ed->doc->els[items[i].idx]);
+		}
+	}
+	cache_clear(ed);
+	Svg_History_Commit(ed->doc);
+	ed_invalidate(ed);
+	(void)ui;
+	return 1;
 }
 
 void Ui_SvgEdit_Reorder(UiSvgEdit *ed, UiContext *ui, int dir)
@@ -3276,6 +3679,129 @@ void Ui_SvgEdit_SetTextAlign(UiSvgEdit *ed, UiContext *ui, int align,
 	Svg_History_Commit(ed->doc);
 	ed_invalidate(ed);
 	(void)ui;
+}
+
+typedef struct TextPathBuild_ {
+	SvgPath *path;
+	int prev;
+	int ok;
+} TextPathBuild_;
+
+static void tp_move_(void *u, float x, float y)
+{
+	TextPathBuild_ *b = (TextPathBuild_ *)u;
+	int idx = Svg_PathMoveTo(b->path, x, y);
+	if (idx < 0) { b->ok = 0; b->prev = -1; return; }
+	b->prev = idx;
+}
+
+static void tp_line_(void *u, float x, float y)
+{
+	TextPathBuild_ *b = (TextPathBuild_ *)u;
+	int idx;
+	if (!b->ok || b->prev < 0) return;
+	idx = Svg_PathAddNode(b->path, x, y, SVG_NODE_CORNER);
+	if (idx < 0) { b->ok = 0; return; }
+	b->path->seg[b->prev] = SVG_SEG_LINE;
+	b->path->nodes[b->prev].hasOut = 0;
+	b->path->nodes[idx].hasIn = 0;
+	b->prev = idx;
+}
+
+static void tp_cubic_(void *u, float c1x, float c1y, float c2x, float c2y,
+	float x, float y)
+{
+	TextPathBuild_ *b = (TextPathBuild_ *)u;
+	int idx, p;
+	if (!b->ok || b->prev < 0) return;
+	p = b->prev;
+	idx = Svg_PathAddNode(b->path, x, y, SVG_NODE_CORNER);
+	if (idx < 0) { b->ok = 0; return; }
+	b->path->seg[p] = SVG_SEG_CUBIC;
+	b->path->nodes[p].hasOut = 1;
+	b->path->nodes[p].outX = c1x - b->path->nodes[p].x;
+	b->path->nodes[p].outY = c1y - b->path->nodes[p].y;
+	b->path->nodes[idx].hasIn = 1;
+	b->path->nodes[idx].inX = c2x - x;
+	b->path->nodes[idx].inY = c2y - y;
+	b->prev = idx;
+}
+
+static void tp_close_(void *u)
+{
+	(void)u; /* 闭合由最终 closed 标志统一表达 */
+}
+
+int Ui_SvgEdit_TextToPath(UiSvgEdit *ed, UiContext *ui)
+{
+	int idx = Ui_SvgEdit_TextTarget(ed);
+	SvgElement *e;
+	SvgPath path;
+	GfxFont *f;
+	GfxPathSink sink;
+	TextPathBuild_ b;
+	UiTheme *t;
+	const char *s, *ls, *p;
+	float axf, af, lh, blockL;
+	int line = 0;
+	if (idx < 0) return 0;
+	e = &ed->doc->els[idx];
+	text_measure_(ed, idx, e);
+	f = text_font_(ed, e);
+	if (!f || e->textW <= 0.0f) return 0;
+	memset(&path, 0, sizeof(path));
+	memset(&sink, 0, sizeof(sink));
+	b.path = &path; b.prev = -1; b.ok = 1;
+	sink.user = &b;
+	sink.move_to = tp_move_;
+	sink.line_to = tp_line_;
+	sink.cubic_to = tp_cubic_;
+	sink.close = tp_close_;
+	axf = e->anchor == 1 ? 0.5f : (e->anchor == 2 ? 1.0f : 0.0f);
+	af = e->align == 1 ? 0.5f : (e->align == 2 ? 1.0f : 0.0f);
+	lh = e->fontSize * (e->lineH > 0.0f ? e->lineH : 1.25f);
+	blockL = e->p.text.x - axf * e->textW;
+	s = e->text;
+	ls = s;
+	for (p = s; ; p++) {
+		if (*p == '\n' || *p == 0) {
+			char buf[512];
+			int n = (int)(p - ls);
+			float w, x, y;
+			if (n > 511) n = 511;
+			memcpy(buf, ls, (size_t)n);
+			buf[n] = 0;
+			w = Gfx_TextWidth(ed->gfx, f, buf);
+			x = blockL + (e->textW - w) * af;
+			y = e->p.text.y + (float)line * lh;
+			if (buf[0]) Gfx_TextOutline(ed->gfx, f, buf, x, y, &sink);
+			line++;
+			if (*p == 0) break;
+			ls = p + 1;
+		}
+	}
+	if (!b.ok || path.count < 2) { Svg_PathFree(&path); return 0; }
+	path.closed = 1;
+	path.seg[path.count - 1] = SVG_SEG_LINE; /* 末轮廓闭环段 */
+	t = ed->ctx->theme;
+	SvgDoc_SetText(ed->doc, idx, "");       /* 释放原文本并置空串 */
+	Svg_PathFree(&e->path);
+	e->path = path;
+	e->type = SVG_EL_PATH;
+	e->compound = 1;
+	if (!(e->style.setMask & SVG_STYLE_FILL) ||
+		e->style.fill.kind != SVG_PAINT_SOLID) {
+		e->style.fill.kind = SVG_PAINT_SOLID;
+		e->style.fill.color = t ? t->text : 0xFF202020u;
+		e->style.setMask |= SVG_STYLE_FILL;
+	}
+	e->version++;
+	ed->nodeSel = -1;
+	cache_clear(ed);
+	Svg_History_Commit(ed->doc);
+	ed_invalidate(ed);
+	(void)ui;
+	return 1;
 }
 
 typedef struct LayerWalk {

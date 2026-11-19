@@ -37,6 +37,37 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l)
 	return DefWindowProcW(h, m, w, l);
 }
 
+typedef struct { GfxPath *p; int contours; int pts; } OutlineProbe;
+
+static void op_move(void *u, float x, float y)
+{
+	OutlineProbe *o = (OutlineProbe *)u;
+	Gfx_PathMoveTo(o->p, x, y);
+	o->contours++;
+	o->pts++;
+}
+
+static void op_line(void *u, float x, float y)
+{
+	OutlineProbe *o = (OutlineProbe *)u;
+	Gfx_PathLineTo(o->p, x, y);
+	o->pts++;
+}
+
+static void op_cubic(void *u, float x1, float y1, float x2, float y2,
+	float x, float y)
+{
+	OutlineProbe *o = (OutlineProbe *)u;
+	Gfx_PathCubicTo(o->p, x1, y1, x2, y2, x, y);
+	o->pts++;
+}
+
+static void op_close(void *u)
+{
+	OutlineProbe *o = (OutlineProbe *)u;
+	Gfx_PathClose(o->p);
+}
+
 void __stdcall startup(void)
 {
 	WNDCLASSEXW wc;
@@ -48,6 +79,9 @@ void __stdcall startup(void)
 	GfxStrokeStyle dash;
 	float dashes[2] = { 6.0f, 4.0f };
 	GfxRect bb, gbox, clipRc;
+	GfxFont *font = NULL;
+	OutlineProbe probe;
+	GfxPathSink sink;
 	char line[160];
 
 	Log_Init();
@@ -179,7 +213,53 @@ void __stdcall startup(void)
 	Gfx_FillPath(g, p, 0xFF303030);
 	CHECK(Gfx_End(g) == 1);
 
+	/* 文本转路径: "O" 应有外轮廓 + 内孔 (>=2 闭合轮廓), 坐标落在基线附近 */
+	font = Gfx_CreateFont(g, 64.0f, 400);
+	CHECK(font != NULL);
+	if (font) {
+		Gfx_PathReset(p);
+		probe.p = p; probe.contours = 0; probe.pts = 0;
+		sink.user = &probe;
+		sink.move_to = op_move; sink.line_to = op_line;
+		sink.cubic_to = op_cubic; sink.close = op_close;
+		CHECK(Gfx_TextOutline(g, font, "O", 10.0f, 10.0f, &sink) >= 2);
+		CHECK(probe.contours >= 2);
+		CHECK(probe.pts > 8);
+		bb = Gfx_PathBounds(g, p);
+		CHECK(bb.w > 20.0f && bb.w < 64.0f);
+		CHECK(bb.h > 20.0f && bb.h < 64.0f);
+		Gfx_DestroyFont(g, font);
+		font = NULL;
+	}
+
+	/* 径向渐变 + 奇偶填充规则: 创建/绘制不崩溃 */
+	{
+		GfxBrush *rad = Gfx_RadialGradientBrush(g, gbox, 0.5f, 0.5f, 0.5f,
+			stops, 2);
+		CHECK(rad != NULL);
+		if (rad) {
+			Gfx_PathReset(p);
+			Gfx_PathMoveTo(p, 50.0f, 50.0f);
+			Gfx_PathLineTo(p, 180.0f, 50.0f);
+			Gfx_PathLineTo(p, 180.0f, 150.0f);
+			Gfx_PathLineTo(p, 50.0f, 150.0f);
+			Gfx_PathClose(p);
+			Gfx_PathMoveTo(p, 90.0f, 80.0f);
+			Gfx_PathLineTo(p, 140.0f, 80.0f);
+			Gfx_PathLineTo(p, 140.0f, 120.0f);
+			Gfx_PathLineTo(p, 90.0f, 120.0f);
+			Gfx_PathClose(p);
+			Gfx_PathSetFillRule(p, 1);
+			Gfx_Begin(g);
+			Gfx_Clear(g, 0xFFFFFFFF);
+			Gfx_FillPathBrush(g, p, rad);
+			CHECK(Gfx_End(g) == 1);
+			Gfx_BrushDestroy(g, rad);
+		}
+	}
+
 done:
+	if (font) Gfx_DestroyFont(g, font);
 	if (solid) Gfx_BrushDestroy(g, solid);
 	if (grad) Gfx_BrushDestroy(g, grad);
 	if (p) Gfx_PathDestroy(g, p);

@@ -33,6 +33,9 @@ typedef struct EdDemo {
 
 	int wantExport;
 	int wantCopy;
+	int ctxOpen;
+	float ctxX, ctxY;
+	UiRect ctxRc;
 	char msg[192];
 	DWORD msgTick;
 
@@ -606,15 +609,20 @@ static void fill_row_ui(EdDemo *d, UiContext *ui, float x, float y)
 	const char *kindText;
 	Ui_SvgEdit_GetStyle(d->ed, &st);
 	if (st.fill.kind == SVG_PAINT_NONE) kindText = "填充: 无";
-	else if (st.fill.kind == SVG_PAINT_LINEAR) kindText = "填充: 渐变";
+	else if (st.fill.kind == SVG_PAINT_LINEAR) kindText = "填充: 线";
+	else if (st.fill.kind == SVG_PAINT_RADIAL) kindText = "填充: 径";
 	else kindText = "填充: 纯色";
 
 	if (Ui_ButtonEx(ui, Ui_Id("svgedit.fillkind", 0, 0),
 		Ui_Rect(x, y, 84, 30), kindText, &plain, 1)) {
-		st.fill.kind = st.fill.kind == SVG_PAINT_NONE ? SVG_PAINT_SOLID
-			: (st.fill.kind == SVG_PAINT_SOLID ? SVG_PAINT_LINEAR
-				: SVG_PAINT_NONE);
-		if (st.fill.kind == SVG_PAINT_LINEAR && st.fill.stopCount < 2) {
+		switch (st.fill.kind) {
+		case SVG_PAINT_NONE: st.fill.kind = SVG_PAINT_SOLID; break;
+		case SVG_PAINT_SOLID: st.fill.kind = SVG_PAINT_LINEAR; break;
+		case SVG_PAINT_LINEAR: st.fill.kind = SVG_PAINT_RADIAL; break;
+		default: st.fill.kind = SVG_PAINT_NONE; break;
+		}
+		if ((st.fill.kind == SVG_PAINT_LINEAR ||
+			 st.fill.kind == SVG_PAINT_RADIAL) && st.fill.stopCount < 2) {
 			SvgGradStop stops[2];
 			stops[0].offset = 0.0f;
 			stops[0].color = st.fill.color ? st.fill.color : 0xFF2D7FF9u;
@@ -622,13 +630,17 @@ static void fill_row_ui(EdDemo *d, UiContext *ui, float x, float y)
 			stops[1].color = 0xFFFFFFFFu;
 			Svg_StyleSetFillStops(&st.fill, stops, 2);
 		}
+		if (st.fill.kind == SVG_PAINT_RADIAL) {
+			st.fill.cx = 0.5f; st.fill.cy = 0.5f; st.fill.r = 0.5f;
+		}
 		Ui_SvgEdit_SetStyle(d->ed, ui, &st);
 	}
 	if (Ui_ButtonEx(ui, Ui_Id("svgedit.fillcolor", 0, 0),
 		Ui_Rect(x + 92, y, 88, 30), "填色", &plain, 1)) {
 		int pi = palette_find(st.fill.color);
 		pi = (pi + 1) % 7;
-		if (st.fill.kind == SVG_PAINT_LINEAR && st.fill.stops &&
+		if ((st.fill.kind == SVG_PAINT_LINEAR ||
+			 st.fill.kind == SVG_PAINT_RADIAL) && st.fill.stops &&
 			st.fill.stopCount >= 1)
 			st.fill.stops[0].color = kPalette[pi];
 		st.fill.color = kPalette[pi];
@@ -721,13 +733,57 @@ static void inspector_style_tab(EdDemo *d, UiContext *ui, UiRect panel)
 		st.join = (st.join + 1) % 3;
 		Ui_SvgEdit_SetStyle(d->ed, ui, &st);
 	}
+	wsprintfA(buf, "规则:%s", st.fillRule ? "奇偶" : "非零");
+	if (Ui_ButtonEx(ui, Ui_Id("svgedit.fillrule", 0, 0),
+		Ui_Rect(x, y + 120, 120, 28), buf, &plain, 1)) {
+		st.fillRule = st.fillRule ? 0 : 1;
+		Ui_SvgEdit_SetStyle(d->ed, ui, &st);
+	}
+	if (st.fill.kind == SVG_PAINT_LINEAR || st.fill.kind == SVG_PAINT_RADIAL) {
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.stopadd", 0, 0),
+			Ui_Rect(x + 128, y + 120, 66, 28), "色标+", &plain, 1)) {
+			SvgGradStop gs[17];
+			int n = st.fill.stopCount, i;
+			if (n > 16) n = 16;
+			for (i = 0; i < n; i++) gs[i] = st.fill.stops[i];
+			if (n >= 2) {
+				gs[n - 1].offset = (st.fill.stops[n - 2].offset +
+					st.fill.stops[n - 1].offset) * 0.5f;
+				gs[n - 1].color = st.fill.stops[n - 2].color;
+				gs[n] = st.fill.stops[n - 1];
+				Svg_StyleSetFillStops(&st.fill, gs, n + 1);
+			}
+			Ui_SvgEdit_SetStyle(d->ed, ui, &st);
+		}
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.stopdel", 0, 0),
+			Ui_Rect(x + 200, y + 120, 66, 28), "色标-", &plain, 1)) {
+			if (st.fill.stopCount > 2)
+				Svg_StyleSetFillStops(&st.fill, st.fill.stops,
+					st.fill.stopCount - 1);
+			Ui_SvgEdit_SetStyle(d->ed, ui, &st);
+		}
+	} else {
+		wsprintfA(buf, "渐变 %.0f°", st.fill.angleDeg);
+		Gfx_Text(g, t->fSmall, buf, Ui_Rect(x + 128, y + 120, 140, 28),
+			t->text3, GFX_TEXT_VCENTER);
+	}
+	if (Ui_ButtonEx(ui, Ui_Id("svgedit.clipcopy", 0, 0),
+		Ui_Rect(x, y + 152, 76, 26), "复制", &plain, 1))
+		Ui_SvgEdit_CopySel(d->ed);
+	if (Ui_ButtonEx(ui, Ui_Id("svgedit.clippaste", 0, 0),
+		Ui_Rect(x + 82, y + 152, 76, 26), "粘贴", &plain, 1))
+		Ui_SvgEdit_Paste(d->ed, ui);
+	if (Ui_ButtonEx(ui, Ui_Id("svgedit.clipdup", 0, 0),
+		Ui_Rect(x + 164, y + 152, 76, 26), "副本", &plain, 1))
+		Ui_SvgEdit_DuplicateSel(d->ed, ui);
 	Svg_StyleFree(&st);
 	Gfx_Text(g, t->fSmall,
 		"钢笔: L 直线  A 圆弧  Shift+A 三点弧  B 贝塞尔\n"
 		"C 闭合  U 撤销节点  Enter/双击/右键 完成\n"
 		"节点: 双击线段插入，拖橙点调弧，Shift 15° 吸附\n"
-		"组: Ctrl+G 组合 / Ctrl+Shift+G 解组",
-		Ui_Rect(x, y + 132, panel.w - 28, 110), t->text3,
+		"组: Ctrl+G 组合 / Ctrl+Shift+G 解组\n"
+		"效率: Ctrl+C/V/D 复制粘贴副本 · 方向键微移",
+		Ui_Rect(x, y + 190, panel.w - 28, 130), t->text3,
 		GFX_TEXT_WRAP);
 }
 
@@ -787,6 +843,25 @@ static void inspector_geom_tab(EdDemo *d, UiContext *ui, UiRect panel)
 	UiInput_Draw(&d->form, d->fStroke);
 	UiInput_Draw(&d->form, d->fOpacity);
 	UiInput_Draw(&d->form, d->fAngle);
+
+	{
+		static const char *al[6] = { "左", "横中", "右", "上", "纵中", "下" };
+		int i;
+		UiButtonStyle bs = btn_plain();
+		label(app, "对齐", Ui_Rect(x, y + 178, 44, 26));
+		for (i = 0; i < 6; i++) {
+			if (Ui_ButtonEx(ui, Ui_Id("svgedit.align", i, 0),
+				Ui_Rect(x + 50 + (float)i * 37, y + 176, 34, 28),
+				al[i], &bs, 1))
+				Ui_SvgEdit_Align(d->ed, ui, i);
+		}
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.distx", 0, 0),
+			Ui_Rect(x, y + 212, 128, 28), "水平等距", &bs, 1))
+			Ui_SvgEdit_Align(d->ed, ui, 6);
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.disty", 0, 0),
+			Ui_Rect(x + 136, y + 212, 128, 28), "垂直等距", &bs, 1))
+			Ui_SvgEdit_Align(d->ed, ui, 7);
+	}
 }
 
 static void inspector_layers_tab(EdDemo *d, UiContext *ui, UiRect panel)
@@ -984,10 +1059,17 @@ static void inspector_text_tab(EdDemo *d, UiContext *ui, UiRect panel)
 				Ui_SvgEdit_SetTextAlign(d->ed, ui, e->align, i);
 		}
 	}
+	{
+		UiButtonStyle bs = btn_plain();
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.text.topath", 0, 0),
+			Ui_Rect(x, y + 186, 96, 28), "转路径", &bs, 1))
+			if (Ui_SvgEdit_TextToPath(d->ed, ui))
+				return; /* 元素已变为路径, 本帧不再编辑文本字段 */
+	}
 	Gfx_Text(g, t->fSmall,
 		"新建: 选文本工具后在画布点击\n"
 		"多行: 模型/导出支持 \\n, 输入框暂为单行",
-		Ui_Rect(x, y + 190, panel.w - 28, 48), t->text3, GFX_TEXT_WRAP);
+		Ui_Rect(x, y + 226, panel.w - 28, 48), t->text3, GFX_TEXT_WRAP);
 }
 
 static void inspector2(EdDemo *d, UiContext *ui, UiRect panel)
@@ -1014,6 +1096,46 @@ static void inspector2(EdDemo *d, UiContext *ui, UiRect panel)
 }
 
 /* ── 帧 ───────────────────────────────────────────────────────────── */
+
+static void ctx_menu(EdDemo *d, UiApp *app, UiContext *ui)
+{
+	UiButtonStyle plain = btn_plain();
+	float w = 140.0f, h = 8 * 30.0f + 8.0f;
+	float x = d->ctxX, y = d->ctxY;
+	int i;
+	if (!d->ctxOpen) return;
+	if (x + w > app->w - 8.0f) x = app->w - w - 8.0f;
+	if (y + h > app->h - 8.0f) y = app->h - h - 8.0f;
+	if (x < 8.0f) x = 8.0f;
+	if (y < 8.0f) y = 8.0f;
+	d->ctxRc = Ui_Rect(x, y, w, h);
+	Ui_Panel(ui, d->ctxRc);
+	{
+		static const char *items[8] = {
+			"复制", "粘贴", "副本", "删除", "置顶", "置底", "组合", "解组"
+		};
+		for (i = 0; i < 8; i++) {
+			if (!Ui_ButtonEx(ui, Ui_Id("svgedit.ctx", i, 0),
+				Ui_Rect(x + 4, y + 4 + (float)i * 30, w - 8, 28),
+				items[i], &plain, 1))
+				continue;
+			switch (i) {
+			case 0: Ui_SvgEdit_CopySel(d->ed); break;
+			case 1: Ui_SvgEdit_Paste(d->ed, ui); break;
+			case 2: Ui_SvgEdit_DuplicateSel(d->ed, ui); break;
+			case 3: Ui_SvgEdit_DeleteSel(d->ed, ui); break;
+			case 4: Ui_SvgEdit_Reorder(d->ed, ui, 1); break;
+			case 5: Ui_SvgEdit_Reorder(d->ed, ui, -1); break;
+			case 6: Ui_SvgEdit_Group(d->ed, ui); break;
+			case 7: Ui_SvgEdit_Ungroup(d->ed, ui); break;
+			default: break;
+			}
+			d->ctxOpen = 0;
+			UiApp_Invalidate(app);
+			return;
+		}
+	}
+}
 
 static void on_frame(UiApp *app, void *user)
 {
@@ -1117,6 +1239,7 @@ static void on_frame(UiApp *app, void *user)
 		}
 	}
 
+	Ui_SvgEdit_SetInputBlock(d->ed, d->ctxOpen);
 	Ui_SvgEdit_Frame(d->ed, ui, d->canvasRc);
 
 	inspector2(d, ui, Ui_Rect(app->w - insW - 16.0f, top + 8.0f,
@@ -1159,6 +1282,7 @@ static void on_frame(UiApp *app, void *user)
 		Ui_Rect(d->statusRc.x + d->statusRc.w - 360, d->statusRc.y,
 			350, d->statusRc.h), t->text3,
 		GFX_TEXT_RIGHT | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+	ctx_menu(d, app, ui);
 }
 
 static void on_after_frame(UiApp *app, void *user)
@@ -1182,6 +1306,11 @@ static void on_mouse(UiApp *app, int msg, float x, float y, void *user)
 {
 	EdDemo *d = (EdDemo *)user;
 	if (msg == UI_APP_MOUSE_DOWN) {
+		if (d->ctxOpen) {
+			UiRect r = d->ctxRc;
+			if (x < r.x || y < r.y || x > r.x + r.w || y > r.y + r.h)
+				d->ctxOpen = 0;
+		}
 		UiInput_MouseDown(&d->form, Ui_HitTest(&app->ui, x, y), x);
 	} else if (msg == UI_APP_MOUSE_MOVE) {
 		UiInput_MouseMove(&d->form, x);
@@ -1190,6 +1319,12 @@ static void on_mouse(UiApp *app, int msg, float x, float y, void *user)
 		UiInput_MouseUp(&d->form);
 	} else if (msg == UI_APP_MOUSE_RDOWN) {
 		Ui_SvgEdit_RightDown(d->ed, x, y);
+		if (Ui_SvgEdit_SelCount(d->ed) > 0) {
+			d->ctxOpen = 1;
+			d->ctxX = x;
+			d->ctxY = y;
+			UiApp_Invalidate(app);
+		}
 	}
 }
 
@@ -1197,6 +1332,11 @@ static int on_key(UiApp *app, UINT vk, void *user)
 {
 	EdDemo *d = (EdDemo *)user;
 	int focused = UiInput_Focused(&d->form) >= 0;
+	if (d->ctxOpen && vk == VK_ESCAPE) {
+		d->ctxOpen = 0;
+		UiApp_Invalidate(app);
+		return 1;
+	}
 	if (UiInput_Key(&d->form, app->hwnd, vk)) {
 		UiApp_Invalidate(app);
 		return 1;
