@@ -217,6 +217,8 @@ static void test_color_focus(void)
 		cs.hexRc.y + cs.hexRc.h * 0.5f);
 	cs_frame_(&cs, &pm);
 	CHECK(cs.focusField == 1);
+	CHECK(cs.editHex.focused == 1);
+	CHECK(cs.editHex.caretOn == 1);
 	/* 输入字符应写入编辑框 */
 	UiColorSelect_Char(&cs, &g_ctx, L'1');
 	UiColorSelect_Char(&cs, &g_ctx, L'2');

@@ -644,6 +644,8 @@ void UiColorSelect_DrawPopup(UiColorSelect *cs, UiPopupManager *pm,
 	if (!cs || !pm || !ui || !ui->theme || !ui->gfx) return;
 	if (!UiColorSelect_IsOpen(pm, cs)) {
 		cs->drag = 0;
+		cs->editHex.focused = 0;
+		cs->editA.focused = 0;
 		if (cs->focusField) {
 			cs->focusField = 0;
 			if (cs->ime) UiIme_SetFocus(cs->ime, NULL);
@@ -742,6 +744,7 @@ void UiColorSelect_DrawPopup(UiColorSelect *cs, UiPopupManager *pm,
 	if (hexHit) {
 		if (cs->focusField != 1) {
 			cs->focusField = 1;
+			cs->blinkOn = 1;
 			if (cs->ime) UiIme_SetFocus(cs->ime, &cs->editHex);
 			Ui_InvalidateRectPad(ui, panel, 8.0f);
 		}
@@ -750,6 +753,7 @@ void UiColorSelect_DrawPopup(UiColorSelect *cs, UiPopupManager *pm,
 	} else if (aHit) {
 		if (cs->focusField != 2) {
 			cs->focusField = 2;
+			cs->blinkOn = 1;
 			if (cs->ime) UiIme_SetFocus(cs->ime, &cs->editA);
 			Ui_InvalidateRectPad(ui, panel, 8.0f);
 		}
@@ -772,6 +776,8 @@ void UiColorSelect_DrawPopup(UiColorSelect *cs, UiPopupManager *pm,
 		cs_draw_bars_(cs, ui->gfx, sv, hue, alpha);
 
 	/* HEX / 透明度编辑框 (自带主题表面与焦点描边) */
+	cs->editHex.focused = (cs->focusField == 1);
+	cs->editA.focused = (cs->focusField == 2);
 	cs->editHex.caretOn = (cs->focusField == 1) ? cs->blinkOn : 0;
 	cs->editA.caretOn = (cs->focusField == 2) ? cs->blinkOn : 0;
 	Edit_Draw(ui, hexId, hexRc, &cs->editHex, NULL);
@@ -920,6 +926,7 @@ int UiColorSelect_Mouse(UiColorSelect *cs, UiContext *ui, int msg,
 				cs_apply_edits_(cs);
 			if (cs->focusField != 1) {
 				cs->focusField = 1;
+				cs->blinkOn = 1;
 				if (cs->ime) UiIme_SetFocus(cs->ime, &cs->editHex);
 			}
 			Edit_PlaceCaret(&cs->editHex, ui->gfx, ui->theme->fInput,
@@ -933,6 +940,7 @@ int UiColorSelect_Mouse(UiColorSelect *cs, UiContext *ui, int msg,
 				cs_apply_edits_(cs);
 			if (cs->focusField != 2) {
 				cs->focusField = 2;
+				cs->blinkOn = 1;
 				if (cs->ime) UiIme_SetFocus(cs->ime, &cs->editA);
 			}
 			Edit_PlaceCaret(&cs->editA, ui->gfx, ui->theme->fInput,
@@ -983,6 +991,8 @@ static void cs_focus_clear_(UiColorSelect *cs)
 {
 	if (!cs->focusField) return;
 	cs->focusField = 0;
+	cs->editHex.focused = 0;
+	cs->editA.focused = 0;
 	if (cs->ime) UiIme_SetFocus(cs->ime, NULL);
 }
 
