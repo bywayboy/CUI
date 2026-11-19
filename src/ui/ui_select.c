@@ -1,6 +1,7 @@
 #include "ui/ui_select.h"
 #include "ui/ui_frame.h"
 #include "ui/ui_icon.h"
+#include "ui/ui_paint.h"
 #include "gfx/gfx_fx.h"
 #include <string.h>
 
@@ -36,6 +37,15 @@ static int sel_item_enabled(const UiSelect *s, int i)
 static float sel_row_h(const UiSelect *s)
 {
 	return s->rowH > 0.0f ? s->rowH : 32.0f;
+}
+
+/* 展开/键盘焦点不走 Ui_State 的 focus 通道 (那条跟 focusId 走),
+ * 用独立通道平滑; 合成器路径直接落终值, 过渡由快照交叉淡化负责. */
+static float sel_state_t(UiContext *ui, UiId id, int ch, float target)
+{
+	if (Ui_FxActive(ui)) return target;
+	Ui_AnimSmooth(ui, id, ch, target);
+	return Ui_AnimGet(ui, id, ch, 0.0f);
 }
 
 static float sel_content_h(const UiSelect *s, float rowH)
@@ -511,10 +521,10 @@ int Ui_Select(UiSelect *s, UiPopupManager *pm, UiContext *ui, UiRect rc,
 {
 	UiTheme *t;
 	UiWidgetState st;
-	UiColor bg, border, col, arrowCol;
+	UiColor border, col, arrowCol;
 	UiRect tr, ar;
-	float arrow;
-	int open, focus, target;
+	float arrow, focusT, glowT;
+	int open, open0, focus, target;
 	const char *ph;
 	char summary[128];
 
@@ -525,37 +535,51 @@ int Ui_Select(UiSelect *s, UiPopupManager *pm, UiContext *ui, UiRect rc,
 	s->committed = 0;
 	s->anchor = rc;
 	open = pm && UiPopupManager_IsOpen(pm, s->id);
+	open0 = open;
 
 	/* 关闭后清理搜索焦点/IME; 多选在关闭时提交一次. */
 	if (!open && s->wasOpen) {
 		if (s->multiple) s->committed = 1;
 		sel_search_end(s, ui);
 		s->panelFx = 0;
+		Ui_FxChange(ui, s->id, Ui_AnimTweenMs(UI_AN_TWEEN_PANEL));
 	}
 	s->wasOpen = open;
 
 	st = Ui_State(ui, s->id, rc, enabled);
 	if (enabled && ui->clicked == s->id) {
+		UiId oldNav = ui->navId;
 		ui->navId = s->id;
+		if (oldNav != s->id)
+			Ui_FxChange(ui, s->id, Ui_AnimFxMs(UI_AN_FOCUS));
 		if (open && pm) UiPopupManager_Close(pm, ui);
 		else sel_open(s, pm, ui, ui->navFocusVisible ? 1 : 0);
 		open = pm && UiPopupManager_IsOpen(pm, s->id);
 		s->wasOpen = open;
 	}
+	if (open != open0)
+		Ui_FxChange(ui, s->id, Ui_AnimTweenMs(UI_AN_TWEEN_PANEL));
 
 	focus = ui->navFocusVisible && ui->navId == s->id;
-	if (!enabled) {
-		bg = t->neutral.soft;
-		border = t->neutral.border;
-	} else {
-		bg = t->neutral.base;
-		border = (open || focus) ? t->primary.base
-			: (st.hover > 0.004f
-				? Ui_ColorMix(t->neutral.border, t->primary.base,
-					st.hover * 0.6f)
-				: t->neutral.border);
+	focusT = enabled ? sel_state_t(ui, s->id, UI_AN_USER + 2,
+		(open || focus) ? 1.0f : 0.0f) : 0.0f;
+	/* 悬停与展开/键盘焦点共用一层光晕, 强度取两者较大值 */
+	glowT = st.glow > focusT ? st.glow : focusT;
+	if (enabled && glowT > 0.004f)
+		Ui_DrawGlowFx(ui, rc, 6.0f, 4.0f,
+			Ui_ColorAlpha(t->primary.base, 80), glowT);
+
+	Gfx_FillRoundRect(ui->gfx, rc, 6.0f,
+		enabled ? t->neutral.base : t->neutral.soft);
+	if (enabled && st.hover > 0.004f)
+		Gfx_FillRoundRect(ui->gfx, rc, 6.0f,
+			Ui_ColorAlpha(t->primary.base, (int)(st.hover * 16.0f)));
+	border = t->neutral.border;
+	if (enabled) {
+		float k = st.hover * 0.6f;
+		if (focusT > k) k = focusT;
+		border = Ui_ColorMix(t->neutral.border, t->primary.base, k);
 	}
-	Gfx_FillRoundRect(ui->gfx, rc, 6.0f, bg);
 	Gfx_StrokeRoundRect(ui->gfx, rc, 6.0f, border, 1.0f);
 
 	tr = Ui_Rect(rc.x + SEL_PAD_X, rc.y,

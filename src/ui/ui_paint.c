@@ -2,18 +2,18 @@
 
 /* 光晕: 3 圈逐渐外扩、alpha 递减的描边。比 D2D 高斯模糊便宜得多,
  * 安装器同时最多一两个悬停控件, 开销可以忽略。 */
-static void draw_glow(Gfx *g, UiRect rc, const UiSurfaceStyle *s, float intensity)
+static void glow_bitmap_or_rings(Gfx *g, UiRect rc, float radius, float glowW,
+	UiColor glow, float intensity)
 {
 	int base, k;
-	if (!g || !s->glow || intensity <= 0.004f) return;
 	/* 首选预烘焙柔光纹理: 一次 DrawBitmap, 无离屏 RT.
 	 * 纹理创建失败才退回 3 圈描边 (旧路径). */
-	if (Gfx_DrawGlowRect(g, rc, s->radius, s->glowW, s->glow, intensity))
+	if (Gfx_DrawGlowRect(g, rc, radius, glowW, glow, intensity))
 		return;
-	base = (int)((s->glow >> 24) & 0xFF);
+	base = (int)((glow >> 24) & 0xFF);
 	for (k = 2; k >= 0; k--) {
 		/* 随亮度向外扩张: 0 -> 贴着边缘, 1 -> 完整光晕 "从边缘亮起来" */
-		float infl = s->glowW * (float)(k + 1) / 3.0f * (0.35f + 0.65f * intensity);
+		float infl = glowW * (float)(k + 1) / 3.0f * (0.35f + 0.65f * intensity);
 		UiRect r;
 		int a = (int)((float)base * intensity * (0.42f - 0.12f * (float)k));
 		r.x = rc.x - infl;
@@ -21,9 +21,22 @@ static void draw_glow(Gfx *g, UiRect rc, const UiSurfaceStyle *s, float intensit
 		r.w = rc.w + infl * 2.0f;
 		r.h = rc.h + infl * 2.0f;
 		if (a <= 1) continue;
-		Gfx_StrokeRoundRect(g, r, s->radius + infl,
-			Ui_ColorAlpha(s->glow, a), 1.2f + (float)k);
+		Gfx_StrokeRoundRect(g, r, radius + infl,
+			Ui_ColorAlpha(glow, a), 1.2f + (float)k);
 	}
+}
+
+void Ui_DrawGlowFx(UiContext *ui, UiRect rc, float radius, float glowW,
+	UiColor glow, float intensity)
+{
+	if (!ui || !ui->gfx || !glow || intensity <= 0.004f) return;
+	glow_bitmap_or_rings(ui->gfx, rc, radius, glowW, glow, intensity);
+}
+
+static void draw_glow(Gfx *g, UiRect rc, const UiSurfaceStyle *s, float intensity)
+{
+	if (!g || !s->glow || intensity <= 0.004f) return;
+	glow_bitmap_or_rings(g, rc, s->radius, s->glowW, s->glow, intensity);
 }
 
 static void fill_flat(Gfx *g, UiRect rc, const UiSurfaceStyle *s, UiColor c)

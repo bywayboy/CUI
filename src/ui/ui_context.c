@@ -116,14 +116,27 @@ void Ui_ContextShutdown(UiContext *ctx)
 
 void Ui_SetFocusId(UiContext *ctx, UiId id)
 {
-	if (ctx) ctx->focusId = id;
+	UiId old;
+	if (!ctx || ctx->focusId == id) return;
+	old = ctx->focusId;
+	ctx->focusId = id;
+	/* 焦点切换同样是视觉变化 (边框换色 + 光晕亮起). 合成器路径下
+	 * Ui_DrawSurface 直接落终值, 不登记快照过渡就会瞬跳. */
+	if (old) Ui_FxChange(ctx, old, Ui_AnimFxMs(UI_AN_FOCUS));
+	if (id) Ui_FxChange(ctx, id, Ui_AnimFxMs(UI_AN_FOCUS));
 }
 
 void Ui_SetNavId(UiContext *ctx, UiId id)
 {
+	UiId old;
 	if (!ctx) return;
+	old = ctx->navId;
 	ctx->navId = id;
 	ctx->navFocusVisible = id ? 1 : 0;
+	if (old == id) return;
+	/* 键盘焦点环/控件焦点色的显隐也走同一条快照过渡. */
+	if (old) Ui_FxChange(ctx, old, Ui_AnimFxMs(UI_AN_HOVER));
+	if (id) Ui_FxChange(ctx, id, Ui_AnimFxMs(UI_AN_HOVER));
 }
 
 void Ui_SetModal(UiContext *ctx, UiId id)

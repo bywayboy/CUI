@@ -33,4 +33,9 @@ typedef struct {
 UiWidgetState Ui_DrawSurface(UiContext *ui, UiId id, UiRect rc,
 	const UiSurfaceStyle *style, int enabled);
 
+/* 单独画一层光晕: 自绘控件 (Select 等) 用, 与 Ui_DrawSurface 同一套
+ * 预烘焙纹理/描边回退, 保证所有控件的光晕外观一致. */
+void Ui_DrawGlowFx(UiContext *ui, UiRect rc, float radius, float glowW,
+	UiColor glow, float intensity);
+
 #endif /* SCV2_UI_PAINT_H */
