@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <string.h>
 #include "ui/ui_input.h"
+#include "ui/ui_anim.h"
 
 static void input_invalidate(UiInput *in, int f)
 {
@@ -31,6 +32,12 @@ static void input_focus(UiInput *in, int f)
 	UiIme_SetFocus(in->ime, f >= 0 ? &in->fields[f].edit : NULL);
 	input_invalidate(in, old);
 	input_invalidate(in, f);
+	/* 焦点变化必须在事件里登记: UiInput_BeginFrame 在字段绘制之前才同步
+	 * focusId, 那时旧的画面已经被本帧新状态覆盖, 快照会退化成一帧无过渡. */
+	if (old >= 0)
+		Ui_FxChange(in->ui, in->fields[old].id, Ui_AnimFxMs(UI_AN_FOCUS));
+	if (f >= 0)
+		Ui_FxChange(in->ui, in->fields[f].id, Ui_AnimFxMs(UI_AN_FOCUS));
 }
 
 static int input_hit(UiInput *in, UiId hit)
