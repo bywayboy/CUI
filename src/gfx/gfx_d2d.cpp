@@ -2588,6 +2588,11 @@ GfxPart *Gfx_PartCreateOn(GfxLayer *l, float dipW, float dipH,
 		return NULL;
 	}
 	p->parent = l;
+	/* CreateOn 只允许在 Gfx_End 之后调用: 立即把内容画进 surface.
+	 * 普通 Gfx_PartCreate 在帧内创建, 内容由本帧 Gfx_End 的 PartsDraw
+	 * 上报; 但挂在 layer 上的部件可能伴随"稳定期零重绘", 等不到下一帧,
+	 * 表面会一直是空的 (Loading spinner 首次出现要等强制重绘). */
+	PartDrawContent(g, p);
 	if (g->compDevice) g->compDevice->Commit();
 	return p;
 }
