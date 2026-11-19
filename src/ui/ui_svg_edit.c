@@ -25,6 +25,10 @@ extern double sqrt(double x);
 #define SE_ZOOM_MAX 32.0f
 #define SE_TOL_PX 4.0f
 #define SE_FIT_MARGIN 36.0f
+#define SE_WORK_PAD 24.0f     /* 画板四周工作区留白 (屏幕 DIP) */
+#define SE_SB_W 8.0f          /* 滚动条宽度 */
+#define SE_SB_MARGIN 2.0f
+#define SE_SB_MIN 24.0f
 #define SE_MAX_GRAD_STOPS 16
 
 enum {
@@ -58,6 +62,13 @@ typedef struct SvgGeom {
 	float rot;
 } SvgGeom;
 
+/* 2D 滚动条几何 (画板+工作区留白 超出视口时出现) */
+typedef struct SeSB {
+	int hasH, hasV;
+	UiRect ht, hth;   /* 水平 track/thumb */
+	UiRect vt, vth;   /* 垂直 track/thumb */
+} SeSB;
+
 struct UiSvgEdit {
 	SvgDoc *doc;
 	UiId id;
@@ -66,6 +77,8 @@ struct UiSvgEdit {
 	UiRect vp;
 	int viewValid;
 	SvgView view;
+	int sbDrag;          /* 滚动条拖拽: 0=无 1=水平 2=垂直 */
+	float sbGrab;        /* 按下时鼠标 - thumb 起点 */
 
 	int tool;
 	int gridOn;
@@ -236,6 +249,8 @@ static int space_down(void) { return (GetKeyState(VK_SPACE) & 0x8000) != 0; }
 
 /* ── 视图 ─────────────────────────────────────────────────────────── */
 
+static void view_clamp(UiSvgEdit *ed);
+
 static void view_fit_view(UiSvgEdit *ed, UiRect vp)
 {
 	float sw, sh, s;
@@ -250,6 +265,7 @@ static void view_fit_view(UiSvgEdit *ed, UiRect vp)
 	ed->view.tx = vp.x + (vp.w - ed->doc->width * s) * 0.5f;
 	ed->view.ty = vp.y + (vp.h - ed->doc->height * s) * 0.5f;
 	ed->viewValid = 1;
+	view_clamp(ed);
 }
 
 static void view_reset(UiSvgEdit *ed, UiRect vp)
@@ -259,6 +275,7 @@ static void view_reset(UiSvgEdit *ed, UiRect vp)
 	ed->view.tx = vp.x + (vp.w - ed->doc->width * s) * 0.5f;
 	ed->view.ty = vp.y + (vp.h - ed->doc->height * s) * 0.5f;
 	ed->viewValid = 1;
+	view_clamp(ed);
 }
 
 static void view_zoom_at(UiSvgEdit *ed, float factor, float sx, float sy)
@@ -272,6 +289,127 @@ static void view_zoom_at(UiSvgEdit *ed, float factor, float sx, float sy)
 	ed->view.scale = ns;
 	ed->view.tx = sx - wx * ns;
 	ed->view.ty = sy - wy * ns;
+	view_clamp(ed);
+}
+
+/* ── 工作区滚动视图 ───────────────────────────────────────────────── */
+
+/* 内容 (画板 + 四周留白) 小于视口时居中, 否则夹紧到滚动范围内,
+ * 保证画板不会完全滚出视野。 */
+static void view_clamp(UiSvgEdit *ed)
+{
+	float dsx, dsy, cw, ch, lo, hi;
+	if (!ed || !ed->doc || !ed->viewValid) return;
+	if (ed->vp.w <= 0.0f || ed->vp.h <= 0.0f) return;
+	dsx = ed->doc->width * ed->view.scale;
+	dsy = ed->doc->height * ed->view.scale;
+	cw = dsx + SE_WORK_PAD * 2.0f;
+	ch = dsy + SE_WORK_PAD * 2.0f;
+	if (cw <= ed->vp.w) {
+		ed->view.tx = ed->vp.x + (ed->vp.w - dsx) * 0.5f;
+	} else {
+		lo = ed->vp.x + ed->vp.w - SE_WORK_PAD - dsx;
+		hi = ed->vp.x + SE_WORK_PAD;
+		if (ed->view.tx < lo) ed->view.tx = lo;
+		if (ed->view.tx > hi) ed->view.tx = hi;
+	}
+	if (ch <= ed->vp.h) {
+		ed->view.ty = ed->vp.y + (ed->vp.h - dsy) * 0.5f;
+	} else {
+		lo = ed->vp.y + ed->vp.h - SE_WORK_PAD - dsy;
+		hi = ed->vp.y + SE_WORK_PAD;
+		if (ed->view.ty < lo) ed->view.ty = lo;
+		if (ed->view.ty > hi) ed->view.ty = hi;
+	}
+}
+
+static void sb_geom(const UiSvgEdit *ed, SeSB *sb)
+{
+	UiRect vp;
+	float dsx, dsy, cw, ch, w, m, span, t, lo, hi, range;
+	if (!ed || !ed->doc || !ed->viewValid) {
+		memset(sb, 0, sizeof(*sb));
+		return;
+	}
+	memset(sb, 0, sizeof(*sb));
+	vp = ed->vp;
+	w = SE_SB_W;
+	m = SE_SB_MARGIN;
+	dsx = ed->doc->width * ed->view.scale;
+	dsy = ed->doc->height * ed->view.scale;
+	cw = dsx + SE_WORK_PAD * 2.0f;
+	ch = dsy + SE_WORK_PAD * 2.0f;
+	sb->hasH = cw > vp.w + 0.5f;
+	sb->hasV = ch > vp.h + 0.5f;
+	if (sb->hasV) {
+		sb->vt = Ui_Rect(vp.x + vp.w - w - m, vp.y + m, w,
+			vp.h - m * 2.0f - (sb->hasH ? w + m : 0.0f));
+		span = sb->vt.h * vp.h / ch;
+		if (span < SE_SB_MIN) span = SE_SB_MIN;
+		if (span > sb->vt.h) span = sb->vt.h;
+		hi = vp.y + SE_WORK_PAD;
+		range = ch - vp.h;
+		t = range > 0.0f ? (hi - ed->view.ty) / range : 0.0f;
+		if (t < 0.0f) t = 0.0f;
+		if (t > 1.0f) t = 1.0f;
+		sb->vth = Ui_Rect(sb->vt.x, sb->vt.y + (sb->vt.h - span) * t,
+			w, span);
+	}
+	if (sb->hasH) {
+		sb->ht = Ui_Rect(vp.x + m, vp.y + vp.h - w - m,
+			vp.w - m * 2.0f - (sb->hasV ? w + m : 0.0f), w);
+		span = sb->ht.w * vp.w / cw;
+		if (span < SE_SB_MIN) span = SE_SB_MIN;
+		if (span > sb->ht.w) span = sb->ht.w;
+		hi = vp.x + SE_WORK_PAD;
+		range = cw - vp.w;
+		t = range > 0.0f ? (hi - ed->view.tx) / range : 0.0f;
+		if (t < 0.0f) t = 0.0f;
+		if (t > 1.0f) t = 1.0f;
+		sb->hth = Ui_Rect(sb->ht.x + (sb->ht.w - span) * t,
+			sb->ht.y, span, w);
+	}
+}
+
+/* t: 0 = 最左/最上, 1 = 最右/最下 */
+static void sb_set_frac(UiSvgEdit *ed, int axis, float t)
+{
+	float ds, range, hi;
+	if (t < 0.0f) t = 0.0f;
+	if (t > 1.0f) t = 1.0f;
+	if (axis == 1) {
+		ds = ed->doc->width * ed->view.scale;
+		range = ds + SE_WORK_PAD * 2.0f - ed->vp.w;
+		hi = ed->vp.x + SE_WORK_PAD;
+		ed->view.tx = hi - t * range;
+	} else {
+		ds = ed->doc->height * ed->view.scale;
+		range = ds + SE_WORK_PAD * 2.0f - ed->vp.h;
+		hi = ed->vp.y + SE_WORK_PAD;
+		ed->view.ty = hi - t * range;
+	}
+	view_clamp(ed);
+}
+
+enum {
+	SE_SB_NONE = 0,
+	SE_SB_HTRACK,
+	SE_SB_VTRACK,
+	SE_SB_HTHUMB,
+	SE_SB_VTHUMB
+};
+
+static int sb_hit(const SeSB *sb, float x, float y)
+{
+	if (sb->hasV) {
+		if (Ui_RectContains(sb->vth, x, y)) return SE_SB_VTHUMB;
+		if (Ui_RectContains(sb->vt, x, y)) return SE_SB_VTRACK;
+	}
+	if (sb->hasH) {
+		if (Ui_RectContains(sb->hth, x, y)) return SE_SB_HTHUMB;
+		if (Ui_RectContains(sb->ht, x, y)) return SE_SB_HTRACK;
+	}
+	return SE_SB_NONE;
 }
 
 static void s2w(const UiSvgEdit *ed, float sx, float sy, float *wx, float *wy)
@@ -1616,6 +1754,7 @@ static void update_drag(UiSvgEdit *ed, UiContext *ui)
 	if (ed->drag == SE_DRAG_PAN) {
 		ed->view.tx += ed->mx - ed->lastMx;
 		ed->view.ty += ed->my - ed->lastMy;
+		view_clamp(ed);
 		ed_invalidate(ed);
 		return;
 	}
@@ -1977,6 +2116,7 @@ static void press_left(UiSvgEdit *ed, UiContext *ui)
 
 static void handle_input(UiSvgEdit *ed, UiContext *ui)
 {
+	SeSB sb;
 	int inCanvas = Ui_RectContains(ed->vp, ed->mx, ed->my);
 	int firstDown = (ui->down == ed->id);
 	int released = (ui->released == ed->id);
@@ -1990,6 +2130,32 @@ static void handle_input(UiSvgEdit *ed, UiContext *ui)
 		s2w(ed, ed->mx, ed->my, &wx, &wy);
 		ed->mouseWorldX = wx;
 		ed->mouseWorldY = wy;
+	}
+
+	sb_geom(ed, &sb);
+
+	/* 滚动条拖拽优先于画布工具 */
+	if (ed->sbDrag) {
+		if (released || !ui->mouseDown) {
+			ed->sbDrag = 0;
+		} else {
+			if (ed->sbDrag == 2) {
+				float span = sb.vt.h - sb.vth.h;
+				if (span > 0.5f)
+					sb_set_frac(ed, 2,
+						(ed->my - ed->sbGrab - sb.vt.y) / span);
+			} else {
+				float span = sb.ht.w - sb.hth.w;
+				if (span > 0.5f)
+					sb_set_frac(ed, 1,
+						(ed->mx - ed->sbGrab - sb.ht.x) / span);
+			}
+			ed_invalidate(ed);
+		}
+		Ui_SetCursor(ui, ed->id, UI_CURSOR_HAND);
+		ed->lastMx = ed->mx;
+		ed->lastMy = ed->my;
+		return;
 	}
 
 	/* 中键平移 */
@@ -2008,8 +2174,29 @@ static void handle_input(UiSvgEdit *ed, UiContext *ui)
 	if (released)
 		release_left(ed, ui);
 	else if (firstDown && inCanvas) {
+		int hit = space_down() ? SE_SB_NONE : sb_hit(&sb, ed->mx, ed->my);
 		if (space_down()) {
 			ed->drag = SE_DRAG_PAN;
+		} else if (hit == SE_SB_VTHUMB) {
+			ed->sbDrag = 2;
+			ed->sbGrab = ed->my - sb.vth.y;
+			ed_invalidate(ed);
+		} else if (hit == SE_SB_HTHUMB) {
+			ed->sbDrag = 1;
+			ed->sbGrab = ed->mx - sb.hth.x;
+			ed_invalidate(ed);
+		} else if (hit == SE_SB_VTRACK) {
+			float span = sb.vt.h - sb.vth.h;
+			if (span > 0.5f)
+				sb_set_frac(ed, 2,
+					(ed->my - sb.vt.y - sb.vth.h * 0.5f) / span);
+			ed_invalidate(ed);
+		} else if (hit == SE_SB_HTRACK) {
+			float span = sb.ht.w - sb.hth.w;
+			if (span > 0.5f)
+				sb_set_frac(ed, 1,
+					(ed->mx - sb.ht.x - sb.hth.w * 0.5f) / span);
+			ed_invalidate(ed);
 		} else {
 			press_left(ed, ui);
 		}
@@ -2031,6 +2218,14 @@ static void handle_input(UiSvgEdit *ed, UiContext *ui)
 		Ui_SetCursor(ui, ed->id, kind);
 	} else if (inCanvas && ed->tool != UI_SVG_TOOL_NODE) {
 		Ui_SetCursor(ui, ed->id, UI_CURSOR_HAND);
+	}
+	/* 滚动条覆盖画布光标 */
+	if (ed->sbDrag == 0 && ed->mouseIn) {
+		int hit = sb_hit(&sb, ed->mx, ed->my);
+		if (hit == SE_SB_HTHUMB || hit == SE_SB_VTHUMB)
+			Ui_SetCursor(ui, ed->id, UI_CURSOR_HAND);
+		else if (hit != SE_SB_NONE)
+			Ui_SetCursor(ui, ed->id, UI_CURSOR_ARROW);
 	}
 
 	/* 十字准星/状态栏需要逐移动重绘 */
@@ -2112,6 +2307,30 @@ void Ui_SvgEdit_Destroy(UiSvgEdit *ed)
 
 /* ── 每帧绘制 ─────────────────────────────────────────────────────── */
 
+static void draw_scrollbars(UiSvgEdit *ed, UiContext *ui, Gfx *g)
+{
+	SeSB sb;
+	UiTheme *t = ui->theme;
+	UiColor trackC, thumbC;
+	int hit, hovV, hovH;
+	sb_geom(ed, &sb);
+	if (!sb.hasH && !sb.hasV) return;
+	hit = ui->mouseOver ? sb_hit(&sb, ui->mouseX, ui->mouseY) : SE_SB_NONE;
+	hovV = hit == SE_SB_VTHUMB || hit == SE_SB_VTRACK || ed->sbDrag == 2;
+	hovH = hit == SE_SB_HTHUMB || hit == SE_SB_HTRACK || ed->sbDrag == 1;
+	trackC = Ui_ColorAlpha(t->text3, 18);
+	if (sb.hasV) {
+		thumbC = Ui_ColorAlpha(t->text3, hovV ? 140 : 90);
+		Gfx_FillRoundRect(g, sb.vt, SE_SB_W * 0.5f, trackC);
+		Gfx_FillRoundRect(g, sb.vth, SE_SB_W * 0.5f, thumbC);
+	}
+	if (sb.hasH) {
+		thumbC = Ui_ColorAlpha(t->text3, hovH ? 140 : 90);
+		Gfx_FillRoundRect(g, sb.ht, SE_SB_W * 0.5f, trackC);
+		Gfx_FillRoundRect(g, sb.hth, SE_SB_W * 0.5f, thumbC);
+	}
+}
+
 void Ui_SvgEdit_Frame(UiSvgEdit *ed, UiContext *ui, UiRect viewport)
 {
 	Gfx *g = ui->gfx;
@@ -2127,11 +2346,12 @@ void Ui_SvgEdit_Frame(UiSvgEdit *ed, UiContext *ui, UiRect viewport)
 	ed->mx = ui->mouseX;
 	ed->my = ui->mouseY;
 	if (!ed->viewValid) view_fit_view(ed, viewport);
+	else view_clamp(ed);
 
 	Ui_RegisterWidget(ui, ed->id, viewport);
 	Ui_RegisterWheelTarget(ui, ed->id, viewport);
 	Ui_SetPressPoll(ui, ed->id,
-		ed->drag != SE_DRAG_NONE || ed->penActive);
+		ed->drag != SE_DRAG_NONE || ed->penActive || ed->sbDrag);
 
 	if (ui->wheelTarget == ed->id && ui->wheelDelta != 0.0f) {
 		float d = ui->wheelDelta;
@@ -2241,6 +2461,8 @@ void Ui_SvgEdit_Frame(UiSvgEdit *ed, UiContext *ui, UiRect viewport)
 		Gfx_Line(g, ed->mx, viewport.y, ed->mx, viewport.y + viewport.h,
 			0x22000000, 1.0f);
 	}
+
+	draw_scrollbars(ed, ui, g);
 
 	Gfx_StrokeRoundRect(g, Ui_Rect(viewport.x + 0.5f, viewport.y + 0.5f,
 		viewport.w - 1.0f, viewport.h - 1.0f), 2.0f, t->frame, 1.0f);
