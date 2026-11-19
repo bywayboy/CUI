@@ -34,6 +34,7 @@ CORE_OBJS = $(OBJ)\edit.obj $(OBJ)\log.obj $(OBJ)\crtstub.obj $(OBJ)\heap.obj \
     $(OBJ)\ui_controls.obj $(OBJ)\ui_select.obj $(OBJ)\ui_menu.obj \
     $(OBJ)\ui_dialog.obj $(OBJ)\ui_textarea.obj $(OBJ)\ui_button_group.obj \
     $(OBJ)\ui_toast.obj $(OBJ)\ui_loading.obj $(OBJ)\ui_input.obj $(OBJ)\ui_app.obj \
+    $(OBJ)\ui_color_select.obj \
     $(OBJ)\ui_progress.obj $(OBJ)\ui_scroll.obj $(OBJ)\ui_tab.obj \
     $(OBJ)\ui_nav.obj $(OBJ)\ui_pagination.obj $(OBJ)\ui_datetime.obj \
     $(OBJ)\ui_datepicker.obj $(OBJ)\ui_fx.obj \
@@ -68,7 +69,8 @@ TEST_OBJS = $(OBJ)\net_test.obj $(OBJ)\gfx_rich_test.obj $(OBJ)\md_test.obj \
     $(OBJ)\gfx_path_test.obj \
     $(OBJ)\ui_nav_test.obj $(OBJ)\ui_pagination_test.obj \
     $(OBJ)\ui_layout_test.obj $(OBJ)\ui_grid_test.obj \
-    $(OBJ)\ui_theme_edit_test.obj $(OBJ)\svg_test.obj
+    $(OBJ)\ui_theme_edit_test.obj $(OBJ)\svg_test.obj \
+    $(OBJ)\ui_color_test.obj
 
 TARGETS = $(BIN)\cui_demo.exe $(BIN)\cui_minimal.exe $(BIN)\cui_advanced.exe \
     $(BIN)\cui_multi.exe $(BIN)\cui_mvvm.exe $(BIN)\cui_scroll.exe \
@@ -81,6 +83,7 @@ TARGETS = $(BIN)\cui_demo.exe $(BIN)\cui_minimal.exe $(BIN)\cui_advanced.exe \
     $(BIN)\cui_nav_test.exe $(BIN)\cui_pagination.exe \
     $(BIN)\cui_pagination_test.exe $(BIN)\cui_layout_test.exe \
     $(BIN)\cui_grid.exe $(BIN)\cui_grid_test.exe \
+    $(BIN)\cui_color_test.exe \
     $(BIN)\cui_theme_editor.exe \
     $(BIN)\cui_theme_edit_test.exe $(BIN)\cui_svg_test.exe \
     $(BIN)\cui_gallery.exe $(BIN)\cui_webview.exe $(BIN)\cui_svgedit.exe
@@ -292,6 +295,10 @@ $(BIN)\cui_layout_test.exe: $(CORE_OBJS) $(OBJ)\ui_layout_test.obj
 
 $(BIN)\cui_grid_test.exe: $(CORE_OBJS) $(OBJ)\ui_grid_test.obj
 	@echo [cui] link ui_grid_test
+	@link $(LIBS_CON) /OUT:$@ $** $(LIBS)
+
+$(BIN)\cui_color_test.exe: $(CORE_OBJS) $(OBJ)\ui_color_test.obj
+	@echo [cui] link ui_color_test
 	@link $(LIBS_CON) /OUT:$@ $** $(LIBS)
 
 $(BIN)\cui_theme_editor.exe: $(CORE_OBJS) $(THEME_EDIT_OBJS) $(OBJ)\theme_editor.obj

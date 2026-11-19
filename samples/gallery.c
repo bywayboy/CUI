@@ -31,6 +31,7 @@
 #include "ui/ui_tooltip.h"
 #include "ui/ui_toast.h"
 #include "ui/ui_loading.h"
+#include "ui/ui_color_select.h"
 #include "ui/ui_progress.h"
 #include "ui/ui_popup.h"
 #include "ui/ui_image.h"
@@ -84,6 +85,7 @@ typedef struct GalleryPage {
 static const GalleryPage kPages[PG_COUNT];
 
 static void load_abort(Gallery *g);
+static void cs_close(Gallery *g);
 
 /* 命令行直跳页 (cui_gallery.exe wssrv); WinMain 解析后赋值 */
 static int g_startPage = PG_WELCOME;
@@ -300,6 +302,11 @@ typedef struct Gallery {
 		UiButtonGroup kind;
 		UiSlider dur;
 	} toastP;
+
+	/* ColorSelect 页 */
+	struct {
+		UiColorSelect main, line;
+	} color;
 
 	/* Loading 页 */
 	struct {
@@ -630,6 +637,7 @@ static const SideRow kSide[] = {
 	{ NULL, PG_SELECT },
 	{ NULL, PG_DATEPICKER },
 	{ NULL, PG_PAGINATION },
+	{ NULL, PG_COLORSEL },
 	{ "导航与容器", -1 },
 	{ NULL, PG_TABS },
 	{ NULL, PG_NAV },
@@ -743,6 +751,7 @@ static void switch_page(Gallery *g, int pg)
 {
 	if (pg == g->page) return;
 	if (g->page == PG_LOADING) load_abort(g);
+	if (g->page == PG_COLORSEL) cs_close(g);
 	g->page = pg;
 	Ui_SetFocusId(&g->app->ui, UI_ID_NONE);
 	/* 换页是整窗内容替换, 进行中的过渡矩形会盖在新页面上 */
@@ -854,6 +863,8 @@ static void draw_content(Gallery *g)
 			g->subTab[g->page] = g->subTabs.selected;
 			if (g->page == PG_LOADING && g->subTab[g->page] != 0)
 				load_abort(g);
+			if (g->page == PG_COLORSEL && g->subTab[g->page] != 0)
+				cs_close(g);
 			Ui_SetFocusId(ui, UI_ID_NONE);
 			UiApp_Invalidate(app);
 		}
@@ -3747,6 +3758,116 @@ static int pag_key(Gallery *g, UINT vk)
 		return 1;
 	}
 	return 0;
+}
+
+/* ── ColorSelect 页 ────────────────────────────────────────────────── */
+
+static void cs_close(Gallery *g)
+{
+	if (UiColorSelect_IsOpen(&g->pm, &g->color.main) ||
+		UiColorSelect_IsOpen(&g->pm, &g->color.line))
+		UiPopupManager_Close(&g->pm, &g->app->ui);
+}
+
+static void cs_init(Gallery *g)
+{
+	UiColorSelect_Init(&g->color.main, Ui_Id("gl.cs.main", 0, 0),
+		0xFF3B82F6u);
+	UiColorSelect_Init(&g->color.line, Ui_Id("gl.cs.line", 0, 0),
+		0xFFE0A33Eu);
+}
+
+static void cs_demo(Gallery *g, UiRect rc)
+{
+	UiTheme *t = &g->app->theme;
+	UiContext *ui = &g->app->ui;
+	Gfx *gfx = g->app->gfx;
+	UiStack col;
+	UiRect card;
+	UiColor cMain, cLine, fg;
+	float h, s, v, a;
+	char buf[192];
+
+	Ui_StackBeginPad(&col, rc, UI_COLUMN, 0.0f, 20.0f, 16.0f, 20.0f, 16.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "主色");
+	Ui_StackSkip(&col, 6.0f);
+	if (UiColorSelect_Draw(&g->color.main, &g->pm, ui,
+			Ui_StackTakeAligned(&col, 34.0f, 360.0f, UI_ALIGN_START), 1))
+		set_status(g, "主色调整中...");
+	Ui_StackSkip(&col, 12.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "描边色");
+	Ui_StackSkip(&col, 6.0f);
+	if (UiColorSelect_Draw(&g->color.line, &g->pm, ui,
+			Ui_StackTakeAligned(&col, 34.0f, 360.0f, UI_ALIGN_START), 1))
+		set_status(g, "描边色调整中...");
+	Ui_StackSkip(&col, 16.0f);
+
+	cMain = UiColorSelect_GetColor(&g->color.main);
+	cLine = UiColorSelect_GetColor(&g->color.line);
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "预览");
+	Ui_StackSkip(&col, 6.0f);
+	card = Ui_StackTake(&col, 112.0f);
+	Gfx_FillRoundRect(gfx, card, 12.0f, cMain);
+	Gfx_StrokeRoundRect(gfx, card, 12.0f, cLine, 3.0f);
+	UiColorSelect_GetHSVA(&g->color.main, &h, &s, &v, &a);
+	fg = v > 0.55f ? 0xFF111111u : 0xFFFFFFFFu;
+	Gfx_Text(gfx, t->fBig, "ColorSelect", Ui_Rect(card.x + 20.0f,
+		card.y + 18.0f, card.w - 40.0f, 32.0f), fg,
+		GFX_TEXT_VCENTER);
+	Gfx_Text(gfx, t->fSmall, "主色填充 · 描边色边框", Ui_Rect(card.x + 20.0f,
+		card.y + 54.0f, card.w - 40.0f, 20.0f), fg,
+		GFX_TEXT_VCENTER);
+	Ui_StackSkip(&col, 12.0f);
+
+	UiColorSelect_GetHSVA(&g->color.main, &h, &s, &v, &a);
+	snprintf(buf, sizeof(buf), "主色  #%08X   H %.0f  S %.2f  V %.2f  A %.2f",
+		(unsigned)cMain, h, s, v, a);
+	small_txt(gfx, t, Ui_StackTake(&col, 18.0f), buf);
+	UiColorSelect_GetHSVA(&g->color.line, &h, &s, &v, &a);
+	snprintf(buf, sizeof(buf), "描边  #%08X   H %.0f  S %.2f  V %.2f  A %.2f",
+		(unsigned)cLine, h, s, v, a);
+	small_txt(gfx, t, Ui_StackTake(&col, 18.0f), buf);
+	Ui_StackSkip(&col, 10.0f);
+
+	note_txt(gfx, t, Ui_StackTakeFill(&col),
+		"点击触发器展开面板: SV 方形 / 色相条 / 透明度条都可拖动.\n"
+		"组件自持 HSVA, 灰色或全黑时色相不丢; 松手/关闭只提交一次\n"
+		"(committed), 实时变化见状态栏与上方回显.");
+}
+
+static int cs_key(Gallery *g, UINT vk)
+{
+	if (UiColorSelect_Key(&g->color.main, &g->pm, &g->app->ui, vk)) return 1;
+	if (UiColorSelect_Key(&g->color.line, &g->pm, &g->app->ui, vk)) return 1;
+	return 0;
+}
+
+static void cs_popups(Gallery *g)
+{
+	char hx[16];
+	UiColorSelect_DrawPopup(&g->color.main, &g->pm, &g->app->ui);
+	UiColorSelect_DrawPopup(&g->color.line, &g->pm, &g->app->ui);
+	/* 面板内拖拽松手/关闭产生的提交: 帧末统一上报 */
+	if (g->color.main.committed) {
+		wsprintfA(hx, "#%08X", (unsigned)UiColorSelect_GetColor(&g->color.main));
+		{
+			char msg[96];
+			wsprintfA(msg, "主色已提交 %s", hx);
+			set_status(g, msg);
+		}
+		g->color.main.committed = 0;
+	}
+	if (g->color.line.committed) {
+		wsprintfA(hx, "#%08X", (unsigned)UiColorSelect_GetColor(&g->color.line));
+		{
+			char msg[96];
+			wsprintfA(msg, "描边色已提交 %s", hx);
+			set_status(g, msg);
+		}
+		g->color.line.committed = 0;
+	}
 }
 
 /* ── ScrollView ────────────────────────────────────────────────────── */
@@ -7521,6 +7642,10 @@ static const GalleryPage kPages[PG_COUNT] = {
 	{ "Pagination", "Pagination 分页", "页码窗口 · 宽度退化 · 保持首条",
 		pag_init, pag_demo, pag_props, pag_key, NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL },
+	/* PG_COLORSEL */
+	{ "ColorSelect 取色", "ColorSelect 颜色选择", "下拉取色 · 自持 HSVA · SV/色相/透明度",
+		cs_init, cs_demo, NULL, cs_key, NULL, NULL, NULL, NULL,
+		NULL, cs_popups, NULL },
 	/* PG_SCROLL */
 	{ "ScrollView", "ScrollView 滚动", "虚拟列表 · 变高缓存 · 惯性/回弹",
 		scroll_init, scroll_demo, scroll_props, NULL, NULL, NULL, NULL, NULL,
@@ -7845,6 +7970,8 @@ static void on_shutdown(UiApp *app, void *user)
 		g->md = NULL;
 	}
 	UiLoading_Shutdown(&g->load.ld);
+	UiColorSelect_Shutdown(&g->color.main);
+	UiColorSelect_Shutdown(&g->color.line);
 	UiToast_Shutdown(&g->toast);
 }
 
@@ -7869,7 +7996,9 @@ static int page_from_cmd(const char *name)
 		{ "switch", PG_SWITCH }, { "slider", PG_SLIDER },
 		{ "select", PG_SELECT }, { "datepicker", PG_DATEPICKER },
 		{ "tabs", PG_TABS }, { "nav", PG_NAV },
-		{ "pagination", PG_PAGINATION }, { "scroll", PG_SCROLL },
+		{ "pagination", PG_PAGINATION },
+		{ "colorselect", PG_COLORSEL }, { "color", PG_COLORSEL },
+		{ "scroll", PG_SCROLL },
 		{ "layout", PG_LAYOUT }, { "flex", PG_FLEX },
 		{ "grid", PG_GRID }, { "dialog", PG_DIALOG },
 		{ "menu", PG_MENU }, { "toast", PG_TOAST },

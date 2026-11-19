@@ -41,7 +41,7 @@ static const char DOC_WELCOME[] =
 	"|:--|:--|\n"
 	"| 基础 | Button · ButtonGroup · Icon |\n"
 	"| 表单 | Input · TextArea · Checkbox · Radio · Switch · Slider |\n"
-	"| 选择器 | Select · DatePicker · Pagination |\n"
+	"| 选择器 | Select · DatePicker · Pagination · ColorSelect |\n"
 	"| 导航与容器 | Tabs · Nav · ScrollView · Layout |\n"
 	"| 弹层与反馈 | Dialog · Menu · Toast · Loading · Tooltip |\n"
 	"| 数据展示 | Progress · Image · Markdown |\n"
@@ -1080,6 +1080,73 @@ static const char BEST_PAGINATION[] =
 	"- [x] 容器窄时交给退化逻辑, 不要硬塞完整页码条;\n"
 	"- [ ] 不要让组件直接持有数据列表 —— 它只管页码;\n"
 	"- [ ] 多个分页条共享一份数据时手动同步 `page`(见本页演示)。\n";
+
+/* ── ColorSelect ──────────────────────────────────────────────────── */
+
+static const char DOC_COLORSEL[] =
+	"# ColorSelect 颜色选择\n"
+	"\n"
+	"下拉式取色: 触发器 = 色块 + `#RRGGBBAA` + chevron; 点击弹出面板。\n"
+	"面板由 **SV 方形** (饱和度×明度) + **色相条** + **透明度条** 组成,\n"
+	"全部可拖拽。组件自持 `h/s/v/a`, 灰色或全黑时保留色相。\n"
+	"\n"
+	"## 基本用法\n"
+	"\n"
+	"```c\n"
+	"static UiColorSelect cs;\n"
+	"UiColorSelect_Init(&cs, Ui_Id(\"ui.color\", 0, 0), 0xFF3B82F6u);\n"
+	"\n"
+	"/* 帧内 */\n"
+	"UiColorSelect_Draw(&cs, &pm, &ui, rc, 1);\n"
+	"/* 帧末 (overlay) */\n"
+	"UiColorSelect_DrawPopup(&cs, &pm, &ui);\n"
+	"/* 键盘 */\n"
+	"UiColorSelect_Key(&cs, &pm, &ui, vk);\n"
+	"\n"
+	"if (cs.committed) {          /* 松手 / 关闭: 只提交一次 */\n"
+	"    save(UiColorSelect_GetColor(&cs));\n"
+	"}\n"
+	"```\n"
+	"\n"
+	"## 面板\n"
+	"\n"
+	"- SV: 横向 白→纯色相, 纵向 透明→黑; 拖动改 s/v;\n"
+	"- 色相条: 红色胶囊底 + 54 段实色; 拖动改 h (0..360);\n"
+	"- 透明度条: 棋盘格 + 透明→不透明渐变; 拖动改 a;\n"
+	"- Esc / 点面板外关闭, 关闭时若有改动置 `committed`.\n";
+
+static const char API_COLORSEL[] =
+	"# ColorSelect API\n"
+	"\n"
+	"```c\n"
+	"#include \"ui/ui_color_select.h\"\n"
+	"```\n"
+	"\n"
+	"| 函数 | 说明 |\n"
+	"|:--|:--|\n"
+	"| `UiColorSelect_Init(cs, id, color)` | 绑定 id, 用初始色反推 HSVA |\n"
+	"| `UiColorSelect_SetColor / SetHSVA` | 双向写入; SetColor 保灰色时的 h |\n"
+	"| `UiColorSelect_GetColor / GetHSVA` | 读出 RGBA / HSVA |\n"
+	"| `UiColorSelect_Draw(cs, pm, ui, rc, enabled)` | 触发器 + 开/关; 返回 changed |\n"
+	"| `UiColorSelect_DrawPopup(cs, pm, ui)` | 帧末面板绘制与拖拽 |\n"
+	"| `UiColorSelect_Key(cs, pm, ui, vk)` | Esc 关面板 |\n"
+	"| `UiColorSelect_IsOpen(pm, cs)` | 面板是否打开 |\n"
+	"| `UiColor_HsvToRgb / RgbToHsv` | 纯函数 (h 0..360, s/v/a 0..1) |\n"
+	"\n"
+	"::: tip 状态语义\n"
+	"`changed` 每帧清除 (拖动中每帧置 1); `committed` 在松手或关闭时置 1,\n"
+	"应用在 `DrawPopup` 之后读取并清 0.\n"
+	":::\n";
+
+static const char BEST_COLORSEL[] =
+	"# ColorSelect 最佳实践\n"
+	"\n"
+	"- [x] 需要拾色/连续调色用 ColorSelect; 少量固定选项用 Select + swatch;\n"
+	"- [x] 只监听 `committed` 落库, 拖动过程用 `changed` 做实时预览;\n"
+	"- [x] 透明度默认参与混色; 不需要 alpha 时保存时强制置 255;\n"
+	"- [x] 灰色/全黑是合法值: SetColor 会保留之前的色相, 拖明度不跳色;\n"
+	"- [ ] 面板同时只开一个 (PopupManager 全局单弹层);\n"
+	"- [ ] 窄触发器会自动省略 hex 文本, 别依赖它展示完整色值。\n";
 
 /* ── 15 ScrollView ────────────────────────────────────────────────── */
 
@@ -2600,6 +2667,27 @@ static const char EVENTS_PAGINATION[] =
 	"不会把用户停在奇怪的位置。\n"
 	":::\n";
 
+static const char EVENTS_COLORSEL[] =
+	"## 事件怎么产生\n"
+	"\n"
+	"与 Select 相同: **没有回调**, 触发器/面板都是即时模式查询。\n"
+	"拖动中每帧 `changed=1`; 松手或关闭面板时 `committed=1` 且只一次。\n"
+	"\n"
+	"```c\n"
+	"/* 帧内 */\n"
+	"if (UiColorSelect_Draw(&cs, &pm, &ui, rc, 1)) {\n"
+	"    preview = UiColorSelect_GetColor(&cs);   /* 实时预览 */\n"
+	"}\n"
+	"/* 帧末 */\n"
+	"UiColorSelect_DrawPopup(&cs, &pm, &ui);\n"
+	"if (cs.committed) {\n"
+	"    commit(UiColorSelect_GetColor(&cs));\n"
+	"    cs.committed = 0;\n"
+	"}\n"
+	"/* on_key: Esc 关闭面板 */\n"
+	"if (UiColorSelect_Key(&cs, &pm, &ui, vk)) return 1;\n"
+	"```\n";
+
 static const char EVENTS_SCROLL[] =
 	"## 事件怎么产生\n"
 	"\n"
@@ -3248,6 +3336,7 @@ static const GalleryDocText kDocs[PG_COUNT] = {
 	/* PG_TABS      */ { 0, DOC_TABS, API_TABS, BEST_TABS, EVENTS_TABS },
 	/* PG_NAV       */ { 0, DOC_NAV, API_NAV, BEST_NAV, EVENTS_NAV },
 	/* PG_PAGINATION*/ { 0, DOC_PAGINATION, API_PAGINATION, BEST_PAGINATION, EVENTS_PAGINATION },
+	/* PG_COLORSEL  */ { 0, DOC_COLORSEL, API_COLORSEL, BEST_COLORSEL, EVENTS_COLORSEL },
 	/* PG_SCROLL    */ { 0, DOC_SCROLL, API_SCROLL, BEST_SCROLL, EVENTS_SCROLL },
 	/* PG_LAYOUT    */ { 0, DOC_LAYOUT, API_LAYOUT, BEST_LAYOUT, EVENTS_LAYOUT },
 	/* PG_FLEX      */ { 0, DOC_FLEX, API_FLEX, BEST_FLEX, EVENTS_FLEX },
