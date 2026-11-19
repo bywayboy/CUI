@@ -1497,8 +1497,9 @@ static int on_nchittest(UiApp *app, int x, int y, LRESULT *hit, void *user)
 	(void)user;
 	if (y < (int)(56.0f * app->scale)) {
 		float dx = (float)x / app->scale;
-		/* 右上角按钮区必须留在客户区, 否则点击会被当成拖窗. */
-		if (dx < app->w - 304.0f || dx > app->w - 12.0f) {
+		/* 顶栏右侧控件区 (缩放簇 + 导出/复制/主题) 必须留在客户区,
+		 * 否则点击会被当成拖窗; 缩放簇起点约 w-576. */
+		if (dx < app->w - 584.0f || dx > app->w - 12.0f) {
 			*hit = HTCAPTION;
 			return 1;
 		}
