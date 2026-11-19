@@ -3193,7 +3193,7 @@ unsigned used = UiThemeGen_Palette(&light, &dark, &opts);
 > [src/ui/ui_svg_edit.h](../src/ui/ui_svg_edit.h)；模型
 > [src/svg/svg_doc.c](../src/svg/svg_doc.c)；样例
 > [samples/svgedit.c](../samples/svgedit.c)（`bin\cui_svgedit.exe`）；
-> headless 断言 `tests/svg_test.c`（`bin\cui_svg_test.exe`，140 项）与
+> headless 断言 `tests/svg_test.c`（`bin\cui_svg_test.exe`，153 项）与
 > `tests/gfx_path_test.c`。
 
 `ui_svg_edit` 把"画布"这一层收进组件：视口缩放/平移、框选/多选、移动/
@@ -3223,9 +3223,13 @@ Ui_SvgEdit_RightDown(ed, x, y);
 - **钢笔**：`P` 折线、`B` 贝塞尔；会话中 `L` 直线、`A` 切向弧、
   `Shift+A` 三点弧、`B` 贝塞尔、`C` 闭合、`U` 撤点；`Enter`/双击/右键/
   点首节点结束。新建 PATH 会先清空模型预置的 3 个示例节点再落首点。
+  `B` 段按下即落锚点，按住拖拽同时给出切线角度与力度，拖动中实时预览
+  手柄与曲线；`Alt` 断开对称。
 - **节点工具**：双击线段按 De Casteljau/圆弧参数切分插点；拖动进/出柄默认
   对称、`Alt` 断开；橙色凸柄直接拖弧（`Svg_ArcFromPoints` 反解）；`U` 或
-  `Delete` 删节点，节点不足 2 个时整条路径被丢弃。
+  `Delete` 删节点，节点不足 2 个时整条路径被丢弃。选中节点的切线以
+  "角度 + 力度" 表示（`Svg_NodeGetTangent/SetTangent`），属性面板可直接
+  输入，画布拖手柄同步更新。
 - **多选**：`Shift` 点选/框选累加；属性面板几何字段只改首个选中元素，
   样式字段改全部；旋转绕选择框中心，`Shift` 15° 吸附；整体缩放支持
   边/角手柄与 `Shift` 等比。

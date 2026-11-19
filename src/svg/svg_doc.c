@@ -327,6 +327,60 @@ void Svg_PathSetSeg(SvgPath *p, int segIndex, SvgSegType type)
 	}
 }
 
+void Svg_NodeGetTangent(const SvgNode *n, float *angleDeg, float *strength,
+	int *symmetric)
+{
+	float ox = 0.0f, oy = 0.0f, len;
+	if (!n) return;
+	if (n->hasOut) {
+		ox = n->outX;
+		oy = n->outY;
+	} else if (n->hasIn) {
+		ox = -n->inX;
+		oy = -n->inY;
+	}
+	len = f_sqrt(ox * ox + oy * oy);
+	if (angleDeg) {
+		float a = rad_d(atan2_r(oy, ox));
+		if (a < 0.0f) a += 360.0f;
+		*angleDeg = a;
+	}
+	if (strength) *strength = len;
+	if (symmetric)
+		*symmetric = n->type == SVG_NODE_SMOOTH &&
+			n->hasIn && n->hasOut;
+}
+
+void Svg_NodeSetTangent(SvgNode *n, float angleDeg, float strength,
+	int symmetric)
+{
+	float r;
+	if (!n) return;
+	if (strength < 0.0f) strength = 0.0f;
+	r = deg_r(angleDeg);
+	if (strength <= 0.0f) {
+		n->outX = n->outY = 0.0f;
+		n->hasOut = 0;
+		if (symmetric) {
+			n->inX = n->inY = 0.0f;
+			n->hasIn = 0;
+		}
+		n->type = symmetric ? SVG_NODE_SMOOTH : SVG_NODE_CORNER;
+		return;
+	}
+	n->outX = cos_r(r) * strength;
+	n->outY = sin_r(r) * strength;
+	n->hasOut = 1;
+	if (symmetric) {
+		n->inX = -n->outX;
+		n->inY = -n->outY;
+		n->hasIn = 1;
+		n->type = SVG_NODE_SMOOTH;
+	} else {
+		n->type = SVG_NODE_CORNER;
+	}
+}
+
 /* 在数组 at 位置插入空位 (节点/段/弧同步); sc = 插入前的段数 */
 static void path_insert_slot(SvgPath *p, int at, int sc)
 {

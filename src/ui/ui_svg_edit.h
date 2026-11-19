@@ -65,6 +65,16 @@ void Ui_SvgEdit_DeleteSel(UiSvgEdit *ed, UiContext *ui);
 void Ui_SvgEdit_DuplicateSel(UiSvgEdit *ed, UiContext *ui);
 void Ui_SvgEdit_Reorder(UiSvgEdit *ed, UiContext *ui, int dir);
 
+/* ── 节点切线 (角度/力度) ─────────────────────────────────────────── */
+/* 节点工具下当前选中节点; 返回节点索引, -1 = 无. */
+int  Ui_SvgEdit_NodeIndex(const UiSvgEdit *ed, int *elIndex);
+/* 选中节点的切线: 角度 (度, 元素局部坐标) + 力度 (世界单位). */
+int  Ui_SvgEdit_NodeParams(const UiSvgEdit *ed, float *angleDeg,
+	float *strength, int *symmetric);
+/* 写选中节点切线; symmetric=1 镜像对侧手柄. 调用方负责 Svg_History_Commit. */
+int  Ui_SvgEdit_SetNodeParams(UiSvgEdit *ed, float angleDeg, float strength,
+	int symmetric);
+
 /* ── 样式 ─────────────────────────────────────────────────────────── */
 /* 取首个选中元素的样式 (无选中取新建默认样式); 调用方用 Svg_StyleFree。 */
 int  Ui_SvgEdit_GetStyle(const UiSvgEdit *ed, SvgStyle *out);

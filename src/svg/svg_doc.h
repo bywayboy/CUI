@@ -122,6 +122,15 @@ void Svg_PathRemoveNode(SvgPath *p, int nodeIndex);
 /* 设置段型; 切到 CUBIC 时保留现有 hasIn/hasOut, 切到 ARC 时给圆弧初值 */
 void Svg_PathSetSeg(SvgPath *p, int segIndex, SvgSegType type);
 
+/* 节点切线参数 (即"角度 + 力度"): angleDeg 为 out 手柄方向 (度, 元素
+ * 局部坐标, 0 = +x, y 向下故顺时针为正), strength 为手柄长度 (世界单位);
+ * 仅 in 手柄时取反向. */
+void Svg_NodeGetTangent(const SvgNode *n, float *angleDeg, float *strength,
+	int *symmetric);
+/* 写 out 手柄; symmetric=1 同步镜像 in 并置 SMOOTH, 0 保留 in 并置 CORNER. */
+void Svg_NodeSetTangent(SvgNode *n, float angleDeg, float strength,
+	int symmetric);
+
 /* ── 圆弧解算与采样 (返回 1 成功; 0 = 退化, 调用方改画直线) ───────── */
 int Svg_ArcFromTangent(float x0, float y0, float tx, float ty,
 	float x1, float y1, SvgArc *out);

@@ -23,6 +23,7 @@ typedef struct EdDemo {
 	UiInput form;
 
 	int fX, fY, fW, fH, fRot, fStroke, fOpacity, fAngle;
+	int fNodeAng, fNodeLen;
 	char geoLabel[4][10];
 	long syncKey;
 	int syncType;
@@ -172,12 +173,14 @@ static void sync_fields(EdDemo *d)
 	long key;
 	char b[32];
 	int type = -1;
+	int eidx, nidx = Ui_SvgEdit_NodeIndex(d->ed, &eidx);
 	if (idx >= 0 && idx < d->doc->count) {
 		e = &d->doc->els[idx];
 		type = (int)e->type;
 	}
 	key = (long)(idx + 1) * 1000003L + (long)type * 7919L +
-		(e ? e->version : 0) + (long)Ui_SvgEdit_SelCount(d->ed) * 131L;
+		(e ? e->version : 0) + (long)Ui_SvgEdit_SelCount(d->ed) * 131L +
+		(long)(nidx + 1) * 17L;
 	if (key == d->syncKey && type == d->syncType) return;
 	if (UiInput_Focused(&d->form) >= 0) return;
 	d->syncKey = key;
@@ -225,6 +228,20 @@ static void sync_fields(EdDemo *d)
 	num_f1(b, st.fill.angleDeg);
 	Edit_SetTextUtf8(UiInput_Edit(&d->form, d->fAngle), b);
 	Svg_StyleFree(&st);
+
+	if (nidx >= 0) {
+		float ang = 0.0f, len = 0.0f;
+		int sym = 0;
+		if (Ui_SvgEdit_NodeParams(d->ed, &ang, &len, &sym)) {
+			num_f1(b, ang);
+			Edit_SetTextUtf8(UiInput_Edit(&d->form, d->fNodeAng), b);
+			num_f1(b, len);
+			Edit_SetTextUtf8(UiInput_Edit(&d->form, d->fNodeLen), b);
+		}
+	} else {
+		Edit_SetTextUtf8(UiInput_Edit(&d->form, d->fNodeAng), "");
+		Edit_SetTextUtf8(UiInput_Edit(&d->form, d->fNodeLen), "");
+	}
 }
 
 static int field_float(EdDemo *d, int field, float *out)
@@ -321,6 +338,18 @@ static void apply_fields(EdDemo *d, UiApp *app)
 		}
 		if (okang) se->style.fill.angleDeg = vang;
 		Svg_ElementTouch(se);
+	}
+	{
+		int eidx;
+		if (Ui_SvgEdit_NodeIndex(d->ed, &eidx) >= 0) {
+			float nang, nlen;
+			int sym = 0;
+			if (field_float(d, d->fNodeAng, &nang) &&
+				field_float(d, d->fNodeLen, &nlen)) {
+				Ui_SvgEdit_NodeParams(d->ed, NULL, NULL, &sym);
+				Ui_SvgEdit_SetNodeParams(d->ed, nang, nlen, sym);
+			}
+		}
 	}
 	Ui_SvgEdit_Commit(d->ed);
 	d->syncKey = 0;
@@ -487,6 +516,10 @@ static void on_init(UiApp *app, void *user)
 		"0123456789.-+", L"100");
 	d->fAngle = UiInput_Add(&d->form, Ui_Id("svgedit.ang", 0, 0), 16, 0,
 		"0123456789.-+", L"0");
+	d->fNodeAng = UiInput_Add(&d->form, Ui_Id("svgedit.nang", 0, 0), 16, 0,
+		"0123456789.-+", L"角度");
+	d->fNodeLen = UiInput_Add(&d->form, Ui_Id("svgedit.nlen", 0, 0), 16, 0,
+		"0123456789.-+", L"力度");
 	geo_labels(d, -1);
 	set_msg(d, "");
 	d->msgTick = 0;
@@ -648,9 +681,29 @@ static void inspector(EdDemo *d, UiContext *ui, UiRect panel)
 	Ui_Panel(ui, panel);
 	Gfx_Text(g, t->fHead, "属性", Ui_Rect(x, y + 8, panel.w - 28, 24),
 		t->text, GFX_TEXT_VCENTER);
-	Gfx_Text(g, t->fSmall, Ui_SvgEdit_SelCount(d->ed) > 1
-		? "多选：样式应用到全部" : "选中元素后可编辑", 
-		Ui_Rect(x, y + 34, panel.w - 28, 18), t->text3, GFX_TEXT_VCENTER);
+	{
+		int eidx, nidx = Ui_SvgEdit_NodeIndex(d->ed, &eidx);
+		if (nidx >= 0) {
+			float ang = 0.0f, len = 0.0f;
+			int sym = 0;
+			Ui_SvgEdit_NodeParams(d->ed, &ang, &len, &sym);
+			wsprintfA(buf, "节点%d%s", nidx, sym ? "" : " 角");
+			label(app, buf, Ui_Rect(x, y + 34, 66, 28));
+			label(app, "角度", Ui_Rect(x + 68, y + 34, 34, 28));
+			label(app, "力度", Ui_Rect(x + 166, y + 34, 34, 28));
+			UiInput_SetRect(&d->form, d->fNodeAng,
+				Ui_Rect(x + 104, y + 34, 58, 28));
+			UiInput_SetRect(&d->form, d->fNodeLen,
+				Ui_Rect(x + 202, y + 34, 68, 28));
+			UiInput_Draw(&d->form, d->fNodeAng);
+			UiInput_Draw(&d->form, d->fNodeLen);
+		} else {
+			Gfx_Text(g, t->fSmall, Ui_SvgEdit_SelCount(d->ed) > 1
+				? "多选：样式应用到全部" : "选中元素后可编辑",
+				Ui_Rect(x, y + 34, panel.w - 28, 18), t->text3,
+				GFX_TEXT_VCENTER);
+		}
+	}
 
 	label(app, d->geoLabel[0], Ui_Rect(x, y + 62, 44, 28));
 	label(app, d->geoLabel[1], Ui_Rect(x + 150, y + 62, 44, 28));

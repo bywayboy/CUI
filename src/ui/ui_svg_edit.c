@@ -889,6 +889,61 @@ static void draw_pen_overlay(UiSvgEdit *ed, UiContext *ui, Gfx *g)
 		w2s(ed, ed->penMidX, ed->penMidY, &sx, &sy);
 		Gfx_FillEllipse(g, sx, sy, 3.5f, 3.5f, t->gold);
 	}
+	/* 拖动中: 锚点落在按下处, 拖拽向量同时给出切向(角度)与力度. */
+	if (ed->drag == SE_DRAG_PEN_POINT && ed->penDragging) {
+		float awx, awy, hwx, hwy, alx, aly, hlx, hly;
+		float asx, asy, osx, osy, isx, isy, dx, dy;
+		awx = ed->penDownWX;
+		awy = ed->penDownWY;
+		hwx = ed->mouseWorldX;
+		hwy = ed->mouseWorldY;
+		Svg_WorldToLocal(e, awx, awy, &alx, &aly);
+		Svg_WorldToLocal(e, hwx, hwy, &hlx, &hly);
+		dx = hlx - alx;
+		dy = hly - aly;
+		Svg_LocalToWorld(e, alx, aly, &awx, &awy);
+		w2s(ed, awx, awy, &asx, &asy);
+		if (ed->penNext == SVG_SEG_CUBIC) {
+			Svg_LocalToWorld(e, alx + dx, aly + dy, &awx, &awy);
+			w2s(ed, awx, awy, &osx, &osy);
+			Svg_LocalToWorld(e, alx - dx, aly - dy, &awx, &awy);
+			w2s(ed, awx, awy, &isx, &isy);
+			Gfx_Line(g, asx, asy, osx, osy, t->text3, 1.0f);
+			Gfx_Line(g, asx, asy, isx, isy, t->text3, 1.0f);
+			Gfx_FillEllipse(g, osx, osy, 3.0f, 3.0f, t->card);
+			Gfx_StrokeEllipse(g, osx, osy, 3.0f, t->primary.base, 1.0f);
+			Gfx_FillEllipse(g, isx, isy, 3.0f, 3.0f, t->card);
+			Gfx_StrokeEllipse(g, isx, isy, 3.0f, t->primary.base, 1.0f);
+		}
+		Gfx_FillRoundRect(g, Ui_Rect(asx - 3.5f, asy - 3.5f, 7, 7),
+			1.5f, t->card);
+		Gfx_StrokeRoundRect(g, Ui_Rect(asx - 3.5f, asy - 3.5f, 7, 7),
+			1.5f, t->primary.base, 1.0f);
+		if (!ed->penJustStarted && n > 0 && ed->penNext == SVG_SEG_CUBIC) {
+			const SvgNode *ln = &e->path.nodes[n - 1];
+			float p0x = ln->x, p0y = ln->y;
+			float c1x = p0x + (ln->hasOut ? ln->outX : 0.0f);
+			float c1y = p0y + (ln->hasOut ? ln->outY : 0.0f);
+			float c2x = alx - dx, c2y = aly - dy;
+			float lx, ly;
+			int k;
+			Svg_LocalToWorld(e, p0x, p0y, &awx, &awy);
+			w2s(ed, awx, awy, &lx, &ly);
+			for (k = 1; k <= 24; k++) {
+				float u = (float)k / 24.0f, v = 1.0f - u;
+				float bx = v * v * v * p0x + 3 * v * v * u * c1x +
+					3 * v * u * u * c2x + u * u * u * alx;
+				float by = v * v * v * p0y + 3 * v * v * u * c1y +
+					3 * v * u * u * c2y + u * u * u * aly;
+				float qx, qy;
+				Svg_LocalToWorld(e, bx, by, &awx, &awy);
+				w2s(ed, awx, awy, &qx, &qy);
+				Gfx_Line(g, lx, ly, qx, qy, t->primary.base, 1.5f);
+				lx = qx;
+				ly = qy;
+			}
+		}
+	}
 	(void)mx; (void)my;
 }
 
@@ -1212,8 +1267,9 @@ static void pen_set_hint(UiSvgEdit *ed)
 		return;
 	}
 	s_str(ed->hint, (int)sizeof(ed->hint),
-		"指定下一点  [L 直线] [A 圆弧] [Shift+A 三点弧] [B 贝塞尔] "
-		"[C 闭合] [U 撤销节点] [Enter/双击/右键 完成] [Esc 取消]");
+		"指定下一点  [L 直线] [A 圆弧] [Shift+A 三点弧] "
+		"[B 贝塞尔: 拖拽定角度/力度] [C 闭合] [U 撤销节点] "
+		"[Enter/双击/右键 完成] [Esc 取消]");
 }
 
 static void pen_apply_first_handles(UiSvgEdit *ed, float dx, float dy)
@@ -2404,6 +2460,50 @@ int Ui_SvgEdit_SelIndex(const UiSvgEdit *ed, int nth)
 {
 	if (!ed || nth < 0 || nth >= ed->selCount) return -1;
 	return ed->sel[nth];
+}
+
+static SvgNode *sel_node(UiSvgEdit *ed)
+{
+	int idx = path_edit_index(ed);
+	if (idx < 0 || ed->nodeSel < 0) return NULL;
+	if (ed->nodeSel >= ed->doc->els[idx].path.count) return NULL;
+	return &ed->doc->els[idx].path.nodes[ed->nodeSel];
+}
+
+int Ui_SvgEdit_NodeIndex(const UiSvgEdit *ed, int *elIndex)
+{
+	int idx;
+	if (!ed) return -1;
+	idx = path_edit_index(ed);
+	if (idx < 0 || ed->nodeSel < 0 ||
+		ed->nodeSel >= ed->doc->els[idx].path.count)
+		return -1;
+	if (elIndex) *elIndex = idx;
+	return ed->nodeSel;
+}
+
+int Ui_SvgEdit_NodeParams(const UiSvgEdit *ed, float *angleDeg,
+	float *strength, int *symmetric)
+{
+	SvgNode *n = sel_node((UiSvgEdit *)ed);
+	if (!n) return 0;
+	Svg_NodeGetTangent(n, angleDeg, strength, symmetric);
+	return 1;
+}
+
+int Ui_SvgEdit_SetNodeParams(UiSvgEdit *ed, float angleDeg, float strength,
+	int symmetric)
+{
+	SvgNode *n;
+	int idx;
+	if (!ed) return 0;
+	idx = path_edit_index(ed);
+	n = sel_node(ed);
+	if (!n) return 0;
+	Svg_NodeSetTangent(n, angleDeg, strength, symmetric);
+	Svg_ElementTouch(&ed->doc->els[idx]);
+	ed_invalidate(ed);
+	return 1;
 }
 
 void Ui_SvgEdit_SelectAll(UiSvgEdit *ed)

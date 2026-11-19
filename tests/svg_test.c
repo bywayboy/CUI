@@ -3,7 +3,8 @@
  *
  * 覆盖: 包围盒 (直线/旋转矩形/三次曲线/椭圆), 命中 (填充/描边容差/旋转/
  *       最上层), 节点插入 (贝塞尔 De Casteljau / 圆弧切分), 圆弧解算
- *       (切向/三点/大弧/半径放大/退化), 弧过拖动点, A 参数导出往返,
+ *       (切向/三点/大弧/半径放大/退化), 节点切线 (角度/力度/对称/角点),
+ *       弧过拖动点, A 参数导出往返,
  *       20 步 undo/redo 序列化逐字节一致, 视口互逆, d 解析往返.
  * 构建: bin\cui_svg_test.exe; 退出码 0 = 全通过.
  */
@@ -563,12 +564,56 @@ static void test_view(void)
 	CHECK(maxErr < 1e-3f);
 }
 
+static void test_node_tangent(void)
+{
+	SvgNode n;
+	float ang, len;
+	int sym;
+	memset(&n, 0, sizeof(n));
+	n.type = SVG_NODE_CORNER;
+	n.hasOut = 1;
+	n.outX = 3.0f;
+	n.outY = 4.0f;
+	Svg_NodeGetTangent(&n, &ang, &len, &sym);
+	CHECK(NEAR(ang, 53.1301f, 0.01f));
+	CHECK(NEAR(len, 5.0f, 1e-4f));
+	CHECK(sym == 0);
+
+	Svg_NodeSetTangent(&n, 90.0f, 10.0f, 1);
+	CHECK(n.hasOut && n.hasIn);
+	CHECK(n.type == SVG_NODE_SMOOTH);
+	CHECK(NEAR(n.outX, 0.0f, 1e-4f) && NEAR(n.outY, 10.0f, 1e-3f));
+	CHECK(NEAR(n.inX, 0.0f, 1e-4f) && NEAR(n.inY, -10.0f, 1e-3f));
+	Svg_NodeGetTangent(&n, &ang, &len, &sym);
+	CHECK(NEAR(ang, 90.0f, 0.02f) && NEAR(len, 10.0f, 1e-4f) && sym == 1);
+
+	/* 角点: 只改 out, 保留 in 手柄 */
+	Svg_NodeSetTangent(&n, 45.0f, 4.0f, 0);
+	CHECK(n.type == SVG_NODE_CORNER && n.hasIn);
+	CHECK(NEAR(n.outX, 2.8284f, 0.01f) && NEAR(n.outY, 2.8284f, 0.01f));
+	CHECK(NEAR(n.inY, -10.0f, 1e-3f));
+
+	/* 力度 0: 清手柄 */
+	Svg_NodeSetTangent(&n, 0.0f, 0.0f, 1);
+	CHECK(!n.hasOut && !n.hasIn);
+
+	/* 仅 in 手柄: 取反作为切向 */
+	memset(&n, 0, sizeof(n));
+	n.type = SVG_NODE_CORNER;
+	n.hasIn = 1;
+	n.inX = -3.0f;
+	n.inY = -4.0f;
+	Svg_NodeGetTangent(&n, &ang, &len, &sym);
+	CHECK(NEAR(ang, 53.1301f, 0.01f) && NEAR(len, 5.0f, 1e-4f));
+}
+
 void __stdcall startup(void)
 {
 	test_bounds();
 	test_hit();
 	test_node_insert();
 	test_arc_solve();
+	test_node_tangent();
 	test_export_roundtrip();
 	test_history();
 	test_view();
