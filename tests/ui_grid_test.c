@@ -414,6 +414,32 @@ static void test_edges(void)
 	}
 }
 
+static void test_explicit_conflict(void)
+{
+	/* 画廊 Grid 演示: wide 关闭时 B 落在 col1 跨两行, D 显式 (2,1) 与其冲突,
+	 * 必须回填到 (2,2), 不能与 B 重叠. */
+	FakeBox a = { 10, 20, 10, 20 };
+	FakeBox b = { 10, 20, 10, 20 };
+	FakeBox c = { 10, 20, 10, 20 };
+	FakeBox d = { 10, 20, 10, 20 };
+	UiGridTrack cols[3] = {
+		fixed_track_(50), fixed_track_(50), fixed_track_(50) };
+	UiGridItem it[4];
+	UiRect rc[4];
+	UiGrid g = grid_(0, 3, 0, 0, 0);
+
+	it[0] = box_item_(&a, 1, 0, 1, 1, 1);
+	it[1] = box_item_(&b, 1, 1, 2, 1, 1);
+	it[2] = box_item_(&c, 2, 0, 1, 1, 1);
+	it[3] = box_item_(&d, 2, 1, 1, 1, 1);
+	CHECK(Ui_GridLayout(Ui_Rect(0, 0, 300, 300), &g, cols, NULL,
+		it, 4, rc));
+	CHECK(near_(rc[0].x, 0) && near_(rc[0].y, 0));
+	CHECK(near_(rc[1].x, 50) && near_(rc[1].y, 0) && near_(rc[1].h, 40));
+	CHECK(near_(rc[2].x, 0) && near_(rc[2].y, 20));
+	CHECK(near_(rc[3].x, 100) && near_(rc[3].y, 20));
+}
+
 void __stdcall startup(void)
 {
 	char line[128];
@@ -426,6 +452,7 @@ void __stdcall startup(void)
 	test_shrink();
 	test_measure_wrap();
 	test_edges();
+	test_explicit_conflict();
 	sprintf(line, "ui_grid_test: %d passed, %d failed\n", g_pass, g_fail);
 	out_(line);
 	ExitProcess(g_fail ? 1u : 0u);

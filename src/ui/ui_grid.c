@@ -170,16 +170,22 @@ static int grid_place_(GridCtx *ctx, const UiGrid *g,
 	for (i = 0; i < count; i++)
 		ctx->itemRow[i] = ctx->itemCol[i] = -1;
 
-	/* 显式行列先占位, 允许重叠 (与 CSS 一致). */
+	/* 显式行列先占位; 目标区域被跨格项占用时就近回填, 网格内不允许重叠. */
 	for (i = 0; i < count; i++) {
-		int rs, cs;
+		int rs, cs, r, c;
 		if (items[i].row < 0 || items[i].col < 0) continue;
 		rs = grid_span_(items[i].rowSpan, items[i].row, ctx->maxRows);
 		cs = grid_span_(items[i].colSpan, items[i].col, ctx->cols);
-		if (!grid_mark_(ctx->occ, ctx->cols, ctx->maxRows,
-			items[i].row, items[i].col, rs, cs)) return 0;
-		ctx->itemRow[i] = items[i].row;
-		ctx->itemCol[i] = items[i].col;
+		r = items[i].row;
+		c = items[i].col;
+		if (r + rs > ctx->maxRows || c + cs > ctx->cols) return 0;
+		if (!grid_area_free_(ctx->occ, ctx->cols, ctx->maxRows, r, c, rs, cs) &&
+			!grid_find_free_(ctx->occ, ctx->cols, ctx->maxRows, r, c,
+				ctx->autoCols, rs, cs, &r, &c))
+			return 0;
+		grid_mark_(ctx->occ, ctx->cols, ctx->maxRows, r, c, rs, cs);
+		ctx->itemRow[i] = r;
+		ctx->itemCol[i] = c;
 	}
 
 	/* 半显式: 固定行找列, 固定列找行. */

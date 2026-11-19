@@ -133,6 +133,7 @@ int Ui_FlexLayout(UiRect inner, int dir, float gap,
 /* ── Grid ───────────────────────────────────────────────────────────
  * 显式轨道 + 隐式 auto 轨道; 固定 / auto / fr 三种轨道。
  * 自动放置按行优先; dense=1 时每项从 (0,0) 重新寻找最早空位。
+ * 显式行列与已占区域冲突时就近回填, 摆放结果互不重叠。
  * 跨格项的尺寸贡献均分到跨过的 auto/fr 轨道, 固定轨道不吸收内容。 */
 enum {
 	UI_GRID_FIXED = 0,   /* value = DIP */
