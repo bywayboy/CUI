@@ -45,6 +45,10 @@ typedef void (*GfxPartDrawFn)(Gfx *g, void *user);
 
 GfxPart *Gfx_PartCreate(Gfx *g, float dipW, float dipH,
 	GfxPartDrawFn fn, void *user);
+/* 部件挂在 layer 的 visual 下: 继承 layer 的 opacity/位置, 用来在被
+ * 合成器淡入淡出的表面上叠加可独立旋转的元素 (Loading spinner). */
+GfxPart *Gfx_PartCreateOn(GfxLayer *l, float dipW, float dipH,
+	GfxPartDrawFn fn, void *user);
 /* 内容需要重画 (主题/尺寸变化) */
 void Gfx_PartUpdate(GfxPart *p);
 /* 每帧声明静态位置 (DIP); 补间期间只更新 y, 结束后落到 baseX */
@@ -65,6 +69,10 @@ float Gfx_PartW(const GfxPart *p);
 /* 旋转 (chevron): 合成器 rotate transform, 角度单位度 */
 void  Gfx_PartSetRotation(GfxPart *p, float deg);
 void  Gfx_PartAnimateRotation(GfxPart *p, float toDeg, int durMs);
+/* 连续匀速旋转 (Loading spinner): 线性合成器动画, 每 10 分钟重锚
+ * 限制角度浮点误差; 同转速重复调用是空操作, 过期时从当前相位续接. */
+void  Gfx_PartSpin(GfxPart *p, float degPerSec);
+void  Gfx_PartSpinStop(GfxPart *p);
 float Gfx_PartRotation(const GfxPart *p);
 void Gfx_PartDestroy(GfxPart *p);
 

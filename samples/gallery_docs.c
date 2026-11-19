@@ -43,7 +43,7 @@ static const char DOC_WELCOME[] =
 	"| 表单 | Input · TextArea · Checkbox · Radio · Switch · Slider |\n"
 	"| 选择器 | Select · DatePicker · Pagination |\n"
 	"| 导航与容器 | Tabs · Nav · ScrollView · Layout |\n"
-	"| 弹层与反馈 | Dialog · Menu · Toast · Tooltip |\n"
+	"| 弹层与反馈 | Dialog · Menu · Toast · Loading · Tooltip |\n"
 	"| 数据展示 | Progress · Image · Markdown |\n"
 	"| 系统 | Theme · Net(网络与定时器) |\n"
 	"\n"
@@ -1686,6 +1686,123 @@ static const char BEST_TOAST[] =
 	"- [ ] 不要同时弹两个 Toast(会互相覆盖, 后者顶掉前者);\n"
 	"- [ ] 回退模式(ULW)下别忘 `Tick` + `Invalidate`, 否则不淡出。\n";
 
+/* ── Loading ──────────────────────────────────────────────────────── */
+
+static const char DOC_LOADING[] =
+	"# Loading 加载遮罩\n"
+	"\n"
+	"`UiLoading` 为**任意父容器**盖一层半透明遮罩: 圆环弧 spinner +\n"
+	"一行可改文案 + 可选圆形 X 取消。默认拦截父容器内全部输入,\n"
+	"`passThrough` 时只画不拦。\n"
+	"\n"
+	"## 显示控制\n"
+	"\n"
+	"- `Show` 之后先等 `delayMs`(默认 150) 再出现 —— 快任务不闪烁;\n"
+	"- 出现后至少停留 `minShowMs`(默认 400) 才接受 `Hide`;\n"
+	"- 结束时淡出 160ms, 期间再 `Show` 会从当前透明度接续淡入;\n"
+	"- **取消只是请求**: X / Esc 置位 `cancelReq`, 由 `TakeCancel` 取走,\n"
+	"  显示/隐藏始终由程序控制 (异步任务完成后再 `Hide`)。\n"
+	"\n"
+	"## 基本用法\n"
+	"\n"
+	"```c\n"
+	"static UiLoading ld;\n"
+	"\n"
+	"UiLoading_Init(&ld, &app->ui);\n"
+	"UiLoading_SetText(&ld, \"正在同步...\");\n"
+	"UiLoading_SetCancelable(&ld, 1);\n"
+	"\n"
+	"UiLoading_Show(&ld);            /* 任务开始 */\n"
+	"\n"
+	"/* 每拍 (定时器/UiTimer): */\n"
+	"if (UiLoading_TakeCancel(&ld)) { /* 中止任务, 稍后 Hide */ }\n"
+	"if (UiLoading_Tick(&ld, now)) UiApp_Invalidate(app);\n"
+	"\n"
+	"/* 帧内, 父容器内容之后: */\n"
+	"UiLoading_Draw(&ld, parentRc, now);\n"
+	"\n"
+	"/* Gfx_End 之后: */\n"
+	"UiLoading_EndFrame(&ld, now);\n"
+	"```\n"
+	"\n"
+	"## 合成器路径\n"
+	"\n"
+	"遮罩/文字/按钮画在父容器大小的 `GfxLayer` 上**只画一次**;\n"
+	"spinner 是 layer 的子 `GfxPart`, 由 DComp 匀速旋转 (270° 弧,\n"
+	"约 1.1s/圈)。稳定期主窗零重绘; ULW 或 layer 创建失败时退回\n"
+	"主窗逐帧绘制, spinner 角度按帧推进。\n";
+
+static const char API_LOADING[] =
+	"# Loading API\n"
+	"\n"
+	"```c\n"
+	"#include \"ui/ui_loading.h\"\n"
+	"```\n"
+	"\n"
+	"| 函数 | 说明 |\n"
+	"|:--|:--|\n"
+	"| `UiLoading_Init / Shutdown` | 绑定 UiContext, 分配实例 slot |\n"
+	"| `UiLoading_SetText(utf8)` | 单行文案 (内部截断到 95 字节) |\n"
+	"| `UiLoading_SetCancelable(on)` | 显示圆形 X, Esc 也触发请求 |\n"
+	"| `UiLoading_SetPassThrough(on)` | 1 = 只画不拦输入 |\n"
+	"| `UiLoading_SetTiming(delay, minShow)` | 防止闪烁/快速吞吐 |\n"
+	"| `UiLoading_SetRadius(dip)` | 遮罩圆角 (0 = 直角, 贴合父容器) |\n"
+	"| `UiLoading_Show / Hide` | 程序控制显示与退出 |\n"
+	"| `UiLoading_Visible / Shown` | PENDING+SHOWN+HIDING / 后者不含 PENDING |\n"
+	"| `UiLoading_TakeCancel` | 一次性取走取消请求 |\n"
+	"| `UiLoading_Key(vk)` | Esc 且可取消时登记请求并返回 1 |\n"
+	"| `UiLoading_Tick(now)` | 状态推进; 1 = 需要主窗重绘 |\n"
+	"| `UiLoading_Draw(parentRc, now)` | 登记拦截/按钮命中, 回退时画内容 |\n"
+	"| `UiLoading_EndFrame(now)` | Gfx_End 之后同步 layer/part/淡入淡出 |\n"
+	"| `UiLoading_UsingLayer(ld)` | 1 = 合成器路径 |\n"
+	"\n"
+	"::: tip 调用顺序\n"
+	"`Tick` 由定时器驱动 (建议 30ms); `Draw` 在父容器内容之后、\n"
+	"`EndFrame` 必须在 `Gfx_End` 之后。稳定期 `Tick` 返回 0,\n"
+	"应用不需要持续失效窗口。\n"
+	":::\n";
+
+static const char EVENTS_LOADING[] =
+	"## 事件怎么产生\n"
+	"\n"
+	"Loading 是**程序控制 + 可选取消请求**模型, 没有推送事件:\n"
+	"\n"
+	"- 遮罩内点击/滚轮被拦截 (blocker 注册在 `UI_Z_OVERLAY`);\n"
+	"- 可取消时: 圆形 X 点击与 Esc 都只置位**取消请求**;\n"
+	"- `TakeCancel` 取走请求后, 由业务中止异步任务再 `Hide`。\n"
+	"\n"
+	"```c\n"
+	"/* 定时器 (UiTimer_Every 30ms): */\n"
+	"if (UiLoading_TakeCancel(&ld)) {\n"
+	"    task_abort(&job);\n"
+	"    UiLoading_Hide(&ld);       /* minShow 内会等够时长 */\n"
+	"}\n"
+	"if (UiLoading_Tick(&ld, UiFrame_Now()))\n"
+	"    UiApp_Invalidate(app);\n"
+	"\n"
+	"/* on_key: Esc 优先交给 Loading */\n"
+	"if (UiLoading_Key(&ld, vk)) return 1;\n"
+	"```\n"
+	"\n"
+	"::: warning 不要自行隐藏\n"
+	"组件不会因为取消请求自动消失 —— 先停任务, 再调 `Hide`,\n"
+	"保证遮罩下的界面不会在任务未收尾时重新接受输入。\n"
+	":::\n";
+
+static const char BEST_LOADING[] =
+	"# Loading 最佳实践\n"
+	"\n"
+	"- [x] 只盖**真正在忙**的容器, 不要全窗遮罩 (侧栏/顶栏还能操作);\n"
+	"- [x] `delayMs` 150–300: 快任务不闪; `minShowMs` ≥ 400: 慢任务不眨眼;\n"
+	"- [x] 会改动数据的操作才给取消按钮; 纯等待不给 (Esc 也无效);\n"
+	"- [x] 取消后先等任务收尾 (或等响应超时) 再 `Hide`, 文案改成\n"
+	"  \"正在取消...\" 更稳;\n"
+	"- [x] `Tick` 用定时器驱动, 别把 Loading 塞进 `animating` ——\n"
+	"  合成器路径稳定期本就不该出帧;\n"
+	"- [ ] 父容器在滚动视口内时, 每帧传**当前** DIP 矩形, 让遮罩跟随滚动;\n"
+	"- [ ] 同一容器只放一个 Loading 实例;\n"
+	"- [ ] 回退模式 (ULW) 下 `Tick` 返回 1 即失效, 别自己再逐帧 Invalidate。\n";
+
 /* ── 20 Tooltip ───────────────────────────────────────────────────── */
 
 static const char DOC_TOOLTIP[] =
@@ -3161,6 +3278,7 @@ static const GalleryDocText kDocs[PG_COUNT] = {
 	/* PG_DIALOG    */ { 0, DOC_DIALOG, API_DIALOG, BEST_DIALOG, EVENTS_DIALOG },
 	/* PG_MENU      */ { 0, DOC_MENU, API_MENU, BEST_MENU, EVENTS_MENU },
 	/* PG_TOAST     */ { 0, DOC_TOAST, API_TOAST, BEST_TOAST, EVENTS_TOAST },
+	/* PG_LOADING   */ { 0, DOC_LOADING, API_LOADING, BEST_LOADING, EVENTS_LOADING },
 	/* PG_TOOLTIP   */ { 0, DOC_TOOLTIP, API_TOOLTIP, BEST_TOOLTIP, EVENTS_TOOLTIP },
 	/* PG_PROGRESS  */ { 0, DOC_PROGRESS, API_PROGRESS, BEST_PROGRESS, EVENTS_PROGRESS },
 	/* PG_IMAGE     */ { 0, DOC_IMAGE, API_IMAGE, BEST_IMAGE, EVENTS_IMAGE },

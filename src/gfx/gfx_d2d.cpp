@@ -251,6 +251,7 @@ struct GfxLayer {
 	IDCompositionEffectGroup *effect;
 	int pw, ph;
 	float opacity;
+	float offsetX;      /* 当前视觉横向位移 (DIP) */
 	float offsetY;      /* 当前视觉纵向位移 (DIP) */
 	int valid;
 	GfxLayer *next;
@@ -1452,6 +1453,22 @@ void Gfx_LayerDestroy(GfxLayer *l)
 	HeapFree(GetProcessHeap(), 0, l);
 }
 
+void Gfx_LayerSetPos(GfxLayer *l, float xDip, float yDip)
+{
+	Gfx *g;
+	float s;
+	if (!l || !l->valid || !l->visual) return;
+	g = l->g;
+	if (!g || !g->compDevice) return;
+	if (l->offsetX == xDip && l->offsetY == yDip) return;
+	s = g->scale > 0.0f ? g->scale : 1.0f;
+	l->offsetX = xDip;
+	l->offsetY = yDip;
+	l->visual->SetOffsetX(xDip * s);
+	l->visual->SetOffsetY(yDip * s);
+	g->compDevice->Commit();
+}
+
 int Gfx_LayerSetOffsetY(GfxLayer *l, float dipY, int animateMs, int ease)
 {
 	Gfx *g;
@@ -2154,6 +2171,7 @@ void Gfx_FxTick(Gfx *g)
 
 struct GfxPart {
 	Gfx *g;
+	GfxLayer *parent;        /* Gfx_PartCreateOn: 挂在 layer visual 下 */
 	int pw, ph;
 	float baseX, baseY;
 	float x, fromX, toX;     /* DIP */
@@ -2172,6 +2190,10 @@ struct GfxPart {
 	double rotStart;
 	int rotDur;
 	int rotAnim;
+	int spinning;            /* 连续匀速旋转 (Gfx_PartSpin) */
+	float spinSpeed;         /* 度/秒 */
+	float spinPhase;         /* 重锚时刻相位 (度) */
+	double spinStart;        /* 重锚时刻 (ms) */
 	ID3D11Texture2D *tex;
 	ID2D1Bitmap1 *bmp;
 	IDCompositionSurface *surf;
@@ -2217,9 +2239,25 @@ float Gfx_PartW(const GfxPart *p)
 	return PartWNow((GfxPart *)p, FxNow());
 }
 
+static float PartSpinNow_(GfxPart *p, double now)
+{
+	double periodMs, t;
+	float deg;
+	if (p->spinSpeed <= 0.0f) return p->spinPhase;
+	periodMs = 360.0 / (double)p->spinSpeed * 1000.0;
+	t = now - p->spinStart;
+	if (t >= periodMs && periodMs > 0.0)
+		t -= periodMs * (double)(long)(t / periodMs);
+	deg = p->spinPhase + (float)(t / 1000.0 * (double)p->spinSpeed);
+	while (deg >= 360.0f) deg -= 360.0f;
+	while (deg < 0.0f) deg += 360.0f;
+	return deg;
+}
+
 static float PartRotNow(GfxPart *p, double now)
 {
 	if (!p) return 0.0f;
+	if (p->spinning) return PartSpinNow_(p, now);
 	if (!p->rotAnim) return p->ang;
 	return PartDecelLerp(p->angFrom, p->angTo, now - p->rotStart, p->rotDur);
 }
@@ -2250,6 +2288,7 @@ void Gfx_PartSetRotation(GfxPart *p, float deg)
 	if (!p || !p->g) return;
 	g = p->g;
 	if (!PartEnsureRot(p)) return;
+	p->spinning = 0;
 	p->ang = deg;
 	p->rotAnim = 0;
 	p->rot->SetAngle(deg);
@@ -2267,6 +2306,7 @@ void Gfx_PartAnimateRotation(GfxPart *p, float toDeg, int durMs)
 	if (!PartEnsureRot(p)) return;
 	now = FxNow();
 	cur = PartRotNow(p, now);
+	p->spinning = 0;
 	p->angFrom = cur;
 	p->angTo = toDeg;
 	p->rotStart = now;
@@ -2293,6 +2333,67 @@ void Gfx_PartAnimateRotation(GfxPart *p, float toDeg, int durMs)
 	p->rot->SetAngle(a);
 	a->Release();
 	if (g->compDevice) g->compDevice->Commit();
+}
+
+/* 重锚周期: 线性角度在 10 分钟内累计 < 200k 度, float 量化误差 < 0.02°;
+ * 更长会让角度精度肉眼可见地抖动。 */
+#define GFX_SPIN_REANCHOR_MS 600000.0
+
+void Gfx_PartSpin(GfxPart *p, float degPerSec)
+{
+	Gfx *g;
+	IDCompositionAnimation *a = NULL;
+	double now, sec, endDeg;
+	float phase;
+	if (!p || !p->g) return;
+	g = p->g;
+	if (degPerSec <= 0.0f) { Gfx_PartSpinStop(p); return; }
+	if (!PartEnsureRot(p)) return;
+	now = FxNow();
+	if (p->spinning && p->spinSpeed == degPerSec &&
+		now - p->spinStart < GFX_SPIN_REANCHOR_MS) {
+		p->rotAnim = 0;
+		return;
+	}
+	/* 从当前呈现相位续接, 新动画里只保留 [0,360) 之后的 10 分钟航程 */
+	phase = PartRotNow(p, now);
+	p->spinning = 1;
+	p->spinSpeed = degPerSec;
+	p->spinPhase = phase;
+	p->spinStart = now;
+	p->rotAnim = 0;
+	p->ang = phase;
+	sec = GFX_SPIN_REANCHOR_MS / 1000.0;
+	if (FAILED(g->compDevice->CreateAnimation(&a)) || !a) {
+		/* 合成器动画不可用: 停在当前相位, 由调用方走回退绘制 */
+		p->spinning = 0;
+		p->rot->SetAngle(phase);
+		if (g->compDevice) g->compDevice->Commit();
+		return;
+	}
+	endDeg = (double)phase + (double)degPerSec * sec;
+	/* 匀速: 只有一次项, 二次/三次系数为 0 */
+	a->AddCubic(0.0, phase, degPerSec, 0.0f, 0.0f);
+	a->End(sec, (float)endDeg);
+	p->rot->SetAngle(a);
+	a->Release();
+	if (g->compDevice) g->compDevice->Commit();
+}
+
+void Gfx_PartSpinStop(GfxPart *p)
+{
+	Gfx *g;
+	float ang;
+	if (!p || !p->g) return;
+	g = p->g;
+	ang = PartRotNow(p, FxNow());
+	p->spinning = 0;
+	p->rotAnim = 0;
+	p->ang = ang;
+	if (p->rot) {
+		p->rot->SetAngle(ang);
+		if (g->compDevice) g->compDevice->Commit();
+	}
 }
 
 void Gfx_PartUpdate(GfxPart *p)
@@ -2399,7 +2500,12 @@ static void PartsFree(Gfx *g)
 	g->parts = NULL;
 	while (p) {
 		GfxPart *n = p->next;
-		if (p->vis && g->compVisual) g->compVisual->RemoveVisual(p->vis);
+		if (p->vis) {
+			if (p->parent && p->parent->visual)
+				p->parent->visual->RemoveVisual(p->vis);
+			else if (g->compVisual)
+				g->compVisual->RemoveVisual(p->vis);
+		}
 		SAFE_RELEASE(p->rot);
 		SAFE_RELEASE(p->clip);
 		SAFE_RELEASE(p->vis);
@@ -2411,7 +2517,8 @@ static void PartsFree(Gfx *g)
 	}
 }
 
-GfxPart *Gfx_PartCreate(Gfx *g, float dipW, float dipH,
+/* 分配纹理/表面/visual 并挂进部件池; 父 visual 由调用方决定. */
+static GfxPart *PartCreate_(Gfx *g, float dipW, float dipH,
 	GfxPartDrawFn fn, void *user)
 {
 	GfxPart *p;
@@ -2439,8 +2546,6 @@ GfxPart *Gfx_PartCreate(Gfx *g, float dipW, float dipH,
 	p->vis->SetContent(NULL);
 	p->vis->SetOffsetX(0.0f);
 	p->vis->SetOffsetY(0.0f);
-	if (FAILED(CompAddBottom(g->compVisual, p->vis))) goto fail;
-	g->compDevice->Commit();
 	p->needDraw = 1;
 	p->seen = g->partFrame;
 	p->next = g->parts;
@@ -2453,6 +2558,38 @@ fail:
 	SAFE_RELEASE(p->tex);
 	HeapFree(GetProcessHeap(), 0, p);
 	return NULL;
+}
+
+GfxPart *Gfx_PartCreate(Gfx *g, float dipW, float dipH,
+	GfxPartDrawFn fn, void *user)
+{
+	GfxPart *p = PartCreate_(g, dipW, dipH, fn, user);
+	if (!p) return NULL;
+	if (FAILED(CompAddBottom(g->compVisual, p->vis))) {
+		Gfx_PartDestroy(p);
+		return NULL;
+	}
+	if (g->compDevice) g->compDevice->Commit();
+	return p;
+}
+
+GfxPart *Gfx_PartCreateOn(GfxLayer *l, float dipW, float dipH,
+	GfxPartDrawFn fn, void *user)
+{
+	GfxPart *p;
+	Gfx *g;
+	if (!l || !l->valid || !l->visual) return NULL;
+	g = l->g;
+	p = PartCreate_(g, dipW, dipH, fn, user);
+	if (!p) return NULL;
+	/* 子 visual 在 layer 内容之上, 与 layer 一起参与 opacity/位移 */
+	if (FAILED(l->visual->AddVisual(p->vis, FALSE, NULL))) {
+		Gfx_PartDestroy(p);
+		return NULL;
+	}
+	p->parent = l;
+	if (g->compDevice) g->compDevice->Commit();
+	return p;
 }
 
 void Gfx_PartPlace(GfxPart *p, float x, float y)
@@ -2703,7 +2840,12 @@ void Gfx_PartDestroy(GfxPart *p)
 		for (pp = &g->parts; *pp; pp = &(*pp)->next) {
 			if (*pp == p) { *pp = p->next; break; }
 		}
-		if (p->vis && g->compVisual) g->compVisual->RemoveVisual(p->vis);
+		if (p->vis) {
+			if (p->parent && p->parent->visual)
+				p->parent->visual->RemoveVisual(p->vis);
+			else if (g->compVisual)
+				g->compVisual->RemoveVisual(p->vis);
+		}
 	}
 	SAFE_RELEASE(p->rot);
 	SAFE_RELEASE(p->clip);

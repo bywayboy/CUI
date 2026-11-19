@@ -247,6 +247,8 @@ int  Gfx_LayerDraw(GfxLayer *l, GfxLayerDrawFn fn, void *user);
 #define GFX_EASE_OUT    1 /* cubic-out: 快起慢收 (减速) */
 #define GFX_EASE_IN     2 /* cubic-in: 慢起快收 (加速) */
 int  Gfx_LayerSetOpacity(GfxLayer *l, float opacity, int animateMs, int ease);
+/* 静态定位 (DIP): 父容器原点; 取代进行中的位移动画. */
+void Gfx_LayerSetPos(GfxLayer *l, float xDip, float yDip);
 int  Gfx_LayerSetOffsetY(GfxLayer *l, float dipY, int animateMs, int ease);
 int  Gfx_LayerResize(GfxLayer *l, int pixelW, int pixelH);
 int  Gfx_LayerAlive(GfxLayer *l);

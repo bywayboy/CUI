@@ -33,7 +33,7 @@ CORE_OBJS = $(OBJ)\edit.obj $(OBJ)\log.obj $(OBJ)\crtstub.obj $(OBJ)\heap.obj \
     $(OBJ)\ui_icon.obj $(OBJ)\ui_popup.obj $(OBJ)\ui_tooltip.obj \
     $(OBJ)\ui_controls.obj $(OBJ)\ui_select.obj $(OBJ)\ui_menu.obj \
     $(OBJ)\ui_dialog.obj $(OBJ)\ui_textarea.obj $(OBJ)\ui_button_group.obj \
-    $(OBJ)\ui_toast.obj $(OBJ)\ui_input.obj $(OBJ)\ui_app.obj \
+    $(OBJ)\ui_toast.obj $(OBJ)\ui_loading.obj $(OBJ)\ui_input.obj $(OBJ)\ui_app.obj \
     $(OBJ)\ui_progress.obj $(OBJ)\ui_scroll.obj $(OBJ)\ui_tab.obj \
     $(OBJ)\ui_nav.obj $(OBJ)\ui_pagination.obj $(OBJ)\ui_datetime.obj \
     $(OBJ)\ui_datepicker.obj $(OBJ)\ui_fx.obj \

@@ -30,6 +30,7 @@
 #include "ui/ui_pagination.h"
 #include "ui/ui_tooltip.h"
 #include "ui/ui_toast.h"
+#include "ui/ui_loading.h"
 #include "ui/ui_progress.h"
 #include "ui/ui_popup.h"
 #include "ui/ui_image.h"
@@ -81,6 +82,8 @@ typedef struct GalleryPage {
 
 /* 页面表 (定义在文件末尾; draw_sidebar/draw_content 提前引用) */
 static const GalleryPage kPages[PG_COUNT];
+
+static void load_abort(Gallery *g);
 
 /* 命令行直跳页 (cui_gallery.exe wssrv); WinMain 解析后赋值 */
 static int g_startPage = PG_WELCOME;
@@ -297,6 +300,17 @@ typedef struct Gallery {
 		UiButtonGroup kind;
 		UiSlider dur;
 	} toastP;
+
+	/* Loading 页 */
+	struct {
+		UiLoading ld;
+		UiCheckbox pass, fast, cancel;
+		int clicks;
+		double deadlineMs;   /* 模拟任务结束时刻; 0 = 无 */
+		int fail;            /* 到期后弹错误 Toast */
+		int cancelWait;      /* 取消后等待任务收尾 */
+		int cancels;
+	} load;
 
 	/* Tooltip 页 */
 	struct {
@@ -627,6 +641,7 @@ static const SideRow kSide[] = {
 	{ NULL, PG_DIALOG },
 	{ NULL, PG_MENU },
 	{ NULL, PG_TOAST },
+	{ NULL, PG_LOADING },
 	{ NULL, PG_TOOLTIP },
 	{ "数据展示", -1 },
 	{ NULL, PG_PROGRESS },
@@ -727,6 +742,7 @@ static void draw_topbar(Gallery *g)
 static void switch_page(Gallery *g, int pg)
 {
 	if (pg == g->page) return;
+	if (g->page == PG_LOADING) load_abort(g);
 	g->page = pg;
 	Ui_SetFocusId(&g->app->ui, UI_ID_NONE);
 	/* 换页是整窗内容替换, 进行中的过渡矩形会盖在新页面上 */
@@ -836,6 +852,8 @@ static void draw_content(Gallery *g)
 		UiTabBar_Draw(&g->subTabs, ui, subRc, kSubTabLabels, &g->pill, 1);
 		if (g->subTabs.selected != prev) {
 			g->subTab[g->page] = g->subTabs.selected;
+			if (g->page == PG_LOADING && g->subTab[g->page] != 0)
+				load_abort(g);
 			Ui_SetFocusId(ui, UI_ID_NONE);
 			UiApp_Invalidate(app);
 		}
@@ -5246,6 +5264,242 @@ static void toast_mouse(Gallery *g, int msg, float x, float y)
 	form_mouse(&g->toastP.form, g->app, msg, x, y);
 }
 
+/* ── Loading 页 ────────────────────────────────────────────────────── */
+
+static const char *const kLoadPhaseNames[4] = {
+	"HIDDEN", "PENDING", "SHOWN", "HIDING"
+};
+
+static void load_sync_options(Gallery *g)
+{
+	UiLoading *ld = &g->load.ld;
+	UiLoading_SetCancelable(ld, g->load.cancel.checked);
+	UiLoading_SetPassThrough(ld, g->load.pass.checked);
+	if (g->load.fast.checked) UiLoading_SetTiming(ld, 0, 0);
+	else UiLoading_SetTiming(ld, 150, 400);
+}
+
+static void load_abort(Gallery *g)
+{
+	g->load.deadlineMs = 0.0;
+	g->load.fail = 0;
+	g->load.cancelWait = 0;
+	UiLoading_TakeCancel(&g->load.ld);
+	UiLoading_Hide(&g->load.ld);
+}
+
+static void load_begin(Gallery *g, int ms, int cancelable, int fail)
+{
+	double now = UiFrame_Now();
+	UiLoading_SetText(&g->load.ld, "载入中...");
+	g->load.cancel.checked = cancelable ? 1 : 0;
+	load_sync_options(g);
+	g->load.deadlineMs = ms > 0 ? now + (double)ms : 0.0;
+	g->load.fail = fail;
+	g->load.cancelWait = 0;
+	UiLoading_Show(&g->load.ld);
+	if (fail)
+		set_status(g, "开始载入, 1.2s 后模拟失败");
+	else if (cancelable)
+		set_status(g, "开始载入 (可取消: X / Esc)");
+	else
+		set_status(g, "开始载入 (程序控制)");
+}
+
+/* 30ms 定时器: 推进状态机 + 模拟异步任务收尾 (不参与 animating 帧循环) */
+static void load_beat(void *user, uint64_t id)
+{
+	UiApp *app = (UiApp *)user;
+	Gallery *g = (Gallery *)app->user;
+	double now = UiFrame_Now();
+	(void)id;
+	if (g->load.deadlineMs > 0.0 && now >= g->load.deadlineMs) {
+		int fail = g->load.fail;
+		g->load.deadlineMs = 0.0;
+		g->load.fail = 0;
+		UiLoading_Hide(&g->load.ld);
+		if (g->load.cancelWait) {
+			g->load.cancelWait = 0;
+			set_status(g, "已取消: 任务已收尾");
+		} else if (fail) {
+			UiToast_Show(&g->toast, "载入失败: 模拟错误", now,
+				2200, UI_TOAST_ERROR);
+			set_status(g, "模拟失败: 已弹错误 Toast");
+		} else {
+			set_status(g, "载入完成");
+		}
+	}
+	if (UiLoading_TakeCancel(&g->load.ld)) {
+		g->load.cancels++;
+		g->load.cancelWait = 1;
+		g->load.deadlineMs = now + 600.0;
+		UiLoading_SetText(&g->load.ld, "正在取消...");
+		set_status(g, "收到取消请求: 600ms 后结束任务");
+	}
+	if (UiLoading_Tick(&g->load.ld, now)) UiApp_Invalidate(app);
+}
+
+static void load_init(Gallery *g)
+{
+	UiLoading_Init(&g->load.ld, &g->app->ui);
+	UiCheckbox_Init(&g->load.pass, Ui_Id("gl.load.pass", 0, 0), 0);
+	UiCheckbox_Init(&g->load.fast, Ui_Id("gl.load.fast", 0, 0), 0);
+	UiCheckbox_Init(&g->load.cancel, Ui_Id("gl.load.cancel", 0, 0), 0);
+	UiTimer_Every(g->app->timer, 30, load_beat, g->app);
+}
+
+static void load_demo(Gallery *g, UiRect rc)
+{
+	UiApp *app = g->app;
+	UiTheme *t = &app->theme;
+	UiContext *ui = &app->ui;
+	Gfx *gfx = app->gfx;
+	UiStack col;
+	UiRect row, parent, child;
+	char buf[192];
+
+	Ui_StackBeginPad(&col, rc, UI_COLUMN, 0.0f, 20.0f, 16.0f, 20.0f, 16.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "场景 (遮罩只覆盖下方父容器)");
+	Ui_StackSkip(&col, 6.0f);
+	row = Ui_StackTake(&col, 38.0f);
+	if (Ui_Button(ui, Ui_Id("gl.load.go2s", 0, 0),
+			Ui_Rect(row.x, row.y, 132.0f, 36.0f), "开始载入 (2s)",
+			UI_BTN_PRIMARY, 1))
+		load_begin(g, 2000, 0, 0);
+	if (Ui_Button(ui, Ui_Id("gl.load.gocancel", 0, 0),
+			Ui_Rect(row.x + 144.0f, row.y, 150.0f, 36.0f),
+			"开始载入 (可取消)", UI_BTN_SECONDARY, 1))
+		load_begin(g, 0, 1, 0);
+	if (Ui_Button(ui, Ui_Id("gl.load.fail", 0, 0),
+			Ui_Rect(row.x + 306.0f, row.y, 120.0f, 36.0f), "模拟失败",
+			UI_BTN_DANGER, 1))
+		load_begin(g, 1200, 0, 1);
+	Ui_StackSkip(&col, 10.0f);
+
+	row = Ui_StackTake(&col, 26.0f);
+	{
+		int opt = 0;
+		opt |= Ui_Checkbox(&g->load.pass, ui,
+			Ui_Rect(row.x, row.y, 168.0f, 26.0f),
+			"passThrough (只画不拦)", 1);
+		opt |= Ui_Checkbox(&g->load.fast, ui,
+			Ui_Rect(row.x + 180.0f, row.y, 220.0f, 26.0f),
+			"快任务 (跳过 delay/minShow)", 1);
+		opt |= Ui_Checkbox(&g->load.cancel, ui,
+			Ui_Rect(row.x + 412.0f, row.y, 168.0f, 26.0f),
+			"允许取消 (X + Esc)", 1);
+		if (opt) load_sync_options(g);
+	}
+	Ui_StackSkip(&col, 10.0f);
+
+	parent = Ui_StackTakeFill(&col);
+	Ui_Panel(ui, parent);
+	child = pane_in(parent, 20.0f);
+	lbl(gfx, t, Ui_Rect(child.x, child.y, child.w, 18.0f), "父容器");
+	{
+		char lab[64];
+		wsprintfA(lab, "面板内按钮 · %d", g->load.clicks);
+		if (Ui_Button(ui, Ui_Id("gl.load.inner", 0, 0),
+				Ui_Rect(child.x, child.y + 30.0f, 170.0f, 34.0f),
+				lab, UI_BTN_SECONDARY, 1)) {
+			char msg[80];
+			g->load.clicks++;
+			snprintf(msg, sizeof(msg), "父容器内按钮被点中: %d%s",
+				g->load.clicks,
+				g->load.ld.passThrough ? " (passThrough)" : "");
+			set_status(g, msg);
+		}
+	}
+	snprintf(buf, sizeof(buf), "主窗帧: %u   状态: %s   取消请求: %d",
+		(unsigned)g->appf.frame, kLoadPhaseNames[g->load.ld.phase],
+		g->load.cancels);
+	small_txt(gfx, t, Ui_Rect(child.x, child.y + 74.0f, child.w, 18.0f),
+		buf);
+	note_txt(gfx, t, Ui_Rect(child.x, child.y + 102.0f, child.w, 56.0f),
+		"合成器模式: 遮罩/文字/按钮只画一次, spinner 由 DComp 匀速旋转,\n"
+		"稳定期上方「主窗帧」不再增长。勾 passThrough 后本按钮可点。\n");
+
+	UiLoading_Draw(&g->load.ld, parent, UiFrame_Now());
+}
+
+static void load_props(Gallery *g, UiRect rc)
+{
+	UiApp *app = g->app;
+	UiTheme *t = &app->theme;
+	UiContext *ui = &app->ui;
+	Gfx *gfx = app->gfx;
+	UiRect ed, pv, area;
+	UiStack col;
+	char buf[160];
+
+	snprintf(g->codeText, sizeof(g->codeText),
+		"static UiLoading ld;\n"
+		"\n"
+		"UiLoading_Init(&ld, &app->ui);\n"
+		"UiLoading_SetText(&ld, \"载入中...\");\n"
+		"UiLoading_SetCancelable(&ld, %d);\n"
+		"UiLoading_SetPassThrough(&ld, %d);\n"
+		"UiLoading_SetTiming(&ld, %d, %d);\n"
+		"UiLoading_Show(&ld);\n"
+		"\n"
+		"/* 定时器 30ms: */\n"
+		"if (UiLoading_TakeCancel(&ld)) task_abort();\n"
+		"if (UiLoading_Tick(&ld, UiFrame_Now()))\n"
+		"    UiApp_Invalidate(app);\n"
+		"\n"
+		"/* 帧内 / Gfx_End 之后: */\n"
+		"UiLoading_Draw(&ld, parentRc, UiFrame_Now());\n"
+		"UiLoading_EndFrame(&ld, UiFrame_Now());\n",
+		g->load.cancel.checked, g->load.pass.checked,
+		g->load.fast.checked ? 0 : 150,
+		g->load.fast.checked ? 0 : 400);
+
+	props_split(g, ui, rc, &ed, &pv);
+	Ui_StackBeginPad(&col, pane_in(ed, 16.0f), UI_COLUMN, 0.0f,
+		16.0f, 14.0f, 16.0f, 14.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "选项");
+	Ui_StackSkip(&col, 4.0f);
+	{
+		UiRect c0 = Ui_StackTake(&col, 26.0f);
+		UiRect c1 = Ui_StackTake(&col, 26.0f);
+		UiRect c2 = Ui_StackTake(&col, 26.0f);
+		int opt = 0;
+		opt |= Ui_Checkbox(&g->load.cancel, ui, c0,
+			"允许取消 (X + Esc)", 1);
+		opt |= Ui_Checkbox(&g->load.pass, ui, c1,
+			"passThrough (只画不拦)", 1);
+		opt |= Ui_Checkbox(&g->load.fast, ui, c2,
+			"快任务 (delay/minShow = 0)", 1);
+		if (opt) load_sync_options(g);
+	}
+	Ui_StackSkip(&col, 12.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "当前配置");
+	Ui_StackSkip(&col, 4.0f);
+	snprintf(buf, sizeof(buf), "state=%s  delay=%d  minShow=%d",
+		kLoadPhaseNames[g->load.ld.phase], g->load.ld.delayMs,
+		g->load.ld.minShowMs);
+	small_txt(gfx, t, Ui_StackTake(&col, 18.0f), buf);
+	Ui_StackSkip(&col, 8.0f);
+	snprintf(buf, sizeof(buf), "cancelable = %d   passThrough = %d",
+		g->load.ld.cancelable, g->load.ld.passThrough);
+	small_txt(gfx, t, Ui_StackTake(&col, 18.0f), buf);
+	Ui_StackSkip(&col, 8.0f);
+	snprintf(buf, sizeof(buf), "主窗帧: %u   取消请求: %d",
+		(unsigned)g->appf.frame, g->load.cancels);
+	small_txt(gfx, t, Ui_StackTake(&col, 18.0f), buf);
+
+	area = pane_in(pv, 20.0f);
+	small_txt(gfx, t, Ui_Rect(area.x, area.y, area.w, 20.0f),
+		"用当前配置启动");
+	if (Ui_Button(ui, Ui_Id("gl.load.pv", 0, 0),
+			Ui_Rect(area.x, area.y + 32.0f, 150.0f, 38.0f),
+			"开始载入", UI_BTN_PRIMARY, 1))
+		load_begin(g, 2000, g->load.cancel.checked, 0);
+}
+
 /* ── Tooltip ───────────────────────────────────────────────────────── */
 
 static const uint32_t kTipIcons[3] = { 0xE74Eu, 0xE72Cu, 0xE74Du };
@@ -7321,6 +7575,10 @@ static const GalleryPage kPages[PG_COUNT] = {
 	{ "Toast 轻提示", "Toast 轻提示", "合成器 layer · 零重绘 · 自动图标",
 		toast_init, toast_demo, toast_props, toast_key, toast_chr,
 		toast_ime, toast_blink, toast_mouse, NULL, NULL, NULL },
+	/* PG_LOADING */
+	{ "Loading 载入", "Loading 加载遮罩", "父容器遮罩 · 合成器 spinner · 可取消",
+		load_init, load_demo, load_props, NULL, NULL, NULL, NULL, NULL,
+		NULL, NULL, NULL },
 	/* PG_TOOLTIP */
 	{ "Tooltip 提示", "Tooltip 工具提示", "悬停延迟气泡 · 不挡命中",
 		tip_init, tip_demo, tip_props, NULL, NULL, NULL, NULL, NULL,
@@ -7471,6 +7729,7 @@ static void on_after_frame(UiApp *app, void *user)
 		UiToast_Hide(&g->toast, UiFrame_Now());
 		UiApp_Invalidate(app);
 	}
+	UiLoading_EndFrame(&g->load.ld, UiFrame_Now());
 	UiToast_EndFrame(&g->toast, UiFrame_Now(), app->w, app->h);
 	UiProgress_EndFrame(&g->prog.prog);
 }
@@ -7534,6 +7793,10 @@ static int on_key(UiApp *app, UINT vk, void *user)
 		UiToast_Hide(&g->toast, UiFrame_Now());
 		UiApp_Invalidate(app);
 		return 1;
+	}
+	if (UiLoading_Shown(&g->load.ld)) {
+		if (UiLoading_Key(&g->load.ld, (int)vk)) UiApp_Invalidate(app);
+		if (vk == VK_ESCAPE) return 1;
 	}
 	if (UiPopupManager_Key(&g->pm, ui, vk)) {
 		UiApp_Invalidate(app);
@@ -7607,6 +7870,7 @@ static void on_shutdown(UiApp *app, void *user)
 		UiMarkdown_Destroy(g->md);
 		g->md = NULL;
 	}
+	UiLoading_Shutdown(&g->load.ld);
 	UiToast_Shutdown(&g->toast);
 }
 
@@ -7635,6 +7899,7 @@ static int page_from_cmd(const char *name)
 		{ "layout", PG_LAYOUT }, { "flex", PG_FLEX },
 		{ "grid", PG_GRID }, { "dialog", PG_DIALOG },
 		{ "menu", PG_MENU }, { "toast", PG_TOAST },
+		{ "loading", PG_LOADING },
 		{ "tooltip", PG_TOOLTIP }, { "progress", PG_PROGRESS },
 		{ "image", PG_IMAGE }, { "markdown", PG_MARKDOWN },
 		{ "theme", PG_THEME }, { "net", PG_NET },
