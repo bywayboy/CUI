@@ -2387,6 +2387,9 @@ void Ui_SvgEdit_Frame(UiSvgEdit *ed, UiContext *ui, UiRect viewport)
 	handle_input(ed, ui);
 	update_hint(ed);
 
+	/* 画布内容严格裁到视口, 放大后不得覆盖工具栏/侧栏 */
+	Gfx_PushClip(g, viewport);
+
 	/* 背景 */
 	Gfx_FillRect(g, viewport,
 		Ui_ColorShift(t->page2, t->themeId == UI_THEME_DARK ? -6 : -4));
@@ -2466,6 +2469,8 @@ void Ui_SvgEdit_Frame(UiSvgEdit *ed, UiContext *ui, UiRect viewport)
 
 	Gfx_StrokeRoundRect(g, Ui_Rect(viewport.x + 0.5f, viewport.y + 0.5f,
 		viewport.w - 1.0f, viewport.h - 1.0f), 2.0f, t->frame, 1.0f);
+
+	Gfx_PopClip(g);
 }
 
 /* ── 键盘 ─────────────────────────────────────────────────────────── */
