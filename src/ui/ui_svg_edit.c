@@ -505,7 +505,7 @@ static int sel_bounds(const UiSvgEdit *ed, GfxRect *out)
 		int idx = ed->sel[i];
 		GfxRect b;
 		if (idx < 0 || idx >= ed->doc->count) continue;
-		b = Svg_ElementBounds(&ed->doc->els[idx]);
+		b = SvgDoc_ElementBounds(ed->doc, idx);
 		if (first) { r = b; first = 0; }
 		else {
 			float x1 = s_max(r.x + r.w, b.x + b.w);
@@ -588,6 +588,8 @@ static int path_edit_index(const UiSvgEdit *ed)
 	for (i = 0; i < ed->selCount; i++) {
 		int idx = ed->sel[i];
 		if (idx < 0 || idx >= ed->doc->count) continue;
+		/* M7: 节点编辑暂只支持根级元素 (嵌套路径 M8+) */
+		if (ed->doc->els[idx].parent >= 0) continue;
 		if (ed->doc->els[idx].type == SVG_EL_PATH ||
 			ed->doc->els[idx].type == SVG_EL_POLYGON)
 			return idx;
@@ -882,14 +884,24 @@ static void draw_element(UiSvgEdit *ed, Gfx *g, int idx)
 	SvgElement *e = &ed->doc->els[idx];
 	SvgCacheEntry *c;
 	int fillable;
-	if (!e->visible) return;
+	int xfPush = 0;
+	float savedRot = 0.0f;
+	if (!e->visible || e->type == SVG_EL_GROUP) return;
+	if (e->xf.has) {
+		float m[6];
+		SvgDoc_SelfMatrix(ed->doc, idx, m);
+		Gfx_PushMatrix(g, m);
+		xfPush = 1;
+		savedRot = e->rot;
+		e->rot = 0.0f;   /* 路径缓存/绘制用局部几何 */
+	}
 	c = cache_ensure(ed, g, idx, e);
-	if (!c->path) return;
+	if (!c->path) { if (xfPush) { e->rot = savedRot; Gfx_PopTransform(g); } return; }
 	fillable = e->type != SVG_EL_LINE;
 	if (fillable && (e->type == SVG_EL_PATH || e->type == SVG_EL_POLYGON)
 		&& !e->path.closed)
 		fillable = 0;
-	if (e->rot != 0.0f) {
+	if (!xfPush && e->rot != 0.0f) {
 		float cx, cy;
 		Svg_ElementCenter(e, &cx, &cy);
 		Gfx_PushRotate(g, cx, cy, e->rot);
@@ -906,7 +918,40 @@ static void draw_element(UiSvgEdit *ed, Gfx *g, int idx)
 		ss.dashCount = e->style.dashCount;
 		Gfx_StrokePath(g, c->path, c->stroke, e->style.strokeWidth, &ss);
 	}
-	if (e->rot != 0.0f) Gfx_PopTransform(g);
+	if (xfPush) {
+		e->rot = savedRot;
+		Gfx_PopTransform(g);
+	} else if (e->rot != 0.0f) {
+		Gfx_PopTransform(g);
+	}
+}
+
+/* DFS: 组压自身矩阵后递归子元素; 叶子走 draw_element */
+static void draw_subtree_(UiSvgEdit *ed, Gfx *g, int idx)
+{
+	SvgElement *e;
+	if (!ed || idx < 0 || idx >= ed->doc->count) return;
+	if (!SvgDoc_IsVisible(ed->doc, idx)) return;
+	e = &ed->doc->els[idx];
+	if (e->type == SVG_EL_GROUP) {
+		float m[6];
+		if (e->xf.has) {
+			SvgDoc_SelfMatrix(ed->doc, idx, m);
+			Gfx_PushMatrix(g, m);
+			{
+				int i;
+				for (i = 0; i < e->childCount; i++)
+					draw_subtree_(ed, g, e->children[i]);
+			}
+			Gfx_PopTransform(g);
+		} else {
+			int i;
+			for (i = 0; i < e->childCount; i++)
+				draw_subtree_(ed, g, e->children[i]);
+		}
+		return;
+	}
+	draw_element(ed, g, idx);
 }
 
 static void handle_pos(const GfxRect *box, int i, float *hx, float *hy)
@@ -1805,6 +1850,15 @@ static void press_node_tool(UiSvgEdit *ed, UiContext *ui)
 	}
 }
 
+/* 组 / 嵌套 / 已启用 xf 的元素: 改变换而不是几何 */
+static int elem_needs_xf_(const UiSvgEdit *ed, int idx)
+{
+	const SvgElement *e;
+	if (!ed || idx < 0 || idx >= ed->doc->count) return 0;
+	e = &ed->doc->els[idx];
+	return e->type == SVG_EL_GROUP || e->parent >= 0 || e->xf.has;
+}
+
 static void update_drag(UiSvgEdit *ed, UiContext *ui)
 {
 	float wx, wy;
@@ -1924,8 +1978,12 @@ static void update_drag(UiSvgEdit *ed, UiContext *ui)
 		for (i = 0; i < ed->origCount; i++) {
 			int idx = ed->sel[i];
 			if (idx < 0 || idx >= ed->doc->count) continue;
-			geom_apply_move(&ed->doc->els[idx], &ed->orig[i], dx, dy);
-			Svg_ElementTouch(&ed->doc->els[idx]);
+			if (elem_needs_xf_(ed, idx))
+				SvgDoc_Translate(ed->doc, idx, dx, dy);
+			else {
+				geom_apply_move(&ed->doc->els[idx], &ed->orig[i], dx, dy);
+				Svg_ElementTouch(&ed->doc->els[idx]);
+			}
 		}
 		ed->dragMoved = 1;
 		ed_invalidate(ed);
@@ -1958,8 +2016,13 @@ static void update_drag(UiSvgEdit *ed, UiContext *ui)
 		for (i = 0; i < ed->origCount; i++) {
 			int idx = ed->sel[i];
 			if (idx < 0 || idx >= ed->doc->count) continue;
-			geom_apply_scale(&ed->doc->els[idx], &ed->orig[i], ax, ay, sx, sy);
-			Svg_ElementTouch(&ed->doc->els[idx]);
+			if (elem_needs_xf_(ed, idx))
+				SvgDoc_ScaleBy(ed->doc, idx, sx, sy, ax, ay);
+			else {
+				geom_apply_scale(&ed->doc->els[idx], &ed->orig[i], ax, ay,
+					sx, sy);
+				Svg_ElementTouch(&ed->doc->els[idx]);
+			}
 		}
 		ed->dragMoved = 1;
 		ed_invalidate(ed);
@@ -1977,9 +2040,13 @@ static void update_drag(UiSvgEdit *ed, UiContext *ui)
 		if (ed->origCount == 1 && ed->selCount == 1) {
 			int idx = ed->sel[0];
 			if (idx >= 0 && idx < ed->doc->count) {
-				SvgElement *e = &ed->doc->els[idx];
-				e->rot = ed->orig[0].rot + delta;
-				Svg_ElementTouch(e);
+				if (elem_needs_xf_(ed, idx))
+					SvgDoc_RotateBy(ed->doc, idx, delta, 0.0f, 0.0f);
+				else {
+					SvgElement *e = &ed->doc->els[idx];
+					e->rot = ed->orig[0].rot + delta;
+					Svg_ElementTouch(e);
+				}
 				ed->dragMoved = 1;
 				ed_invalidate(ed);
 			}
@@ -1989,6 +2056,18 @@ static void update_drag(UiSvgEdit *ed, UiContext *ui)
 			int idx = ed->sel[i];
 			float cx, cy, nx, ny;
 			if (idx < 0 || idx >= ed->doc->count) continue;
+			if (elem_needs_xf_(ed, idx)) {
+				GfxRect b = SvgDoc_ElementBounds(ed->doc, idx);
+				cx = b.x + b.w * 0.5f;
+				cy = b.y + b.h * 0.5f;
+				nx = ed->pivotX + (cx - ed->pivotX) * c
+					- (cy - ed->pivotY) * s;
+				ny = ed->pivotY + (cx - ed->pivotX) * s
+					+ (cy - ed->pivotY) * c;
+				SvgDoc_RotateBy(ed->doc, idx, delta, 0.0f, 0.0f);
+				SvgDoc_Translate(ed->doc, idx, nx - cx, ny - cy);
+				continue;
+			}
 			geom_center(&ed->orig[i], &cx, &cy);
 			nx = ed->pivotX + (cx - ed->pivotX) * c - (cy - ed->pivotY) * s;
 			ny = ed->pivotY + (cx - ed->pivotX) * s + (cy - ed->pivotY) * c;
@@ -2020,7 +2099,9 @@ static void rubber_finish(UiSvgEdit *ed, UiContext *ui)
 	}
 	if (!ed->rubberAdd) sel_clear(ed);
 	for (i = 0; i < ed->doc->count; i++) {
-		GfxRect b = Svg_ElementBounds(&ed->doc->els[i]);
+		GfxRect b;
+		if (ed->doc->els[i].parent >= 0) continue;
+		b = SvgDoc_ElementBounds(ed->doc, i);
 		if (b.x < r.x + r.w && b.x + b.w > r.x &&
 			b.y < r.y + r.h && b.y + b.h > r.y)
 			sel_add(ed, i);
@@ -2485,8 +2566,11 @@ void Ui_SvgEdit_Frame(UiSvgEdit *ed, UiContext *ui, UiRect viewport)
 	/* 元素 (裁到画板) */
 	Gfx_PushClip(g, board);
 	Gfx_PushScaleTranslate(g, ed->view.scale, ed->view.tx, ed->view.ty);
-	for (i = 0; i < ed->doc->count; i++)
-		draw_element(ed, g, i);
+	{
+		int nr = SvgDoc_RootCount(ed->doc), r;
+		for (r = 0; r < nr; r++)
+			draw_subtree_(ed, g, SvgDoc_RootAt(ed->doc, r));
+	}
 	Gfx_PopTransform(g);
 	Gfx_PopClip(g);
 
@@ -2593,6 +2677,11 @@ int Ui_SvgEdit_Key(UiSvgEdit *ed, UiContext *ui, UINT vk)
 	}
 	if (ctrl && vk == 'A') {
 		Ui_SvgEdit_SelectAll(ed);
+		return 1;
+	}
+	if (ctrl && vk == 'G') {
+		if (shift) Ui_SvgEdit_Ungroup(ed, ui);
+		else Ui_SvgEdit_Group(ed, ui);
 		return 1;
 	}
 	if (ctrl && (vk == '0' || vk == VK_NUMPAD0)) {
@@ -2795,10 +2884,11 @@ int Ui_SvgEdit_SetNodeParams(UiSvgEdit *ed, float angleDeg, float strength,
 
 void Ui_SvgEdit_SelectAll(UiSvgEdit *ed)
 {
-	int i;
-	if (!ed) return;
+	int i, n;
+	if (!ed || !ed->doc) return;
 	sel_clear(ed);
-	for (i = 0; i < ed->doc->count; i++) sel_add(ed, i);
+	n = SvgDoc_RootCount(ed->doc);
+	for (i = 0; i < n; i++) sel_add(ed, SvgDoc_RootAt(ed->doc, i));
 	ed_invalidate(ed);
 }
 
@@ -2873,16 +2963,140 @@ void Ui_SvgEdit_Reorder(UiSvgEdit *ed, UiContext *ui, int dir)
 	if (!ed || !ed->doc || ed->selCount != 1) return;
 	{
 		int idx = ed->sel[0];
-		int to = idx + (dir > 0 ? 1 : -1);
-		if (idx < 0 || idx >= ed->doc->count || to < 0 || to >= ed->doc->count)
-			return;
+		uint32_t uid;
+		if (idx < 0 || idx >= ed->doc->count) return;
+		uid = SvgDoc_UidAt(ed->doc, idx);
 		SvgDoc_MoveZ(ed->doc, idx, dir);
 		cache_clear(ed);
-		ed->sel[0] = to;
+		ed->sel[0] = SvgDoc_IndexOfUid(ed->doc, uid);
+		if (ed->sel[0] < 0) ed->selCount = 0;
 		Svg_History_Commit(ed->doc);
 		ed_invalidate(ed);
 	}
 	(void)ui;
+}
+
+int Ui_SvgEdit_Group(UiSvgEdit *ed, UiContext *ui)
+{
+	int g;
+	if (!ed || !ed->doc || ed->selCount <= 0) return 0;
+	g = SvgDoc_Group(ed->doc, ed->sel, ed->selCount);
+	if (g < 0) return 0;
+	sel_clear(ed);
+	sel_add(ed, g);
+	ed->nodeSel = -1;
+	cache_clear(ed);
+	Svg_History_Commit(ed->doc);
+	ed_invalidate(ed);
+	(void)ui;
+	return 1;
+}
+
+int Ui_SvgEdit_Ungroup(UiSvgEdit *ed, UiContext *ui)
+{
+	int g;
+	if (!ed || !ed->doc || ed->selCount != 1) return 0;
+	g = ed->sel[0];
+	if (g < 0 || g >= ed->doc->count) return 0;
+	if (ed->doc->els[g].type != SVG_EL_GROUP) return 0;
+	if (SvgDoc_Ungroup(ed->doc, g) < 0) return 0;
+	sel_clear(ed);
+	ed->nodeSel = -1;
+	cache_clear(ed);
+	Svg_History_Commit(ed->doc);
+	ed_invalidate(ed);
+	(void)ui;
+	return 1;
+}
+
+void Ui_SvgEdit_SelectIndex(UiSvgEdit *ed, int idx)
+{
+	if (!ed || !ed->doc || idx < 0 || idx >= ed->doc->count) return;
+	sel_clear(ed);
+	sel_add(ed, idx);
+	ed->nodeSel = -1;
+	ed_invalidate(ed);
+}
+
+void Ui_SvgEdit_SetVisible(UiSvgEdit *ed, int idx, int on)
+{
+	if (!ed || !ed->doc) return;
+	SvgDoc_SetVisible(ed->doc, idx, on);
+	ed_invalidate(ed);
+}
+
+void Ui_SvgEdit_SetLocked(UiSvgEdit *ed, int idx, int on)
+{
+	if (!ed || !ed->doc) return;
+	SvgDoc_SetLocked(ed->doc, idx, on);
+	ed_invalidate(ed);
+}
+
+void Ui_SvgEdit_Rename(UiSvgEdit *ed, int idx, const char *utf8)
+{
+	int i;
+	char *dst;
+	if (!ed || !ed->doc || idx < 0 || idx >= ed->doc->count || !utf8) return;
+	dst = ed->doc->els[idx].name;
+	for (i = 0; i < 47 && utf8[i]; i++) dst[i] = utf8[i];
+	dst[i] = 0;
+	ed_invalidate(ed);
+}
+
+int Ui_SvgEdit_MoveOut(UiSvgEdit *ed, UiContext *ui)
+{
+	int idx, parent, grand;
+	if (!ed || !ed->doc || ed->selCount != 1) return 0;
+	idx = ed->sel[0];
+	if (idx < 0 || idx >= ed->doc->count) return 0;
+	parent = ed->doc->els[idx].parent;
+	if (parent < 0) return 0;
+	grand = ed->doc->els[parent].parent;
+	if (!SvgDoc_Reparent(ed->doc, idx, grand, -1)) return 0;
+	cache_clear(ed);
+	Svg_History_Commit(ed->doc);
+	ed_invalidate(ed);
+	(void)ui;
+	return 1;
+}
+
+typedef struct LayerWalk {
+	UiSvgLayerRow *out;
+	int cap, n;
+} LayerWalk;
+
+static int layer_walk_(SvgDoc *d, int idx, void *user)
+{
+	LayerWalk *lw = (LayerWalk *)user;
+	SvgElement *e;
+	int i;
+	if (lw->n >= lw->cap) return 1;
+	e = &d->els[idx];
+	{
+		UiSvgLayerRow *r = &lw->out[lw->n++];
+		r->index = idx;
+		r->parent = e->parent;
+		r->depth = SvgDoc_DepthOf(d, idx);
+		r->uid = e->uid;
+		r->isGroup = e->type == SVG_EL_GROUP;
+		r->visible = e->visible;
+		r->locked = e->locked;
+		r->childCount = e->childCount;
+		for (i = 0; i < 47 && e->name[i]; i++) r->name[i] = e->name[i];
+		r->name[i] = 0;
+	}
+	return 0;
+}
+
+int Ui_SvgEdit_Layers(const UiSvgEdit *ed, UiSvgLayerRow *out, int cap)
+{
+	LayerWalk lw;
+	if (!ed || !ed->doc || !out || cap <= 0) return 0;
+	lw.out = out;
+	lw.cap = cap;
+	lw.n = 0;
+	SvgDoc_WalkDfs(ed->doc, 0, layer_walk_, &lw);
+	return lw.n;
 }
 
 int Ui_SvgEdit_GetStyle(const UiSvgEdit *ed, SvgStyle *out)
@@ -2892,8 +3106,8 @@ int Ui_SvgEdit_GetStyle(const UiSvgEdit *ed, SvgStyle *out)
 	if (ed->selCount > 0) {
 		int idx = ed->sel[0];
 		if (idx >= 0 && idx < ed->doc->count) {
-			Svg_StyleCopy(out, &ed->doc->els[idx].style);
-			return 1;
+			if (SvgDoc_ResolveStyle(ed->doc, idx, out)) return 1;
+			memset(out, 0, sizeof(*out));
 		}
 	}
 	Svg_StyleCopy(out, &ed->defStyle);

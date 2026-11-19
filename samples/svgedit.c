@@ -24,6 +24,9 @@ typedef struct EdDemo {
 
 	int fX, fY, fW, fH, fRot, fStroke, fOpacity, fAngle;
 	int fNodeAng, fNodeLen;
+	int fName;
+	int inspTab;          /* 0 样式 / 1 几何 / 2 图层 */
+	int nameSyncIdx;
 	char geoLabel[4][10];
 	long syncKey;
 	int syncType;
@@ -520,6 +523,10 @@ static void on_init(UiApp *app, void *user)
 		"0123456789.-+", L"角度");
 	d->fNodeLen = UiInput_Add(&d->form, Ui_Id("svgedit.nlen", 0, 0), 16, 0,
 		"0123456789.-+", L"力度");
+	d->fName = UiInput_Add(&d->form, Ui_Id("svgedit.name", 0, 0), 47, 0,
+		NULL, L"图层名称");
+	d->inspTab = 0;
+	d->nameSyncIdx = -2;
 	geo_labels(d, -1);
 	set_msg(d, "");
 	d->msgTick = 0;
@@ -666,21 +673,66 @@ static void stroke_row_ui(EdDemo *d, UiContext *ui, float x, float y)
 	Svg_StyleFree(&st);
 }
 
-static void inspector(EdDemo *d, UiContext *ui, UiRect panel)
+/* ── M8: 三栏检查器 (样式/几何/图层) ─────────────────────────────── */
+
+static int insp_tab_btn(EdDemo *d, UiContext *ui, UiRect rc, const char *label,
+	int tab)
+{
+	UiButtonStyle st = btn_active(d->inspTab == tab);
+	if (Ui_ButtonEx(ui, Ui_Id("svgedit.insp.tab", tab, 0), rc, label, &st, 1)) {
+		d->inspTab = tab;
+		d->nameSyncIdx = -2;
+		return 1;
+	}
+	return 0;
+}
+
+static void inspector_style_tab(EdDemo *d, UiContext *ui, UiRect panel)
 {
 	UiApp *app = d->app;
 	UiTheme *t = &app->theme;
 	Gfx *g = app->gfx;
 	SvgStyle st;
 	UiButtonStyle plain = btn_plain();
-	float x = panel.x + 14, y = panel.y;
-	float fx1 = x + 52, fx2 = x + 200;
-	float fw1 = 92, fw2 = 86;
+	float x = panel.x + 14, y = panel.y + 72;
 	char buf[64];
 
-	Ui_Panel(ui, panel);
-	Gfx_Text(g, t->fHead, "属性", Ui_Rect(x, y + 8, panel.w - 28, 24),
-		t->text, GFX_TEXT_VCENTER);
+	fill_row_ui(d, ui, x, y);
+	stroke_row_ui(d, ui, x, y + 40);
+	Ui_SvgEdit_GetStyle(d->ed, &st);
+	wsprintfA(buf, "端点:%s", st.cap == SVG_CAP_ROUND ? "圆"
+		: (st.cap == SVG_CAP_SQUARE ? "方" : "平"));
+	if (Ui_ButtonEx(ui, Ui_Id("svgedit.cap", 0, 0),
+		Ui_Rect(x, y + 84, 120, 30), buf, &plain, 1)) {
+		st.cap = (st.cap + 1) % 3;
+		Ui_SvgEdit_SetStyle(d->ed, ui, &st);
+	}
+	wsprintfA(buf, "连接:%s", st.join == SVG_JOIN_ROUND ? "圆"
+		: (st.join == SVG_JOIN_BEVEL ? "斜" : "尖"));
+	if (Ui_ButtonEx(ui, Ui_Id("svgedit.join", 0, 0),
+		Ui_Rect(x + 128, y + 84, 120, 30), buf, &plain, 1)) {
+		st.join = (st.join + 1) % 3;
+		Ui_SvgEdit_SetStyle(d->ed, ui, &st);
+	}
+	Svg_StyleFree(&st);
+	Gfx_Text(g, t->fSmall,
+		"钢笔: L 直线  A 圆弧  Shift+A 三点弧  B 贝塞尔\n"
+		"C 闭合  U 撤销节点  Enter/双击/右键 完成\n"
+		"节点: 双击线段插入，拖橙点调弧，Shift 15° 吸附\n"
+		"组: Ctrl+G 组合 / Ctrl+Shift+G 解组",
+		Ui_Rect(x, y + 132, panel.w - 28, 110), t->text3,
+		GFX_TEXT_WRAP);
+}
+
+static void inspector_geom_tab(EdDemo *d, UiContext *ui, UiRect panel)
+{
+	UiApp *app = d->app;
+	UiTheme *t = &app->theme;
+	Gfx *g = app->gfx;
+	float x = panel.x + 14, y = panel.y + 72;
+	float fx1 = x + 52, fx2 = x + 200;
+	char buf[64];
+
 	{
 		int eidx, nidx = Ui_SvgEdit_NodeIndex(d->ed, &eidx);
 		if (nidx >= 0) {
@@ -688,40 +740,38 @@ static void inspector(EdDemo *d, UiContext *ui, UiRect panel)
 			int sym = 0;
 			Ui_SvgEdit_NodeParams(d->ed, &ang, &len, &sym);
 			wsprintfA(buf, "节点%d%s", nidx, sym ? "" : " 角");
-			label(app, buf, Ui_Rect(x, y + 34, 66, 28));
-			label(app, "角度", Ui_Rect(x + 68, y + 34, 34, 28));
-			label(app, "力度", Ui_Rect(x + 166, y + 34, 34, 28));
+			label(app, buf, Ui_Rect(x, y, 66, 28));
+			label(app, "角度", Ui_Rect(x + 68, y, 34, 28));
+			label(app, "力度", Ui_Rect(x + 166, y, 34, 28));
 			UiInput_SetRect(&d->form, d->fNodeAng,
-				Ui_Rect(x + 104, y + 34, 58, 28));
+				Ui_Rect(x + 104, y, 58, 28));
 			UiInput_SetRect(&d->form, d->fNodeLen,
-				Ui_Rect(x + 202, y + 34, 68, 28));
+				Ui_Rect(x + 202, y, 68, 28));
 			UiInput_Draw(&d->form, d->fNodeAng);
 			UiInput_Draw(&d->form, d->fNodeLen);
 		} else {
 			Gfx_Text(g, t->fSmall, Ui_SvgEdit_SelCount(d->ed) > 1
 				? "多选：样式应用到全部" : "选中元素后可编辑",
-				Ui_Rect(x, y + 34, panel.w - 28, 18), t->text3,
+				Ui_Rect(x, y, panel.w - 28, 18), t->text3,
 				GFX_TEXT_VCENTER);
 		}
 	}
-
-	label(app, d->geoLabel[0], Ui_Rect(x, y + 62, 44, 28));
-	label(app, d->geoLabel[1], Ui_Rect(x + 150, y + 62, 44, 28));
-	label(app, d->geoLabel[2], Ui_Rect(x, y + 98, 44, 28));
-	label(app, d->geoLabel[3], Ui_Rect(x + 150, y + 98, 44, 28));
-	label(app, "旋转", Ui_Rect(x, y + 134, 44, 28));
-	label(app, "线宽", Ui_Rect(x + 150, y + 134, 44, 28));
-	label(app, "透明", Ui_Rect(x, y + 170, 44, 28));
-	label(app, "渐变角", Ui_Rect(x + 150, y + 170, 44, 28));
-
-	UiInput_SetRect(&d->form, d->fX, Ui_Rect(fx1, y + 62, fw1, 28));
-	UiInput_SetRect(&d->form, d->fY, Ui_Rect(fx2, y + 62, fw2, 28));
-	UiInput_SetRect(&d->form, d->fW, Ui_Rect(fx1, y + 98, fw1, 28));
-	UiInput_SetRect(&d->form, d->fH, Ui_Rect(fx2, y + 98, fw2, 28));
-	UiInput_SetRect(&d->form, d->fRot, Ui_Rect(fx1, y + 134, fw1, 28));
-	UiInput_SetRect(&d->form, d->fStroke, Ui_Rect(fx2, y + 134, fw2, 28));
-	UiInput_SetRect(&d->form, d->fOpacity, Ui_Rect(fx1, y + 170, fw1, 28));
-	UiInput_SetRect(&d->form, d->fAngle, Ui_Rect(fx2, y + 170, fw2, 28));
+	label(app, d->geoLabel[0], Ui_Rect(x, y + 30, 44, 28));
+	label(app, d->geoLabel[1], Ui_Rect(x + 150, y + 30, 44, 28));
+	label(app, d->geoLabel[2], Ui_Rect(x, y + 66, 44, 28));
+	label(app, d->geoLabel[3], Ui_Rect(x + 150, y + 66, 44, 28));
+	label(app, "旋转", Ui_Rect(x, y + 102, 44, 28));
+	label(app, "线宽", Ui_Rect(x + 150, y + 102, 44, 28));
+	label(app, "透明", Ui_Rect(x, y + 138, 44, 28));
+	label(app, "渐变角", Ui_Rect(x + 150, y + 138, 44, 28));
+	UiInput_SetRect(&d->form, d->fX, Ui_Rect(fx1, y + 30, 92, 28));
+	UiInput_SetRect(&d->form, d->fY, Ui_Rect(fx2, y + 30, 86, 28));
+	UiInput_SetRect(&d->form, d->fW, Ui_Rect(fx1, y + 66, 92, 28));
+	UiInput_SetRect(&d->form, d->fH, Ui_Rect(fx2, y + 66, 86, 28));
+	UiInput_SetRect(&d->form, d->fRot, Ui_Rect(fx1, y + 102, 92, 28));
+	UiInput_SetRect(&d->form, d->fStroke, Ui_Rect(fx2, y + 102, 86, 28));
+	UiInput_SetRect(&d->form, d->fOpacity, Ui_Rect(fx1, y + 138, 92, 28));
+	UiInput_SetRect(&d->form, d->fAngle, Ui_Rect(fx2, y + 138, 86, 28));
 	UiInput_Draw(&d->form, d->fX);
 	UiInput_Draw(&d->form, d->fY);
 	UiInput_Draw(&d->form, d->fW);
@@ -730,49 +780,144 @@ static void inspector(EdDemo *d, UiContext *ui, UiRect panel)
 	UiInput_Draw(&d->form, d->fStroke);
 	UiInput_Draw(&d->form, d->fOpacity);
 	UiInput_Draw(&d->form, d->fAngle);
+}
 
-	Gfx_Text(g, t->fSmall, "样式", Ui_Rect(x, y + 206, 60, 18),
-		t->text3, GFX_TEXT_VCENTER);
-	fill_row_ui(d, ui, x, y + 228);
-	stroke_row_ui(d, ui, x, y + 268);
+static void inspector_layers_tab(EdDemo *d, UiContext *ui, UiRect panel)
+{
+	UiApp *app = d->app;
+	UiTheme *t = &app->theme;
+	Gfx *g = app->gfx;
+	UiButtonStyle plain = btn_plain();
+	UiSvgLayerRow rows[160];
+	int n, shown, k, sel = Ui_SvgEdit_SelIndex(d->ed, 0);
+	float x = panel.x + 14, y = panel.y + 72;
+	float listY = y + 36;
+	float listH = panel.h - 72 - 36 - 122;
+	char buf[80];
 
-	/* 端点/连接 */
-	Ui_SvgEdit_GetStyle(d->ed, &st);
-	wsprintfA(buf, "端点:%s", st.cap == SVG_CAP_ROUND ? "圆"
-		: (st.cap == SVG_CAP_SQUARE ? "方" : "平"));
-	if (Ui_ButtonEx(ui, Ui_Id("svgedit.cap", 0, 0),
-		Ui_Rect(x, y + 312, 120, 30), buf, &plain, 1)) {
-		st.cap = (st.cap + 1) % 3;
-		Ui_SvgEdit_SetStyle(d->ed, ui, &st);
+	n = Ui_SvgEdit_Layers(d->ed, rows, 160);
+	shown = (int)(listH / 24.0f);
+	if (shown > n) shown = n;
+	sel = Ui_SvgEdit_SelIndex(d->ed, 0);
+
+	/* 重命名框 */
+	if (Ui_SvgEdit_SelCount(d->ed) == 1 && sel >= 0 &&
+		sel < d->doc->count) {
+		if (d->nameSyncIdx != sel && UiInput_Focused(&d->form) < 0) {
+			Edit_SetTextUtf8(UiInput_Edit(&d->form, d->fName),
+				d->doc->els[sel].name);
+			d->nameSyncIdx = sel;
+		}
+		label(app, "名称", Ui_Rect(x, y, 44, 28));
+		UiInput_SetRect(&d->form, d->fName, Ui_Rect(x + 50, y, panel.w - 78, 28));
+		UiInput_Draw(&d->form, d->fName);
+		{
+			char nm[48];
+			Edit_TextUtf8(UiInput_Edit(&d->form, d->fName), nm,
+				(int)sizeof(nm));
+			if (lstrcmpA(nm, d->doc->els[sel].name) != 0)
+				Ui_SvgEdit_Rename(d->ed, sel, nm);
+		}
+	} else {
+		label(app, "选中单个元素可重命名",
+			Ui_Rect(x, y, panel.w - 28, 28));
 	}
-	wsprintfA(buf, "连接:%s", st.join == SVG_JOIN_ROUND ? "圆"
-		: (st.join == SVG_JOIN_BEVEL ? "斜" : "尖"));
-	if (Ui_ButtonEx(ui, Ui_Id("svgedit.join", 0, 0),
-		Ui_Rect(x + 128, y + 312, 120, 30), buf, &plain, 1)) {
-		st.join = (st.join + 1) % 3;
-		Ui_SvgEdit_SetStyle(d->ed, ui, &st);
+
+	Gfx_FillRoundRect(g, Ui_Rect(x, listY, panel.w - 28, listH), 8.0f,
+		t->card);
+	Gfx_StrokeRoundRect(g, Ui_Rect(x, listY, panel.w - 28, listH), 8.0f,
+		t->border, 1.0f);
+	for (k = 0; k < shown; k++) {
+		UiSvgLayerRow *r = &rows[k];
+		UiRect rr = Ui_Rect(x + 4, listY + 4 + (float)k * 24.0f,
+			panel.w - 36, 22);
+		UiWidgetState st = Ui_State(ui,
+			Ui_IdIndex("svgedit.layer.row", k, 0, r->uid), rr, 1);
+		UiId eyeId = Ui_IdIndex("svgedit.layer.eye", k, 0, r->uid);
+		UiId lockId = Ui_IdIndex("svgedit.layer.lock", k, 0, r->uid);
+		int isSel = r->index == sel;
+		if (isSel)
+			Gfx_FillRoundRect(g, rr, 6.0f, t->primary.soft);
+		else if (st.hovered)
+			Gfx_FillRoundRect(g, rr, 6.0f,
+				Ui_ColorAlpha(t->text3, 24));
+		if (Ui_ButtonEx(ui, eyeId,
+			Ui_Rect(rr.x + 2, rr.y + 2, 22, 18),
+			r->visible ? "显" : "隐", &plain, 1))
+			Ui_SvgEdit_SetVisible(d->ed, r->index, !r->visible);
+		if (Ui_ButtonEx(ui, lockId,
+			Ui_Rect(rr.x + 26, rr.y + 2, 22, 18),
+			r->locked ? "锁" : "开", &plain, 1))
+			Ui_SvgEdit_SetLocked(d->ed, r->index, !r->locked);
+		wsprintfA(buf, "%s%s", r->isGroup ? "▸ " : "",
+			r->name[0] ? r->name : (r->isGroup ? "组" : "元素"));
+		Gfx_Text(g, r->isGroup ? t->fBtn : t->fSmall, buf,
+			Ui_Rect(rr.x + 56 + (float)r->depth * 12.0f, rr.y,
+				rr.w - 60 - (float)r->depth * 12.0f, rr.h),
+			r->visible ? t->text2 : t->text4,
+			GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+		if (st.hovered) Ui_SetCursor(ui,
+			Ui_IdIndex("svgedit.layer.row", k, 0, r->uid), UI_CURSOR_HAND);
+		if (ui->clicked == Ui_IdIndex("svgedit.layer.row", k, 0, r->uid))
+			Ui_SvgEdit_SelectIndex(d->ed, r->index);
 	}
-	Svg_StyleFree(&st);
+	if (n > shown)
+		label(app, "列表过长，缩放窗口或折叠组查看",
+			Ui_Rect(x, listY + listH + 2, panel.w - 28, 16));
 
-	/* 层级/复制/删除 */
-	if (Ui_ButtonEx(ui, Ui_Id("svgedit.up", 0, 0),
-		Ui_Rect(x, y + 352, 62, 30), "上移", &plain, 1))
-		Ui_SvgEdit_Reorder(d->ed, ui, 1);
-	if (Ui_ButtonEx(ui, Ui_Id("svgedit.down", 0, 0),
-		Ui_Rect(x + 70, y + 352, 62, 30), "下移", &plain, 1))
-		Ui_SvgEdit_Reorder(d->ed, ui, -1);
-	if (Ui_ButtonEx(ui, Ui_Id("svgedit.dup", 0, 0),
-		Ui_Rect(x + 140, y + 352, 62, 30), "复制", &plain, 1))
-		Ui_SvgEdit_DuplicateSel(d->ed, ui);
-	if (Ui_ButtonEx(ui, Ui_Id("svgedit.del", 0, 0),
-		Ui_Rect(x + 210, y + 352, 62, 30), "删除", &plain, 1))
-		Ui_SvgEdit_DeleteSel(d->ed, ui);
+	/* 操作按钮 (三行) */
+	{
+		float by = panel.y + panel.h - 108;
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.up", 0, 0),
+			Ui_Rect(x, by, 62, 28), "上移", &plain, 1))
+			Ui_SvgEdit_Reorder(d->ed, ui, 1);
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.down", 0, 0),
+			Ui_Rect(x + 70, by, 62, 28), "下移", &plain, 1))
+			Ui_SvgEdit_Reorder(d->ed, ui, -1);
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.out", 0, 0),
+			Ui_Rect(x + 140, by, 92, 28), "移出组", &plain,
+			Ui_SvgEdit_SelCount(d->ed) == 1)) {
+			Ui_SvgEdit_MoveOut(d->ed, ui);
+			d->nameSyncIdx = -2;
+		}
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.group", 0, 0),
+			Ui_Rect(x, by + 34, 78, 28), "组合", &plain, 1)) {
+			Ui_SvgEdit_Group(d->ed, ui);
+			d->nameSyncIdx = -2;
+		}
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.ungroup", 0, 0),
+			Ui_Rect(x + 86, by + 34, 78, 28), "解组", &plain, 1)) {
+			Ui_SvgEdit_Ungroup(d->ed, ui);
+			d->nameSyncIdx = -2;
+		}
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.dup", 0, 0),
+			Ui_Rect(x + 172, by + 34, 62, 28), "复制", &plain, 1))
+			Ui_SvgEdit_DuplicateSel(d->ed, ui);
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.del", 0, 0),
+			Ui_Rect(x, by + 68, 62, 28), "删除", &plain, 1))
+			Ui_SvgEdit_DeleteSel(d->ed, ui);
+	}
+	(void)plain;
+}
 
-	Gfx_Text(g, t->fSmall,
-		"钢笔: L 直线  A 圆弧  Shift+A 三点弧  B 贝塞尔\n"
-		"C 闭合  U 撤销节点  Enter/双击/右键 完成\n"
-		"节点: 双击线段插入，拖橙点调弧，Shift 15° 吸附",
-		Ui_Rect(x, y + 396, panel.w - 28, 90), t->text3, GFX_TEXT_WRAP);
+static void inspector2(EdDemo *d, UiContext *ui, UiRect panel)
+{
+	UiApp *app = d->app;
+	UiTheme *t = &app->theme;
+	Gfx *g = app->gfx;
+	float tw;
+	Ui_Panel(ui, panel);
+	Gfx_Text(g, t->fHead, "检查器", Ui_Rect(panel.x + 14, panel.y + 8,
+		panel.w - 28, 24), t->text, GFX_TEXT_VCENTER);
+	tw = (panel.w - 28 - 12) / 3.0f;
+	insp_tab_btn(d, ui, Ui_Rect(panel.x + 14, panel.y + 34, tw, 28), "样式", 0);
+	insp_tab_btn(d, ui, Ui_Rect(panel.x + 14 + tw + 6, panel.y + 34, tw, 28),
+		"几何", 1);
+	insp_tab_btn(d, ui, Ui_Rect(panel.x + 14 + (tw + 6) * 2, panel.y + 34,
+		tw, 28), "图层", 2);
+	if (d->inspTab == 0) inspector_style_tab(d, ui, panel);
+	else if (d->inspTab == 1) inspector_geom_tab(d, ui, panel);
+	else inspector_layers_tab(d, ui, panel);
 }
 
 /* ── 帧 ───────────────────────────────────────────────────────────── */
@@ -819,27 +964,53 @@ static void on_frame(UiApp *app, void *user)
 		}
 	}
 
-	/* 工具栏 */
+	/* 顶栏缩放 (工具已移到左侧栏) */
 	{
-		float bx = 24.0f, by = top + 6.0f;
-		tool_button(d, ui, Ui_Rect(bx, by, 58, 32), "选择", UI_SVG_TOOL_SELECT);
-		tool_button(d, ui, Ui_Rect(bx + 62, by, 58, 32), "节点", UI_SVG_TOOL_NODE);
-		tool_button(d, ui, Ui_Rect(bx + 124, by, 58, 32), "直线", UI_SVG_TOOL_LINE);
-		tool_button(d, ui, Ui_Rect(bx + 186, by, 58, 32), "矩形", UI_SVG_TOOL_RECT);
-		tool_button(d, ui, Ui_Rect(bx + 248, by, 58, 32), "椭圆", UI_SVG_TOOL_ELLIPSE);
-		tool_button(d, ui, Ui_Rect(bx + 310, by, 66, 32), "多边形", UI_SVG_TOOL_POLYGON);
-		tool_button(d, ui, Ui_Rect(bx + 380, by, 58, 32), "钢笔", UI_SVG_TOOL_PEN);
-		tool_button(d, ui, Ui_Rect(bx + 442, by, 66, 32), "贝塞尔", UI_SVG_TOOL_BEZIER);
+		float bx = app->w - insW - 16.0f - 260.0f, by = 12.0f;
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.zoomout", 0, 0),
+			Ui_Rect(bx, by, 34, 32), "-", &plain, 1))
+			Ui_SvgEdit_ZoomAt(d->ed, 0.8f, app->w * 0.5f,
+				app->h * 0.5f);
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.zoomin", 0, 0),
+			Ui_Rect(bx + 38, by, 34, 32), "+", &plain, 1))
+			Ui_SvgEdit_ZoomAt(d->ed, 1.25f, app->w * 0.5f,
+				app->h * 0.5f);
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.fit", 0, 0),
+			Ui_Rect(bx + 76, by, 52, 32), "适应", &plain, 1))
+			Ui_SvgEdit_ZoomFit(d->ed, d->canvasRc);
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.one", 0, 0),
+			Ui_Rect(bx + 132, by, 52, 32), "100%", &plain, 1))
+			Ui_SvgEdit_ZoomReset(d->ed, d->canvasRc);
+	}
 
-		bx = 536.0f;
+	/* 画布区域先算, 左栏高度跟随 */
+	d->canvasRc = Ui_Rect(84.0f, top + 8.0f,
+		app->w - 84.0f - insW - 16.0f - 12.0f,
+		app->h - (top + 8.0f) - statusH - 12.0f);
+	if (d->canvasRc.w < ED_CANVAS_MIN_W) d->canvasRc.w = ED_CANVAS_MIN_W;
+
+	/* 左侧工具栏 (三栏第一栏) */
+	{
+		UiRect rail = Ui_Rect(12.0f, top + 8.0f, 60.0f, d->canvasRc.h);
+		float bx = rail.x + 8, by = rail.y + 8;
+		Ui_Panel(ui, rail);
+		tool_button(d, ui, Ui_Rect(bx, by, 44, 30), "选择", UI_SVG_TOOL_SELECT);
+		tool_button(d, ui, Ui_Rect(bx, by + 34, 44, 30), "节点", UI_SVG_TOOL_NODE);
+		tool_button(d, ui, Ui_Rect(bx, by + 68, 44, 30), "直线", UI_SVG_TOOL_LINE);
+		tool_button(d, ui, Ui_Rect(bx, by + 102, 44, 30), "矩形", UI_SVG_TOOL_RECT);
+		tool_button(d, ui, Ui_Rect(bx, by + 136, 44, 30), "椭圆", UI_SVG_TOOL_ELLIPSE);
+		tool_button(d, ui, Ui_Rect(bx, by + 170, 44, 30), "多边", UI_SVG_TOOL_POLYGON);
+		tool_button(d, ui, Ui_Rect(bx, by + 204, 44, 30), "钢笔", UI_SVG_TOOL_PEN);
+		tool_button(d, ui, Ui_Rect(bx, by + 238, 44, 30), "贝塞", UI_SVG_TOOL_BEZIER);
+		by += 278;
 		if (Ui_ButtonEx(ui, Ui_Id("svgedit.undo", 0, 0),
-			Ui_Rect(bx, by, 52, 32), "撤销", &plain,
+			Ui_Rect(bx, by, 44, 30), "撤销", &plain,
 			Ui_SvgEdit_CanUndo(d->ed))) {
 			Ui_SvgEdit_Undo(d->ed, ui);
 			UiApp_Invalidate(app);
 		}
 		if (Ui_ButtonEx(ui, Ui_Id("svgedit.redo", 0, 0),
-			Ui_Rect(bx + 56, by, 52, 32), "重做", &plain,
+			Ui_Rect(bx, by + 34, 44, 30), "重做", &plain,
 			Ui_SvgEdit_CanRedo(d->ed))) {
 			Ui_SvgEdit_Redo(d->ed, ui);
 			UiApp_Invalidate(app);
@@ -847,34 +1018,14 @@ static void on_frame(UiApp *app, void *user)
 		{
 			UiButtonStyle gs = btn_active(Ui_SvgEdit_GridOn(d->ed));
 			if (Ui_ButtonEx(ui, Ui_Id("svgedit.grid", 0, 0),
-				Ui_Rect(bx + 116, by, 58, 32), "网格", &gs, 1))
+				Ui_Rect(bx, by + 68, 44, 30), "网格", &gs, 1))
 				Ui_SvgEdit_SetGrid(d->ed, !Ui_SvgEdit_GridOn(d->ed), 8.0f);
 		}
-		if (Ui_ButtonEx(ui, Ui_Id("svgedit.zoomout", 0, 0),
-			Ui_Rect(bx + 180, by, 40, 32), "-", &plain, 1))
-			Ui_SvgEdit_ZoomAt(d->ed, 0.8f,
-				d->canvasRc.x + d->canvasRc.w * 0.5f,
-				d->canvasRc.y + d->canvasRc.h * 0.5f);
-		if (Ui_ButtonEx(ui, Ui_Id("svgedit.zoomin", 0, 0),
-			Ui_Rect(bx + 224, by, 40, 32), "+", &plain, 1))
-			Ui_SvgEdit_ZoomAt(d->ed, 1.25f,
-				d->canvasRc.x + d->canvasRc.w * 0.5f,
-				d->canvasRc.y + d->canvasRc.h * 0.5f);
-		if (Ui_ButtonEx(ui, Ui_Id("svgedit.fit", 0, 0),
-			Ui_Rect(bx + 268, by, 48, 32), "适应", &plain, 1))
-			Ui_SvgEdit_ZoomFit(d->ed, d->canvasRc);
-		if (Ui_ButtonEx(ui, Ui_Id("svgedit.one", 0, 0),
-			Ui_Rect(bx + 320, by, 48, 32), "100%", &plain, 1))
-			Ui_SvgEdit_ZoomReset(d->ed, d->canvasRc);
 	}
 
-	d->canvasRc = Ui_Rect(16.0f, top + bar + 4.0f,
-		app->w - 16.0f - insW - 16.0f - 16.0f,
-		app->h - (top + bar + 4.0f) - statusH - 12.0f);
-	if (d->canvasRc.w < ED_CANVAS_MIN_W) d->canvasRc.w = ED_CANVAS_MIN_W;
 	Ui_SvgEdit_Frame(d->ed, ui, d->canvasRc);
 
-	inspector(d, ui, Ui_Rect(app->w - insW - 16.0f, top + bar + 4.0f,
+	inspector2(d, ui, Ui_Rect(app->w - insW - 16.0f, top + 8.0f,
 		insW, d->canvasRc.h));
 
 	/* 状态栏 */

@@ -183,6 +183,8 @@ void Gfx_PushRotate(Gfx *g, float cx, float cy, float deg);
 /* 等比缩放 + 平移 (视口变换): 世界坐标 → DIP, screen = world*scale + t.
  * 与 Gfx_PushRotate 共用栈与 Gfx_PopTransform. */
 void Gfx_PushScaleTranslate(Gfx *g, float scale, float tx, float ty);
+/* 2×3 仿射 (a b c d e f): x'=a*x+c*y+e, y'=b*x+d*y+f; 共用变换栈 */
+void Gfx_PushMatrix(Gfx *g, const float m[6]);
 void Gfx_PopTransform(Gfx *g);
 
 /* 文本 */

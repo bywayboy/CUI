@@ -155,7 +155,7 @@ struct Gfx {
 	int inFrame;
 	int clipDepth;
 	int xformDepth;
-	D2D1_MATRIX_3X2_F xformStack[8];
+	D2D1_MATRIX_3X2_F xformStack[16];
 	int dirtyFull;
 	int dirtyClip;
 	int forceFull;
@@ -4714,6 +4714,23 @@ void Gfx_PushRotate(Gfx *g, float cx, float cy, float deg)
 	rot = D2D1::Matrix3x2F::Rotation(deg, D2D1::Point2F(cx, cy));
 	m = rot * cur;
 	g->rt->SetTransform(&m);
+}
+
+/* 2×3 仿射 (a b c d e f): x' = a*x + c*y + e; y' = b*x + d*y + f.
+ * 与 PushRotate/PushScaleTranslate 共用栈与 Gfx_PopTransform. */
+void Gfx_PushMatrix(Gfx *g, const float m[6])
+{
+	D2D1_MATRIX_3X2_F cur, tm, out;
+	if (!g || !g->rt || !m) return;
+	if (g->xformDepth >= (int)(sizeof(g->xformStack) / sizeof(g->xformStack[0])))
+		return;
+	g->rt->GetTransform(&cur);
+	g->xformStack[g->xformDepth++] = cur;
+	tm._11 = m[0]; tm._12 = m[1];
+	tm._21 = m[2]; tm._22 = m[3];
+	tm._31 = m[4]; tm._32 = m[5];
+	out = tm * cur;
+	g->rt->SetTransform(&out);
 }
 
 void Gfx_PopTransform(Gfx *g)

@@ -607,6 +607,106 @@ static void test_node_tangent(void)
 	CHECK(NEAR(ang, 53.1301f, 0.01f) && NEAR(len, 5.0f, 1e-4f));
 }
 
+/* M7: 文档树 / 变换组合 / 样式继承 / 组解散 / 导出 / 历史 / 命中 */
+static void test_m7_tree(void)
+{
+	SvgDoc *d = SvgDoc_Create(400.0f, 300.0f);
+	SvgElement *a, *b;
+	int gi, idx[2], ci, gidx;
+	GfxRect rb;
+
+	CHECK(d != NULL);
+	if (!d) return;
+	a = SvgDoc_Add(d, SVG_EL_RECT);
+	a->p.rect.x = 0; a->p.rect.y = 0;
+	a->p.rect.w = 20; a->p.rect.h = 10;
+	b = SvgDoc_Add(d, SVG_EL_RECT);
+	b->p.rect.x = 40; b->p.rect.y = 0;
+	b->p.rect.w = 20; b->p.rect.h = 10;
+	CHECK(SvgDoc_RootCount(d) == 2);
+	CHECK(SvgDoc_UidAt(d, 0) != 0 && SvgDoc_UidAt(d, 0) != SvgDoc_UidAt(d, 1));
+
+	idx[0] = 0; idx[1] = 1;
+	gi = SvgDoc_Group(d, idx, 2);
+	CHECK(gi > 0);
+	CHECK(d->els[gi].type == SVG_EL_GROUP && d->els[gi].childCount == 2);
+	CHECK(d->els[0].parent == gi && d->els[1].parent == gi);
+	CHECK(SvgDoc_RootCount(d) == 1);
+	CHECK(SvgDoc_IsLocked(d, 0) == 0);
+	CHECK(NEAR(SvgDoc_ElementBounds(d, 1).x, 40.0f, 0.1f));
+
+	/* 组平移 + 旋转: 世界 bounds 跟随, 中心不变, 宽高互换 */
+	SvgDoc_Translate(d, gi, 100.0f, 0.0f);
+	rb = SvgDoc_ElementBounds(d, gi);
+	CHECK(NEAR(rb.x, 100.0f, 0.1f) && NEAR(rb.w, 60.0f, 0.1f));
+	SvgDoc_RotateBy(d, gi, 90.0f, 0.0f, 0.0f);
+	{
+		GfxRect r2 = SvgDoc_ElementBounds(d, gi);
+		float cx0 = rb.x + rb.w * 0.5f, cy0 = rb.y + rb.h * 0.5f;
+		float cx1 = r2.x + r2.w * 0.5f, cy1 = r2.y + r2.h * 0.5f;
+		CHECK(NEAR(cx0, cx1, 0.2f) && NEAR(cy0, cy1, 0.2f));
+		CHECK(NEAR(r2.w, rb.h, 0.2f) && NEAR(r2.h, rb.w, 0.2f));
+	}
+
+	/* 样式继承: 组只带 fill, 子无覆盖 */
+	{
+		SvgStyle st;
+		Svg_StyleDefault(&st);
+		st.fill.kind = SVG_PAINT_SOLID;
+		st.fill.color = 0xFFFF0000u;
+		st.setMask = SVG_STYLE_FILL;
+		d->els[gi].style = st;
+		d->els[0].style.setMask = 0;
+		CHECK(SvgDoc_ResolveStyle(d, 0, &st));
+		CHECK((st.fill.color & 0x00FFFFFFu) == 0x00FF0000u);
+		Svg_StyleFree(&st);
+	}
+
+	/* 历史: 组快照 → 解散快照; 撤销回到组, 重做回到解散 */
+	Svg_History_Commit(d);
+	CHECK(SvgDoc_Ungroup(d, gi) == 2);
+	CHECK(SvgDoc_RootCount(d) == 2);
+	Svg_History_Commit(d);
+	CHECK(Svg_History_Undo(d));
+	CHECK(SvgDoc_RootCount(d) == 1);
+	CHECK(Svg_History_Redo(d));
+	CHECK(SvgDoc_RootCount(d) == 2);
+
+	/* 压缩 remap */
+	{
+		int n = d->count;
+		SvgDoc_Remove(d, 1);
+		CHECK(d->count == n - 1 && SvgDoc_RootCount(d) == 1);
+	}
+
+	/* 命中: 组锁定整组不可选 */
+	{
+		SvgElement *c = SvgDoc_Add(d, SVG_EL_RECT);
+		c->p.rect.x = 10; c->p.rect.y = 10;
+		c->p.rect.w = 50; c->p.rect.h = 50;
+		ci = d->count - 1;
+		(void)SvgDoc_Add(d, SVG_EL_GROUP);
+		gidx = d->count - 1;
+		CHECK(SvgDoc_Reparent(d, ci, gidx, 0));
+		CHECK(SvgDoc_ElementBounds(d, ci).w > 0.0f);
+		SvgDoc_SetLocked(d, gidx, 1);
+		CHECK(Svg_DocHit(d, 20.0f, 20.0f, 1.0f) < 0);
+		SvgDoc_SetLocked(d, gidx, 0);
+		CHECK(Svg_DocHit(d, 20.0f, 20.0f, 1.0f) >= 0);
+		SvgDoc_Translate(d, gidx, 5.0f, 0.0f);
+	}
+
+	/* 导出: 组节点与 transform */
+	{
+		char *svg = Svg_Export(d);
+		CHECK(svg && find_(svg, "<g") != NULL);
+		CHECK(svg && find_(svg, "transform=") != NULL);
+		Svg_FreeString(svg);
+	}
+
+	SvgDoc_Destroy(d);
+}
+
 void __stdcall startup(void)
 {
 	test_bounds();
@@ -617,6 +717,7 @@ void __stdcall startup(void)
 	test_export_roundtrip();
 	test_history();
 	test_view();
+	test_m7_tree();
 
 	{
 		char line[160];

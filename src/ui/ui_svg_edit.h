@@ -64,6 +64,23 @@ int  Ui_SvgEdit_SelectionBounds(const UiSvgEdit *ed, GfxRect *out);
 void Ui_SvgEdit_DeleteSel(UiSvgEdit *ed, UiContext *ui);
 void Ui_SvgEdit_DuplicateSel(UiSvgEdit *ed, UiContext *ui);
 void Ui_SvgEdit_Reorder(UiSvgEdit *ed, UiContext *ui, int dir);
+/* 组 / 解组 (Ctrl+G / Ctrl+Shift+G); 返回 1 = 成功. */
+int  Ui_SvgEdit_Group(UiSvgEdit *ed, UiContext *ui);
+int  Ui_SvgEdit_Ungroup(UiSvgEdit *ed, UiContext *ui);
+/* 图层树只读快照 (DFS 先序, depth 从 0 起) */
+typedef struct UiSvgLayerRow {
+	int index, parent, depth;
+	uint32_t uid;
+	int isGroup, visible, locked, childCount;
+	char name[48];
+} UiSvgLayerRow;
+int  Ui_SvgEdit_Layers(const UiSvgEdit *ed, UiSvgLayerRow *out, int cap);
+/* 图层面板操作 */
+void Ui_SvgEdit_SelectIndex(UiSvgEdit *ed, int idx);
+void Ui_SvgEdit_SetVisible(UiSvgEdit *ed, int idx, int on);
+void Ui_SvgEdit_SetLocked(UiSvgEdit *ed, int idx, int on);
+void Ui_SvgEdit_Rename(UiSvgEdit *ed, int idx, const char *utf8);
+int  Ui_SvgEdit_MoveOut(UiSvgEdit *ed, UiContext *ui);   /* 移出所在组 */
 
 /* ── 节点切线 (角度/力度) ─────────────────────────────────────────── */
 /* 节点工具下当前选中节点; 返回节点索引, -1 = 无. */
