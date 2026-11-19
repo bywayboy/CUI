@@ -54,14 +54,14 @@ typedef struct UiLoading {
 	float drawnHover, drawnPress;  /* layer 内容最后一次画进去的强度 */
 	int contentRev, drawnRev;      /* 文本/按钮/圆角变更序号 */
 
+	UiId idBlock, idCancel;   /* Init 时算好, 避免逐帧哈希字符串 */
+
 	GfxLayer *layer;
 	GfxPart *spin;
 	int layerW, layerH;
 	float layerX, layerY;
 	int layerDirty, layerIn, layerOut, fallback;
 	uint32_t themeRev;
-
-	float fallbackDeg;        /* 主窗回退时 spinner 角度 */
 } UiLoading;
 
 void UiLoading_Init(UiLoading *ld, UiContext *ui);

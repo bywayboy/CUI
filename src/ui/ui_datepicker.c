@@ -81,30 +81,12 @@ static void dp_sync_both(UiDatePicker *dp)
 
 static void dp_invalidate_trigger(UiDatePicker *dp, UiContext *ui)
 {
-	RECT r;
-	float sc;
-	UiRect rc = dp->anchor;
-	if (!ui || !ui->hwnd || rc.w <= 0.0f) return;
-	sc = ui->scale > 0.0f ? ui->scale : 1.0f;
-	r.left = (LONG)((rc.x - 3.0f) * sc);
-	r.top = (LONG)((rc.y - 3.0f) * sc);
-	r.right = (LONG)((rc.x + rc.w + 3.0f) * sc) + 1;
-	r.bottom = (LONG)((rc.y + rc.h + 3.0f) * sc) + 1;
-	InvalidateRect(ui->hwnd, &r, FALSE);
+	Ui_InvalidateRectPad(ui, dp->anchor, 3.0f);
 }
 
 static void dp_invalidate_panel(UiDatePicker *dp, UiContext *ui)
 {
-	RECT r;
-	float sc;
-	UiRect rc = dp->panelRc;
-	if (!ui || !ui->hwnd || rc.w <= 0.0f) return;
-	sc = ui->scale > 0.0f ? ui->scale : 1.0f;
-	r.left = (LONG)((rc.x - 4.0f) * sc);
-	r.top = (LONG)((rc.y - 4.0f) * sc);
-	r.right = (LONG)((rc.x + rc.w + 4.0f) * sc) + 1;
-	r.bottom = (LONG)((rc.y + rc.h + 4.0f) * sc) + 1;
-	InvalidateRect(ui->hwnd, &r, FALSE);
+	Ui_InvalidateRectPad(ui, dp->panelRc, 4.0f);
 }
 
 /* ── 值写入 / 提交 ─────────────────────────────────────────────────── */
@@ -714,6 +696,15 @@ static void dp_draw_month(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui,
 	/* 日格 (淡入补间) */
 	Ui_AnimSetRect(ui, gridId, Ui_Rect(bx, gy, DP_GRID_W, 6.0f * cellW));
 	pushed = Gfx_PushAlpha(ui->gfx, alpha);
+	{
+	/* 选中/区间端点每帧不变, 42 格循环外算一次; 点击改值后再刷新. */
+	int baseDn = dp->hasValue
+		? UiDate_DayNumber(dp->value.y, dp->value.m, dp->value.d) : -1;
+	int endDn = dp->hasEnd
+		? UiDate_DayNumber(dp->end.y, dp->end.m, dp->end.d)
+		: (dp->phase == 1 ? dp->hoverDay : -1);
+	int loDn = baseDn, hiDn = endDn;
+	if (loDn > hiDn) { int tmp = loDn; loDn = hiDn; hiDn = tmp; }
 	for (i = 0; i < 42; i++) {
 		int dn = gridStart + i;
 		int y, m, d, en, inMonth, sel, endpoint, inRange, isToday;
@@ -728,20 +719,26 @@ static void dp_draw_month(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui,
 		inMonth = (y == viewY && m == viewM);
 		en = dp_day_enabled(dp, dn);
 		st = Ui_StateInstant(ui, cid, cell, en);
-		if (en && ui->clicked == cid)
+		if (en && ui->clicked == cid) {
 			dp_pick_day(dp, pm, ui, y, m, d, dn);
+			baseDn = dp->hasValue
+				? UiDate_DayNumber(dp->value.y, dp->value.m, dp->value.d)
+				: -1;
+			endDn = dp->hasEnd
+				? UiDate_DayNumber(dp->end.y, dp->end.m, dp->end.d)
+				: (dp->phase == 1 ? dp->hoverDay : -1);
+			loDn = baseDn;
+			hiDn = endDn;
+			if (loDn > hiDn) { int tmp = loDn; loDn = hiDn; hiDn = tmp; }
+		}
 
 		endpoint = 0; inRange = 0; sel = 0;
 		if (!isR) {
-			sel = dp->hasValue && dn == UiDate_DayNumber(dp->value.y, dp->value.m, dp->value.d);
+			sel = dp->hasValue && dn == baseDn;
 		} else {
-			int sDn = dp->hasValue ? UiDate_DayNumber(dp->value.y, dp->value.m, dp->value.d) : -1;
-			int eDn = dp->hasEnd ? UiDate_DayNumber(dp->end.y, dp->end.m, dp->end.d)
-				: (dp->phase == 1 ? dp->hoverDay : -1);
-			int lo = sDn, hi = eDn;
-			if (lo > hi) { int tmp = lo; lo = hi; hi = tmp; }
-			endpoint = (dn == sDn) || (dn == eDn);
-			inRange = (sDn >= 0 && eDn >= 0 && dn > lo && dn < hi);
+			endpoint = (dn == baseDn) || (dn == endDn);
+			inRange = (baseDn >= 0 && endDn >= 0 &&
+				dn > loDn && dn < hiDn);
 			sel = endpoint;
 		}
 		isToday = (dn == todayDn);
@@ -766,6 +763,7 @@ static void dp_draw_month(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui,
 		wsprintfA(num, "%d", d);
 		Gfx_Text(ui->gfx, t->fBody, num, cell, col,
 			GFX_TEXT_CENTER | GFX_TEXT_VCENTER);
+	}
 	}
 	if (pushed) Gfx_PopAlpha(ui->gfx);
 }

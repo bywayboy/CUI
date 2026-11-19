@@ -176,6 +176,8 @@ void Ui_SetCursor(UiContext *ctx, UiId id, int kind);
 void Ui_SetPressPoll(UiContext *ctx, UiId id, int on);
 /* 局部失效 (DIP 客户区坐标): 悬停/内容小范围变化时避免整控件重绘. */
 void Ui_InvalidateRect(UiContext *ctx, UiRect rc);
+/* 同 Ui_InvalidateRect, 但外扩 pad DIP (阴影/描边/光晕). */
+void Ui_InvalidateRectPad(UiContext *ctx, UiRect rc, float pad);
 /* 注册控件内悬停判定 (见 UiHoverFn). 控件内部有链接等精细命中区时,
  * 在鼠标移动事件中同步判断光标/悬停, 只在变化时改光标并请求重绘. */
 void Ui_SetHoverFn(UiContext *ctx, UiId id, UiHoverFn fn, void *user);

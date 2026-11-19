@@ -68,10 +68,8 @@ typedef struct UiTabBar {
 	float indContentW;
 	float indH;
 	int indSel;
-	/* CARD 两阶段绘制: Draw 保存活动项几何/状态, DrawActive 在内容之后覆盖. */
+	/* CARD 两阶段绘制: Draw 保存活动项几何, DrawActive 在内容之后覆盖. */
 	UiRect activeRc;
-	float activeHover, activePress;
-	int activeFocus;
 } UiTabBar;
 
 void UiTabBar_Init(UiTabBar *tb, UiId id, int count);

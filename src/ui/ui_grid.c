@@ -391,7 +391,6 @@ static void grid_finalize_tracks_(GridTrackState *st, int n)
 	int i;
 	for (i = 0; i < n; i++) {
 		if (st[i].max < st[i].min) st[i].max = st[i].min;
-		if (st[i].min > st[i].max) st[i].min = st[i].max;
 		if (st[i].pref < st[i].min) st[i].pref = st[i].min;
 		if (st[i].pref > st[i].max) st[i].pref = st[i].max;
 		st[i].size = st[i].pref;
@@ -422,8 +421,9 @@ static void grid_column_content_(GridCtx *ctx, const UiGrid *g,
 	}
 }
 
+/* outM 可选: 记录每个非空项的最终列宽下测量结果, 供摆放阶段复用. */
 static void grid_row_content_(GridCtx *ctx, const UiGrid *g,
-	const UiGridItem *items, int count)
+	const UiGridItem *items, int count, UiMeasure *outM)
 {
 	int pass, i;
 	for (pass = 0; pass < 2; pass++) {
@@ -439,6 +439,7 @@ static void grid_row_content_(GridCtx *ctx, const UiGrid *g,
 			for (k = 0; k < cs; k++) cellW += ctx->col[c + k].size;
 			cellW += ctx->colGap * (float)(cs - 1);
 			grid_measure_(&items[i], cellW, &m);
+			if (outM) outM[i] = m;
 			gap = ctx->rowGap * (float)(rs - 1);
 			minT = m.minH - gap;
 			prefT = m.prefH - gap;
@@ -586,7 +587,7 @@ void Ui_GridMeasure(const UiGrid *g,
 		: grid_sum_(ctx.col, ctx.cols, 1) + ctx.colGap * (float)(ctx.cols - 1);
 
 	grid_init_tracks_(ctx.row, ctx.rows, rowTracks, g->rows);
-	grid_row_content_(&ctx, g, items, count);
+	grid_row_content_(&ctx, g, items, count, NULL);
 	grid_finalize_tracks_(ctx.row, ctx.rows);
 	gap = grid_max_(g->rowGap, 0.0f);
 	out->minH = grid_sum_(ctx.row, ctx.rows, 0) + gap * (float)(ctx.rows - 1);
@@ -617,7 +618,7 @@ int Ui_GridLayout(UiRect inner, const UiGrid *g,
 	grid_positions_(ctx.col, ctx.cols, ctx.colGap, inner.x);
 
 	grid_init_tracks_(ctx.row, ctx.rows, rowTracks, g->rows);
-	grid_row_content_(&ctx, g, items, count);
+	grid_row_content_(&ctx, g, items, count, NULL);
 	grid_finalize_tracks_(ctx.row, ctx.rows);
 	grid_resolve_tracks_(ctx.row, ctx.rows, ctx.rowGap, inner.h, 1,
 		&ctx.rowGap);
@@ -638,10 +639,108 @@ int Ui_GridLayout(UiRect inner, const UiGrid *g,
 			ctx.row[ctx.itemRow[i]].pos,
 			grid_span_size_(ctx.col, ctx.itemCol[i], cs, ctx.colGap),
 			grid_span_size_(ctx.row, ctx.itemRow[i], rs, ctx.rowGap));
+		if (items[i].stretch) {   /* 拉伸项忽略自身 measure 结果 */
+			out[i] = cell;
+			continue;
+		}
 		grid_measure_(&items[i], cell.w, &m);
+		w = grid_min_(m.prefW, cell.w);
+		h = grid_min_(m.prefH, cell.h);
+		if (w < 0.0f) w = 0.0f;
+		if (h < 0.0f) h = 0.0f;
+		x = cell.x;
+		y = cell.y;
+		if (items[i].align == UI_ALIGN_CENTER) {
+			x += (cell.w - w) * 0.5f;
+			y += (cell.h - h) * 0.5f;
+		} else if (items[i].align == UI_ALIGN_END) {
+			x += cell.w - w;
+			y += cell.h - h;
+		}
+		out[i] = Ui_Rect(x, y, w, h);
+	}
+	grid_ctx_free_(&ctx, &sc);
+	return 1;
+}
+
+/* 一次求解: 输出每项矩形 + 自然尺寸 (等价 Measure(maxW=inner.w)+Layout).
+ * 行内容测量结果直接复用到摆放阶段, 省掉整轮 measure 回调. */
+int Ui_GridSolve(UiRect inner, const UiGrid *g,
+	const UiGridTrack *colTracks, const UiGridTrack *rowTracks,
+	const UiGridItem *items, int count, UiRect *out, UiMeasure *measure)
+{
+	GridCtx ctx;
+	GridScratch sc;
+	UiMeasure rowMStack[GRID_STACK_ITEMS];
+	UiMeasure *rowM = rowMStack;
+	int heapM = 0, i;
+	float gap0, gap, minWv, prefWv, minHv, prefHv;
+
+	if (!g || !items || !out || count <= 0) return 0;
+	if (!(inner.w > 0.0f)) return 0;   /* inner.h <= 0 = 按内容自然高度 */
+	if (!grid_prepare_(&ctx, &sc, g, items, count)) {
+		grid_ctx_free_(&ctx, &sc);
+		return 0;
+	}
+	if (count > GRID_STACK_ITEMS) {
+		rowM = (UiMeasure *)HeapAlloc(GetProcessHeap(), 0,
+			(SIZE_T)count * sizeof(UiMeasure));
+		if (!rowM) {
+			grid_ctx_free_(&ctx, &sc);
+			return 0;
+		}
+		heapM = 1;
+	}
+	for (i = 0; i < count; i++) rowM[i].maxW = GRID_BIG;
+
+	/* 列: 按 inner.w 定宽并记录自然 minW/prefW */
+	grid_init_tracks_(ctx.col, ctx.cols, colTracks, g->cols);
+	grid_column_content_(&ctx, g, items, count);
+	grid_finalize_tracks_(ctx.col, ctx.cols);
+	grid_resolve_tracks_(ctx.col, ctx.cols, ctx.colGap, inner.w, 1,
+		&ctx.colGap);
+	grid_positions_(ctx.col, ctx.cols, ctx.colGap, inner.x);
+	gap0 = grid_max_(g->colGap, 0.0f);
+	minWv = grid_sum_(ctx.col, ctx.cols, 0) + gap0 * (float)(ctx.cols - 1);
+	prefWv = inner.w;
+
+	/* 行: 先记录自然高度 (Measure 语义), 再按 inner.h 求解摆放尺寸 */
+	grid_init_tracks_(ctx.row, ctx.rows, rowTracks, g->rows);
+	grid_row_content_(&ctx, g, items, count, rowM);
+	grid_finalize_tracks_(ctx.row, ctx.rows);
+	gap = grid_max_(g->rowGap, 0.0f);
+	minHv = grid_sum_(ctx.row, ctx.rows, 0) + gap * (float)(ctx.rows - 1);
+	prefHv = grid_sum_(ctx.row, ctx.rows, 1) + gap * (float)(ctx.rows - 1);
+	if (inner.h > 0.0f)
+		grid_resolve_tracks_(ctx.row, ctx.rows, ctx.rowGap, inner.h, 1,
+			&ctx.rowGap);
+	grid_positions_(ctx.row, ctx.rows, ctx.rowGap, inner.y);
+
+	for (i = 0; i < count; i++) {
+		UiMeasure m;
+		UiRect cell;
+		float w, h, x, y, dw;
+		int rs, cs;
+		if (ctx.itemRow[i] < 0 || ctx.itemCol[i] < 0) {
+			out[i] = Ui_Rect(0, 0, 0, 0);
+			continue;
+		}
+		rs = grid_span_(items[i].rowSpan, ctx.itemRow[i], ctx.rows);
+		cs = grid_span_(items[i].colSpan, ctx.itemCol[i], ctx.cols);
+		cell = Ui_Rect(ctx.col[ctx.itemCol[i]].pos,
+			ctx.row[ctx.itemRow[i]].pos,
+			grid_span_size_(ctx.col, ctx.itemCol[i], cs, ctx.colGap),
+			grid_span_size_(ctx.row, ctx.itemRow[i], rs, ctx.rowGap));
 		if (items[i].stretch) {
 			out[i] = cell;
 			continue;
+		}
+		dw = rowM[i].maxW - cell.w;
+		if (dw < 0.0f) dw = -dw;
+		if (dw <= 0.01f) {
+			m = rowM[i];   /* 行内容阶段同宽度测过, 直接复用 */
+		} else {
+			grid_measure_(&items[i], cell.w, &m);
 		}
 		w = grid_min_(m.prefW, cell.w);
 		h = grid_min_(m.prefH, cell.h);
@@ -658,6 +757,17 @@ int Ui_GridLayout(UiRect inner, const UiGrid *g,
 		}
 		out[i] = Ui_Rect(x, y, w, h);
 	}
+
+	if (measure) {
+		measure->maxW = inner.w;
+		measure->minW = minWv;
+		measure->prefW = prefWv;
+		measure->minH = minHv;
+		measure->prefH = prefHv;
+		measure->baseline = 0.0f;
+		Ui_MeasureNormalize(measure);
+	}
+	if (heapM) HeapFree(GetProcessHeap(), 0, rowM);
 	grid_ctx_free_(&ctx, &sc);
 	return 1;
 }

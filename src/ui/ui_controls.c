@@ -567,7 +567,7 @@ int Ui_Switch(UiSwitch *s, UiContext *ui, UiRect rc,
 	if (st.hover > 0.004f && enabled)
 		trackCol = Ui_ColorMix(trackCol, t->primary.hover, st.hover * 0.12f);
 	Gfx_FillRoundRect(ui->gfx, track, 10.0f, trackCol);
-	thumb = enabled ? t->neutral.base : t->neutral.base;
+	thumb = t->neutral.base;
 	s->thumbBase = track.x + 10.0f - SW_THUMB_PAD;
 	s->thumbStep = 18.0f;
 	if (fx) {

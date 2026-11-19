@@ -317,14 +317,24 @@ static void on_frame(UiApp *app, void *user)
 	grid.colGap = (float)d->gap;
 	grid.dense = d->dense;
 
-	m.maxW = innerW;
-	Ui_GridMeasure(&grid, cols, rows, items, ITEM_COUNT, &m);
+	/* 一次求解同时得到每项矩形与内容自然高度: 行内容测量结果直接复用
+	 * 到摆放阶段, 每项 measure 回调从 4 次降到 2 次 (列/行各一次). */
+	if (!Ui_GridSolve(Ui_Rect(0.0f, 0.0f, innerW, 0.0f), &grid,
+		cols, rows, items, ITEM_COUNT, rc, &m))
+		return;
 	d->contentH = (int)m.prefH;
 
 	UiScrollView_Begin(&d->sv, ui, viewport, innerW, m.prefH);
 	content = UiScrollView_ContentRect(&d->sv);
-	if (Ui_GridLayout(Ui_Rect(content.x, content.y, innerW, m.prefH),
-		&grid, cols, rows, items, ITEM_COUNT, rc)) {
+	{
+		/* 矩形相对 (0,0) 求解, 平移到滚动内容坐标系 */
+		float dx = content.x, dy = content.y;
+		for (i = 0; i < ITEM_COUNT; i++) {
+			rc[i].x += dx;
+			rc[i].y += dy;
+		}
+	}
+	{
 		if (!UiScrollView_Cull(&d->sv, rc[0]))
 			draw_section_header(g, t, rc[0]);
 		for (i = 0; i < CARD_COUNT; i++) {

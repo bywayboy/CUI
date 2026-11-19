@@ -229,15 +229,7 @@ static float ta_measure_w(UiTextArea *ta, Gfx *g, GfxFont *f,
 
 static void ta_invalidate(UiTextArea *ta, UiContext *ui)
 {
-	RECT r;
-	float sc;
-	if (!ta || !ui || !ui->hwnd) return;
-	sc = ui->scale > 0.0f ? ui->scale : 1.0f;
-	r.left = (LONG)((ta->rc.x - 4.0f) * sc);
-	r.top = (LONG)((ta->rc.y - 4.0f) * sc);
-	r.right = (LONG)((ta->rc.x + ta->rc.w + 4.0f) * sc) + 1;
-	r.bottom = (LONG)((ta->rc.y + ta->rc.h + 4.0f) * sc) + 1;
-	InvalidateRect(ui->hwnd, &r, FALSE);
+	if (ta) Ui_InvalidateRectPad(ui, ta->rc, 4.0f);
 }
 
 /* ── 行布局 ────────────────────────────────────────────────────────── */
@@ -1179,20 +1171,19 @@ static void ta_draw_selection(UiTextArea *ta, Gfx *g, GfxFont *f,
 	}
 }
 
+/* cw: 组合串宽度, 由调用方算好 (同一帧光标定位也要用). */
 static void ta_draw_composition(UiTextArea *ta, Gfx *g, GfxFont *f,
-	int line, float y, UiColor col)
+	int line, float y, UiColor col, float cw)
 {
 	int ls = ta->lineStart[line];
 	int colIdx = ta_col_of(ta, line, ta->caret);
 	float x = ta->textRc.x + ta_x_of(ta, g, f, line, colIdx);
-	float cw;
 	if (colIdx > 0) {
 		ta_to_utf8(ta, ls, colIdx);
 		Gfx_Text(g, f, ta->u8,
 			Ui_Rect(ta->textRc.x, y, x - ta->textRc.x, ta->lineH),
 			col, GFX_TEXT_VCENTER);
 	}
-	cw = ta_measure_w(ta, g, f, ta->imeEdit.comp, ta->imeEdit.compLen);
 	if (ta->imeEdit.compLen > 0) {
 		ta_w_to_utf8(ta, ta->imeEdit.comp, ta->imeEdit.compLen);
 		Gfx_Text(g, f, ta->u8,
@@ -1357,7 +1348,7 @@ int Ui_TextArea(UiTextArea *ta, UiContext *ui, UiRect rc, int enabled)
 	for (i = first; i <= last; i++) {
 		float y = ta->textRc.y + (float)i * lineH - ta->drawOffset;
 		if (ta->imeEdit.compLen > 0 && i == caretLine)
-			ta_draw_composition(ta, g, f, i, y, textCol);
+			ta_draw_composition(ta, g, f, i, y, textCol, compW);
 		else
 			ta_draw_line(ta, g, f, i, y, textCol);
 	}

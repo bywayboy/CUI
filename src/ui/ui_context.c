@@ -41,26 +41,52 @@ static int reserve_wheel_targets(UiContext *ctx, int need)
 	return 1;
 }
 
+static void InvalidateWidgetAt(UiContext *ctx, int i)
+{
+	UiRect d = ctx->widgets[i].rect;
+	float s = ctx->scale > 0.0f ? ctx->scale : 1.0f;
+	/* 10 DIP: 覆盖光晕外扩 (glowW 4 + 描边) 与动画脏区的扩边,
+	 * 只留 2 DIP 会在光晕淡出后留下旧光圈。 */
+	int m = (int)(10.0f * s + 0.5f);
+	RECT r;
+	r.left = (LONG)(d.x * s) - m;
+	r.top = (LONG)(d.y * s) - m;
+	r.right = (LONG)((d.x + d.w) * s) + m;
+	r.bottom = (LONG)((d.y + d.h) * s) + m;
+	InvalidateRect(ctx->hwnd, &r, FALSE);
+}
+
+static int WidgetIndex(const UiContext *ctx, UiId id)
+{
+	int i;
+	if (!ctx || !id) return -1;
+	for (i = ctx->widgetCount - 1; i >= 0; i--)
+		if (ctx->widgets[i].id == id) return i;
+	return -1;
+}
+
 /* 只失效一个控件矩形；找不到（控件集合变化）时退回整窗，保证正确性。 */
 static void InvalidateWidget(UiContext *ctx, UiId id)
 {
+	int i;
 	if (!ctx || !ctx->hwnd || !id) return;
-	for (int i = ctx->widgetCount - 1; i >= 0; i--) {
-		if (ctx->widgets[i].id != id) continue;
-		UiRect d = ctx->widgets[i].rect;
-		float s = ctx->scale > 0.0f ? ctx->scale : 1.0f;
-		/* 10 DIP: 覆盖光晕外扩 (glowW 4 + 描边) 与动画脏区的扩边,
-		 * 只留 2 DIP 会在光晕淡出后留下旧光圈。 */
-		int m = (int)(10.0f * s + 0.5f);
-		RECT r;
-		r.left = (LONG)(d.x * s) - m;
-		r.top = (LONG)(d.y * s) - m;
-		r.right = (LONG)((d.x + d.w) * s) + m;
-		r.bottom = (LONG)((d.y + d.h) * s) + m;
-		InvalidateRect(ctx->hwnd, &r, FALSE);
+	i = WidgetIndex(ctx, id);
+	if (i >= 0) {
+		InvalidateWidgetAt(ctx, i);
 		return;
 	}
 	InvalidateRect(ctx->hwnd, NULL, FALSE);
+}
+
+/* 已注册才失效; 返回 1 = 找到 (调用方据此决定是否登记过渡). */
+static int InvalidateWidgetSoft(UiContext *ctx, UiId id)
+{
+	int i;
+	if (!ctx || !ctx->hwnd || !id) return 0;
+	i = WidgetIndex(ctx, id);
+	if (i < 0) return 0;
+	InvalidateWidgetAt(ctx, i);
+	return 1;
 }
 
 void Ui_ContextInvalidate(UiContext *ctx, UiRect rc)
@@ -391,16 +417,6 @@ void Ui_RegisterWidget(UiContext *ctx, UiId id, UiRect rc)
 	w->scope = ctx->inputScope;
 }
 
-/* 控件是否仍在上一帧的注册表里. 找不到 (控件集合已变) 时不能失效/过渡. */
-static int widget_registered(const UiContext *ctx, UiId id)
-{
-	int i;
-	if (!ctx || !id) return 0;
-	for (i = ctx->widgetCount - 1; i >= 0; i--)
-		if (ctx->widgets[i].id == id) return 1;
-	return 0;
-}
-
 int Ui_WidgetRect(UiContext *ctx, UiId id, UiRect *out)
 {
 	int i;
@@ -482,17 +498,22 @@ void Ui_SetPressPoll(UiContext *ctx, UiId id, int on)
 			ctx->widgets[i].pressPoll = on ? 1 : 0;
 }
 
-void Ui_InvalidateRect(UiContext *ctx, UiRect rc)
+void Ui_InvalidateRectPad(UiContext *ctx, UiRect rc, float pad)
 {
 	RECT r;
 	float s;
 	if (!ctx || !ctx->hwnd || rc.w <= 0.0f || rc.h <= 0.0f) return;
 	s = ctx->scale > 0.0f ? ctx->scale : 1.0f;
-	r.left = (LONG)((rc.x - 1.0f) * s);
-	r.top = (LONG)((rc.y - 1.0f) * s);
-	r.right = (LONG)((rc.x + rc.w + 1.0f) * s) + 1;
-	r.bottom = (LONG)((rc.y + rc.h + 1.0f) * s) + 1;
+	r.left = (LONG)((rc.x - pad) * s);
+	r.top = (LONG)((rc.y - pad) * s);
+	r.right = (LONG)((rc.x + rc.w + pad) * s) + 1;
+	r.bottom = (LONG)((rc.y + rc.h + pad) * s) + 1;
 	InvalidateRect(ctx->hwnd, &r, FALSE);
+}
+
+void Ui_InvalidateRect(UiContext *ctx, UiRect rc)
+{
+	Ui_InvalidateRectPad(ctx, rc, 1.0f);
 }
 
 int Ui_CursorAt(const UiContext *ctx, float x, float y)
@@ -616,48 +637,42 @@ void Ui_OnMouseMove(UiContext *ctx, float x, float y)
 		return;
 	}
 	UiId h = UI_ID_NONE;
+	int wi = -1;
 	if (ctx->drag.active || ctx->mouseDown) {
 		/* 拖动/按住时不更新 hover，保证按下态稳定 */
 		h = UI_ID_NONE;
 	} else {
-		h = Ui_HitTest(ctx, x, y);
+		/* 与 Ui_HitTest 同语义, 但保留下标给 hoverFn 复用, 只扫一次表 */
+		wi = widget_at(ctx, x, y);
+		if (wi >= 0) h = ctx->widgets[wi].id;
+		else if (ctx->inputOwner && !ctx->popupOpen) h = ctx->inputOwner;
 	}
 	UiId oldHover = ctx->hover;
 	ctx->hover = h;
 	if (h != oldHover) {
-		if (widget_registered(ctx, oldHover)) {
-			InvalidateWidget(ctx, oldHover);
+		if (InvalidateWidgetSoft(ctx, oldHover))
 			Ui_FxChange(ctx, oldHover, Ui_AnimFxMs(UI_AN_HOVER));
-		}
-		if (widget_registered(ctx, h)) {
-			InvalidateWidget(ctx, h);
+		if (InvalidateWidgetSoft(ctx, h))
 			Ui_FxChange(ctx, h, Ui_AnimFxMs(UI_AN_HOVER));
-		}
 	}
 	/* 控件内精细命中区: 鼠标移动事件内同步判定, 只在状态变化时重绘 */
-	if (h != UI_ID_NONE) {
-		int wi = widget_at(ctx, x, y);
-		UiRect dirty;
-		if (wi >= 0 && ctx->widgets[wi].hoverFn) {
-			dirty = Ui_Rect(0, 0, 0, 0);
-			if (ctx->widgets[wi].hoverFn(ctx->widgets[wi].hoverUser, ctx,
-				x, y, &dirty)) {
-				if (dirty.w > 0.0f && dirty.h > 0.0f)
-					Ui_InvalidateRect(ctx, dirty);
-				else
-					InvalidateWidget(ctx, h);
-			}
+	if (wi >= 0 && ctx->widgets[wi].hoverFn) {
+		UiRect dirty = Ui_Rect(0, 0, 0, 0);
+		if (ctx->widgets[wi].hoverFn(ctx->widgets[wi].hoverUser, ctx,
+			x, y, &dirty)) {
+			if (dirty.w > 0.0f && dirty.h > 0.0f)
+				Ui_InvalidateRect(ctx, dirty);
+			else
+				InvalidateWidgetAt(ctx, wi);
 		}
 	}
 	if (ctx->drag.active) InvalidateWidget(ctx, ctx->drag.id);
 	else if (ctx->pressed) {
 		/* 只有显式声明“按下跟随指针”的控件才需要逐移动重绘, 否则
 		 * 按下期间每次移动都会整控件重绘 (文本/文档等无视觉变化). */
-		int pi;
-		for (pi = ctx->widgetCount - 1; pi >= 0; pi--)
-			if (ctx->widgets[pi].id == ctx->pressed) break;
+		int pi = WidgetIndex(ctx, ctx->pressed);
 		if (pi >= 0 && ctx->widgets[pi].pressPoll)
-			InvalidateWidget(ctx, ctx->pressed);
+			InvalidateWidgetAt(ctx, pi);
 	}
 }
 
@@ -690,10 +705,8 @@ void Ui_OnMouseDown(UiContext *ctx, float x, float y)
 	ctx->released = UI_ID_NONE;
 	ctx->clickedOutside = 0;
 	if (hit) {
-		if (widget_registered(ctx, hit)) {
-			InvalidateWidget(ctx, hit);
+		if (InvalidateWidgetSoft(ctx, hit))
 			Ui_FxChange(ctx, hit, Ui_AnimFxMs(UI_AN_PRESS));   /* hover -> press */
-		}
 	} else if (ctx->popupOpen && ctx->hwnd) {
 		/* 点在弹层外: 弹层管理器在下一帧关闭, 这里先安排一次重绘. */
 		InvalidateRect(ctx->hwnd, NULL, FALSE);
@@ -736,15 +749,18 @@ void Ui_OnMouseUp(UiContext *ctx, float x, float y)
 	 * 原控件上, 必须立刻恢复, 否则要等下一次 mousemove 才亮回来 —— 每点一次
 	 * 就闪一下 (真机: "多几次就 hover/focus 来回闪")。 */
 	ctx->hover = hit;
-	if (widget_registered(ctx, oldPressed)) InvalidateWidget(ctx, oldPressed);
-	if (widget_registered(ctx, oldHover)) InvalidateWidget(ctx, oldHover);
-	if (widget_registered(ctx, hit)) InvalidateWidget(ctx, hit);
-	/* press -> hover 的过渡 */
-	if (oldPressed && widget_registered(ctx, oldPressed))
-		Ui_FxChange(ctx, oldPressed, Ui_AnimFxMs(UI_AN_PRESS));
-	if (hit && widget_registered(ctx, hit)) Ui_FxChange(ctx, hit, Ui_AnimFxMs(UI_AN_PRESS));
-	if (oldHover && oldHover != hit && widget_registered(ctx, oldHover))
-		Ui_FxChange(ctx, oldHover, Ui_AnimFxMs(UI_AN_HOVER));
+	{
+		int regOld = InvalidateWidgetSoft(ctx, oldPressed);
+		int regHover = InvalidateWidgetSoft(ctx, oldHover);
+		int regHit = InvalidateWidgetSoft(ctx, hit);
+		/* press -> hover 的过渡 */
+		if (oldPressed && regOld)
+			Ui_FxChange(ctx, oldPressed, Ui_AnimFxMs(UI_AN_PRESS));
+		if (hit && regHit)
+			Ui_FxChange(ctx, hit, Ui_AnimFxMs(UI_AN_PRESS));
+		if (oldHover && oldHover != hit && regHover)
+			Ui_FxChange(ctx, oldHover, Ui_AnimFxMs(UI_AN_HOVER));
+	}
 }
 
 void Ui_OnMouseLeave(UiContext *ctx)
@@ -756,15 +772,10 @@ void Ui_OnMouseLeave(UiContext *ctx)
 		ctx->hover = ctx->modal;
 		return;
 	}
-	if (widget_registered(ctx, ctx->hover)) {
-		InvalidateWidget(ctx, ctx->hover);
-		if (ctx->hover) Ui_FxChange(ctx, ctx->hover, Ui_AnimFxMs(UI_AN_HOVER));
-	}
-	if (widget_registered(ctx, ctx->pressed)) {
-		InvalidateWidget(ctx, ctx->pressed);
-		if (ctx->pressed && ctx->pressed != ctx->hover)
-			Ui_FxChange(ctx, ctx->pressed, Ui_AnimFxMs(UI_AN_PRESS));
-	}
+	if (InvalidateWidgetSoft(ctx, ctx->hover))
+		Ui_FxChange(ctx, ctx->hover, Ui_AnimFxMs(UI_AN_HOVER));
+	if (InvalidateWidgetSoft(ctx, ctx->pressed) && ctx->pressed != ctx->hover)
+		Ui_FxChange(ctx, ctx->pressed, Ui_AnimFxMs(UI_AN_PRESS));
 	if (ctx->drag.active) InvalidateWidget(ctx, ctx->drag.id);
 	ctx->hover = UI_ID_NONE;
 	/* 按住/拖动期间窗口已 SetCapture, 指针划出客户区仍会收到移动消息.

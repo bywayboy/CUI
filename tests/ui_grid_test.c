@@ -440,6 +440,41 @@ static void test_explicit_conflict(void)
 	CHECK(near_(rc[3].x, 100) && near_(rc[3].y, 20));
 }
 
+/* Solve = Measure(maxW=inner.w)+Layout, 且每项只回调 2 次 (列/行各一次). */
+static void test_solve(void)
+{
+	FakeBox a = { 60, 90, 30, 50 };
+	FakeBox b = { 50, 70, 20, 40 };
+	UiGridTrack cols[2] = { auto_track_(0, 0), fr_track_(1, 0, 0) };
+	UiGridItem it[2];
+	UiRect ref[2], got[2];
+	UiGrid g = grid_(0, 2, 8, 8, 0);
+	UiMeasure mRef, mGot;
+	int i;
+
+	it[0] = box_item_(&a, -1, -1, 1, 1, 0);
+	it[1] = box_item_(&b, -1, -1, 1, 1, 0);
+
+	mRef.maxW = 300;
+	Ui_GridMeasure(&g, cols, NULL, it, 2, &mRef);
+	CHECK(Ui_GridLayout(Ui_Rect(10, 20, 300, mRef.prefH), &g, cols, NULL,
+		it, 2, ref));
+
+	a.calls = 0;
+	b.calls = 0;
+	CHECK(Ui_GridSolve(Ui_Rect(10, 20, 300, 0), &g, cols, NULL, it, 2,
+		got, &mGot));
+	for (i = 0; i < 2; i++) {
+		CHECK(near_(ref[i].x, got[i].x) && near_(ref[i].y, got[i].y));
+		CHECK(near_(ref[i].w, got[i].w) && near_(ref[i].h, got[i].h));
+	}
+	CHECK(near_(mRef.minW, mGot.minW) && near_(mRef.prefW, mGot.prefW));
+	CHECK(near_(mRef.minH, mGot.minH) && near_(mRef.prefH, mGot.prefH));
+	CHECK(a.calls == 2 && b.calls == 2);
+	/* 绝对尺寸: 第 2 列吃掉剩余宽度 */
+	CHECK(near_(got[0].w, 90) && near_(got[1].x, 10 + 90 + 8));
+}
+
 void __stdcall startup(void)
 {
 	char line[128];
@@ -453,6 +488,7 @@ void __stdcall startup(void)
 	test_measure_wrap();
 	test_edges();
 	test_explicit_conflict();
+	test_solve();
 	sprintf(line, "ui_grid_test: %d passed, %d failed\n", g_pass, g_fail);
 	out_(line);
 	ExitProcess(g_fail ? 1u : 0u);

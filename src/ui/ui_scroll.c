@@ -207,7 +207,6 @@ static void scroll_wheel_apply(UiScrollView *sv, float delta)
 	sv->idleMs = 0.0f;
 	sv->barOpacity = 1.0f;
 	sv->barTarget = 1.0f;
-	sv->busy = 1;
 }
 
 void UiScrollView_ScrollTo(UiScrollView *sv, UiContext *ui,
@@ -222,7 +221,6 @@ void UiScrollView_ScrollTo(UiScrollView *sv, UiContext *ui,
 	sv->idleMs = 0.0f;
 	sv->barOpacity = 1.0f;
 	sv->barTarget = 1.0f;
-	sv->busy = 1;
 	invalidate_rc(ui, sv->viewport, 2.0f);
 }
 
@@ -247,7 +245,6 @@ void UiScrollView_Fling(UiScrollView *sv, UiContext *ui, float velocity)
 	sv->idleMs = 0.0f;
 	sv->barOpacity = 1.0f;
 	sv->barTarget = 1.0f;
-	sv->busy = 1;
 	invalidate_rc(ui, sv->viewport, 2.0f);
 }
 
@@ -350,7 +347,7 @@ void UiScrollView_End(UiScrollView *sv, UiContext *ui)
 	UiTheme *t;
 	UiWidgetState tst, hst;
 	UiId trackId, thumbId;
-	float opacity, w, margin;
+	float opacity, w;
 	UiColor trackColor, thumbColor;
 	int hover;
 
@@ -389,7 +386,6 @@ void UiScrollView_End(UiScrollView *sv, UiContext *ui)
 		sv->idleMs = 0.0f;
 		sv->barOpacity = 1.0f;
 		sv->barTarget = 1.0f;
-		sv->busy = 1;
 	}
 
 	if (hst.pressed && ui->mouseDown && !sv->draggingThumb) {
@@ -399,14 +395,11 @@ void UiScrollView_End(UiScrollView *sv, UiContext *ui)
 		sv->idleMs = 0.0f;
 		sv->barOpacity = 1.0f;
 		sv->barTarget = 1.0f;
-		sv->busy = 1;
 	}
 	if (sv->draggingThumb && !ui->mouseDown) sv->draggingThumb = 0;
 
 	hover = hst.hovered || sv->draggingThumb;
 	w = sv->bar.width > 0.0f ? sv->bar.width : 6.0f;
-	margin = sv->bar.margin > 0.0f ? sv->bar.margin : 2.0f;
-	(void)margin;
 
 	trackColor = sv->bar.track;
 	if (!trackColor) trackColor = Ui_ColorAlpha(t ? t->text3 : 0xFF888888u, 18);
@@ -445,7 +438,6 @@ int UiScrollView_Busy(const UiScrollView *sv)
 void UiScrollView_Tick(UiScrollView *sv, UiContext *ui, float dtMs)
 {
 	float dt, oldOffset, oldOpacity, maxOff, targetOp;
-	int moved = 0;
 	if (!sv || !ui) return;
 	if (dtMs < 0.0f) dtMs = 0.0f;
 	if (dtMs > 50.0f) dtMs = 50.0f;
@@ -461,7 +453,6 @@ void UiScrollView_Tick(UiScrollView *sv, UiContext *ui, float dtMs)
 		sv->barOpacity = 0.0f;
 		sv->barTarget = 0.0f;
 		sv->idleMs = 0.0f;
-		sv->busy = 0;
 		return;
 	}
 
@@ -542,7 +533,6 @@ void UiScrollView_Tick(UiScrollView *sv, UiContext *ui, float dtMs)
 	}
 
 	if (absf_(sv->offset - oldOffset) > 0.001f) {
-		moved = 1;
 		sv->idleMs = 0.0f;
 		invalidate_rc(ui, sv->viewport, 2.0f);
 		/* 内容在动: 该区域内的过渡快照会与新内容错位, 直接落位 */
@@ -568,8 +558,6 @@ void UiScrollView_Tick(UiScrollView *sv, UiContext *ui, float dtMs)
 	if (absf_(sv->barOpacity - oldOpacity) > 0.001f)
 		invalidate_rc(ui, bar_rect(sv), 3.0f);
 
-	sv->busy = UiScrollView_Busy(sv);
-	(void)moved;
 }
 
 UiRect UiScrollView_ContentRect(const UiScrollView *sv)

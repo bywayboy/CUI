@@ -67,6 +67,7 @@ typedef struct MdRow {
 	                      * 不同, 行复用必须把它算进 key, 否则会搬错高度 */
 	int measured;
 	float measuredW;
+	uint32_t liveStamp;  /* == md->liveEpoch 表示已在 live[] 中 */
 	uint8_t rowType;     /* 创建时快照: 旧行释放时 blk 可能已随文档释放 */
 	int boxIdx;          /* 所属盒子 (div/容器) 下标; -1 = 无. div 的
 	                      * align/lineSpacing/padR 都从这里查. */
@@ -96,6 +97,8 @@ typedef struct MdRow {
 			float *colW;
 			float *rowH;
 			float *cellW;        /* 单元格文本宽缓存 (对齐用) */
+			GfxRect **cellCode;  /* 每格内联代码底色矩形 (布局局部) */
+			int *cellCodeN;
 			int tblCols, tblRows;
 			float tblH;
 		} table;
@@ -231,6 +234,7 @@ struct UiMarkdown {
 
 	int *live;
 	int liveCount, liveCap;
+	uint32_t liveEpoch;   /* 去重代次: 重置 live[] 时 +1, 免 O(n) 清标记 */
 
 	int measureCalls;
 	int reuseRows;      /* 上次 SetText/Append 复用的行数 */
@@ -243,6 +247,7 @@ struct UiMarkdown {
 	int downRow, downLink;
 	int pressActive;
 	uint32_t themeRev;
+	int styleDirty;     /* md->st 变了, 下一帧重算派生样式 */
 
 	UiMarkdownLinkFn linkFn;
 	void *linkUser;
@@ -610,9 +615,9 @@ static void md_math_cache_clear(UiMarkdown *md)
 	md->mmathCap = 0;
 }
 
-/* 按 blk->type 释放对应 payload; union 成员不可跨类型访问 */
-/* 只释放行 payload (不动行数组/悬停状态), 供增量重建复用旧行 */
-static void md_row_payload_release(UiMarkdown *md, MdRow *r)
+/* 按 blk->type 释放对应 payload; union 成员不可跨类型访问.
+ * keepImages: 宽度变化时保留行内图片对象 (尺寸在 measure 阶段重算). */
+static void md_row_payload_release(UiMarkdown *md, MdRow *r, int keepImages)
 {
 	int i, type;
 	if (!r) return;
@@ -629,15 +634,18 @@ static void md_row_payload_release(UiMarkdown *md, MdRow *r)
 		md_free_(r->p.text.codeRects);
 		r->p.text.codeRects = NULL;
 		r->p.text.codeN = r->p.text.codeCap = 0;
-		if (r->p.text.inlImgs) {
-			for (i = 0; i < r->p.text.inlN; i++)
-				if (r->p.text.inlImgs[i]) UiImage_Destroy(r->p.text.inlImgs[i]);
-			md_free_(r->p.text.inlImgs);
-			r->p.text.inlImgs = NULL;
+		if (!keepImages) {
+			if (r->p.text.inlImgs) {
+				for (i = 0; i < r->p.text.inlN; i++)
+					if (r->p.text.inlImgs[i])
+						UiImage_Destroy(r->p.text.inlImgs[i]);
+				md_free_(r->p.text.inlImgs);
+				r->p.text.inlImgs = NULL;
+			}
+			md_free_(r->p.text.inlStates);
+			r->p.text.inlStates = NULL;
+			r->p.text.inlN = 0;
 		}
-		md_free_(r->p.text.inlStates);
-		r->p.text.inlStates = NULL;
-		r->p.text.inlN = 0;
 		if (r->p.text.inlMath) {
 			for (i = 0; i < r->p.text.mathN; i++)
 				if (r->p.text.inlMath[i]) md_math_cache_put(md, r->p.text.inlMath[i]);
@@ -647,6 +655,11 @@ static void md_row_payload_release(UiMarkdown *md, MdRow *r)
 		r->p.text.mathN = 0;
 		break;
 	case MD_BLOCK_IMAGE:
+		if (keepImages) {
+			/* 保留 img/src/解码位图, 尺寸在 measure 时重算 */
+			r->p.image.imgReady = 0;
+			break;
+		}
 		if (r->p.image.img) {
 			UiImage_Destroy(r->p.image.img);
 			r->p.image.img = NULL;
@@ -668,6 +681,14 @@ static void md_row_payload_release(UiMarkdown *md, MdRow *r)
 		r->p.table.rowH = NULL;
 		md_free_(r->p.table.cellW);
 		r->p.table.cellW = NULL;
+		if (r->p.table.cellCode) {
+			for (i = 0; i < r->p.table.cellN; i++)
+				md_free_(r->p.table.cellCode[i]);
+			md_free_(r->p.table.cellCode);
+			r->p.table.cellCode = NULL;
+		}
+		md_free_(r->p.table.cellCodeN);
+		r->p.table.cellCodeN = NULL;
 		r->p.table.cellN = 0;
 		r->p.table.tblCols = r->p.table.tblRows = 0;
 		r->p.table.tblH = 0.0f;
@@ -696,14 +717,20 @@ static void md_row_release(UiMarkdown *md, MdRow *r)
 		md->hovRow = -1;
 		md->hovLink = -1;
 	}
-	md_row_payload_release(md, r);
+	md_row_payload_release(md, r, 0);
+}
+
+static void md_live_reset(UiMarkdown *md)
+{
+	md->liveCount = 0;
+	if (++md->liveEpoch == 0) md->liveEpoch = 1;
 }
 
 static int md_live_push(UiMarkdown *md, int idx)
 {
-	int i;
-	for (i = 0; i < md->liveCount; i++)
-		if (md->live[i] == idx) return 1;
+	if (idx < 0 || idx >= md->rowCount) return 0;
+	if (!md->liveEpoch) md->liveEpoch = 1;
+	if (md->rows[idx].liveStamp == md->liveEpoch) return 1;
 	if (md->liveCount >= md->liveCap) {
 		int nc = md->liveCap ? md->liveCap * 2 : 32;
 		int *np = (int *)md_realloc_(md->live,
@@ -713,6 +740,7 @@ static int md_live_push(UiMarkdown *md, int idx)
 		md->liveCap = nc;
 	}
 	md->live[md->liveCount++] = idx;
+	md->rows[idx].liveStamp = md->liveEpoch;
 	return 1;
 }
 
@@ -1614,17 +1642,6 @@ static GfxRichText *md_row_make_rt(UiMarkdown *md, int index)
 
 /* ── 图片 ──────────────────────────────────────────────────────────── */
 
-static void md_u8_to_w(const char *s, wchar_t *out, int cap)
-{
-	int n;
-	if (!out || cap <= 0) return;
-	out[0] = 0;
-	if (!s) return;
-	n = MultiByteToWideChar(CP_UTF8, 0, s, -1, out, cap);
-	if (n <= 0) out[0] = 0;
-	else out[cap - 1] = 0;
-}
-
 /* 块级公式: 基准 16 DIP, 超出可用宽时按比例重建 (最多 3 次);
  * 语法错误回退为代码字体的原始源码。 */
 static void md_math_block_build(UiMarkdown *md, MdRow *r, float avail)
@@ -2017,7 +2034,12 @@ static int md_table_build(UiMarkdown *md, int index)
 	r->p.table.cellRt = (GfxRichText **)md_alloc_(rows * cols * (int)sizeof(GfxRichText *));
 	r->p.table.rowH = (float *)md_alloc_(rows * (int)sizeof(float));
 	r->p.table.cellW = (float *)md_alloc_(rows * cols * (int)sizeof(float));
-	if (!r->p.table.colW || !r->p.table.cellRt || !r->p.table.rowH || !r->p.table.cellW) {
+	r->p.table.cellCode = (GfxRect **)md_alloc_(
+		rows * cols * (int)sizeof(GfxRect *));
+	r->p.table.cellCodeN = (int *)md_alloc_(
+		rows * cols * (int)sizeof(int));
+	if (!r->p.table.colW || !r->p.table.cellRt || !r->p.table.rowH ||
+		!r->p.table.cellW || !r->p.table.cellCode || !r->p.table.cellCodeN) {
 		md_free_(nat);
 		md_row_release(md, r);
 		return 0;
@@ -2059,6 +2081,38 @@ static int md_table_build(UiMarkdown *md, int index)
 					md_apply_runs(md, rt, cell->runs, cell->runCount, 0);
 					r->p.table.cellW[rr * cols + c] = Gfx_RichWidth(rt);
 					h = Gfx_RichHeight(rt);
+					/* 预取内联代码底色矩形: 绘制时不再逐帧 DWrite 命中 */
+					if (cell->runCount > 0) {
+						int ci = rr * cols + c;
+						int ri, k, n = 0, cap = 0;
+						GfxRect *rs = NULL;
+						for (ri = 0; ri < cell->runCount; ri++)
+							if (cell->runs[ri].style & MD_R_CODE)
+								cap += 16;
+						if (cap > 0)
+							rs = (GfxRect *)md_alloc_(
+								cap * (int)sizeof(GfxRect));
+						for (ri = 0; rs && ri < cell->runCount; ri++) {
+							const MdRun *run = &cell->runs[ri];
+							GfxRect tmp[16];
+							int cn;
+							if (!(run->style & MD_R_CODE) || run->len <= 0)
+								continue;
+							if (n + 16 > cap) {
+								int nc2 = cap * 2;
+								GfxRect *np = (GfxRect *)md_realloc_(rs,
+									(SIZE_T)nc2 * sizeof(GfxRect));
+								if (!np) break;
+								rs = np;
+								cap = nc2;
+							}
+							cn = Gfx_RichRangeRects(rt, run->start,
+								run->len, tmp, 16);
+							for (k = 0; k < cn; k++) rs[n++] = tmp[k];
+						}
+						r->p.table.cellCode[ci] = rs;
+						r->p.table.cellCodeN[ci] = n;
+					}
 				}
 			}
 			h += padY * 2.0f;
@@ -2155,76 +2209,14 @@ static void md_evict(UiMarkdown *md, int first, int last)
 	for (i = 0; i < md->liveCount; ) {
 		int idx = md->live[i];
 		if (idx < first - MD_OVERSCAN || idx > last + MD_OVERSCAN) {
-			if (idx >= 0 && idx < md->rowCount)
+			if (idx >= 0 && idx < md->rowCount) {
 				md_row_release(md, &md->rows[idx]);
+				md->rows[idx].liveStamp = 0;
+			}
 			md->live[i] = md->live[--md->liveCount];
 			continue;
 		}
 		i++;
-	}
-}
-
-/* 宽度变化: 只丢弃与宽度相关的布局, 保留图片对象 (UiImage 自带 src/位图) */
-static void md_row_relayout_release(UiMarkdown *md, MdRow *r)
-{
-	int i, type = r ? (int)r->rowType : -1;
-	if (!r) return;
-	switch (type) {
-	case MD_BLOCK_PARAGRAPH:
-	case MD_BLOCK_HEADING:
-	case MD_BLOCK_CODE:
-		if (r->p.text.rt) {
-			Gfx_RichDestroy(r->p.text.rt);
-			r->p.text.rt = NULL;
-		}
-		r->p.text.rtH = 0.0f;
-		md_free_(r->p.text.codeRects);
-		r->p.text.codeRects = NULL;
-		r->p.text.codeN = r->p.text.codeCap = 0;
-		/* 行内图片保留; 行内公式按新宽度重新拟合 */
-		if (r->p.text.inlMath) {
-			for (i = 0; i < r->p.text.mathN; i++)
-				if (r->p.text.inlMath[i])
-					md_math_cache_put(md, r->p.text.inlMath[i]);
-			md_free_(r->p.text.inlMath);
-			r->p.text.inlMath = NULL;
-		}
-		r->p.text.mathN = 0;
-		break;
-	case MD_BLOCK_IMAGE:
-		/* 保留 img/src/解码位图, 尺寸在 measure 时重算 */
-		r->p.image.imgReady = 0;
-		break;
-	case MD_BLOCK_TABLE:
-		if (r->p.table.cellRt) {
-			for (i = 0; i < r->p.table.cellN; i++)
-				if (r->p.table.cellRt[i]) Gfx_RichDestroy(r->p.table.cellRt[i]);
-			md_free_(r->p.table.cellRt);
-			r->p.table.cellRt = NULL;
-		}
-		md_free_(r->p.table.colW);
-		r->p.table.colW = NULL;
-		md_free_(r->p.table.rowH);
-		r->p.table.rowH = NULL;
-		md_free_(r->p.table.cellW);
-		r->p.table.cellW = NULL;
-		r->p.table.cellN = 0;
-		r->p.table.tblCols = r->p.table.tblRows = 0;
-		r->p.table.tblH = 0.0f;
-		break;
-	case MD_BLOCK_MATH:
-		if (r->p.math.bm) {
-			md_math_cache_put(md, r->p.math.bm);
-			r->p.math.bm = NULL;
-		}
-		if (r->p.math.bmFallback) {
-			Gfx_RichDestroy(r->p.math.bmFallback);
-			r->p.math.bmFallback = NULL;
-		}
-		r->p.math.bmW = r->p.math.bmH = r->p.math.bmD = 0.0f;
-		break;
-	default:
-		break;
 	}
 }
 
@@ -2236,10 +2228,10 @@ static void md_invalidate_width(UiMarkdown *md)
 	md->downRow = -1;
 	md->downLink = -1;
 	md->pressActive = 0;
-	md->liveCount = 0;
+	md_live_reset(md);
 	for (i = 0; i < md->rowCount; i++) {
 		MdRow *r = &md->rows[i];
-		md_row_relayout_release(md, r);
+		md_row_payload_release(md, r, 1);
 		r->measured = 0;
 		/* 保留的图片进入 live, 首帧 evict 回收视口外的 */
 		if (r->rowType == MD_BLOCK_IMAGE && r->p.image.img) {
@@ -2278,13 +2270,12 @@ static int md_text_set(UiMarkdown *md, const char *s, int n)
 	return 1;
 }
 
-static void md_rows_clear(UiMarkdown *md, int keep_rt)
+static void md_rows_clear(UiMarkdown *md)
 {
 	int i;
-	(void)keep_rt;
 	for (i = 0; i < md->rowCount; i++)
 		md_row_release(md, &md->rows[i]);
-	md->liveCount = 0;
+	md_live_reset(md);
 	md->rowCount = 0;
 	md->boxCount = 0;
 }
@@ -2301,7 +2292,7 @@ static void md_rows_detach(UiMarkdown *md, MdRow **outRows, int *outN,
 	md->rowCap = 0;
 	md->items = NULL;
 	md->itemCap = 0;
-	md->liveCount = 0;
+	md_live_reset(md);
 	md->boxCount = 0;
 	md->hovRow = -1;
 	md->hovLink = -1;
@@ -2425,7 +2416,7 @@ static void md_rows_merge(UiMarkdown *md, MdRow *oldRows, int oldN,
 	/* 未搬走的旧 payload 全部释放 */
 	for (i = 0; i < oldN; i++) {
 		if (!moved || moved[i] != 2)
-			md_row_payload_release(md, &oldRows[i]);
+			md_row_payload_release(md, &oldRows[i], 0);
 	}
 	md_free_(map);
 	md_free_(moved);
@@ -2464,8 +2455,6 @@ static void md_slug_of(const char *u8, char *out, int cap)
 
 static void md_anchors_clear(UiMarkdown *md)
 {
-	int i;
-	(void)i;
 	/* slug 统一放在 anchorChars 里, 这里只丢引用, 容量留给下次复用 */
 	md->anchorCount = 0;
 	md->anchorCharsLen = 0;
@@ -2771,9 +2760,9 @@ static void md_rebuild_rows_incremental(UiMarkdown *md, MdRow *oldRows,
 		md_flatten(md, &md->doc.blocks[i], 0, 0, MD_MK_NONE, 0, MD_TASK_NONE);
 	md_anchors_build(md);
 	if (!md_rebuild_items(md)) {
-		md_rows_clear(md, 0);
+		md_rows_clear(md);
 		md_anchors_clear(md);
-		for (i = 0; i < oldN; i++) md_row_payload_release(md, &oldRows[i]);
+		for (i = 0; i < oldN; i++) md_row_payload_release(md, &oldRows[i], 0);
 		UiScrollLayout_Init(&md->layout, NULL, 0);
 		return;
 	}
@@ -2792,8 +2781,8 @@ static int md_parse_current(UiMarkdown *md)
 	md_rows_detach(md, &oldRows, &oldN, &oldItems);
 	rc = Md_Parse(&md->doc, md->text, md->textLen);
 	if (rc != 0) {
-		md_rows_clear(md, 0);
-		for (i = 0; i < oldN; i++) md_row_payload_release(md, &oldRows[i]);
+		md_rows_clear(md);
+		for (i = 0; i < oldN; i++) md_row_payload_release(md, &oldRows[i], 0);
 		md_free_(oldRows);
 		md_free_(oldItems);
 		UiScrollLayout_Init(&md->layout, NULL, 0);
@@ -2866,22 +2855,18 @@ static void md_draw_table(UiMarkdown *md, int index, float x, float y)
 					tx = xx + padX;
 				if (tx < xx + padX) tx = xx + padX;
 				{
-					int ri, k;
-					for (ri = 0; cell && ri < cell->runCount; ri++) {
-						const MdRun *run = &cell->runs[ri];
-						GfxRect cr[16];
-						int cn;
-						if (!(run->style & MD_R_CODE) || run->len <= 0)
-							continue;
-						cn = Gfx_RichRangeRects(rt, run->start, run->len,
-							cr, 16);
-						for (k = 0; k < cn; k++)
-							Gfx_FillRoundRect(md->gfx, Ui_Rect(
-								tx + cr[k].x - 1.0f,
-								yy + padY + cr[k].y,
-								cr[k].w + 2.0f, cr[k].h),
-								3.0f, md->cInlineCodeBg);
-					}
+					int k;
+					int ci = rr * r->p.table.tblCols + c;
+					GfxRect *cr = r->p.table.cellCode
+						? r->p.table.cellCode[ci] : NULL;
+					int cn = r->p.table.cellCodeN
+						? r->p.table.cellCodeN[ci] : 0;
+					for (k = 0; k < cn; k++)
+						Gfx_FillRoundRect(md->gfx, Ui_Rect(
+							tx + cr[k].x - 1.0f,
+							yy + padY + cr[k].y,
+							cr[k].w + 2.0f, cr[k].h),
+							3.0f, md->cInlineCodeBg);
 				}
 				Gfx_RichDraw(rt, md->gfx, tx, yy + padY, md->cText);
 			}
@@ -3041,6 +3026,7 @@ UiMarkdown *UiMarkdown_Create(Gfx *gfx, UiId id, UiNet *net)
 	md->net = net;
 	md->st = UiMarkdownStyle_Light();
 	md->followTheme = 1;
+	md->styleDirty = 1;
 	md->downRow = -1;
 	md->downLink = -1;
 	md->stickRow = -1;
@@ -3075,7 +3061,7 @@ UiMarkdown *UiMarkdown_Create(Gfx *gfx, UiId id, UiNet *net)
 void UiMarkdown_Destroy(UiMarkdown *md)
 {
 	if (!md) return;
-	md_rows_clear(md, 0);
+	md_rows_clear(md);
 	md_anchors_clear(md);
 	md_math_cache_clear(md);
 	md_free_(md->anchors);
@@ -3139,12 +3125,13 @@ void UiMarkdown_SetStyle(UiMarkdown *md, const UiMarkdownStyle *st)
 		md->st = UiMarkdownStyle_Light();
 		md->followTheme = 1;
 	}
+	md->styleDirty = 1;
 	/* 字体对象会被重建: 先释放行 (含公式引用), 再清公式缓存, 最后换字体 */
 	for (i = 0; i < md->rowCount; i++) {
 		md_row_release(md, &md->rows[i]);
 		md->rows[i].measured = 0;
 	}
-	md->liveCount = 0;
+	md_live_reset(md);
 	md_math_cache_clear(md);
 	md_build_fonts(md);
 	md->needEstimate = 1;
@@ -3362,16 +3349,19 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 	md->hoverRow = -1;
 	md->hoverLink = -1;
 
-	md_resolve_style(md, ui->theme);
-	if (!md->fontsReady) md_build_fonts(md);
 	{
-		/* 链接/代码高亮颜色烙在行布局里, 换肤后必须重建可见行 */
+		/* 样式是 (theme, st, followTheme) 的纯函数: 只在输入变化时重算.
+		 * 链接/代码高亮颜色烙在行布局里, 换肤后必须重建可见行. */
 		uint32_t rev = ui->theme ? ui->theme->themeRev : 0;
-		if (rev != md->themeRev) {
+		if (rev != md->themeRev || md->styleDirty) {
+			int themeChanged = rev != md->themeRev;
 			md->themeRev = rev;
-			if (md->rowCount > 0) md_invalidate_width(md);
+			md->styleDirty = 0;
+			md_resolve_style(md, ui->theme);
+			if (themeChanged && md->rowCount > 0) md_invalidate_width(md);
 		}
 	}
+	if (!md->fontsReady) md_build_fonts(md);
 
 	contentW = UiScrollView_ContentWidth(&md->sv, rc);
 	viewH = rc.h - md->sv.pad.top - md->sv.pad.bottom;
@@ -3463,7 +3453,6 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 				/* 非平滑: 直接落位. 直接改 offset 是安全的 ——
 				 * 可见区间与绘制都在本块之后重新计算. */
 				if (!md->stickAnim) md->sv.offset = y;
-				md->sv.busy = 1;
 				md->stickSettle = 0;
 			} else if (md->sv.target == md->sv.offset) {
 				if (++md->stickSettle >= 3) release = 1;

@@ -20,11 +20,6 @@ static float nav_maxf(float a, float b)
 	return a > b ? a : b;
 }
 
-static float nav_minf(float a, float b)
-{
-	return a < b ? a : b;
-}
-
 static UiColor nav_col(UiColor c, UiColor def)
 {
 	return c ? c : def;
@@ -747,16 +742,6 @@ static int nav_panel_prefix(UiNavBar *nav, int level, UiId *prefix)
 	return depth;
 }
 
-static float nav_panel_rows_h(const UiNavBar *nav, const UiNavItem *items,
-	int count)
-{
-	float h = 0.0f;
-	int i;
-	for (i = 0; i < count; i++)
-		h += nav_is_divider(&items[i]) ? NAV_DIV_H : nav->style.panelRowH;
-	return h;
-}
-
 /* 计算本页可显示行数与是否出现 "更多". 高度先按全部行算, 超出时给
  * 更多行预留一行, 再按行高向前装填. */
 static int nav_panel_fit(const UiNavBar *nav, const UiNavItem *items,
@@ -1150,21 +1135,23 @@ static void nav_horizontal_measure(UiNavBar *nav, UiContext *ui, UiRect content)
 	}
 	moreW = nav_more_w(nav, ui);
 	if (moreW > avail) moreW = avail;
-	for (i = 0; i < nav->count; i++)
-		total += nav_root_item_w(nav, ui, &nav->items[i]) +
+	/* 单趟: 总量与前缀可容纳数一起算; 全部放下则 visible = count.
+	 * (命中 "更多" 预留时在首个放不下的项处停止, 语义同原两趟实现) */
+	for (i = 0; i < nav->count; i++) {
+		float add = nav_root_item_w(nav, ui, &nav->items[i]) +
 			(i ? nav->style.gap : 0.0f);
-	if (total <= avail + 0.01f) {
-		visible = nav->count;
-	} else {
-		overflow = 1;
-		for (i = 0; i < nav->count; i++) {
-			float add = nav_root_item_w(nav, ui, &nav->items[i]) +
-				(i ? nav->style.gap : 0.0f);
-			if (cursor + add + NAV_MORE_GAP + moreW > avail)
-				break;
+		total += add;
+		if (overflow) continue;
+		if (cursor + add + NAV_MORE_GAP + moreW > avail)
+			overflow = 1;
+		else {
 			cursor += add;
 			visible++;
 		}
+	}
+	if (total <= avail + 0.01f) {
+		visible = nav->count;
+		overflow = 0;
 	}
 	nav->visibleStart = 0;
 	nav->visibleCount = visible;

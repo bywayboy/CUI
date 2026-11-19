@@ -81,7 +81,6 @@ typedef struct UiScrollView {
 	float dragGrab;     /* 按下时 mouseY - thumb.y */
 	int   active;       /* Begin 已压 clip, End 需要弹 */
 	int   clipPushed;   /* 输入 clip 是否压栈成功 */
-	int   busy;
 } UiScrollView;
 
 void UiScrollView_Init(UiScrollView *sv, UiId id,

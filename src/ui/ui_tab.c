@@ -160,13 +160,15 @@ static float tab_icon_size(const UiIcon *icon)
 	return (icon && icon->kind == UI_ICON_GLYPH && icon->font) ? 16.0f : 0.0f;
 }
 
+/* textW < 0 = 自行测量; 有缓存时传宽度, 避免每帧重复 DWrite 测量. */
 static void tab_draw_content(UiContext *ui, const char *label,
-	const UiIcon *icon, UiRect item, UiColor color, int enabled)
+	const UiIcon *icon, UiRect item, UiColor color, int enabled, float textW)
 {
 	UiTheme *t = ui->theme;
 	Gfx *g = ui->gfx;
 	float iconW = tab_icon_size(icon);
-	float textW = label ? Gfx_TextWidth(g, t->fLabel, label) : 0.0f;
+	if (textW < 0.0f)
+		textW = label ? Gfx_TextWidth(g, t->fLabel, label) : 0.0f;
 	float gap = (iconW > 0.0f && textW > 0.0f) ? 6.0f : 0.0f;
 	float contentW = iconW + gap + textW;
 	float x = item.x + (item.w - contentW) * 0.5f;
@@ -248,6 +250,7 @@ int UiTabBar_DrawEx(UiTabBar *tb, UiContext *ui, UiRect rc,
 	int variant, stretch, showDivider;
 	int i, clicked = -1, selectedIndex = -1;
 	UiRect selectedRc = { 0, 0, 0, 0 };
+	float selectedTw = 0.0f;
 	UiColor cText, cHover, cActive, cDis, cInd, cHoverBg, cActiveBg, cBorder;
 	UiColor cCardBg;
 
@@ -316,8 +319,9 @@ int UiTabBar_DrawEx(UiTabBar *tb, UiContext *ui, UiRect rc,
 			float w = equalW;
 			int en = tab_item_enabled(tb, i, enabled);
 			UiColor col;
+			float tw = labels[i] ? Gfx_TextWidth(g, t->fLabel, labels[i])
+				: 0.0f;
 			if (!stretch) {
-				float tw = Gfx_TextWidth(g, t->fLabel, labels[i]);
 				float iw = icons ? tab_icon_size(&icons[i]) : 0.0f;
 				w = iw + (iw > 0.0f && tw > 0.0f ? 6.0f : 0.0f)
 					+ tw + padX * 2.0f;
@@ -338,15 +342,12 @@ int UiTabBar_DrawEx(UiTabBar *tb, UiContext *ui, UiRect rc,
 			if (tb->selected == i) {
 				selectedRc = item;
 				selectedIndex = i;
+				selectedTw = tw;
 			}
 
 			if (variant == UI_TAB_CARD) {
 				if (tb->selected == i) {
 					tb->activeRc = item;
-					tb->activeHover = st.hover;
-					tb->activePress = st.press;
-					tb->activeFocus = (tb->focusVisible &&
-						ui->navId == tb->id && tb->focus == i);
 					/* 活动项在 DrawActive 里最后画, 不在这里画文字/底色. */
 				} else {
 					UiColor fill = cCardBg;
@@ -371,7 +372,7 @@ int UiTabBar_DrawEx(UiTabBar *tb, UiContext *ui, UiRect rc,
 						col = Ui_ColorMix(col, cHover, st.hover);
 					if (!en) col = cDis;
 					tab_draw_content(ui, labels[i],
-						icons ? &icons[i] : NULL, item, col, en);
+						icons ? &icons[i] : NULL, item, col, en, tw);
 				}
 			} else if (variant == UI_TAB_PILL) {
 				UiRect ir = Ui_RectInset(item, 2.0f);
@@ -402,7 +403,7 @@ int UiTabBar_DrawEx(UiTabBar *tb, UiContext *ui, UiRect rc,
 					col = Ui_ColorMix(col, cHover, st.hover);
 				if (!en) col = cDis;
 				tab_draw_content(ui, labels[i],
-					icons ? &icons[i] : NULL, item, col, en);
+					icons ? &icons[i] : NULL, item, col, en, tw);
 			} else {
 				if (en && tb->selected != i && st.hover > 0.004f) {
 					UiRect ir = Ui_RectInset(item, 2.0f);
@@ -419,7 +420,7 @@ int UiTabBar_DrawEx(UiTabBar *tb, UiContext *ui, UiRect rc,
 					col = Ui_ColorMix(col, cHover, st.hover);
 				if (!en) col = cDis;
 				tab_draw_content(ui, labels[i],
-					icons ? &icons[i] : NULL, item, col, en);
+					icons ? &icons[i] : NULL, item, col, en, tw);
 			}
 		}
 	}
@@ -429,7 +430,7 @@ int UiTabBar_DrawEx(UiTabBar *tb, UiContext *ui, UiRect rc,
 			header.w, 1.0f), 0.0f, Ui_ColorAlpha(t->neutral.border, 220));
 	}
 	if (variant == UI_TAB_LINE && selectedIndex >= 0) {
-		float tw = Gfx_TextWidth(g, t->fLabel, labels[selectedIndex]);
+		float tw = selectedTw;   /* 主循环已测过 */
 		float iconW = icons ? tab_icon_size(&icons[selectedIndex]) : 0.0f;
 		float iw = tw + 12.0f + iconW +
 			(iconW > 0.0f && tw > 0.0f ? 6.0f : 0.0f);
@@ -550,7 +551,7 @@ void UiTabBar_DrawActiveEx(UiTabBar *tb, UiContext *ui,
 	}
 	tab_draw_content(ui, labels[tb->selected],
 		icons ? &icons[tb->selected] : NULL, tb->activeRc,
-		en ? cText : cDis, en);
+		en ? cText : cDis, en, -1.0f);
 }
 
 void UiTabBar_DrawActive(UiTabBar *tb, UiContext *ui,

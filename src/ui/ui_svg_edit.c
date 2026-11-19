@@ -12,6 +12,7 @@
 
 extern void *memset(void *d, int c, size_t n);
 extern void *memcpy(void *d, const void *s, size_t n);
+extern int memcmp(const void *a, const void *b, size_t n);
 extern double sqrt(double x);
 
 #define SE_PI 3.14159265358979323846f
@@ -100,6 +101,15 @@ struct UiSvgEdit {
 	int mouseWorldValid;
 	float mouseWorldX, mouseWorldY;
 
+	/* 几何缓存 (跨帧, 键包含 view/文档版本): 滚动条几何 / 选区包围盒 */
+	SeSB sbCache;
+	float sbKey[9];
+	int sbKeyValid;
+	uint64_t selBoundsKey;
+	GfxRect selBoundsCache;
+	int selBoundsValid;
+	int selBoundsHas;
+
 	/* 拖动 */
 	int drag;
 	int dragHandle;
@@ -107,7 +117,6 @@ struct UiSvgEdit {
 	int rubberAdd;
 	float pressSX, pressSY;
 	float startWX, startWY;
-	float lastDragWX, lastDragWY;
 	float pivotX, pivotY, startAngle;
 	GfxRect startBox;
 
@@ -123,7 +132,6 @@ struct UiSvgEdit {
 	int dragSeg;
 	float nodeOX, nodeOY;
 	float handleOX, handleOY;
-	int editIndex;
 
 	/* 钢笔 */
 	int penActive;
@@ -326,7 +334,7 @@ static void view_clamp(UiSvgEdit *ed)
 static void sb_geom(const UiSvgEdit *ed, SeSB *sb)
 {
 	UiRect vp;
-	float dsx, dsy, cw, ch, w, m, span, t, lo, hi, range;
+	float dsx, dsy, cw, ch, w, m, span, t, hi, range;
 	if (!ed || !ed->doc || !ed->viewValid) {
 		memset(sb, 0, sizeof(*sb));
 		return;
@@ -511,6 +519,65 @@ static int sel_bounds(const UiSvgEdit *ed, GfxRect *out)
 	if (first) return 0;
 	*out = r;
 	return 1;
+}
+
+/* 选区包围盒缓存: 键 = 选中索引 + 元素版本; 几何拖动/改样式后自动失效. */
+static uint64_t sel_bounds_key(const UiSvgEdit *ed)
+{
+	uint64_t h = 1469598103934665603ull;
+	int i;
+	if (!ed->doc) return 0;
+	h ^= (uint32_t)(uintptr_t)ed->doc; h *= 1099511628211ull;
+	h ^= (uint32_t)ed->doc->count; h *= 1099511628211ull;
+	for (i = 0; i < ed->selCount; i++) {
+		int idx = ed->sel[i];
+		h ^= (uint32_t)idx; h *= 1099511628211ull;
+		if (idx >= 0 && idx < ed->doc->count) {
+			h ^= (uint32_t)ed->doc->els[idx].version;
+			h *= 1099511628211ull;
+		}
+	}
+	return h;
+}
+
+static int sel_bounds_cached(const UiSvgEdit *ed, GfxRect *out)
+{
+	uint64_t k;
+	UiSvgEdit *m = (UiSvgEdit *)ed;
+	k = sel_bounds_key(ed);
+	if (m->selBoundsValid && m->selBoundsKey == k) {
+		if (!m->selBoundsHas) return 0;
+		*out = m->selBoundsCache;
+		return 1;
+	}
+	m->selBoundsHas = sel_bounds(ed, &m->selBoundsCache);
+	m->selBoundsKey = k;
+	m->selBoundsValid = 1;
+	if (!m->selBoundsHas) return 0;
+	*out = m->selBoundsCache;
+	return 1;
+}
+
+static void sb_geom_cached(UiSvgEdit *ed, SeSB *out)
+{
+	float k[9];
+	k[0] = ed->vp.x;
+	k[1] = ed->vp.y;
+	k[2] = ed->vp.w;
+	k[3] = ed->vp.h;
+	k[4] = ed->view.scale;
+	k[5] = ed->view.tx;
+	k[6] = ed->view.ty;
+	k[7] = ed->doc ? ed->doc->width : 0.0f;
+	k[8] = ed->doc ? ed->doc->height : 0.0f;
+	if (ed->sbKeyValid && memcmp(k, ed->sbKey, sizeof(k)) == 0) {
+		*out = ed->sbCache;
+		return;
+	}
+	sb_geom(ed, out);
+	ed->sbCache = *out;
+	memcpy(ed->sbKey, k, sizeof(k));
+	ed->sbKeyValid = 1;
 }
 
 /* 优先取选中的路径作为节点编辑对象 */
@@ -998,7 +1065,6 @@ static void draw_pen_overlay(UiSvgEdit *ed, UiContext *ui, Gfx *g)
 	UiTheme *t = ui->theme;
 	SvgElement *e;
 	int i, n;
-	float mx = ed->mx, my = ed->my;
 	if (!ed->penActive || ed->penIndex < 0 || ed->penIndex >= ed->doc->count)
 		return;
 	e = &ed->doc->els[ed->penIndex];
@@ -1014,9 +1080,8 @@ static void draw_pen_overlay(UiSvgEdit *ed, UiContext *ui, Gfx *g)
 	}
 	if (n > 0 && ed->mouseIn) {
 		float lx, ly, wx, wy, sx, sy;
-		Svg_WorldToLocal(e, ed->mouseWorldX, ed->mouseWorldY, &lx, &ly);
-		Svg_LocalToWorld(e, lx, ly, &wx, &wy);
-		w2s(ed, wx, wy, &sx, &sy);
+		/* 鼠标已是世界坐标, 无需 local→world 往返 */
+		w2s(ed, ed->mouseWorldX, ed->mouseWorldY, &sx, &sy);
 		Svg_LocalToWorld(e, e->path.nodes[n - 1].x, e->path.nodes[n - 1].y,
 			&wx, &wy);
 		w2s(ed, wx, wy, &lx, &ly);
@@ -1082,8 +1147,7 @@ static void draw_pen_overlay(UiSvgEdit *ed, UiContext *ui, Gfx *g)
 			}
 		}
 	}
-	(void)mx; (void)my;
-}
+	}
 
 static void draw_node_overlay(UiSvgEdit *ed, UiContext *ui, Gfx *g)
 {
@@ -1345,15 +1409,10 @@ static void create_update(UiSvgEdit *ed, float wx, float wy, int shift)
 			e->p.line.y2 = y2;
 		}
 	} else if (e->type == SVG_EL_POLYGON) {
+		/* 半径即可确定正多边形; 旋转角沿用模板 */
 		float dx = wx - px, dy = wy - py;
 		float r = s_sqrt(dx * dx + dy * dy);
-		float a = s_atan2(dy, dx) + SE_PI * 0.5f;
-		if (shift) {
-			float q = SE_PI * 0.25f;
-			a = s_round_grid(a, q);
-		}
 		if (r < 2.0f) r = 2.0f;
-		(void)a;
 		poly_rebuild(e, px, py, r, ed->polySides);
 	} else {
 		return;
@@ -1608,9 +1667,7 @@ static void start_drag(UiSvgEdit *ed, int mode)
 	ed->pressSX = ed->mx;
 	ed->pressSY = ed->my;
 	s2w(ed, ed->mx, ed->my, &ed->startWX, &ed->startWY);
-	ed->lastDragWX = ed->startWX;
-	ed->lastDragWY = ed->startWY;
-	sel_bounds(ed, &ed->startBox);
+	sel_bounds_cached(ed, &ed->startBox);
 }
 
 static void drag_end_commit(UiSvgEdit *ed, UiContext *ui)
@@ -1638,7 +1695,7 @@ static void press_select_tool(UiSvgEdit *ed, UiContext *ui)
 	int hit;
 	float wx, wy;
 	int shift = shift_down();
-	if (sel_bounds(ed, &box))
+	if (sel_bounds_cached(ed, &box))
 		handle = hit_handle(ed, box, ed->mx, ed->my);
 	if (handle >= 0 && ed->selCount > 0) {
 		orig_capture(ed);
@@ -2132,7 +2189,7 @@ static void handle_input(UiSvgEdit *ed, UiContext *ui)
 		ed->mouseWorldY = wy;
 	}
 
-	sb_geom(ed, &sb);
+	sb_geom_cached(ed, &sb);
 
 	/* 滚动条拖拽优先于画布工具 */
 	if (ed->sbDrag) {
@@ -2208,7 +2265,7 @@ static void handle_input(UiSvgEdit *ed, UiContext *ui)
 	} else if (ed->tool == UI_SVG_TOOL_SELECT && inCanvas) {
 		GfxRect box;
 		int kind = UI_CURSOR_ARROW;
-		if (sel_bounds(ed, &box)) {
+		if (sel_bounds_cached(ed, &box)) {
 			int h = hit_handle(ed, box, ed->mx, ed->my);
 			if (h == 1 || h == 5) kind = UI_CURSOR_SIZE_NS;
 			else if (h == 3 || h == 7) kind = UI_CURSOR_SIZE_WE;
@@ -2284,7 +2341,6 @@ UiSvgEdit *Ui_SvgEdit_Create(SvgDoc *doc, UiId id)
 	ed->hoverNode = -1;
 	ed->dragNode = -1;
 	ed->dragSeg = -1;
-	ed->editIndex = -1;
 	ed->createIndex = -1;
 	ed->penIndex = -1;
 	Svg_StyleDefault(&ed->defStyle);
@@ -2313,7 +2369,7 @@ static void draw_scrollbars(UiSvgEdit *ed, UiContext *ui, Gfx *g)
 	UiTheme *t = ui->theme;
 	UiColor trackC, thumbC;
 	int hit, hovV, hovH;
-	sb_geom(ed, &sb);
+	sb_geom_cached(ed, &sb);
 	if (!sb.hasH && !sb.hasV) return;
 	hit = ui->mouseOver ? sb_hit(&sb, ui->mouseX, ui->mouseY) : SE_SB_NONE;
 	hovV = hit == SE_SB_VTHUMB || hit == SE_SB_VTRACK || ed->sbDrag == 2;
@@ -2437,7 +2493,7 @@ void Ui_SvgEdit_Frame(UiSvgEdit *ed, UiContext *ui, UiRect viewport)
 	/* 选择框 */
 	if (ed->tool == UI_SVG_TOOL_SELECT || ed->tool == UI_SVG_TOOL_NODE) {
 		GfxRect wb;
-		if (!ed->penActive && sel_bounds(ed, &wb) && ed->selCount > 0)
+		if (!ed->penActive && sel_bounds_cached(ed, &wb) && ed->selCount > 0)
 			draw_selection(ed, ui, wb);
 	}
 
@@ -2755,7 +2811,7 @@ void Ui_SvgEdit_ClearSel(UiSvgEdit *ed)
 
 int Ui_SvgEdit_SelectionBounds(const UiSvgEdit *ed, GfxRect *out)
 {
-	return sel_bounds(ed, out);
+	return sel_bounds_cached(ed, out);
 }
 
 void Ui_SvgEdit_DeleteSel(UiSvgEdit *ed, UiContext *ui)

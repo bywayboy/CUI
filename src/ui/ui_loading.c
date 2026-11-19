@@ -36,19 +36,6 @@ static void loading_drop_(UiLoading *ld)
 	ld->drawnRev = -1;
 }
 
-static void loading_copy_(char *dst, const char *src, int cap)
-{
-	int i = 0;
-	if (!dst || cap <= 0) return;
-	if (src) {
-		while (src[i] && i < cap - 1) {
-			dst[i] = src[i];
-			i++;
-		}
-	}
-	dst[i] = 0;
-}
-
 static void loading_layout_(const UiLoading *ld, Gfx *g, UiTheme *th,
 	UiRect area, LoadingLayout *out)
 {
@@ -213,7 +200,9 @@ void UiLoading_Init(UiLoading *ld, UiContext *ui)
 	ld->delayMs = 150;
 	ld->minShowMs = 400;
 	ld->drawnRev = -1;
-	loading_copy_(ld->text, "载入中...", (int)sizeof(ld->text));
+	ld->idBlock = Ui_Id("loading.blocker", ld->slot, 0);
+	ld->idCancel = Ui_Id("loading.cancel", ld->slot, 0);
+	lstrcpynA(ld->text, "载入中...", (int)sizeof(ld->text));
 }
 
 void UiLoading_Shutdown(UiLoading *ld)
@@ -227,7 +216,7 @@ void UiLoading_Shutdown(UiLoading *ld)
 void UiLoading_SetText(UiLoading *ld, const char *utf8)
 {
 	if (!ld) return;
-	loading_copy_(ld->text, utf8, (int)sizeof(ld->text));
+	lstrcpynA(ld->text, utf8 ? utf8 : "", (int)sizeof(ld->text));
 	ld->contentRev++;
 }
 
@@ -387,9 +376,9 @@ void UiLoading_Draw(UiLoading *ld, UiRect parentRc, double nowMs)
 	if (!ld) return;
 	ui = ld->ui;
 	if (!ui || !ui->gfx || !ui->theme) return;
-	ld->rc = parentRc;
 	shown = ld->phase == UI_LOADING_SHOWN || ld->phase == UI_LOADING_HIDING;
 	if (!shown) return;
+	ld->rc = parentRc;
 	th = ui->theme;
 	if (!ld->shownDrawn) {
 		ld->shownDrawn = 1;
@@ -397,13 +386,11 @@ void UiLoading_Draw(UiLoading *ld, UiRect parentRc, double nowMs)
 	}
 
 	ld->btnHover = ld->btnPress = 0.0f;
-	cid = Ui_Id("loading.cancel", ld->slot, 0);
+	cid = ld->idCancel;
 	if (!ld->passThrough) {
 		Ui_PushLayer(ui, UI_Z_OVERLAY);
-		Ui_RegisterWidget(ui, Ui_Id("loading.blocker", ld->slot, 0),
-			parentRc);
-		Ui_RegisterWheelTarget(ui, Ui_Id("loading.blocker", ld->slot, 0),
-			parentRc);
+		Ui_RegisterWidget(ui, ld->idBlock, parentRc);
+		Ui_RegisterWheelTarget(ui, ld->idBlock, parentRc);
 	}
 	if (ld->cancelable) {
 		LoadingLayout lay;

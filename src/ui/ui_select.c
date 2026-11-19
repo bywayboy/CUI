@@ -96,16 +96,22 @@ static int sel_count_matches(const UiSelect *s)
 	return n;
 }
 
-static int sel_match_at(const UiSelect *s, int k)
+/* 一遍扫描同时得到可见项数与最大文本宽 (原来分两趟). */
+static void sel_scan(const UiSelect *s, Gfx *gfx, GfxFont *font,
+	int *outCount, float *outMaxTw)
 {
 	int i, n = 0;
-	if (k < 0) return -1;
+	float mw = 0.0f;
 	for (i = 0; i < s->count; i++) {
+		float tw;
 		if (!sel_match(s, i)) continue;
-		if (n == k) return i;
 		n++;
+		if (!font) continue;
+		tw = Gfx_TextWidth(gfx, font, s->items[i] ? s->items[i] : "");
+		if (tw > mw) mw = tw;
 	}
-	return -1;
+	*outCount = n;
+	*outMaxTw = mw;
 }
 
 static int sel_vis_of(const UiSelect *s, int orig)
@@ -146,21 +152,11 @@ static int sel_last(const UiSelect *s)
 
 static void sel_invalidate(UiSelect *s, UiContext *ui)
 {
-	RECT r;
-	UiRect rc;
-	float sc;
 	if (!s || !ui || !ui->hwnd) return;
-	rc = s->listRc;
-	if (rc.w <= 0.0f || rc.h <= 0.0f) {
+	if (s->listRc.w <= 0.0f || s->listRc.h <= 0.0f)
 		InvalidateRect(ui->hwnd, NULL, FALSE);
-		return;
-	}
-	sc = ui->scale > 0.0f ? ui->scale : 1.0f;
-	r.left = (LONG)((rc.x - 4.0f) * sc);
-	r.top = (LONG)((rc.y - 4.0f) * sc);
-	r.right = (LONG)((rc.x + rc.w + 4.0f) * sc) + 1;
-	r.bottom = (LONG)((rc.y + rc.h + 4.0f) * sc) + 1;
-	InvalidateRect(ui->hwnd, &r, FALSE);
+	else
+		Ui_InvalidateRectPad(ui, s->listRc, 4.0f);
 }
 
 static void sel_refilter(UiSelect *s, UiContext *ui)
@@ -505,15 +501,7 @@ static void sel_arrow_draw(Gfx *g, void *user)
 
 static void sel_invalidate_trigger(UiContext *ui, UiRect rc)
 {
-	RECT r;
-	float sc;
-	if (!ui || !ui->hwnd) return;
-	sc = ui->scale > 0.0f ? ui->scale : 1.0f;
-	r.left = (LONG)((rc.x - 3.0f) * sc);
-	r.top = (LONG)((rc.y - 3.0f) * sc);
-	r.right = (LONG)((rc.x + rc.w + 3.0f) * sc) + 1;
-	r.bottom = (LONG)((rc.y + rc.h + 3.0f) * sc) + 1;
-	InvalidateRect(ui->hwnd, &r, FALSE);
+	Ui_InvalidateRectPad(ui, rc, 3.0f);
 }
 
 int Ui_Select(UiSelect *s, UiPopupManager *pm, UiContext *ui, UiRect rc,
@@ -672,7 +660,7 @@ void UiSelect_DrawPopup(UiSelect *s, UiPopupManager *pm, UiContext *ui)
 	UiTheme *t;
 	UiRect panel, listView, searchRc, inner, row, trc;
 	float rowH, viewH, contentH, w, h, tw, maxTw;
-	int i, k, first, last;
+	int k, first, last;
 	float searchH;
 	UiWidgetState st;
 	UiColor col;
@@ -689,13 +677,7 @@ void UiSelect_DrawPopup(UiSelect *s, UiPopupManager *pm, UiContext *ui)
 	s->sv.cfg.wheelStep = rowH * 3.0f;
 	if (s->filterable && !s->searchActive) sel_search_begin(s, ui);
 	if (s->searchActive) Ui_SetFocusId(ui, sel_search_id(s));
-	s->visCount = sel_count_matches(s);
-
-	maxTw = 0.0f;
-	for (i = 0; i < s->count; i++) {
-		tw = Gfx_TextWidth(ui->gfx, t->fBody, s->items[i] ? s->items[i] : "");
-		if (tw > maxTw) maxTw = tw;
-	}
+	sel_scan(s, ui->gfx, t->fBody, &s->visCount, &maxTw);
 	w = s->listW > 0.0f ? s->listW : s->anchor.w;
 	/* 文本 + 勾选槽 + 滚动条预留 + 左右内边距 */
 	tw = maxTw + 20.0f + 8.0f + SEL_PAD_X * 2.0f;
@@ -767,11 +749,15 @@ void UiSelect_DrawPopup(UiSelect *s, UiPopupManager *pm, UiContext *ui)
 		last = (int)((s->sv.offset + inner.h) / rowH) + 1;
 		if (first < 0) first = 0;
 		if (last > s->visCount) last = s->visCount;
-		for (k = first; k < last; k++) {
-			int orig = sel_match_at(s, k);
+		/* 单趟: 边过滤边定位可见行, 避免每行再全表重扫 (O(n²)). */
+		{
+			int n = 0, orig;
+		for (orig = 0; orig < s->count && n < last; orig++) {
 			UiId id;
 			int en, selected2;
-			if (orig < 0) continue;
+			if (!sel_match(s, orig)) continue;
+			if (n < first) { n++; continue; }
+			k = n;
 			id = sel_child(s->id, "ui.select.item", orig);
 			en = sel_item_enabled(s, orig);
 			row = Ui_Rect(inner.x,
@@ -812,7 +798,9 @@ void UiSelect_DrawPopup(UiSelect *s, UiPopupManager *pm, UiContext *ui)
 						GFX_TEXT_RIGHT | GFX_TEXT_VCENTER);
 				}
 			}
+			n++;
 			if (!UiPopupManager_IsOpen(pm, s->id)) break; /* 刚点选关闭 */
+		}
 		}
 	}
 

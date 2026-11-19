@@ -5434,21 +5434,16 @@ static void load_props(Gallery *g, UiRect rc)
 	char buf[160];
 
 	snprintf(g->codeText, sizeof(g->codeText),
-		"static UiLoading ld;\n"
-		"\n"
 		"UiLoading_Init(&ld, &app->ui);\n"
-		"UiLoading_SetText(&ld, \"载入中...\");\n"
 		"UiLoading_SetCancelable(&ld, %d);\n"
 		"UiLoading_SetPassThrough(&ld, %d);\n"
 		"UiLoading_SetTiming(&ld, %d, %d);\n"
 		"UiLoading_Show(&ld);\n"
 		"\n"
-		"/* 定时器 30ms: */\n"
+		"/* 定时器 30ms + 帧内/Gfx_End 之后 */\n"
 		"if (UiLoading_TakeCancel(&ld)) task_abort();\n"
 		"if (UiLoading_Tick(&ld, UiFrame_Now()))\n"
 		"    UiApp_Invalidate(app);\n"
-		"\n"
-		"/* 帧内 / Gfx_End 之后: */\n"
 		"UiLoading_Draw(&ld, parentRc, UiFrame_Now());\n"
 		"UiLoading_EndFrame(&ld, UiFrame_Now());\n",
 		g->load.cancel.checked, g->load.pass.checked,
@@ -5459,35 +5454,14 @@ static void load_props(Gallery *g, UiRect rc)
 	Ui_StackBeginPad(&col, pane_in(ed, 16.0f), UI_COLUMN, 0.0f,
 		16.0f, 14.0f, 16.0f, 14.0f);
 
-	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "选项");
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "当前配置 (选项在演示页勾选)");
 	Ui_StackSkip(&col, 4.0f);
-	{
-		UiRect c0 = Ui_StackTake(&col, 26.0f);
-		UiRect c1 = Ui_StackTake(&col, 26.0f);
-		UiRect c2 = Ui_StackTake(&col, 26.0f);
-		int opt = 0;
-		opt |= Ui_Checkbox(&g->load.cancel, ui, c0,
-			"允许取消 (X + Esc)", 1);
-		opt |= Ui_Checkbox(&g->load.pass, ui, c1,
-			"passThrough (只画不拦)", 1);
-		opt |= Ui_Checkbox(&g->load.fast, ui, c2,
-			"快任务 (delay/minShow = 0)", 1);
-		if (opt) load_sync_options(g);
-	}
-	Ui_StackSkip(&col, 12.0f);
-
-	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "当前配置");
-	Ui_StackSkip(&col, 4.0f);
-	snprintf(buf, sizeof(buf), "state=%s  delay=%d  minShow=%d",
+	snprintf(buf, sizeof(buf), "%s  delay=%d  minShow=%d",
 		kLoadPhaseNames[g->load.ld.phase], g->load.ld.delayMs,
 		g->load.ld.minShowMs);
 	small_txt(gfx, t, Ui_StackTake(&col, 18.0f), buf);
-	Ui_StackSkip(&col, 8.0f);
-	snprintf(buf, sizeof(buf), "cancelable = %d   passThrough = %d",
-		g->load.ld.cancelable, g->load.ld.passThrough);
-	small_txt(gfx, t, Ui_StackTake(&col, 18.0f), buf);
-	Ui_StackSkip(&col, 8.0f);
-	snprintf(buf, sizeof(buf), "主窗帧: %u   取消请求: %d",
+	Ui_StackSkip(&col, 6.0f);
+	snprintf(buf, sizeof(buf), "主窗帧=%u   取消=%d",
 		(unsigned)g->appf.frame, g->load.cancels);
 	small_txt(gfx, t, Ui_StackTake(&col, 18.0f), buf);
 

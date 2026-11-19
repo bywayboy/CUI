@@ -179,4 +179,13 @@ int Ui_GridLayout(UiRect inner, const UiGrid *g,
                   const UiGridTrack *rowTracks,
                   const UiGridItem *items, int count, UiRect *out);
 
+/* Measure(maxW=inner.w)+Layout 合并为一次求解: 行内容测量结果直接复用
+ * 到摆放阶段, 每项只调一次 measure 回调 (原方案两次)。out[i] 同 Layout;
+ * measure 可为 NULL。返回 1 = 成功。 */
+int Ui_GridSolve(UiRect inner, const UiGrid *g,
+                 const UiGridTrack *colTracks,
+                 const UiGridTrack *rowTracks,
+                 const UiGridItem *items, int count,
+                 UiRect *out, UiMeasure *measure);
+
 #endif /* CUI_UI_LAYOUT_H */
