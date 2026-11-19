@@ -13,7 +13,7 @@
 #include "ui/ui_ime.h"
 #include "edit.h"
 
-#define UI_INPUT_MAX 8
+#define UI_INPUT_MAX 16   /* 每表单字段上限; 超限 UiInput_Add 返回 -1 */
 
 typedef struct {
 	UiEdit edit;

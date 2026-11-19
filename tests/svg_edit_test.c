@@ -8,6 +8,7 @@
 #include <windows.h>
 #include "gfx/gfx.h"
 #include "ui/ui_context.h"
+#include "ui/ui_input.h"
 #include "ui/ui_theme.h"
 #include "ui/ui_svg_edit.h"
 
@@ -50,6 +51,88 @@ static int count_(const char *s, const char *sub)
 	return n;
 }
 
+static UiRect g_vp;
+
+static void frame_(UiSvgEdit *ed)
+{
+	Gfx_Begin(g_gfx);
+	Gfx_Clear(g_gfx, 0xFFFFFFFF);
+	Ui_BeginFrame(&g_ctx);
+	Ui_SvgEdit_Frame(ed, &g_ctx, g_vp);
+	Ui_EndFrame(&g_ctx);
+	Gfx_End(g_gfx);
+}
+
+static void press_at(UiSvgEdit *ed, float x, float y)
+{
+	Ui_OnMouseDown(&g_ctx, x, y);
+	frame_(ed);
+}
+
+static void release_at(UiSvgEdit *ed, float x, float y)
+{
+	Ui_OnMouseUp(&g_ctx, x, y);
+	frame_(ed);
+}
+
+static void test_gradient_selection_reset(void)
+{
+	UiRect vp = g_vp = Ui_Rect(0.0f, 0.0f, 800.0f, 600.0f);
+	SvgDoc *doc = SvgDoc_Create(400.0f, 300.0f);
+	UiSvgEdit *ed;
+	UiId id = Ui_Id("svg.grad.sel", 0, 0);
+	SvgElement *r, *el;
+	SvgGradStop gs[2];
+	float tx, ty;
+	int ridx, eidx;
+	if (!doc) return;
+	r = SvgDoc_Add(doc, SVG_EL_RECT);
+	r->p.rect.x = 40.0f; r->p.rect.y = 40.0f;
+	r->p.rect.w = 100.0f; r->p.rect.h = 80.0f;
+	gs[0].offset = 0.0f; gs[0].color = 0xFF2D7FF9u;
+	gs[1].offset = 1.0f; gs[1].color = 0xFFFFFFFFu;
+	r->style.fill.kind = SVG_PAINT_RADIAL;
+	r->style.fill.cx = 0.5f; r->style.fill.cy = 0.5f; r->style.fill.r = 0.5f;
+	Svg_StyleSetFillStops(&r->style.fill, gs, 2);
+	el = SvgDoc_Add(doc, SVG_EL_ELLIPSE);
+	el->p.ellipse.cx = 320.0f; el->p.ellipse.cy = 220.0f;
+	el->p.ellipse.rx = 50.0f; el->p.ellipse.ry = 40.0f;
+	ridx = 0; eidx = 1;
+	ed = Ui_SvgEdit_Create(doc, id);
+	CHECK(ed != NULL);
+	if (!ed) { SvgDoc_Destroy(doc); return; }
+	Ui_SvgEdit_ZoomReset(ed, vp);
+	frame_(ed);
+	/* view_reset: world→screen = world + tx/ty */
+	tx = vp.x + (vp.w - doc->width) * 0.5f;
+	ty = vp.y + (vp.h - doc->height) * 0.5f;
+
+	press_at(ed, tx + 90.0f, ty + 80.0f);
+	release_at(ed, tx + 90.0f, ty + 80.0f);
+	CHECK(Ui_SvgEdit_SelIndex(ed, 0) == ridx);
+
+	/* 拖径向手柄: 中心 (90,80) → 边缘 0.707r 方向 */
+	press_at(ed, tx + 90.0f + 25.0f, ty + 80.0f + 20.0f);
+	frame_(ed);
+	Ui_OnMouseMove(&g_ctx, tx + 105.0f, ty + 95.0f);
+	frame_(ed);
+	release_at(ed, tx + 105.0f, ty + 95.0f);
+	CHECK(Ui_SvgEdit_SelIndex(ed, 0) == ridx);
+
+	/* 拖完后应能点选圆 (渐变手柄不得抢走元素外的点选) */
+	press_at(ed, tx + 320.0f, ty + 220.0f);
+	release_at(ed, tx + 320.0f, ty + 220.0f);
+	CHECK(Ui_SvgEdit_SelIndex(ed, 0) == eidx);
+
+	/* 再点回矩形 (渐变填充) 也应可选 */
+	press_at(ed, tx + 90.0f, ty + 80.0f);
+	release_at(ed, tx + 90.0f, ty + 80.0f);
+	CHECK(Ui_SvgEdit_SelIndex(ed, 0) == ridx);
+
+	Ui_SvgEdit_Destroy(ed);
+	SvgDoc_Destroy(doc);
+}
+
 void __stdcall startup(void)
 {
 	WNDCLASSEXW wc;
@@ -75,6 +158,22 @@ void __stdcall startup(void)
 	UiTheme_Init(&g_theme, g_gfx);
 	Ui_ContextInit(&g_ctx, hwnd, g_gfx, &g_theme);
 	Ui_SetViewport(&g_ctx, 800.0f, 600.0f, 1.0f);
+
+	/* 表单字段容量: 编辑器检查器用到 14 个输入框, 不能被静默截断 (文本页崩溃根因) */
+	{
+		UiInput form;
+		int i, added = 0;
+		UiInput_Init(&form, &g_ctx, NULL);
+		for (i = 0; i < 14; i++) {
+			if (UiInput_Add(&form, Ui_Id("t.field", i, 0), 64, 0,
+				NULL, L"") >= 0)
+				added++;
+		}
+		CHECK(added == 14);
+		CHECK(UiInput_Edit(&form, 13) != NULL);
+		CHECK(UiInput_Edit(&form, 14) == NULL);
+		UiInput_Shutdown(&form);
+	}
 
 	doc = SvgDoc_Create(400, 300);
 	CHECK(doc != NULL);
@@ -193,6 +292,8 @@ void __stdcall startup(void)
 	Ui_SvgEdit_Frame(ed, &g_ctx, Ui_Rect(0.0f, 0.0f, 800.0f, 600.0f));
 	Ui_EndFrame(&g_ctx);
 	CHECK(Gfx_End(g_gfx) == 1);
+
+	test_gradient_selection_reset();
 
 	CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
 

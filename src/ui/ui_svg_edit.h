@@ -119,6 +119,9 @@ int  Ui_SvgEdit_SetNodeParams(UiSvgEdit *ed, float angleDeg, float strength,
 int  Ui_SvgEdit_GetStyle(const UiSvgEdit *ed, SvgStyle *out);
 /* 应用到全部选中元素, 并成为之后新建元素的默认样式。 */
 void Ui_SvgEdit_SetStyle(UiSvgEdit *ed, UiContext *ui, const SvgStyle *style);
+/* 拖动取色等连续更新: 只应用不提交历史; 结束时调用 Ui_SvgEdit_Commit. */
+void Ui_SvgEdit_SetStyleLive(UiSvgEdit *ed, UiContext *ui,
+	const SvgStyle *style);
 
 /* ── 历史 ─────────────────────────────────────────────────────────── */
 void Ui_SvgEdit_Commit(UiSvgEdit *ed);            /* 属性面板改完后提交 */

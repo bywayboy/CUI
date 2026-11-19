@@ -8,8 +8,11 @@
 #include <windows.h>
 #include <commdlg.h>
 #include "ui/ui_app.h"
+#include "ui/ui_color_select.h"
+#include "ui/ui_frame.h"
 #include "ui/ui_input.h"
 #include "ui/ui_paint.h"
+#include "ui/ui_popup.h"
 #include "ui/ui_svg_edit.h"
 #include "ui/ui_widgets.h"
 #include "edit.h"
@@ -36,6 +39,11 @@ typedef struct EdDemo {
 	int ctxOpen;
 	float ctxX, ctxY;
 	UiRect ctxRc;
+
+	UiPopupManager pm;
+	UiColorSelect csFill, csStroke;
+	long csKey;
+	int lastSelIdx, lastSelCount;
 	char msg[192];
 	DWORD msgTick;
 
@@ -44,11 +52,6 @@ typedef struct EdDemo {
 } EdDemo;
 
 static EdDemo g_demo;
-
-static const GfxColor kPalette[7] = {
-	0xFFD9DEE7u, 0xFF202020u, 0xFF2D7FF9u, 0xFF26A69Au,
-	0xFFEF9A3Du, 0xFFE05656u, 0xFFFFFFFFu
-};
 
 /* ── 文本/数字工具 (0CRT: 无 sprintf %f) ─────────────────────────── */
 
@@ -113,14 +116,6 @@ static void set_msg(EdDemo *d, const char *s)
 }
 
 /* ── 样式辅助 ─────────────────────────────────────────────────────── */
-
-static int palette_find(GfxColor c)
-{
-	int i;
-	for (i = 0; i < 7; i++)
-		if ((kPalette[i] & 0x00FFFFFFu) == (c & 0x00FFFFFFu)) return i;
-	return -1;
-}
 
 static int dash_index(const SvgStyle *st)
 {
@@ -506,6 +501,14 @@ static void on_init(UiApp *app, void *user)
 	d->ed = Ui_SvgEdit_Create(d->doc, Ui_Id("svgedit.canvas", 0, 0));
 
 	UiInput_Init(&d->form, &app->ui, &app->ime);
+	UiPopupManager_Init(&d->pm);
+	UiColorSelect_Init(&d->csFill, Ui_Id("svgedit.cs.fill", 0, 0), 0xFF3B82F6u);
+	UiColorSelect_Init(&d->csStroke, Ui_Id("svgedit.cs.stroke", 0, 0), 0xFFE0A33Eu);
+	UiColorSelect_AttachIme(&d->csFill, &app->ime);
+	UiColorSelect_AttachIme(&d->csStroke, &app->ime);
+	d->csKey = 0;
+	d->lastSelIdx = -2;
+	d->lastSelCount = -1;
 	d->fX = UiInput_Add(&d->form, Ui_Id("svgedit.x", 0, 0), 16, 0,
 		"0123456789.-+", L"X");
 	d->fY = UiInput_Add(&d->form, Ui_Id("svgedit.y", 0, 0), 16, 0,
@@ -547,6 +550,8 @@ static void on_shutdown(UiApp *app, void *user)
 	EdDemo *d = (EdDemo *)user;
 	(void)app;
 	UiInput_Shutdown(&d->form);
+	UiColorSelect_Shutdown(&d->csFill);
+	UiColorSelect_Shutdown(&d->csStroke);
 	Ui_SvgEdit_Destroy(d->ed);
 	SvgDoc_Destroy(d->doc);
 	d->ed = NULL;
@@ -586,28 +591,64 @@ static int tool_button(EdDemo *d, UiContext *ui, UiRect rc,
 	return 0;
 }
 
-static void swatch(EdDemo *d, Gfx *g, UiRect rc, GfxColor color, int none)
+static long cs_sel_key_(EdDemo *d)
 {
-	UiTheme *t = &d->app->theme;
-	if (none) {
-		Gfx_FillRoundRect(g, rc, 4.0f, t->btnBg);
-		Gfx_StrokeRoundRect(g, rc, 4.0f, t->btnBorder, 1.0f);
-		Gfx_Line(g, rc.x + 3, rc.y + rc.h - 3, rc.x + rc.w - 3, rc.y + 3,
-			t->text3, 1.0f);
-		return;
+	int idx = Ui_SvgEdit_SelIndex(d->ed, 0);
+	long k = (long)(idx + 1) * 1000003L + (long)Ui_SvgEdit_SelCount(d->ed) * 131L;
+	if (idx >= 0 && idx < d->doc->count) k += d->doc->els[idx].version;
+	return k;
+}
+
+/* 触发器颜色跟随选中元素; 面板打开/拖动中不覆盖. */
+static void cs_sync(EdDemo *d)
+{
+	SvgStyle st;
+	long key = cs_sel_key_(d);
+	if (key == d->csKey) return;
+	d->csKey = key;
+	if (UiColorSelect_IsOpen(&d->pm, &d->csFill) ||
+		UiColorSelect_IsOpen(&d->pm, &d->csStroke)) return;
+	Ui_SvgEdit_GetStyle(d->ed, &st);
+	if (st.fill.kind == SVG_PAINT_NONE)
+		UiColorSelect_SetColor(&d->csFill, 0xFF9AA3AFu);
+	else if ((st.fill.kind == SVG_PAINT_LINEAR ||
+			st.fill.kind == SVG_PAINT_RADIAL) && st.fill.stops &&
+		st.fill.stopCount > 0)
+		UiColorSelect_SetColor(&d->csFill, st.fill.stops[0].color);
+	else
+		UiColorSelect_SetColor(&d->csFill, st.fill.color);
+	UiColorSelect_SetColor(&d->csStroke, st.stroke.kind == SVG_PAINT_NONE
+		? 0xFF9AA3AFu : st.stroke.color);
+	Svg_StyleFree(&st);
+}
+
+static void cs_apply(EdDemo *d, int stroke, UiColor c)
+{
+	SvgStyle st;
+	if (Ui_SvgEdit_SelCount(d->ed) <= 0) return;
+	Ui_SvgEdit_GetStyle(d->ed, &st);
+	if (stroke) {
+		st.stroke.kind = SVG_PAINT_SOLID;
+		st.stroke.color = c;
+	} else {
+		if (st.fill.kind == SVG_PAINT_NONE) st.fill.kind = SVG_PAINT_SOLID;
+		st.fill.color = c;
+		if ((st.fill.kind == SVG_PAINT_LINEAR ||
+				st.fill.kind == SVG_PAINT_RADIAL) && st.fill.stops &&
+			st.fill.stopCount > 0)
+			st.fill.stops[0].color = c;
 	}
-	Gfx_FillRoundRect(g, rc, 4.0f, color);
-	Gfx_StrokeRoundRect(g, rc, 4.0f, t->btnBorder, 1.0f);
+	Ui_SvgEdit_SetStyleLive(d->ed, &d->app->ui, &st);
+	Svg_StyleFree(&st);
 }
 
 static void fill_row_ui(EdDemo *d, UiContext *ui, float x, float y)
 {
-	UiTheme *t = &d->app->theme;
-	Gfx *g = d->app->gfx;
 	SvgStyle st;
 	UiButtonStyle plain = btn_plain();
 	const char *kindText;
 	Ui_SvgEdit_GetStyle(d->ed, &st);
+	cs_sync(d);
 	if (st.fill.kind == SVG_PAINT_NONE) kindText = "填充: 无";
 	else if (st.fill.kind == SVG_PAINT_LINEAR) kindText = "填充: 线";
 	else if (st.fill.kind == SVG_PAINT_RADIAL) kindText = "填充: 径";
@@ -634,29 +675,44 @@ static void fill_row_ui(EdDemo *d, UiContext *ui, float x, float y)
 			st.fill.cx = 0.5f; st.fill.cy = 0.5f; st.fill.r = 0.5f;
 		}
 		Ui_SvgEdit_SetStyle(d->ed, ui, &st);
+		d->csKey = 0;
 	}
-	if (Ui_ButtonEx(ui, Ui_Id("svgedit.fillcolor", 0, 0),
-		Ui_Rect(x + 92, y, 88, 30), "填色", &plain, 1)) {
-		int pi = palette_find(st.fill.color);
-		pi = (pi + 1) % 7;
-		if ((st.fill.kind == SVG_PAINT_LINEAR ||
-			 st.fill.kind == SVG_PAINT_RADIAL) && st.fill.stops &&
-			st.fill.stopCount >= 1)
-			st.fill.stops[0].color = kPalette[pi];
-		st.fill.color = kPalette[pi];
-		if (st.fill.kind == SVG_PAINT_NONE) st.fill.kind = SVG_PAINT_SOLID;
-		Ui_SvgEdit_SetStyle(d->ed, ui, &st);
+	if (UiColorSelect_Draw(&d->csFill, &d->pm, ui,
+		Ui_Rect(x + 92, y, 96, 30),
+		Ui_SvgEdit_SelCount(d->ed) > 0 && st.fill.kind != SVG_PAINT_NONE) &&
+		st.fill.kind != SVG_PAINT_NONE)
+		cs_apply(d, 0, UiColorSelect_GetColor(&d->csFill));
+
+	if (st.fill.kind == SVG_PAINT_LINEAR || st.fill.kind == SVG_PAINT_RADIAL) {
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.stopadd", 0, 0),
+			Ui_Rect(x + 128, y + 120, 66, 28), "色标+", &plain, 1)) {
+			SvgGradStop gs[17];
+			int n = st.fill.stopCount, i;
+			if (n > 16) n = 16;
+			for (i = 0; i < n; i++) gs[i] = st.fill.stops[i];
+			if (n >= 2) {
+				gs[n].offset = st.fill.stops[n - 1].offset;
+				gs[n].color = st.fill.stops[n - 1].color;
+				gs[n - 1].offset = (st.fill.stops[n - 2].offset +
+					st.fill.stops[n - 1].offset) * 0.5f;
+				gs[n - 1].color = st.fill.stops[n - 2].color;
+				Svg_StyleSetFillStops(&st.fill, gs, n + 1);
+			}
+			Ui_SvgEdit_SetStyle(d->ed, ui, &st);
+		}
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.stopdel", 0, 0),
+			Ui_Rect(x + 200, y + 120, 66, 28), "色标-", &plain, 1)) {
+			if (st.fill.stopCount > 2)
+				Svg_StyleSetFillStops(&st.fill, st.fill.stops,
+					st.fill.stopCount - 1);
+			Ui_SvgEdit_SetStyle(d->ed, ui, &st);
+		}
 	}
-	swatch(d, g, Ui_Rect(x + 188, y + 6, 30, 18),
-		st.fill.color, st.fill.kind == SVG_PAINT_NONE);
-	(void)t;
 	Svg_StyleFree(&st);
 }
 
 static void stroke_row_ui(EdDemo *d, UiContext *ui, float x, float y)
 {
-	UiTheme *t = &d->app->theme;
-	Gfx *g = d->app->gfx;
 	SvgStyle st;
 	UiButtonStyle plain = btn_plain();
 	char dashLabel[48];
@@ -673,22 +729,16 @@ static void stroke_row_ui(EdDemo *d, UiContext *ui, float x, float y)
 			? SVG_PAINT_SOLID : SVG_PAINT_NONE;
 		Ui_SvgEdit_SetStyle(d->ed, ui, &st);
 	}
-	if (Ui_ButtonEx(ui, Ui_Id("svgedit.strokecolor", 0, 0),
-		Ui_Rect(x + 88, y, 84, 30), "描边色", &plain, 1)) {
-		int pi = palette_find(st.stroke.color);
-		pi = (pi + 1) % 7;
-		st.stroke.color = kPalette[pi];
-		if (st.stroke.kind == SVG_PAINT_NONE) st.stroke.kind = SVG_PAINT_SOLID;
-		Ui_SvgEdit_SetStyle(d->ed, ui, &st);
-	}
+	if (UiColorSelect_Draw(&d->csStroke, &d->pm, ui,
+		Ui_Rect(x + 88, y, 84, 30),
+		Ui_SvgEdit_SelCount(d->ed) > 0 && st.stroke.kind != SVG_PAINT_NONE) &&
+		st.stroke.kind != SVG_PAINT_NONE)
+		cs_apply(d, 1, UiColorSelect_GetColor(&d->csStroke));
 	if (Ui_ButtonEx(ui, Ui_Id("svgedit.dash", 0, 0),
 		Ui_Rect(x + 180, y, 92, 30), dashLabel, &plain, 1)) {
 		dash_apply(&st, (di + 1) % 4);
 		Ui_SvgEdit_SetStyle(d->ed, ui, &st);
 	}
-	swatch(d, g, Ui_Rect(x + 180, y + 35, 24, 4),
-		st.stroke.color, st.stroke.kind == SVG_PAINT_NONE);
-	(void)t;
 	Svg_StyleFree(&st);
 }
 
@@ -740,28 +790,7 @@ static void inspector_style_tab(EdDemo *d, UiContext *ui, UiRect panel)
 		Ui_SvgEdit_SetStyle(d->ed, ui, &st);
 	}
 	if (st.fill.kind == SVG_PAINT_LINEAR || st.fill.kind == SVG_PAINT_RADIAL) {
-		if (Ui_ButtonEx(ui, Ui_Id("svgedit.stopadd", 0, 0),
-			Ui_Rect(x + 128, y + 120, 66, 28), "色标+", &plain, 1)) {
-			SvgGradStop gs[17];
-			int n = st.fill.stopCount, i;
-			if (n > 16) n = 16;
-			for (i = 0; i < n; i++) gs[i] = st.fill.stops[i];
-			if (n >= 2) {
-				gs[n - 1].offset = (st.fill.stops[n - 2].offset +
-					st.fill.stops[n - 1].offset) * 0.5f;
-				gs[n - 1].color = st.fill.stops[n - 2].color;
-				gs[n] = st.fill.stops[n - 1];
-				Svg_StyleSetFillStops(&st.fill, gs, n + 1);
-			}
-			Ui_SvgEdit_SetStyle(d->ed, ui, &st);
-		}
-		if (Ui_ButtonEx(ui, Ui_Id("svgedit.stopdel", 0, 0),
-			Ui_Rect(x + 200, y + 120, 66, 28), "色标-", &plain, 1)) {
-			if (st.fill.stopCount > 2)
-				Svg_StyleSetFillStops(&st.fill, st.fill.stops,
-					st.fill.stopCount - 1);
-			Ui_SvgEdit_SetStyle(d->ed, ui, &st);
-		}
+		/* 色标增删由 fill_row_ui 提供 (右侧第 1 行下) */
 	} else {
 		wsprintfA(buf, "渐变 %.0f°", st.fill.angleDeg);
 		Gfx_Text(g, t->fSmall, buf, Ui_Rect(x + 128, y + 120, 140, 28),
@@ -1078,6 +1107,20 @@ static void inspector2(EdDemo *d, UiContext *ui, UiRect panel)
 	UiTheme *t = &app->theme;
 	Gfx *g = app->gfx;
 	float tw;
+	int sidx = Ui_SvgEdit_SelIndex(d->ed, 0);
+	int scnt = Ui_SvgEdit_SelCount(d->ed);
+	cs_sync(d);
+	if (sidx != d->lastSelIdx || scnt != d->lastSelCount) {
+		d->lastSelIdx = sidx;
+		d->lastSelCount = scnt;
+		if (scnt == 1 && sidx >= 0 && sidx < d->doc->count &&
+			d->doc->els[sidx].type == SVG_EL_TEXT)
+			d->inspTab = 2;
+		else if (d->inspTab == 2)
+			d->inspTab = 0;
+		d->nameSyncIdx = -2;
+		d->textSyncIdx = -2;
+	}
 	Ui_Panel(ui, panel);
 	Gfx_Text(g, t->fHead, "检查器", Ui_Rect(panel.x + 14, panel.y + 8,
 		panel.w - 28, 24), t->text, GFX_TEXT_VCENTER);
@@ -1150,6 +1193,7 @@ static void on_frame(UiApp *app, void *user)
 	int zi;
 	float zoom;
 
+	UiPopupManager_BeginFrame(&d->pm, ui);
 	sync_fields(d);
 
 	Gfx_FillRoundRectGradV(g, Ui_Rect(0, 0, app->w, app->h),
@@ -1239,7 +1283,8 @@ static void on_frame(UiApp *app, void *user)
 		}
 	}
 
-	Ui_SvgEdit_SetInputBlock(d->ed, d->ctxOpen);
+	Ui_SvgEdit_SetInputBlock(d->ed,
+		d->ctxOpen || UiPopupManager_AnyOpen(&d->pm));
 	Ui_SvgEdit_Frame(d->ed, ui, d->canvasRc);
 
 	inspector2(d, ui, Ui_Rect(app->w - insW - 16.0f, top + 8.0f,
@@ -1283,11 +1328,20 @@ static void on_frame(UiApp *app, void *user)
 			350, d->statusRc.h), t->text3,
 		GFX_TEXT_RIGHT | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 	ctx_menu(d, app, ui);
+	UiColorSelect_DrawPopup(&d->csFill, &d->pm, ui);
+	UiColorSelect_DrawPopup(&d->csStroke, &d->pm, ui);
 }
 
 static void on_after_frame(UiApp *app, void *user)
 {
 	EdDemo *d = (EdDemo *)user;
+	if (d->csFill.committed || d->csStroke.committed) {
+		d->csFill.committed = 0;
+		d->csStroke.committed = 0;
+		Ui_SvgEdit_Commit(d->ed);
+	}
+	UiColorSelect_EndFrame(&d->csFill, UiFrame_Now());
+	UiColorSelect_EndFrame(&d->csStroke, UiFrame_Now());
 	if (d->wantExport) {
 		d->wantExport = 0;
 		save_svg(d);
@@ -1305,6 +1359,16 @@ static void on_after_frame(UiApp *app, void *user)
 static void on_mouse(UiApp *app, int msg, float x, float y, void *user)
 {
 	EdDemo *d = (EdDemo *)user;
+	{
+		int used;
+		used = UiColorSelect_Mouse(&d->csFill, &app->ui, msg, x, y);
+		used |= UiColorSelect_Mouse(&d->csStroke, &app->ui, msg, x, y);
+		if (used) {
+			double now = UiFrame_Now();
+			UiColorSelect_EndFrame(&d->csFill, now);
+			UiColorSelect_EndFrame(&d->csStroke, now);
+		}
+	}
 	if (msg == UI_APP_MOUSE_DOWN) {
 		if (d->ctxOpen) {
 			UiRect r = d->ctxRc;
@@ -1337,6 +1401,16 @@ static int on_key(UiApp *app, UINT vk, void *user)
 		UiApp_Invalidate(app);
 		return 1;
 	}
+	{
+		int csOpen = UiColorSelect_IsOpen(&d->pm, &d->csFill) ||
+			UiColorSelect_IsOpen(&d->pm, &d->csStroke);
+		if (UiColorSelect_Key(&d->csFill, &d->pm, &app->ui, vk) ||
+			UiColorSelect_Key(&d->csStroke, &d->pm, &app->ui, vk)) {
+			UiApp_Invalidate(app);
+			return 1;
+		}
+		if (csOpen) return 1;   /* 面板打开时屏蔽编辑器快捷键 */
+	}
 	if (UiInput_Key(&d->form, app->hwnd, vk)) {
 		UiApp_Invalidate(app);
 		return 1;
@@ -1368,6 +1442,8 @@ static int on_char(UiApp *app, wchar_t ch, void *user)
 {
 	EdDemo *d = (EdDemo *)user;
 	(void)app;
+	if (UiColorSelect_Char(&d->csFill, &app->ui, ch)) return 1;
+	if (UiColorSelect_Char(&d->csStroke, &app->ui, ch)) return 1;
 	return UiInput_Char(&d->form, ch);
 }
 
@@ -1375,6 +1451,8 @@ static void on_ime(UiApp *app, void *user)
 {
 	EdDemo *d = (EdDemo *)user;
 	(void)app;
+	UiColorSelect_OnIme(&d->csFill, &app->ui);
+	UiColorSelect_OnIme(&d->csStroke, &app->ui);
 	UiInput_OnIme(&d->form);
 }
 
@@ -1382,6 +1460,8 @@ static void on_timer(UiApp *app, void *user)
 {
 	EdDemo *d = (EdDemo *)user;
 	(void)app;
+	UiColorSelect_Blink(&d->csFill, &d->app->ui);
+	UiColorSelect_Blink(&d->csStroke, &d->app->ui);
 	UiInput_Blink(&d->form);
 	if (d->msg[0] && GetTickCount() - d->msgTick >= 3500)
 		d->msg[0] = 0;

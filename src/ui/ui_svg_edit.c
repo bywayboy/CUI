@@ -1254,10 +1254,18 @@ static int grad_handle_(UiSvgEdit *ed, int idx, float *x0, float *y0,
 
 static int grad_handle_hit_(UiSvgEdit *ed, int *part)
 {
-	float x0, y0, x1, y1;
+	float x0, y0, x1, y1, wx, wy;
 	int radial = 0;
 	int idx = ed->selCount == 1 ? ed->sel[0] : -1;
+	GfxRect wb;
 	if (!grad_handle_(ed, idx, &x0, &y0, &x1, &y1, &radial)) return -1;
+	/* 只允许在选中元素范围内抓渐变手柄: 手柄/半径可能伸出元素外,
+	 * 若跨到其它对象上会抢走点选 (用户无法再选中被覆盖的元素). */
+	s2w(ed, ed->mx, ed->my, &wx, &wy);
+	wb = SvgDoc_ElementBounds(ed->doc, idx);
+	if (wx < wb.x || wy < wb.y ||
+		wx > wb.x + wb.w || wy > wb.y + wb.h)
+		return -1;
 	if (pt_dist2(ed->mx, ed->my, x0, y0) <= 100.0f) { *part = 0; return idx; }
 	if (pt_dist2(ed->mx, ed->my, x1, y1) <= 100.0f) { *part = 1; return idx; }
 	return -1;
@@ -1299,7 +1307,8 @@ static void grad_drag_update_(UiSvgEdit *ed, int idx, int part)
 		} else {
 			float nx = (lx - cx) / b.w, ny = (ly - cy) / b.h;
 			float r = s_sqrt(nx * nx + ny * ny);
-			e->style.fill.r = r < 0.02f ? 0.02f : (r > 4.0f ? 4.0f : r);
+			/* UI 手柄把 r 限制在 1 内, 避免手柄甩到相邻元素上抢点选 */
+			e->style.fill.r = r < 0.02f ? 0.02f : (r > 1.0f ? 1.0f : r);
 		}
 	} else {
 		float dx = lx - cx, dy = ly - cy;
@@ -1772,6 +1781,7 @@ static void create_finish(UiSvgEdit *ed, UiContext *ui, int moved)
 	}
 	Svg_History_Commit(ed->doc);
 	sel_only(ed, idx);
+	ed->tool = UI_SVG_TOOL_SELECT;
 	ed_invalidate(ed);
 	(void)ui;
 }
@@ -1954,6 +1964,7 @@ static void pen_finish(UiSvgEdit *ed, UiContext *ui, int closePath, int commit)
 			Svg_ElementTouch(e);
 			Svg_History_Commit(ed->doc);
 			sel_only(ed, idx);
+			ed->tool = UI_SVG_TOOL_SELECT;
 		} else {
 			SvgDoc_Remove(ed->doc, idx);
 			cache_clear(ed);
@@ -2582,6 +2593,7 @@ static void press_left(UiSvgEdit *ed, UiContext *ui)
 		cache_clear(ed);
 		Svg_History_Commit(ed->doc);
 		ed->drag = SE_DRAG_SWALLOW;
+		ed->tool = UI_SVG_TOOL_SELECT;
 		ed_invalidate(ed);
 		return;
 	}
@@ -3858,7 +3870,8 @@ int Ui_SvgEdit_GetStyle(const UiSvgEdit *ed, SvgStyle *out)
 	return 1;
 }
 
-void Ui_SvgEdit_SetStyle(UiSvgEdit *ed, UiContext *ui, const SvgStyle *style)
+static void set_style_(UiSvgEdit *ed, UiContext *ui, const SvgStyle *style,
+	int commit)
 {
 	int i;
 	if (!ed || !style) return;
@@ -3870,9 +3883,19 @@ void Ui_SvgEdit_SetStyle(UiSvgEdit *ed, UiContext *ui, const SvgStyle *style)
 		style_assign(&ed->doc->els[idx], style);
 		Svg_ElementTouch(&ed->doc->els[idx]);
 	}
-	if (ed->selCount > 0) Svg_History_Commit(ed->doc);
+	if (commit && ed->selCount > 0) Svg_History_Commit(ed->doc);
 	ed_invalidate(ed);
 	(void)ui;
+}
+
+void Ui_SvgEdit_SetStyle(UiSvgEdit *ed, UiContext *ui, const SvgStyle *style)
+{
+	set_style_(ed, ui, style, 1);
+}
+
+void Ui_SvgEdit_SetStyleLive(UiSvgEdit *ed, UiContext *ui, const SvgStyle *style)
+{
+	set_style_(ed, ui, style, 0);
 }
 
 void Ui_SvgEdit_Commit(UiSvgEdit *ed)
