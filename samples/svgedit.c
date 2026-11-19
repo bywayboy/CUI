@@ -40,8 +40,8 @@ typedef struct EdDemo {
 	UiMenu ctxMenu;
 
 	UiPopupManager pm;
-	UiColorSelect csFill, csStroke;
-	UiColor csFillLast, csStrokeLast;
+	UiColorSelect csFill, csStroke, csFill2;
+	UiColor csFillLast, csStrokeLast, csFill2Last;
 	long csKey;
 	int lastSelIdx, lastSelCount;
 	char msg[192];
@@ -520,8 +520,10 @@ static void on_init(UiApp *app, void *user)
 	UiMenu_SetItems(&d->ctxMenu, kCtxItems, ED_CTX_N);
 	UiColorSelect_Init(&d->csFill, Ui_Id("svgedit.cs.fill", 0, 0), 0xFF3B82F6u);
 	UiColorSelect_Init(&d->csStroke, Ui_Id("svgedit.cs.stroke", 0, 0), 0xFFE0A33Eu);
+	UiColorSelect_Init(&d->csFill2, Ui_Id("svgedit.cs.fill2", 0, 0), 0xFFFFFFFFu);
 	UiColorSelect_AttachIme(&d->csFill, &app->ime);
 	UiColorSelect_AttachIme(&d->csStroke, &app->ime);
+	UiColorSelect_AttachIme(&d->csFill2, &app->ime);
 	d->csKey = -1;
 	d->lastSelIdx = -2;
 	d->lastSelCount = -1;
@@ -568,6 +570,7 @@ static void on_shutdown(UiApp *app, void *user)
 	UiInput_Shutdown(&d->form);
 	UiColorSelect_Shutdown(&d->csFill);
 	UiColorSelect_Shutdown(&d->csStroke);
+	UiColorSelect_Shutdown(&d->csFill2);
 	Ui_SvgEdit_Destroy(d->ed);
 	SvgDoc_Destroy(d->doc);
 	d->ed = NULL;
@@ -635,14 +638,21 @@ static void cs_sync(EdDemo *d)
 		UiColorSelect_SetColor(&d->csFill, st.fill.color);
 	UiColorSelect_SetColor(&d->csStroke, st.stroke.kind == SVG_PAINT_NONE
 		? 0xFF9AA3AFu : st.stroke.color);
+	if ((st.fill.kind == SVG_PAINT_LINEAR ||
+			st.fill.kind == SVG_PAINT_RADIAL) && st.fill.stops &&
+		st.fill.stopCount > 0)
+		UiColorSelect_SetColor(&d->csFill2,
+			st.fill.stops[st.fill.stopCount - 1].color);
 	d->csFillLast = UiColorSelect_GetColor(&d->csFill);
 	d->csStrokeLast = UiColorSelect_GetColor(&d->csStroke);
+	d->csFill2Last = UiColorSelect_GetColor(&d->csFill2);
 	Svg_StyleFree(&st);
 }
 
 /* 面板内拖动/输入不会立即回到 Draw 调用点 (changed 会在下一帧被清零),
  * 因此在鼠标事件与帧末按当前颜色主动同步到选中元素. */
 static void cs_apply(EdDemo *d, int stroke, UiColor c);
+static void cs_apply_stop(EdDemo *d, int last, UiColor c);
 
 static void cs_live(EdDemo *d)
 {
@@ -666,6 +676,16 @@ static void cs_live(EdDemo *d)
 	} else {
 		d->csStrokeLast = UiColorSelect_GetColor(&d->csStroke);
 	}
+	if (UiColorSelect_IsOpen(&d->pm, &d->csFill2)) {
+		UiColor c = UiColorSelect_GetColor(&d->csFill2);
+		if (c != d->csFill2Last) {
+			d->csFill2Last = c;
+			cs_apply_stop(d, 1, c);
+			UiApp_Invalidate(d->app);
+		}
+	} else {
+		d->csFill2Last = UiColorSelect_GetColor(&d->csFill2);
+	}
 }
 
 static void cs_apply(EdDemo *d, int stroke, UiColor c)
@@ -684,6 +704,25 @@ static void cs_apply(EdDemo *d, int stroke, UiColor c)
 			st.fill.stopCount > 0)
 			st.fill.stops[0].color = c;
 	}
+	Ui_SvgEdit_SetStyleLive(d->ed, &d->app->ui, &st);
+	Svg_StyleFree(&st);
+}
+
+static void cs_apply_stop(EdDemo *d, int last, UiColor c)
+{
+	SvgStyle st;
+	int idx;
+	if (Ui_SvgEdit_SelCount(d->ed) <= 0) return;
+	Ui_SvgEdit_GetStyle(d->ed, &st);
+	if ((st.fill.kind != SVG_PAINT_LINEAR &&
+			st.fill.kind != SVG_PAINT_RADIAL) || !st.fill.stops ||
+		st.fill.stopCount <= 0) {
+		Svg_StyleFree(&st);
+		return;
+	}
+	idx = last ? st.fill.stopCount - 1 : 0;
+	st.fill.stops[idx].color = c;
+	if (!last) st.fill.color = c;
 	Ui_SvgEdit_SetStyleLive(d->ed, &d->app->ui, &st);
 	Svg_StyleFree(&st);
 }
@@ -728,31 +767,14 @@ static void fill_row_ui(EdDemo *d, UiContext *ui, float x, float y)
 		Ui_SvgEdit_SelCount(d->ed) > 0 && st.fill.kind != SVG_PAINT_NONE) &&
 		st.fill.kind != SVG_PAINT_NONE)
 		cs_apply(d, 0, UiColorSelect_GetColor(&d->csFill));
-
 	if (st.fill.kind == SVG_PAINT_LINEAR || st.fill.kind == SVG_PAINT_RADIAL) {
-		if (Ui_ButtonEx(ui, Ui_Id("svgedit.stopadd", 0, 0),
-			Ui_Rect(x + 128, y + 120, 66, 28), "色标+", &plain, 1)) {
-			SvgGradStop gs[17];
-			int n = st.fill.stopCount, i;
-			if (n > 16) n = 16;
-			for (i = 0; i < n; i++) gs[i] = st.fill.stops[i];
-			if (n >= 2) {
-				gs[n].offset = st.fill.stops[n - 1].offset;
-				gs[n].color = st.fill.stops[n - 1].color;
-				gs[n - 1].offset = (st.fill.stops[n - 2].offset +
-					st.fill.stops[n - 1].offset) * 0.5f;
-				gs[n - 1].color = st.fill.stops[n - 2].color;
-				Svg_StyleSetFillStops(&st.fill, gs, n + 1);
-			}
-			Ui_SvgEdit_SetStyle(d->ed, ui, &st);
-		}
-		if (Ui_ButtonEx(ui, Ui_Id("svgedit.stopdel", 0, 0),
-			Ui_Rect(x + 200, y + 120, 66, 28), "色标-", &plain, 1)) {
-			if (st.fill.stopCount > 2)
-				Svg_StyleSetFillStops(&st.fill, st.fill.stops,
-					st.fill.stopCount - 1);
-			Ui_SvgEdit_SetStyle(d->ed, ui, &st);
-		}
+		/* 渐变状态: 第二个取色器编辑末端色标 */
+		if (UiColorSelect_Draw(&d->csFill2, &d->pm, ui,
+			Ui_Rect(x + 92, y + 36, 96, 30), 1) &&
+			st.fill.stopCount > 0)
+			cs_apply_stop(d, 1, UiColorSelect_GetColor(&d->csFill2));
+	} else if (UiColorSelect_IsOpen(&d->pm, &d->csFill2)) {
+		UiPopupManager_Close(&d->pm, ui);
 	}
 	Svg_StyleFree(&st);
 }
@@ -810,46 +832,71 @@ static void inspector_style_tab(EdDemo *d, UiContext *ui, UiRect panel)
 	SvgStyle st;
 	UiButtonStyle plain = btn_plain();
 	float x = panel.x + 14, y = panel.y + 72;
+	float gy;
 	char buf[64];
 
-	fill_row_ui(d, ui, x, y);
-	stroke_row_ui(d, ui, x, y + 40);
 	Ui_SvgEdit_GetStyle(d->ed, &st);
+	gy = (st.fill.kind == SVG_PAINT_LINEAR ||
+		st.fill.kind == SVG_PAINT_RADIAL) ? 36.0f : 0.0f;
+	fill_row_ui(d, ui, x, y);
+	stroke_row_ui(d, ui, x, y + 40 + gy);
 	wsprintfA(buf, "端点:%s", st.cap == SVG_CAP_ROUND ? "圆"
 		: (st.cap == SVG_CAP_SQUARE ? "方" : "平"));
 	if (Ui_ButtonEx(ui, Ui_Id("svgedit.cap", 0, 0),
-		Ui_Rect(x, y + 84, 120, 30), buf, &plain, 1)) {
+		Ui_Rect(x, y + 84 + gy, 120, 30), buf, &plain, 1)) {
 		st.cap = (st.cap + 1) % 3;
 		Ui_SvgEdit_SetStyle(d->ed, ui, &st);
 	}
 	wsprintfA(buf, "连接:%s", st.join == SVG_JOIN_ROUND ? "圆"
 		: (st.join == SVG_JOIN_BEVEL ? "斜" : "尖"));
 	if (Ui_ButtonEx(ui, Ui_Id("svgedit.join", 0, 0),
-		Ui_Rect(x + 128, y + 84, 120, 30), buf, &plain, 1)) {
+		Ui_Rect(x + 128, y + 84 + gy, 120, 30), buf, &plain, 1)) {
 		st.join = (st.join + 1) % 3;
 		Ui_SvgEdit_SetStyle(d->ed, ui, &st);
 	}
 	wsprintfA(buf, "规则:%s", st.fillRule ? "奇偶" : "非零");
 	if (Ui_ButtonEx(ui, Ui_Id("svgedit.fillrule", 0, 0),
-		Ui_Rect(x, y + 120, 120, 28), buf, &plain, 1)) {
+		Ui_Rect(x, y + 120 + gy, 120, 28), buf, &plain, 1)) {
 		st.fillRule = st.fillRule ? 0 : 1;
 		Ui_SvgEdit_SetStyle(d->ed, ui, &st);
 	}
 	if (st.fill.kind == SVG_PAINT_LINEAR || st.fill.kind == SVG_PAINT_RADIAL) {
-		/* 色标增删由 fill_row_ui 提供 (右侧第 1 行下) */
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.stopadd", 0, 0),
+			Ui_Rect(x + 128, y + 120 + gy, 66, 28), "色标+", &plain, 1)) {
+			SvgGradStop gs[17];
+			int n = st.fill.stopCount, i;
+			if (n > 16) n = 16;
+			for (i = 0; i < n; i++) gs[i] = st.fill.stops[i];
+			if (n >= 2) {
+				gs[n].offset = st.fill.stops[n - 1].offset;
+				gs[n].color = st.fill.stops[n - 1].color;
+				gs[n - 1].offset = (st.fill.stops[n - 2].offset +
+					st.fill.stops[n - 1].offset) * 0.5f;
+				gs[n - 1].color = st.fill.stops[n - 2].color;
+				Svg_StyleSetFillStops(&st.fill, gs, n + 1);
+			}
+			Ui_SvgEdit_SetStyle(d->ed, ui, &st);
+		}
+		if (Ui_ButtonEx(ui, Ui_Id("svgedit.stopdel", 0, 0),
+			Ui_Rect(x + 200, y + 120 + gy, 66, 28), "色标-", &plain, 1)) {
+			if (st.fill.stopCount > 2)
+				Svg_StyleSetFillStops(&st.fill, st.fill.stops,
+					st.fill.stopCount - 1);
+			Ui_SvgEdit_SetStyle(d->ed, ui, &st);
+		}
 	} else {
 		wsprintfA(buf, "渐变 %.0f°", st.fill.angleDeg);
 		Gfx_Text(g, t->fSmall, buf, Ui_Rect(x + 128, y + 120, 140, 28),
 			t->text3, GFX_TEXT_VCENTER);
 	}
 	if (Ui_ButtonEx(ui, Ui_Id("svgedit.clipcopy", 0, 0),
-		Ui_Rect(x, y + 152, 76, 26), "复制", &plain, 1))
+		Ui_Rect(x, y + 152 + gy, 76, 26), "复制", &plain, 1))
 		Ui_SvgEdit_CopySel(d->ed);
 	if (Ui_ButtonEx(ui, Ui_Id("svgedit.clippaste", 0, 0),
-		Ui_Rect(x + 82, y + 152, 76, 26), "粘贴", &plain, 1))
+		Ui_Rect(x + 82, y + 152 + gy, 76, 26), "粘贴", &plain, 1))
 		Ui_SvgEdit_Paste(d->ed, ui);
 	if (Ui_ButtonEx(ui, Ui_Id("svgedit.clipdup", 0, 0),
-		Ui_Rect(x + 164, y + 152, 76, 26), "副本", &plain, 1))
+		Ui_Rect(x + 164, y + 152 + gy, 76, 26), "副本", &plain, 1))
 		Ui_SvgEdit_DuplicateSel(d->ed, ui);
 	Svg_StyleFree(&st);
 	Gfx_Text(g, t->fSmall,
@@ -858,7 +905,7 @@ static void inspector_style_tab(EdDemo *d, UiContext *ui, UiRect panel)
 		"节点: 双击线段插入，拖橙点调弧，Shift 15° 吸附\n"
 		"组: Ctrl+G 组合 / Ctrl+Shift+G 解组\n"
 		"效率: Ctrl+C/V/D 复制粘贴副本 · 方向键微移",
-		Ui_Rect(x, y + 190, panel.w - 28, 130), t->text3,
+		Ui_Rect(x, y + 190 + gy, panel.w - 28, 130), t->text3,
 		GFX_TEXT_WRAP);
 }
 
@@ -936,6 +983,20 @@ static void inspector_geom_tab(EdDemo *d, UiContext *ui, UiRect panel)
 		if (Ui_ButtonEx(ui, Ui_Id("svgedit.disty", 0, 0),
 			Ui_Rect(x + 136, y + 212, 128, 28), "垂直等距", &bs, 1))
 			Ui_SvgEdit_Align(d->ed, ui, 7);
+	}
+	{
+		int ps = Ui_SvgEdit_PolySides(d->ed);
+		if (ps > 0) {
+			UiButtonStyle bs = btn_plain();
+			wsprintfA(buf, "边数 %d", ps);
+			label(app, buf, Ui_Rect(x, y + 250, 96, 28));
+			if (Ui_ButtonEx(ui, Ui_Id("svgedit.polydec", 0, 0),
+				Ui_Rect(x + 104, y + 248, 48, 28), "边-", &bs, 1))
+				Ui_SvgEdit_SetPolySides(d->ed, ui, ps - 1);
+			if (Ui_ButtonEx(ui, Ui_Id("svgedit.polyinc", 0, 0),
+				Ui_Rect(x + 158, y + 248, 48, 28), "边+", &bs, 1))
+				Ui_SvgEdit_SetPolySides(d->ed, ui, ps + 1);
+		}
 	}
 }
 
@@ -1353,6 +1414,7 @@ static void on_frame(UiApp *app, void *user)
 		GFX_TEXT_RIGHT | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 	UiColorSelect_DrawPopup(&d->csFill, &d->pm, ui);
 	UiColorSelect_DrawPopup(&d->csStroke, &d->pm, ui);
+	UiColorSelect_DrawPopup(&d->csFill2, &d->pm, ui);
 	UiMenu_Draw(&d->ctxMenu, &d->pm, ui);
 	ctx_consume(d, ui);
 }
@@ -1361,13 +1423,16 @@ static void on_after_frame(UiApp *app, void *user)
 {
 	EdDemo *d = (EdDemo *)user;
 	cs_live(d);
-	if (d->csFill.committed || d->csStroke.committed) {
+	if (d->csFill.committed || d->csStroke.committed ||
+		d->csFill2.committed) {
 		d->csFill.committed = 0;
 		d->csStroke.committed = 0;
+		d->csFill2.committed = 0;
 		Ui_SvgEdit_Commit(d->ed);
 	}
 	UiColorSelect_EndFrame(&d->csFill, UiFrame_Now());
 	UiColorSelect_EndFrame(&d->csStroke, UiFrame_Now());
+	UiColorSelect_EndFrame(&d->csFill2, UiFrame_Now());
 	if (d->wantExport) {
 		d->wantExport = 0;
 		save_svg(d);
@@ -1389,10 +1454,12 @@ static void on_mouse(UiApp *app, int msg, float x, float y, void *user)
 		int used;
 		used = UiColorSelect_Mouse(&d->csFill, &app->ui, msg, x, y);
 		used |= UiColorSelect_Mouse(&d->csStroke, &app->ui, msg, x, y);
+		used |= UiColorSelect_Mouse(&d->csFill2, &app->ui, msg, x, y);
 		if (used) {
 			double now = UiFrame_Now();
 			UiColorSelect_EndFrame(&d->csFill, now);
 			UiColorSelect_EndFrame(&d->csStroke, now);
+			UiColorSelect_EndFrame(&d->csFill2, now);
 			cs_live(d);
 		}
 	}
@@ -1427,9 +1494,11 @@ static int on_key(UiApp *app, UINT vk, void *user)
 	}
 	{
 		int csOpen = UiColorSelect_IsOpen(&d->pm, &d->csFill) ||
-			UiColorSelect_IsOpen(&d->pm, &d->csStroke);
+			UiColorSelect_IsOpen(&d->pm, &d->csStroke) ||
+			UiColorSelect_IsOpen(&d->pm, &d->csFill2);
 		if (UiColorSelect_Key(&d->csFill, &d->pm, &app->ui, vk) ||
-			UiColorSelect_Key(&d->csStroke, &d->pm, &app->ui, vk)) {
+			UiColorSelect_Key(&d->csStroke, &d->pm, &app->ui, vk) ||
+			UiColorSelect_Key(&d->csFill2, &d->pm, &app->ui, vk)) {
 			UiApp_Invalidate(app);
 			return 1;
 		}
@@ -1469,6 +1538,7 @@ static int on_char(UiApp *app, wchar_t ch, void *user)
 	int popup = UiPopupManager_AnyOpen(&d->pm);
 	if (UiColorSelect_Char(&d->csFill, &app->ui, ch)) return 1;
 	if (UiColorSelect_Char(&d->csStroke, &app->ui, ch)) return 1;
+	if (UiColorSelect_Char(&d->csFill2, &app->ui, ch)) return 1;
 	if (popup) return 0;   /* 弹层聚焦时不给底层输入框 */
 	return UiInput_Char(&d->form, ch);
 }
@@ -1478,6 +1548,7 @@ static void on_ime(UiApp *app, void *user)
 	EdDemo *d = (EdDemo *)user;
 	UiColorSelect_OnIme(&d->csFill, &app->ui);
 	UiColorSelect_OnIme(&d->csStroke, &app->ui);
+	UiColorSelect_OnIme(&d->csFill2, &app->ui);
 	if (!UiPopupManager_AnyOpen(&d->pm)) UiInput_OnIme(&d->form);
 }
 
@@ -1487,6 +1558,7 @@ static void on_timer(UiApp *app, void *user)
 	(void)app;
 	UiColorSelect_Blink(&d->csFill, &d->app->ui);
 	UiColorSelect_Blink(&d->csStroke, &d->app->ui);
+	UiColorSelect_Blink(&d->csFill2, &d->app->ui);
 	UiInput_Blink(&d->form);
 	if (d->msg[0] && GetTickCount() - d->msgTick >= 3500)
 		d->msg[0] = 0;

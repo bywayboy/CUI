@@ -62,6 +62,7 @@ typedef struct SvgGeom {
 	float p[8];
 	SvgPath path;
 	float rot;
+	SvgTransform xf;   /* 拖动起点变换快照 (xf 通道防累计) */
 } SvgGeom;
 
 /* 2D 滚动条几何 (画板+工作区留白 超出视口时出现) */
@@ -626,17 +627,24 @@ static void orig_clear(UiSvgEdit *ed)
 	ed->origCount = 0;
 }
 
-static void geom_from(SvgGeom *g, const SvgElement *e)
-{
+static void geom_from(SvgGeom *g, const SvgElement *e){
 	int i;
 	memset(g, 0, sizeof(*g));
 	g->type = e->type;
 	g->rot = e->rot;
+	g->xf = e->xf;
 	for (i = 0; i < 8; i++)
 		((float *)&g->p)[i] = ((const float *)&e->p)[i];
 	Svg_PathInit(&g->path);
 	if (e->type == SVG_EL_PATH || e->type == SVG_EL_POLYGON)
 		Svg_PathCopy(&g->path, &e->path);
+}
+
+/* xf 元素每次拖动都从起点快照重算, 避免 SvgDoc_*By 把本次总位移
+ * 反复累加到上一帧结果上 (鼠标一动手柄就“飞”). */
+static void geom_restore_xf(SvgElement *e, const SvgGeom *g)
+{
+	e->xf = g->xf;
 }
 
 static void orig_capture(UiSvgEdit *ed)
@@ -1664,6 +1672,8 @@ static void poly_rebuild(SvgElement *e, float cx, float cy, float r, int n)
 			SVG_NODE_CORNER);
 	}
 	e->path.closed = 1;
+	if (e->path.count > 0)
+		e->path.seg[e->path.count - 1] = SVG_SEG_LINE;
 	Svg_ElementTouch(e);
 }
 
@@ -2328,10 +2338,11 @@ static void update_drag(UiSvgEdit *ed, UiContext *ui)
 		float dy = wy - ed->startWY;
 		int i;
 		if (ed->gridOn && !alt_down()) {
-			float gx = snap_w(ed, ed->startWX + dx);
-			float gy = snap_w(ed, ed->startWY + dy);
-			dx = gx - ed->startWX;
-			dy = gy - ed->startWY;
+			/* 网格吸附按“位移量化”而不是把元素位置吸到网格:
+			 * 元素不在网格上时, 轻微移动不会先跳到最近网格 (飞跳). */
+			float st = ed->gridStep > 0.5f ? ed->gridStep : 8.0f;
+			dx = s_round_grid(dx, st);
+			dy = s_round_grid(dy, st);
 		}
 		if (shift_down()) {
 			if (s_abs(dx) > s_abs(dy)) dy = 0.0f;
@@ -2342,9 +2353,10 @@ static void update_drag(UiSvgEdit *ed, UiContext *ui)
 		for (i = 0; i < ed->origCount; i++) {
 			int idx = ed->sel[i];
 			if (idx < 0 || idx >= ed->doc->count) continue;
-			if (elem_needs_xf_(ed, idx))
+			if (elem_needs_xf_(ed, idx)) {
+				geom_restore_xf(&ed->doc->els[idx], &ed->orig[i]);
 				SvgDoc_Translate(ed->doc, idx, dx, dy);
-			else {
+			} else {
 				geom_apply_move(&ed->doc->els[idx], &ed->orig[i], dx, dy);
 				Svg_ElementTouch(&ed->doc->els[idx]);
 			}
@@ -2380,9 +2392,10 @@ static void update_drag(UiSvgEdit *ed, UiContext *ui)
 		for (i = 0; i < ed->origCount; i++) {
 			int idx = ed->sel[i];
 			if (idx < 0 || idx >= ed->doc->count) continue;
-			if (elem_needs_xf_(ed, idx))
+			if (elem_needs_xf_(ed, idx)) {
+				geom_restore_xf(&ed->doc->els[idx], &ed->orig[i]);
 				SvgDoc_ScaleBy(ed->doc, idx, sx, sy, ax, ay);
-			else {
+			} else {
 				geom_apply_scale(&ed->doc->els[idx], &ed->orig[i], ax, ay,
 					sx, sy);
 				Svg_ElementTouch(&ed->doc->els[idx]);
@@ -2404,9 +2417,10 @@ static void update_drag(UiSvgEdit *ed, UiContext *ui)
 		if (ed->origCount == 1 && ed->selCount == 1) {
 			int idx = ed->sel[0];
 			if (idx >= 0 && idx < ed->doc->count) {
-				if (elem_needs_xf_(ed, idx))
+				if (elem_needs_xf_(ed, idx)) {
+					geom_restore_xf(&ed->doc->els[idx], &ed->orig[0]);
 					SvgDoc_RotateBy(ed->doc, idx, delta, 0.0f, 0.0f);
-				else {
+				} else {
 					SvgElement *e = &ed->doc->els[idx];
 					e->rot = ed->orig[0].rot + delta;
 					Svg_ElementTouch(e);
@@ -2421,7 +2435,9 @@ static void update_drag(UiSvgEdit *ed, UiContext *ui)
 			float cx, cy, nx, ny;
 			if (idx < 0 || idx >= ed->doc->count) continue;
 			if (elem_needs_xf_(ed, idx)) {
-				GfxRect b = SvgDoc_ElementBounds(ed->doc, idx);
+				GfxRect b;
+				geom_restore_xf(&ed->doc->els[idx], &ed->orig[i]);
+				b = SvgDoc_ElementBounds(ed->doc, idx);
 				cx = b.x + b.w * 0.5f;
 				cy = b.y + b.h * 0.5f;
 				nx = ed->pivotX + (cx - ed->pivotX) * c
@@ -3239,6 +3255,46 @@ void Ui_SvgEdit_SetInputBlock(UiSvgEdit *ed, int blocked)
 {
 	if (!ed) return;
 	ed->inputBlock = blocked ? 1 : 0;
+}
+
+int Ui_SvgEdit_PolySides(const UiSvgEdit *ed)
+{
+	int idx;
+	if (!ed || !ed->doc || ed->selCount != 1) return -1;
+	idx = ed->sel[0];
+	if (idx < 0 || idx >= ed->doc->count) return -1;
+	if (ed->doc->els[idx].type != SVG_EL_POLYGON) return -1;
+	return ed->doc->els[idx].path.count >= 3
+		? ed->doc->els[idx].path.count : -1;
+}
+
+void Ui_SvgEdit_SetPolySides(UiSvgEdit *ed, UiContext *ui, int sides)
+{
+	SvgElement *e;
+	float cx, cy, r;
+	int idx;
+	if (!ed || !ed->doc || ed->selCount != 1) return;
+	idx = ed->sel[0];
+	if (idx < 0 || idx >= ed->doc->count) return;
+	e = &ed->doc->els[idx];
+	if (e->type != SVG_EL_POLYGON) return;
+	if (sides < 3) sides = 3;
+	if (sides > 64) sides = 64;
+	Svg_ElementCenter(e, &cx, &cy);
+	if (e->path.count > 0) {
+		float dx = e->path.nodes[0].x - cx;
+		float dy = e->path.nodes[0].y - cy;
+		r = s_sqrt(dx * dx + dy * dy);
+	} else {
+		GfxRect b = Svg_ElementLocalBounds(e);
+		r = s_min(b.w, b.h) * 0.5f;
+	}
+	if (r < 2.0f) r = 2.0f;
+	poly_rebuild(e, cx, cy, r, sides);
+	cache_clear(ed);
+	Svg_History_Commit(ed->doc);
+	ed_invalidate(ed);
+	(void)ui;
 }
 
 int Ui_SvgEdit_GridOn(const UiSvgEdit *ed)

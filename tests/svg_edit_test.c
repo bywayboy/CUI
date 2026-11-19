@@ -111,6 +111,7 @@ static void test_gradient_selection_reset(void)
 	CHECK(ed != NULL);
 	if (!ed) { SvgDoc_Destroy(doc); return; }
 	g_edit_id = id;
+	Ui_SvgEdit_SetGrid(ed, 0, 8.0f);
 	Ui_SvgEdit_ZoomReset(ed, vp);
 	frame_(ed);
 
@@ -251,6 +252,7 @@ static void test_text_transform(void)
 	CHECK(ed != NULL);
 	if (!ed) { SvgDoc_Destroy(doc); return; }
 	g_edit_id = id;
+	Ui_SvgEdit_SetGrid(ed, 0, 8.0f);
 	Ui_SvgEdit_ZoomReset(ed, vp);
 	frame_(ed);
 	frame_(ed);
@@ -262,10 +264,13 @@ static void test_text_transform(void)
 	b = SvgDoc_ElementBounds(doc, 0);
 	Ui_SvgEdit_WorldToScreen(ed, b.x + b.w * 0.5f, b.y + b.h * 0.5f, &sx, &sy);
 	press_at(ed, sx, sy);
+	Ui_OnMouseMove(&g_ctx, sx + 20.0f, sy + 15.0f);
+	frame_(ed);
 	Ui_OnMouseMove(&g_ctx, sx + 30.0f, sy + 20.0f);
 	frame_(ed);
 	release_at(ed, sx + 30.0f, sy + 20.0f);
-	CHECK(doc->els[0].xf.tx != 0.0f || doc->els[0].xf.ty != 0.0f);
+	CHECK(doc->els[0].xf.tx > 25.0f && doc->els[0].xf.tx < 40.0f);
+	CHECK(doc->els[0].xf.ty > 15.0f && doc->els[0].xf.ty < 28.0f);
 
 	/* 缩放文本 (右下角手柄) */
 	b = SvgDoc_ElementBounds(doc, 0);
@@ -284,6 +289,94 @@ static void test_text_transform(void)
 	frame_(ed);
 	release_at(ed, sx + 100.0f, sy + 30.0f);
 	CHECK(doc->els[0].xf.rot != 0.0f);
+
+	Ui_SvgEdit_Destroy(ed);
+	SvgDoc_Destroy(doc);
+}
+
+static void test_shape_drag(void)
+{
+	UiRect vp = g_vp = Ui_Rect(0.0f, 0.0f, 800.0f, 600.0f);
+	SvgDoc *doc = SvgDoc_Create(400.0f, 300.0f);
+	UiSvgEdit *ed;
+	UiId id = Ui_Id("svg.shape.drag", 0, 0);
+	SvgElement *el, *ln, *pg;
+	GfxRect b0, b1;
+	float sx, sy;
+	if (!doc) return;
+	el = SvgDoc_Add(doc, SVG_EL_ELLIPSE);
+	el->p.ellipse.cx = 100.0f; el->p.ellipse.cy = 80.0f;
+	el->p.ellipse.rx = 30.0f; el->p.ellipse.ry = 25.0f;
+	ln = SvgDoc_Add(doc, SVG_EL_LINE);
+	ln->p.line.x1 = 200.0f; ln->p.line.y1 = 200.0f;
+	ln->p.line.x2 = 260.0f; ln->p.line.y2 = 200.0f;
+	pg = SvgDoc_Add(doc, SVG_EL_POLYGON);
+	Svg_PathFree(&pg->path);
+	Svg_PathInit(&pg->path);
+	Svg_PathAddNode(&pg->path, 300.0f, 60.0f, SVG_NODE_CORNER);
+	Svg_PathAddNode(&pg->path, 340.0f, 90.0f, SVG_NODE_CORNER);
+	Svg_PathAddNode(&pg->path, 300.0f, 120.0f, SVG_NODE_CORNER);
+	pg->path.closed = 1;
+	pg->path.seg[2] = SVG_SEG_LINE;
+	Svg_ElementTouch(pg);
+	ed = Ui_SvgEdit_Create(doc, id);
+	CHECK(ed != NULL);
+	if (!ed) { SvgDoc_Destroy(doc); return; }
+	g_edit_id = id;
+	Ui_SvgEdit_SetGrid(ed, 0, 8.0f);
+	Ui_SvgEdit_ZoomReset(ed, vp);
+	frame_(ed);
+
+	/* 椭圆拖 10,7 应只移动约 10,7 */
+	b0 = SvgDoc_ElementBounds(doc, 0);
+	Ui_SvgEdit_WorldToScreen(ed, 100.0f, 80.0f, &sx, &sy);
+	press_at(ed, sx, sy);
+	Ui_OnMouseMove(&g_ctx, sx + 10.0f, sy + 7.0f);
+	frame_(ed);
+	release_at(ed, sx + 10.0f, sy + 7.0f);
+	b1 = SvgDoc_ElementBounds(doc, 0);
+	CHECK(b1.x > b0.x + 6.0f && b1.x < b0.x + 14.0f);
+	CHECK(b1.y > b0.y + 3.0f && b1.y < b0.y + 11.0f);
+
+	/* 已带变换 (xf) 的元素多次拖动不应累计位移 */
+	SvgDoc_RotateBy(doc, 0, 0.0f, 0.0f, 0.0f);
+	frame_(ed);
+	b0 = SvgDoc_ElementBounds(doc, 0);
+	Ui_SvgEdit_WorldToScreen(ed, b0.x + b0.w * 0.5f,
+		b0.y + b0.h * 0.5f, &sx, &sy);
+	press_at(ed, sx, sy);
+	Ui_OnMouseMove(&g_ctx, sx + 4.0f, sy + 1.0f);
+	frame_(ed);
+	Ui_OnMouseMove(&g_ctx, sx + 10.0f, sy + 6.0f);
+	frame_(ed);
+	release_at(ed, sx + 10.0f, sy + 6.0f);
+	b1 = SvgDoc_ElementBounds(doc, 0);
+	CHECK(b1.x > b0.x + 6.0f && b1.x < b0.x + 14.0f);
+	CHECK(b1.y > b0.y + 2.0f && b1.y < b0.y + 10.0f);
+
+	/* 直线中点拖动 */
+	Ui_SvgEdit_WorldToScreen(ed, 230.0f, 200.0f, &sx, &sy);
+	press_at(ed, sx, sy);
+	Ui_OnMouseMove(&g_ctx, sx + 12.0f, sy + 6.0f);
+	frame_(ed);
+	release_at(ed, sx + 12.0f, sy + 6.0f);
+	CHECK(ln->p.line.x1 > 204.0f && ln->p.line.x1 < 218.0f);
+
+	/* 多边形拖动 */
+	Ui_SvgEdit_WorldToScreen(ed, 315.0f, 90.0f, &sx, &sy);
+	press_at(ed, sx, sy);
+	Ui_OnMouseMove(&g_ctx, sx + 9.0f, sy + 8.0f);
+	frame_(ed);
+	release_at(ed, sx + 9.0f, sy + 8.0f);
+	CHECK(pg->path.nodes[0].x > 303.0f && pg->path.nodes[0].x < 315.0f);
+
+	/* 多边形边数调整 */
+	Ui_SvgEdit_SelectIndex(ed, 2);
+	CHECK(Ui_SvgEdit_PolySides(ed) == 3);
+	Ui_SvgEdit_SetPolySides(ed, &g_ctx, 6);
+	CHECK(Ui_SvgEdit_PolySides(ed) == 6);
+	CHECK(pg->path.closed == 1);
+	CHECK(pg->path.seg[5] == SVG_SEG_LINE);
 
 	Ui_SvgEdit_Destroy(ed);
 	SvgDoc_Destroy(doc);
@@ -452,6 +545,7 @@ void __stdcall startup(void)
 	test_gradient_selection_reset();
 	test_color_focus();
 	test_text_transform();
+	test_shape_drag();
 
 	CHECK(HeapValidate(GetProcessHeap(), 0, NULL) != 0);
 

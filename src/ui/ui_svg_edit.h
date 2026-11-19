@@ -46,6 +46,9 @@ void Ui_SvgEdit_RightDown(UiSvgEdit *ed, float x, float y);
 
 void  Ui_SvgEdit_SetTool(UiSvgEdit *ed, int tool);
 int   Ui_SvgEdit_Tool(const UiSvgEdit *ed);
+/* 选中单个多边形时的边数读写 (3..64), 以中心/外接半径重建. */
+int   Ui_SvgEdit_PolySides(const UiSvgEdit *ed);
+void  Ui_SvgEdit_SetPolySides(UiSvgEdit *ed, UiContext *ui, int sides);
 void  Ui_SvgEdit_ZoomAt(UiSvgEdit *ed, float factor, float sx, float sy);
 void  Ui_SvgEdit_ZoomFit(UiSvgEdit *ed, UiRect viewport);
 void  Ui_SvgEdit_ZoomReset(UiSvgEdit *ed, UiRect viewport);
