@@ -1838,19 +1838,23 @@ static void release_left(UiSvgEdit *ed, UiContext *ui)
 {
 	switch (ed->drag) {
 	case SE_DRAG_PEN_POINT: {
-		float wx, wy, dwx, dwy;
-		s2w(ed, ed->mx, ed->my, &wx, &wy);
-		s2w(ed, ed->pressSX, ed->pressSY, &dwx, &dwy);
-		wx = snap_w(ed, wx);
-		wy = snap_w(ed, wy);
+		float awx, awy, rwx, rwy, hx = 0.0f, hy = 0.0f;
+		s2w(ed, ed->pressSX, ed->pressSY, &awx, &awy);
+		s2w(ed, ed->mx, ed->my, &rwx, &rwy);
+		awx = snap_w(ed, awx);
+		awy = snap_w(ed, awy);
+		if (ed->penDragging) {
+			hx = rwx - awx;
+			hy = rwy - awy;
+		}
 		if (ed->penJustStarted) {
 			ed->penJustStarted = 0;
 			if (ed->penDragging) {
-				pen_apply_first_handles(ed, wx - dwx, wy - dwy);
+				pen_apply_first_handles(ed, hx, hy);
 			}
 			ed_invalidate(ed);
 		} else {
-			pen_add_point(ed, wx, wy, wx - dwx, wy - dwy);
+			pen_add_point(ed, awx, awy, hx, hy);
 			if (ed->penActive) pen_set_hint(ed);
 			ed_invalidate(ed);
 		}
