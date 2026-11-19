@@ -24,9 +24,9 @@ typedef struct EdDemo {
 
 	int fX, fY, fW, fH, fRot, fStroke, fOpacity, fAngle;
 	int fNodeAng, fNodeLen;
-	int fName;
-	int inspTab;          /* 0 样式 / 1 几何 / 2 图层 */
-	int nameSyncIdx;
+	int fName, fText, fFamily, fSize;
+	int inspTab;          /* 0 样式 / 1 几何 / 2 文本 / 3 图层 */
+	int nameSyncIdx, textSyncIdx;
 	char geoLabel[4][10];
 	long syncKey;
 	int syncType;
@@ -525,8 +525,15 @@ static void on_init(UiApp *app, void *user)
 		"0123456789.-+", L"力度");
 	d->fName = UiInput_Add(&d->form, Ui_Id("svgedit.name", 0, 0), 47, 0,
 		NULL, L"图层名称");
+	d->fText = UiInput_Add(&d->form, Ui_Id("svgedit.text", 0, 0), 255, 0,
+		NULL, L"文本内容");
+	d->fFamily = UiInput_Add(&d->form, Ui_Id("svgedit.family", 0, 0), 47, 0,
+		NULL, L"字体");
+	d->fSize = UiInput_Add(&d->form, Ui_Id("svgedit.fsize", 0, 0), 8, 0,
+		"0123456789.", L"字号");
 	d->inspTab = 0;
 	d->nameSyncIdx = -2;
+	d->textSyncIdx = -2;
 	geo_labels(d, -1);
 	set_msg(d, "");
 	d->msgTick = 0;
@@ -900,6 +907,89 @@ static void inspector_layers_tab(EdDemo *d, UiContext *ui, UiRect panel)
 	(void)plain;
 }
 
+static void inspector_text_tab(EdDemo *d, UiContext *ui, UiRect panel)
+{
+	UiApp *app = d->app;
+	UiTheme *t = &app->theme;
+	Gfx *g = app->gfx;
+	UiButtonStyle plain = btn_plain();
+	int idx = Ui_SvgEdit_TextTarget(d->ed);
+	SvgElement *e = NULL;
+	float x = panel.x + 14, y = panel.y + 72;
+	char buf[300];
+	char nm[64];
+
+	if (idx < 0 || idx >= d->doc->count) {
+		label(app, "选中文本元素后可编辑 (工具: T/文本)",
+			Ui_Rect(x, y, panel.w - 28, 24));
+		return;
+	}
+	e = &d->doc->els[idx];
+	if (d->textSyncIdx != idx && UiInput_Focused(&d->form) < 0) {
+		Edit_SetTextUtf8(UiInput_Edit(&d->form, d->fText),
+			e->text ? e->text : "");
+		Edit_SetTextUtf8(UiInput_Edit(&d->form, d->fFamily), e->family);
+		num_f1(buf, e->fontSize);
+		Edit_SetTextUtf8(UiInput_Edit(&d->form, d->fSize), buf);
+		d->textSyncIdx = idx;
+	}
+
+	label(app, "内容", Ui_Rect(x, y, 44, 24));
+	UiInput_SetRect(&d->form, d->fText, Ui_Rect(x + 50, y, panel.w - 78, 28));
+	UiInput_Draw(&d->form, d->fText);
+	Edit_TextUtf8(UiInput_Edit(&d->form, d->fText), buf, (int)sizeof(buf));
+	if (lstrcmpA(buf, e->text ? e->text : "") != 0)
+		Ui_SvgEdit_SetTextContent(d->ed, ui, buf);
+
+	label(app, "字体", Ui_Rect(x, y + 40, 44, 24));
+	UiInput_SetRect(&d->form, d->fFamily, Ui_Rect(x + 50, y + 38,
+		panel.w - 78, 28));
+	UiInput_Draw(&d->form, d->fFamily);
+	Edit_TextUtf8(UiInput_Edit(&d->form, d->fFamily), nm, (int)sizeof(nm));
+	label(app, "字号", Ui_Rect(x, y + 76, 44, 24));
+	UiInput_SetRect(&d->form, d->fSize, Ui_Rect(x + 50, y + 74, 70, 28));
+	UiInput_Draw(&d->form, d->fSize);
+	Edit_TextUtf8(UiInput_Edit(&d->form, d->fSize), buf, 16);
+	{
+		float size = e->fontSize;
+		float ns;
+		if (parse_f(buf, &ns) && ns > 0.0f) size = ns;
+		if (lstrcmpA(nm, e->family) != 0 || size != e->fontSize)
+			Ui_SvgEdit_SetTextFont(d->ed, ui, nm, size, e->fontWeight);
+	}
+	wsprintfA(buf, "字重: %d", e->fontWeight);
+	if (Ui_ButtonEx(ui, Ui_Id("svgedit.text.weight", 0, 0),
+		Ui_Rect(x + 130, y + 74, 96, 28), buf, &plain, 1))
+		Ui_SvgEdit_SetTextFont(d->ed, ui, e->family, e->fontSize,
+			e->fontWeight >= 600 ? 400 : 700);
+
+	{
+		static const char *al[3] = { "左", "中", "右" };
+		static const char *an[3] = { "起", "中", "止" };
+		int i;
+		label(app, "对齐", Ui_Rect(x, y + 112, 44, 24));
+		for (i = 0; i < 3; i++) {
+			UiButtonStyle bs = btn_active(e->align == i);
+			if (Ui_ButtonEx(ui, Ui_Id("svgedit.text.align", i, 0),
+				Ui_Rect(x + 50 + (float)i * 40, y + 110, 34, 26),
+				al[i], &bs, 1))
+				Ui_SvgEdit_SetTextAlign(d->ed, ui, i, e->anchor);
+		}
+		label(app, "锚点", Ui_Rect(x, y + 148, 44, 24));
+		for (i = 0; i < 3; i++) {
+			UiButtonStyle bs = btn_active(e->anchor == i);
+			if (Ui_ButtonEx(ui, Ui_Id("svgedit.text.anchor", i, 0),
+				Ui_Rect(x + 50 + (float)i * 40, y + 146, 34, 26),
+				an[i], &bs, 1))
+				Ui_SvgEdit_SetTextAlign(d->ed, ui, e->align, i);
+		}
+	}
+	Gfx_Text(g, t->fSmall,
+		"新建: 选文本工具后在画布点击\n"
+		"多行: 模型/导出支持 \\n, 输入框暂为单行",
+		Ui_Rect(x, y + 190, panel.w - 28, 48), t->text3, GFX_TEXT_WRAP);
+}
+
 static void inspector2(EdDemo *d, UiContext *ui, UiRect panel)
 {
 	UiApp *app = d->app;
@@ -909,14 +999,17 @@ static void inspector2(EdDemo *d, UiContext *ui, UiRect panel)
 	Ui_Panel(ui, panel);
 	Gfx_Text(g, t->fHead, "检查器", Ui_Rect(panel.x + 14, panel.y + 8,
 		panel.w - 28, 24), t->text, GFX_TEXT_VCENTER);
-	tw = (panel.w - 28 - 12) / 3.0f;
+	tw = (panel.w - 28 - 18) / 4.0f;
 	insp_tab_btn(d, ui, Ui_Rect(panel.x + 14, panel.y + 34, tw, 28), "样式", 0);
 	insp_tab_btn(d, ui, Ui_Rect(panel.x + 14 + tw + 6, panel.y + 34, tw, 28),
 		"几何", 1);
 	insp_tab_btn(d, ui, Ui_Rect(panel.x + 14 + (tw + 6) * 2, panel.y + 34,
-		tw, 28), "图层", 2);
+		tw, 28), "文本", 2);
+	insp_tab_btn(d, ui, Ui_Rect(panel.x + 14 + (tw + 6) * 3, panel.y + 34,
+		tw, 28), "图层", 3);
 	if (d->inspTab == 0) inspector_style_tab(d, ui, panel);
 	else if (d->inspTab == 1) inspector_geom_tab(d, ui, panel);
+	else if (d->inspTab == 2) inspector_text_tab(d, ui, panel);
 	else inspector_layers_tab(d, ui, panel);
 }
 
@@ -1002,7 +1095,8 @@ static void on_frame(UiApp *app, void *user)
 		tool_button(d, ui, Ui_Rect(bx, by + 170, 44, 30), "多边", UI_SVG_TOOL_POLYGON);
 		tool_button(d, ui, Ui_Rect(bx, by + 204, 44, 30), "钢笔", UI_SVG_TOOL_PEN);
 		tool_button(d, ui, Ui_Rect(bx, by + 238, 44, 30), "贝塞", UI_SVG_TOOL_BEZIER);
-		by += 278;
+		tool_button(d, ui, Ui_Rect(bx, by + 272, 44, 30), "文本", UI_SVG_TOOL_TEXT);
+		by += 312;
 		if (Ui_ButtonEx(ui, Ui_Id("svgedit.undo", 0, 0),
 			Ui_Rect(bx, by, 44, 30), "撤销", &plain,
 			Ui_SvgEdit_CanUndo(d->ed))) {

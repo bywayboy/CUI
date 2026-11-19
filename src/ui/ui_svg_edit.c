@@ -91,6 +91,12 @@ struct UiSvgEdit {
 
 	SvgCacheEntry *cache;
 	int cacheCap;
+	/* 文本字体缓存 (family/size/weight) */
+	GfxFont *fonts[8];
+	char fontFam[8][64];
+	float fontSizes[8];
+	int fontWeights[8];
+	int fontCount;
 	SvgGeom *orig;
 	int origCount;
 	int origCap;
@@ -879,6 +885,120 @@ static SvgCacheEntry *cache_ensure(UiSvgEdit *ed, Gfx *g, int idx, SvgElement *e
 
 /* ── 绘制 ─────────────────────────────────────────────────────────── */
 
+static GfxFont *text_font_(UiSvgEdit *ed, const SvgElement *e)
+{
+	const char *fam = e->family[0] ? e->family : "Segoe UI";
+	float size = e->fontSize > 0.0f ? e->fontSize : 24.0f;
+	int wt = e->fontWeight >= 600 ? 700 : 400;
+	int i;
+	wchar_t wf[64];
+	GfxFont *f;
+	for (i = 0; i < ed->fontCount; i++) {
+		if (ed->fontWeights[i] == wt &&
+			ed->fontSizes[i] == size &&
+			lstrcmpA(ed->fontFam[i], fam) == 0)
+			return ed->fonts[i];
+	}
+	for (i = 0; i < 63 && fam[i]; i++) wf[i] = (wchar_t)(unsigned char)fam[i];
+	wf[i] = 0;
+	f = Gfx_CreateFontFamily(ed->gfx, wf, size, wt);
+	if (!f) return NULL;
+	if (ed->fontCount >= 8) {
+		int k;
+		Gfx_DestroyFont(ed->gfx, ed->fonts[0]);
+		for (k = 1; k < ed->fontCount; k++) {
+			ed->fonts[k - 1] = ed->fonts[k];
+			ed->fontSizes[k - 1] = ed->fontSizes[k];
+			ed->fontWeights[k - 1] = ed->fontWeights[k];
+			memcpy(ed->fontFam[k - 1], ed->fontFam[k], 64);
+		}
+		ed->fontCount--;
+	}
+	ed->fonts[ed->fontCount] = f;
+	ed->fontSizes[ed->fontCount] = size;
+	ed->fontWeights[ed->fontCount] = wt;
+	{
+		int k;
+		for (k = 0; k < 63 && fam[k]; k++) ed->fontFam[ed->fontCount][k] = fam[k];
+		ed->fontFam[ed->fontCount][k] = 0;
+	}
+	ed->fontCount++;
+	return f;
+}
+
+/* 测量 (按行) 并缓存到元素 */
+static void text_measure_(UiSvgEdit *ed, int idx, SvgElement *e)
+{
+	const char *s = e->text ? e->text : "";
+	const char *ls = s, *p;
+	float maxW = 0.0f;
+	int lines = 0;
+	GfxFont *f;
+	if (e->measVer == e->version && e->textW > 0.0f) return;
+	f = text_font_(ed, e);
+	if (!f) return;
+	for (p = s; ; p++) {
+		if (*p == '\n' || *p == 0) {
+			char buf[512];
+			int n = (int)(p - ls);
+			float w;
+			if (n > 511) n = 511;
+			memcpy(buf, ls, (size_t)n);
+			buf[n] = 0;
+			w = Gfx_TextWidth(ed->gfx, f, buf);
+			if (w > maxW) maxW = w;
+			lines++;
+			if (*p == 0) break;
+			ls = p + 1;
+		}
+	}
+	{
+		float lh = e->fontSize * (e->lineH > 0.0f ? e->lineH : 1.25f);
+		SvgDoc_SetTextBounds(ed->doc, idx, maxW, lh * (float)lines, lines);
+	}
+}
+
+static void draw_text_(UiSvgEdit *ed, Gfx *g, int idx)
+{
+	SvgElement *e = &ed->doc->els[idx];
+	UiTheme *t = ed->ctx->theme;
+	GfxFont *f;
+	UiColor col;
+	const char *s, *ls, *p;
+	float axf, af, lh, blockL;
+	int line = 0;
+	if (!e->text) return;
+	text_measure_(ed, idx, e);
+	f = text_font_(ed, e);
+	if (!f) return;
+	axf = e->anchor == 1 ? 0.5f : (e->anchor == 2 ? 1.0f : 0.0f);
+	af = e->align == 1 ? 0.5f : (e->align == 2 ? 1.0f : 0.0f);
+	lh = e->fontSize * (e->lineH > 0.0f ? e->lineH : 1.25f);
+	blockL = e->p.text.x - axf * e->textW;
+	col = ((e->style.setMask & SVG_STYLE_FILL) &&
+		e->style.fill.kind == SVG_PAINT_SOLID) ? e->style.fill.color
+		: (t ? t->text : 0xFF202020u);
+	s = e->text;
+	ls = s;
+	for (p = s; ; p++) {
+		if (*p == '\n' || *p == 0) {
+			char buf[512];
+			int n = (int)(p - ls);
+			float w, x, y;
+			if (n > 511) n = 511;
+			memcpy(buf, ls, (size_t)n);
+			buf[n] = 0;
+			w = Gfx_TextWidth(g, f, buf);
+			x = blockL + (e->textW - w) * af;
+			y = e->p.text.y + (float)line * lh;
+			Gfx_Text(g, f, buf, Ui_Rect(x, y, w + 4.0f, lh), col, 0);
+			line++;
+			if (*p == 0) break;
+			ls = p + 1;
+		}
+	}
+}
+
 static void draw_element(UiSvgEdit *ed, Gfx *g, int idx)
 {
 	SvgElement *e = &ed->doc->els[idx];
@@ -887,6 +1007,18 @@ static void draw_element(UiSvgEdit *ed, Gfx *g, int idx)
 	int xfPush = 0;
 	float savedRot = 0.0f;
 	if (!e->visible || e->type == SVG_EL_GROUP) return;
+	if (e->type == SVG_EL_TEXT) {
+		if (e->xf.has) {
+			float m[6];
+			SvgDoc_SelfMatrix(ed->doc, idx, m);
+			Gfx_PushMatrix(g, m);
+			draw_text_(ed, g, idx);
+			Gfx_PopTransform(g);
+		} else {
+			draw_text_(ed, g, idx);
+		}
+		return;
+	}
 	if (e->xf.has) {
 		float m[6];
 		SvgDoc_SelfMatrix(ed->doc, idx, m);
@@ -2218,6 +2350,27 @@ static void press_left(UiSvgEdit *ed, UiContext *ui)
 		pen_start(ed, snap_w(ed, wx), snap_w(ed, wy));
 		return;
 	}
+	if (ed->tool == UI_SVG_TOOL_TEXT) {
+		SvgElement *e;
+		int idx;
+		s2w(ed, ed->mx, ed->my, &wx, &wy);
+		if (!in_board(ed, wx, wy)) return;
+		e = SvgDoc_AddChild(ed->doc, -1, SVG_EL_TEXT);
+		if (!e) return;
+		idx = ed->doc->count - 1;
+		e->p.text.x = snap_w(ed, wx);
+		e->p.text.y = snap_w(ed, wy);
+		e->style.fill.kind = SVG_PAINT_SOLID;
+		e->style.fill.color = 0xFF202020u;
+		ed->doc->els[idx].version++;
+		sel_clear(ed);
+		sel_add(ed, idx);
+		cache_clear(ed);
+		Svg_History_Commit(ed->doc);
+		ed->drag = SE_DRAG_SWALLOW;
+		ed_invalidate(ed);
+		return;
+	}
 	if (ed->tool == UI_SVG_TOOL_SELECT) {
 		press_select_tool(ed, ui);
 		return;
@@ -2401,6 +2554,9 @@ static void update_hint(UiSvgEdit *ed)
 	} else if (ed->tool == UI_SVG_TOOL_ELLIPSE) {
 		s_str(ed->hint, (int)sizeof(ed->hint),
 			"椭圆：拖动绘制，Shift 正圆，Alt 从中心");
+	} else if (ed->tool == UI_SVG_TOOL_TEXT) {
+		s_str(ed->hint, (int)sizeof(ed->hint),
+			"文本：点击画布创建；在检查器「文本」页改内容/字体/对齐");
 	} else {
 		s_str(ed->hint, (int)sizeof(ed->hint),
 			"矩形：拖动绘制，Shift 正方形，Alt 从中心");
@@ -2434,6 +2590,10 @@ void Ui_SvgEdit_Destroy(UiSvgEdit *ed)
 	int i;
 	if (!ed) return;
 	if (ed->gfx) cache_clear(ed);
+	if (ed->gfx) {
+		for (i = 0; i < ed->fontCount; i++)
+			if (ed->fonts[i]) Gfx_DestroyFont(ed->gfx, ed->fonts[i]);
+	}
 	for (i = 0; i < ed->origCount; i++) geom_free(&ed->orig[i]);
 	s_free(ed->orig);
 	s_free(ed->cache);
@@ -2734,6 +2894,7 @@ int Ui_SvgEdit_Key(UiSvgEdit *ed, UiContext *ui, UINT vk)
 	switch (vk) {
 	case 'V': Ui_SvgEdit_SetTool(ed, UI_SVG_TOOL_SELECT); return 1;
 	case 'N': Ui_SvgEdit_SetTool(ed, UI_SVG_TOOL_NODE); return 1;
+	case 'T': Ui_SvgEdit_SetTool(ed, UI_SVG_TOOL_TEXT); return 1;
 	case 'L': Ui_SvgEdit_SetTool(ed, UI_SVG_TOOL_LINE); return 1;
 	case 'R': Ui_SvgEdit_SetTool(ed, UI_SVG_TOOL_RECT); return 1;
 	case 'O': Ui_SvgEdit_SetTool(ed, UI_SVG_TOOL_ELLIPSE); return 1;
@@ -2760,7 +2921,7 @@ void Ui_SvgEdit_SetTool(UiSvgEdit *ed, int tool)
 {
 	if (!ed) return;
 	if (ed->penActive) pen_finish(ed, ed->ctx, 0, 1);
-	if (tool < 0 || tool > UI_SVG_TOOL_BEZIER) return;
+	if (tool < 0 || tool > UI_SVG_TOOL_TEXT) return;
 	ed->tool = tool;
 	ed->nodeSel = -1;
 	update_hint(ed);
@@ -3058,6 +3219,63 @@ int Ui_SvgEdit_MoveOut(UiSvgEdit *ed, UiContext *ui)
 	ed_invalidate(ed);
 	(void)ui;
 	return 1;
+}
+
+int Ui_SvgEdit_TextTarget(const UiSvgEdit *ed)
+{
+	int i;
+	if (!ed || !ed->doc) return -1;
+	for (i = 0; i < ed->selCount; i++) {
+		int idx = ed->sel[i];
+		if (idx < 0 || idx >= ed->doc->count) continue;
+		if (ed->doc->els[idx].type == SVG_EL_TEXT) return idx;
+	}
+	return -1;
+}
+
+void Ui_SvgEdit_SetTextContent(UiSvgEdit *ed, UiContext *ui, const char *utf8)
+{
+	int idx = Ui_SvgEdit_TextTarget(ed);
+	if (idx < 0) return;
+	if (!SvgDoc_SetText(ed->doc, idx, utf8)) return;
+	cache_clear(ed);
+	Svg_History_Commit(ed->doc);
+	ed_invalidate(ed);
+	(void)ui;
+}
+
+void Ui_SvgEdit_SetTextFont(UiSvgEdit *ed, UiContext *ui,
+	const char *family, float size, int weight)
+{
+	int idx = Ui_SvgEdit_TextTarget(ed);
+	SvgElement *e;
+	int i;
+	if (idx < 0) return;
+	e = &ed->doc->els[idx];
+	if (family) {
+		for (i = 0; i < 63 && family[i]; i++) e->family[i] = family[i];
+		e->family[i] = 0;
+	}
+	if (size > 0.0f) e->fontSize = size;
+	e->fontWeight = weight >= 600 ? 700 : 400;
+	e->measVer = 0;
+	e->version++;
+	Svg_History_Commit(ed->doc);
+	ed_invalidate(ed);
+	(void)ui;
+}
+
+void Ui_SvgEdit_SetTextAlign(UiSvgEdit *ed, UiContext *ui, int align,
+	int anchor)
+{
+	int idx = Ui_SvgEdit_TextTarget(ed);
+	if (idx < 0) return;
+	ed->doc->els[idx].align = align < 0 ? 0 : (align > 2 ? 2 : align);
+	ed->doc->els[idx].anchor = anchor < 0 ? 0 : (anchor > 2 ? 2 : anchor);
+	ed->doc->els[idx].version++;
+	Svg_History_Commit(ed->doc);
+	ed_invalidate(ed);
+	(void)ui;
 }
 
 typedef struct LayerWalk {

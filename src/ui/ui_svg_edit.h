@@ -26,7 +26,8 @@ enum {
 	UI_SVG_TOOL_ELLIPSE,
 	UI_SVG_TOOL_POLYGON,
 	UI_SVG_TOOL_PEN,
-	UI_SVG_TOOL_BEZIER
+	UI_SVG_TOOL_BEZIER,
+	UI_SVG_TOOL_TEXT
 };
 
 typedef struct UiSvgEdit UiSvgEdit;
@@ -81,6 +82,15 @@ void Ui_SvgEdit_SetVisible(UiSvgEdit *ed, int idx, int on);
 void Ui_SvgEdit_SetLocked(UiSvgEdit *ed, int idx, int on);
 void Ui_SvgEdit_Rename(UiSvgEdit *ed, int idx, const char *utf8);
 int  Ui_SvgEdit_MoveOut(UiSvgEdit *ed, UiContext *ui);   /* 移出所在组 */
+
+/* ── 文本 (M9) ───────────────────────────────────────────────────── */
+int  Ui_SvgEdit_TextTarget(const UiSvgEdit *ed);   /* 选中文本元素下标, -1 */
+void Ui_SvgEdit_SetTextContent(UiSvgEdit *ed, UiContext *ui,
+	const char *utf8);
+void Ui_SvgEdit_SetTextFont(UiSvgEdit *ed, UiContext *ui,
+	const char *family, float size, int weight);
+void Ui_SvgEdit_SetTextAlign(UiSvgEdit *ed, UiContext *ui,
+	int align, int anchor);
 
 /* ── 节点切线 (角度/力度) ─────────────────────────────────────────── */
 /* 节点工具下当前选中节点; 返回节点索引, -1 = 无. */

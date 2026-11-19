@@ -707,6 +707,43 @@ static void test_m7_tree(void)
 	SvgDoc_Destroy(d);
 }
 
+/* M9: 文本元素 边界/命中/导出 (测量值由编辑器写入, 这里直接注入) */
+static void test_text_element(void)
+{
+	SvgDoc *d = SvgDoc_Create(400.0f, 300.0f);
+	SvgElement *e;
+	GfxRect b;
+	char *svg;
+
+	CHECK(d != NULL);
+	if (!d) return;
+	e = SvgDoc_Add(d, SVG_EL_TEXT);
+	CHECK(e && e->type == SVG_EL_TEXT);
+	SvgDoc_SetText(d, 0, "A&B");
+	SvgDoc_SetTextBounds(d, 0, 60.0f, 40.0f, 2);
+	e = &d->els[0];
+	CHECK(NEAR(e->textW, 60.0f, 0.01f) && NEAR(e->textH, 40.0f, 0.01f));
+	CHECK(streq_(SvgDoc_GetText(d, 0), "A&B"));
+	b = SvgDoc_ElementBounds(d, 0);
+	CHECK(NEAR(b.w, 60.0f, 0.1f) && NEAR(b.h, 40.0f, 0.1f));
+	CHECK(Svg_DocHit(d, b.x + 5.0f, b.y + 5.0f, 1.0f) == 0);
+
+	/* 多行 + 字体属性 + XML 转义 */
+	e->fontSize = 20.0f;
+	e->fontWeight = 700;
+	SvgDoc_SetText(d, 0, "A<&>\nB");
+	SvgDoc_SetTextBounds(d, 0, 60.0f, 50.0f, 2);
+	svg = Svg_Export(d);
+	CHECK(svg && find_(svg, "<text") != NULL);
+	CHECK(svg && find_(svg, "font-size=") != NULL);
+	CHECK(svg && find_(svg, "font-weight=\"700\"") != NULL);
+	CHECK(svg && find_(svg, "&amp;") != NULL);
+	CHECK(svg && find_(svg, "<tspan") != NULL);
+	Svg_FreeString(svg);
+
+	SvgDoc_Destroy(d);
+}
+
 void __stdcall startup(void)
 {
 	test_bounds();
@@ -718,6 +755,7 @@ void __stdcall startup(void)
 	test_history();
 	test_view();
 	test_m7_tree();
+	test_text_element();
 
 	{
 		char line[160];

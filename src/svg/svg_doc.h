@@ -20,7 +20,8 @@
 
 typedef enum {
 	SVG_EL_RECT, SVG_EL_ELLIPSE, SVG_EL_LINE, SVG_EL_POLYGON, SVG_EL_PATH,
-	SVG_EL_GROUP
+	SVG_EL_GROUP,
+	SVG_EL_TEXT
 } SvgElType;
 
 /* 每个元素局部 TRS; 世界 = 父世界 × 自身. 枢轴 (cx,cy) 在元素局部坐标. */
@@ -104,7 +105,19 @@ typedef struct {
 		struct { float x, y, w, h; } rect;
 		struct { float cx, cy, rx, ry; } ellipse;
 		struct { float x1, y1, x2, y2; } line;
+		struct { float x, y; } text;   /* 文本锚点左上 (anchor 决定 x 偏移) */
 	} p;
+	/* 文本 (SVG_EL_TEXT): 测量值由编辑器按字体写入 */
+	char *text;                     /* UTF-8, 可含 \n */
+	char family[64];                /* 字体族, 默认 Segoe UI */
+	float fontSize;                 /* DIP */
+	int fontWeight;                 /* 400 / 700 */
+	float lineH;                    /* 行高倍数, 默认 1.25 */
+	int align;                      /* 0 左 / 1 中 / 2 右 (块内对齐) */
+	int anchor;                     /* 0 start / 1 middle / 2 end */
+	float textW, textH;             /* 测量缓存 */
+	int textLines;
+	int measVer;                    /* == version 时测量有效 */
 	SvgPath path;                   /* PATH / POLYGON; 其余类型按参数展开 */
 	SvgStyle style;
 	SvgTransform xf;                /* 新模型; 组合根/组/嵌套变换 */
@@ -166,6 +179,11 @@ GfxRect SvgDoc_ElementBounds(const SvgDoc *d, int idx);
 void SvgDoc_Translate(SvgDoc *d, int idx, float dx, float dy);
 void SvgDoc_RotateBy(SvgDoc *d, int idx, float dDeg, float cx, float cy);
 void SvgDoc_ScaleBy(SvgDoc *d, int idx, float kx, float ky, float cx, float cy);
+
+/* ── 文本 (M9) ───────────────────────────────────────────────────── */
+int  SvgDoc_SetText(SvgDoc *d, int idx, const char *utf8);
+const char *SvgDoc_GetText(const SvgDoc *d, int idx);
+void SvgDoc_SetTextBounds(SvgDoc *d, int idx, float w, float h, int lines);
 /* 几何/样式改动后调用: version++ (绘制与画刷缓存失效) */
 void Svg_ElementTouch(SvgElement *e);
 

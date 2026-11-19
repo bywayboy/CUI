@@ -111,6 +111,18 @@ static void *x_alloc(size_t n)
 	return HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, n ? n : 1);
 }
 
+static char *x_strdup_(const char *s)
+{
+	size_t n = 0;
+	char *p;
+	if (!s) s = "";
+	while (s[n]) n++;
+	p = (char *)x_alloc(n + 1);
+	if (!p) return NULL;
+	memcpy(p, s, n + 1);
+	return p;
+}
+
 static void *x_grow(void *old, size_t n)
 {
 	return old
@@ -841,6 +853,37 @@ void SvgDoc_RotateBy(SvgDoc *d, int idx, float dDeg, float cx, float cy)
 	d->els[idx].version++;
 }
 
+/* ── 文本 API (M9) ───────────────────────────────────────────────── */
+
+int SvgDoc_SetText(SvgDoc *d, int idx, const char *utf8)
+{
+	char *p;
+	if (!d || idx < 0 || idx >= d->count) return 0;
+	if (d->els[idx].type != SVG_EL_TEXT) return 0;
+	p = x_strdup_(utf8 ? utf8 : "");
+	if (!p) return 0;
+	x_free(d->els[idx].text);
+	d->els[idx].text = p;
+	d->els[idx].measVer = 0;
+	d->els[idx].version++;
+	return 1;
+}
+
+const char *SvgDoc_GetText(const SvgDoc *d, int idx)
+{
+	if (!d || idx < 0 || idx >= d->count) return "";
+	return d->els[idx].text ? d->els[idx].text : "";
+}
+
+void SvgDoc_SetTextBounds(SvgDoc *d, int idx, float w, float h, int lines)
+{
+	if (!d || idx < 0 || idx >= d->count) return;
+	d->els[idx].textW = w;
+	d->els[idx].textH = h;
+	d->els[idx].textLines = lines > 0 ? lines : 1;
+	d->els[idx].measVer = d->els[idx].version;
+}
+
 void SvgDoc_ScaleBy(SvgDoc *d, int idx, float kx, float ky, float cx, float cy)
 {
 	(void)cx; (void)cy;
@@ -1283,6 +1326,15 @@ static int element_flatten_raw(const SvgElement *e, float tol, SvgPoly *out)
 		if (!pb_pt(&b, e->p.line.x1, e->p.line.y1)) return 0;
 		if (!pb_pt(&b, e->p.line.x2, e->p.line.y2)) return 0;
 		break;
+	case SVG_EL_TEXT: {
+		GfxRect tb = Svg_ElementLocalBounds(e);
+		if (!pb_contour(&b, 1)) return 0;
+		if (!pb_pt(&b, tb.x, tb.y)) return 0;
+		if (!pb_pt(&b, tb.x + tb.w, tb.y)) return 0;
+		if (!pb_pt(&b, tb.x + tb.w, tb.y + tb.h)) return 0;
+		if (!pb_pt(&b, tb.x, tb.y + tb.h)) return 0;
+		break;
+	}
 	default:
 		return flatten_path(&b, &e->path, tol);
 	}
@@ -1335,6 +1387,16 @@ GfxRect Svg_ElementLocalBounds(const SvgElement *e)
 		r.w = f_abs(e->p.line.x2 - e->p.line.x1);
 		r.h = f_abs(e->p.line.y2 - e->p.line.y1);
 		break;
+	case SVG_EL_TEXT: {
+		float axf = e->anchor == 1 ? 0.5f : (e->anchor == 2 ? 1.0f : 0.0f);
+		float w = e->textW > 0.0f ? e->textW : 1.0f;
+		float h = e->textH > 0.0f ? e->textH : e->fontSize * e->lineH;
+		r.x = e->p.text.x - axf * w;
+		r.y = e->p.text.y;
+		r.w = w;
+		r.h = h;
+		break;
+	}
 	default: {
 		SvgPoly po;
 		int i;
@@ -1643,6 +1705,24 @@ static void element_init(SvgElement *e, SvgElType type)
 		Svg_PathAddNode(&e->path, 80.0f, 140.0f, SVG_NODE_CORNER);
 		if (type == SVG_EL_POLYGON) e->path.closed = 1;
 		break;
+	case SVG_EL_TEXT:
+		e->p.text.x = 60.0f;
+		e->p.text.y = 60.0f;
+		e->text = x_strdup_("文本");
+		{
+			const char *fam = "Segoe UI";
+			int i;
+			for (i = 0; i < 63 && fam[i]; i++) e->family[i] = fam[i];
+			e->family[i] = 0;
+		}
+		e->fontSize = 24.0f;
+		e->fontWeight = 400;
+		e->lineH = 1.25f;
+		e->textW = 48.0f;
+		e->textH = 30.0f;
+		e->textLines = 1;
+		e->measVer = 0;
+		break;
 	}
 }
 
@@ -1652,6 +1732,8 @@ static void element_free(SvgElement *e)
 	x_free(e->children);
 	e->children = NULL;
 	e->childCount = e->childCap = 0;
+	x_free(e->text);
+	e->text = NULL;
 	Svg_PathFree(&e->path);
 	Svg_StyleFree(&e->style);
 }
@@ -1665,9 +1747,14 @@ static int element_copy(SvgElement *dst, const SvgElement *src)
 	dst->style.fill.stops = NULL; dst->style.fill.stopCount = 0;
 	dst->style.stroke.stops = NULL; dst->style.stroke.stopCount = 0;
 	dst->children = NULL;
+	dst->text = NULL;
+	if (src->text) {
+		dst->text = x_strdup_(src->text);
+		if (!dst->text) return 0;
+	}
 	if (src->childCount > 0) {
 		dst->children = (int *)x_alloc((size_t)src->childCount * sizeof(int));
-		if (!dst->children) return 0;
+		if (!dst->children) goto fail;
 		memcpy(dst->children, src->children,
 			(size_t)src->childCount * sizeof(int));
 		dst->childCount = src->childCount;
@@ -1683,6 +1770,8 @@ fail:
 	x_free(dst->children);
 	dst->children = NULL;
 	dst->childCount = dst->childCap = 0;
+	x_free(dst->text);
+	dst->text = NULL;
 	return 0;
 }
 
@@ -2707,6 +2796,60 @@ static void export_leaf_(SB *b, const SvgElement *e, GradDefs *gd)
 	sb_put(b, "/>\n");
 }
 
+static void sb_text_escaped_(SB *b, const char *s, int len)
+{
+	int i;
+	for (i = 0; i < len; i++) {
+		char c = s[i];
+		if (c == '&') sb_put(b, "&amp;");
+		else if (c == '<') sb_put(b, "&lt;");
+		else if (c == '>') sb_put(b, "&gt;");
+		else sb_ch(b, c);
+	}
+}
+
+static void export_text_(SB *b, const SvgElement *e, GradDefs *gd)
+{
+	const char *s = e->text ? e->text : "";
+	const char *ls = s;
+	const char *p;
+	int first = 1;
+	float dy = e->fontSize * (e->lineH > 0.0f ? e->lineH : 1.25f);
+
+	sb_put(b, "<text");
+	sb_attr_num(b, " x", e->p.text.x);
+	sb_attr_num(b, " y", e->p.text.y);
+	sb_put(b, " dominant-baseline=\"hanging\"");
+	sb_attr_str(b, " font-family", e->family[0] ? e->family : "Segoe UI");
+	sb_attr_num(b, " font-size", e->fontSize);
+	if (e->fontWeight >= 600) sb_attr_num(b, " font-weight", 700);
+	if (e->anchor == 1) sb_attr_str(b, " text-anchor", "middle");
+	else if (e->anchor == 2) sb_attr_str(b, " text-anchor", "end");
+	export_style(b, e, gd);
+	export_transform(b, e);
+	if (e->name[0]) sb_attr_str(b, " data-name", e->name);
+	sb_ch(b, '>');
+	for (p = s; ; p++) {
+		if (*p == '\n' || *p == 0) {
+			if (first) {
+				sb_text_escaped_(b, ls, (int)(p - ls));
+				first = 0;
+			} else {
+				sb_put(b, "<tspan x=\"");
+				sb_num(b, e->p.text.x);
+				sb_put(b, "\" dy=\"");
+				sb_num(b, dy);
+				sb_put(b, "\">");
+				sb_text_escaped_(b, ls, (int)(p - ls));
+				sb_put(b, "</tspan>");
+			}
+			if (*p == 0) break;
+			ls = p + 1;
+		}
+	}
+	sb_put(b, "</text>\n");
+}
+
 static void export_node_(SB *b, const SvgDoc *d, int idx, GradDefs *gd,
 	int depth)
 {
@@ -2726,6 +2869,10 @@ static void export_node_(SB *b, const SvgDoc *d, int idx, GradDefs *gd,
 			export_node_(b, d, e->children[i], gd, depth + 1);
 		export_indent_(b, depth);
 		sb_put(b, "</g>\n");
+		return;
+	}
+	if (e->type == SVG_EL_TEXT) {
+		export_text_(b, e, gd);
 		return;
 	}
 	export_leaf_(b, e, gd);
