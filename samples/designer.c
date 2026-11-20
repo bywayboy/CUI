@@ -61,7 +61,7 @@ enum {
 	DK_N_X, DK_N_Y, DK_N_TEXT, DK_N_HINT, DK_N_OPTIONS, DK_N_VALUE,
 	DK_N_CHECKED, DK_N_ENABLED, DK_N_VARIANT, DK_N_CLICK, DK_N_CHANGE,
 	DK_N_GRIDCOLS, DK_N_GRIDROWS, DK_N_GRIDROW, DK_N_GRIDCOL,
-	DK_N_ROWSPAN, DK_N_COLSPAN
+	DK_N_ROWSPAN, DK_N_COLSPAN, DK_N_GRIDROWGAP, DK_N_GRIDCOLGAP
 };
 
 enum {
@@ -676,12 +676,26 @@ static void d_build_props(void)
 		d_fmt(b, sizeof(b), n->padding[1]); d_prop_add(DK_N_PADT, DPK_FLOAT, "Padding T", b);
 		d_fmt(b, sizeof(b), n->padding[2]); d_prop_add(DK_N_PADR, DPK_FLOAT, "Padding R", b);
 		d_fmt(b, sizeof(b), n->padding[3]); d_prop_add(DK_N_PADB, DPK_FLOAT, "Padding B", b);
-		snprintf(b, sizeof(b), "%d", n->gridCols); d_prop_add(DK_N_GRIDCOLS, DPK_INT, "Grid Cols", b);
-		snprintf(b, sizeof(b), "%d", n->gridRows); d_prop_add(DK_N_GRIDROWS, DPK_INT, "Grid Rows", b);
-		snprintf(b, sizeof(b), "%d", n->gridCol); d_prop_add(DK_N_GRIDCOL, DPK_INT, "Grid Col", b);
-		snprintf(b, sizeof(b), "%d", n->gridRow); d_prop_add(DK_N_GRIDROW, DPK_INT, "Grid Row", b);
-		snprintf(b, sizeof(b), "%d", n->colSpan); d_prop_add(DK_N_COLSPAN, DPK_INT, "Col Span", b);
-		snprintf(b, sizeof(b), "%d", n->rowSpan); d_prop_add(DK_N_ROWSPAN, DPK_INT, "Row Span", b);
+		snprintf(b, sizeof(b), "%d", n->gridCols);
+		if (n->type == UI_DN_GRID) {
+			d_prop_add(DK_N_GRIDCOLS, DPK_INT, "Grid Cols", b);
+			snprintf(b, sizeof(b), "%d", n->gridRows);
+			d_prop_add(DK_N_GRIDROWS, DPK_INT, "Grid Rows (0=自动)", b);
+			d_fmt(b, sizeof(b), n->gridRowGap);
+			d_prop_add(DK_N_GRIDROWGAP, DPK_FLOAT, "Row Gap", b);
+			d_fmt(b, sizeof(b), n->gridColGap);
+			d_prop_add(DK_N_GRIDCOLGAP, DPK_FLOAT, "Col Gap", b);
+		} else if (n->parent >= 0 &&
+		    g_d.doc.nodes[n->parent].type == UI_DN_GRID) {
+			snprintf(b, sizeof(b), "%d", n->gridRow);
+			d_prop_add(DK_N_GRIDROW, DPK_INT, "Grid Row", b);
+			snprintf(b, sizeof(b), "%d", n->gridCol);
+			d_prop_add(DK_N_GRIDCOL, DPK_INT, "Grid Col", b);
+			snprintf(b, sizeof(b), "%d", n->colSpan);
+			d_prop_add(DK_N_COLSPAN, DPK_INT, "Col Span", b);
+			snprintf(b, sizeof(b), "%d", n->rowSpan);
+			d_prop_add(DK_N_ROWSPAN, DPK_INT, "Row Span", b);
+		}
 		g_d.propSection = 3;
 		d_prop_add(DK_N_TEXT, DPK_TEXT, "Text", n->text);
 		d_prop_add(DK_N_HINT, DPK_TEXT, "Hint", n->hint);
@@ -773,10 +787,12 @@ static void d_prop_apply_text(int key, const char *text)
 		else if (key == DK_N_VALUE) n->value = (float)d_atof(text);
 		else if (key == DK_N_CLICK) UiDesign_SetText(n->onClick, UI_DN_ID_MAX, text);
 		else if (key == DK_N_CHANGE) UiDesign_SetText(n->onChange, UI_DN_ID_MAX, text);
-		else if (key == DK_N_GRIDCOLS) n->gridCols = d_atoi(text);
-		else if (key == DK_N_GRIDROWS) n->gridRows = d_atoi(text);
-		else if (key == DK_N_GRIDCOL) n->gridCol = d_atoi(text);
+		else if (key == DK_N_GRIDCOLS) n->gridCols = d_atoi(text) > 0 ? d_atoi(text) : 1;
+		else if (key == DK_N_GRIDROWS) n->gridRows = d_atoi(text) > 0 ? d_atoi(text) : 0;
 		else if (key == DK_N_GRIDROW) n->gridRow = d_atoi(text);
+		else if (key == DK_N_GRIDCOL) n->gridCol = d_atoi(text);
+		else if (key == DK_N_GRIDROWGAP) n->gridRowGap = (float)d_atof(text);
+		else if (key == DK_N_GRIDCOLGAP) n->gridColGap = (float)d_atof(text);
 		else if (key == DK_N_COLSPAN) n->colSpan = d_atoi(text) > 0 ? d_atoi(text) : 1;
 		else if (key == DK_N_ROWSPAN) n->rowSpan = d_atoi(text) > 0 ? d_atoi(text) : 1;
 	}
@@ -836,6 +852,15 @@ static int d_container_parent(void)
 	return -1;
 }
 
+static void d_grid_defaults(UiDesignNode *n)
+{
+	if (!n) return;
+	if (n->gridCols < 2) n->gridCols = 2;
+	n->gridRows = 0;              /* 0 = 行数随子节点自动增长 */
+	if (n->gridColGap <= 0.0f) n->gridColGap = 8.0f;
+	if (n->gridRowGap <= 0.0f) n->gridRowGap = 8.0f;
+}
+
 static void d_add_node(int type)
 {
 	int parent = d_container_parent();
@@ -857,11 +882,16 @@ static void d_add_node(int type)
 		n->h = type == UI_DN_ROW ? 64.0f : 180.0f;
 		n->padding[0] = n->padding[1] = n->padding[2] = n->padding[3] = 8.0f;
 		n->gap = 8.0f;
+		if (type == UI_DN_GRID) d_grid_defaults(n);
 	} else {
 		n->wMode = UI_DN_SIZE_FIXED;
 		n->hMode = UI_DN_SIZE_FIXED;
 		n->w = UiDesign_DefaultW(type);
 		n->h = UiDesign_DefaultH(type);
+		if (parent >= 0 && g_d.doc.nodes[parent].type == UI_DN_GRID) {
+			n->wMode = UI_DN_SIZE_FILL;
+			n->hMode = UI_DN_SIZE_FILL;
+		}
 		if (type == UI_DN_LABEL) UiDesign_NodeSetText(n, "Label");
 		else if (type == UI_DN_BUTTON) UiDesign_NodeSetText(n, "Button");
 		else if (type == UI_DN_INPUT) UiDesign_NodeSetHint(n, "请输入");
@@ -1205,6 +1235,25 @@ static UiRect d_canvas_area(void)
 		g_d.app->h - TOP_H - PALETTE_H - STATUS_H - GAP * 2.0f);
 }
 
+static void d_draw_grid_cells(const UiDesignNode *n, UiRect inner, GfxColor c)
+{
+	Gfx *g = g_d.app->gfx;
+	int cols = n->gridCols > 0 ? n->gridCols : 1;
+	int rows = n->gridRows > 0 ? n->gridRows
+		: (n->childCount + cols - 1) / cols;
+	float cw, rh;
+	int i;
+	if (rows < 1) rows = 1;
+	cw = (inner.w - n->gridColGap * (cols - 1)) / cols;
+	rh = (inner.h - n->gridRowGap * (rows - 1)) / rows;
+	for (i = 1; i < cols; i++)
+		Gfx_Line(g, inner.x + i * (cw + n->gridColGap), inner.y,
+			inner.x + i * (cw + n->gridColGap), inner.y + inner.h, c, 1.0f);
+	for (i = 1; i < rows; i++)
+		Gfx_Line(g, inner.x, inner.y + i * (rh + n->gridRowGap),
+			inner.x + inner.w, inner.y + i * (rh + n->gridRowGap), c, 1.0f);
+}
+
 static void d_draw_layout_guides(void)
 {
 	UiTheme *t = &g_d.app->theme;
@@ -1234,32 +1283,31 @@ static void d_draw_layout_guides(void)
 							p->gap, pi.h), Ui_ColorAlpha(t->primary.base, 14));
 				}
 			}
+			if (p->type == UI_DN_GRID)
+				d_draw_grid_cells(p, pi, Ui_ColorAlpha(t->primary.base, 35));
 		}
 	}
 	if (UiDesign_IsContainer(n->type)) {
 		d_inset(nr, n->padding, &inner);
 		Gfx_StrokeRoundRectCornersDashed(g, inner, Gfx_Corners(0, 0, 0, 0),
 			Ui_ColorAlpha(t->primary.base, 200), 1.0f);
-		snprintf(b, sizeof(b), "%s · gap %d · W:%s H:%s",
-			UiDesign_TypeName(n->type), (int)n->gap,
-			d_size_mode(n->wMode), d_size_mode(n->hMode));
+		if (n->type == UI_DN_GRID) {
+			int cols = n->gridCols > 0 ? n->gridCols : 1;
+			int rows = n->gridRows > 0 ? n->gridRows
+				: (n->childCount + cols - 1) / cols;
+			if (rows < 1) rows = 1;
+			snprintf(b, sizeof(b), "Grid %d×%d · gap %d/%d · W:%s H:%s",
+				cols, rows, (int)n->gridColGap, (int)n->gridRowGap,
+				d_size_mode(n->wMode), d_size_mode(n->hMode));
+		} else {
+			snprintf(b, sizeof(b), "%s · gap %d · W:%s H:%s",
+				UiDesign_TypeName(n->type), (int)n->gap,
+				d_size_mode(n->wMode), d_size_mode(n->hMode));
+		}
 		Gfx_Text(g, t->fMini, b, Ui_Rect(nr.x + 4, nr.y + 2, nr.w - 8, 16),
 			t->primary.base, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
-		if (n->type == UI_DN_GRID) {
-			int c, r;
-			float cw = (inner.w - n->gridColGap * (n->gridCols - 1)) /
-				(n->gridCols > 0 ? n->gridCols : 1);
-			float rh = (inner.h - n->gridRowGap * (n->gridRows - 1)) /
-				(n->gridRows > 0 ? n->gridRows : 1);
-			for (c = 1; c < n->gridCols; c++)
-				Gfx_Line(g, inner.x + c * (cw + n->gridColGap), inner.y,
-					inner.x + c * (cw + n->gridColGap), inner.y + inner.h,
-					Ui_ColorAlpha(t->primary.base, 45), 1.0f);
-			for (r = 1; r < n->gridRows; r++)
-				Gfx_Line(g, inner.x, inner.y + r * (rh + n->gridRowGap),
-					inner.x + inner.w, inner.y + r * (rh + n->gridRowGap),
-					Ui_ColorAlpha(t->primary.base, 45), 1.0f);
-		}
+		if (n->type == UI_DN_GRID)
+			d_draw_grid_cells(n, inner, Ui_ColorAlpha(t->primary.base, 45));
 	}
 }
 
@@ -1841,11 +1889,14 @@ static float d_draw_constraints(UiContext *ui, UiRect panel, float y)
 			UI_BTN_PRIMARY);
 		if (c >= 0) {
 			int types[4] = { UI_DN_COLUMN, UI_DN_ROW, UI_DN_GRID, UI_DN_ABSOLUTE };
-			n->type = types[c];
-			g_d.doc.dirty = 1;
-			g_d.layoutReady = 0;
-			d_undo_push();
-			UiApp_Invalidate(g_d.app);
+			if (n->type != types[c]) {
+				n->type = types[c];
+				if (n->type == UI_DN_GRID) d_grid_defaults(n);
+				g_d.doc.dirty = 1;
+				g_d.layoutReady = 0;
+				d_undo_push();
+				UiApp_Invalidate(g_d.app);
+			}
 		}
 		y += 32;
 	}
@@ -2183,11 +2234,17 @@ static void d_insert_at(float x, float y)
 		n->h = g_d.insertType == UI_DN_ROW ? 64.0f : 180.0f;
 		n->padding[0] = n->padding[1] = n->padding[2] = n->padding[3] = 8.0f;
 		n->gap = 8.0f;
+		if (g_d.insertType == UI_DN_GRID) d_grid_defaults(n);
 	} else {
 		n->wMode = UI_DN_SIZE_FIXED;
 		n->hMode = UI_DN_SIZE_FIXED;
 		n->w = UiDesign_DefaultW(g_d.insertType);
 		n->h = UiDesign_DefaultH(g_d.insertType);
+		if (p->type == UI_DN_GRID) {
+			/* Grid 子项默认铺满单元格, 插入后就能看到网格效果. */
+			n->wMode = UI_DN_SIZE_FILL;
+			n->hMode = UI_DN_SIZE_FILL;
+		}
 		if (g_d.insertType == UI_DN_LABEL) UiDesign_NodeSetText(n, "Label");
 		else if (g_d.insertType == UI_DN_BUTTON) UiDesign_NodeSetText(n, "Button");
 		else if (g_d.insertType == UI_DN_INPUT) UiDesign_NodeSetHint(n, "请输入");

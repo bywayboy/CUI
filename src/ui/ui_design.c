@@ -1308,13 +1308,18 @@ static void dn_layout_linear(const UiDesignDoc *doc, const UiDesignNode *p,
 static void dn_layout_grid(const UiDesignDoc *doc, const UiDesignNode *p,
 	UiRect inner, UiRect *rects)
 {
-	int rows = p->gridRows > 0 ? p->gridRows : 1;
 	int cols = p->gridCols > 0 ? p->gridCols : 1;
+	int rows;
 	float rowGap = p->gridRowGap;
 	float colGap = p->gridColGap;
 	float cellW = (inner.w - colGap * (cols - 1)) / cols;
-	float cellH = (inner.h - rowGap * (rows - 1)) / rows;
+	float cellH;
 	int i;
+	/* gridRows <= 0: 按子节点数量自动确定行数. */
+	rows = p->gridRows > 0 ? p->gridRows
+		: (p->childCount + cols - 1) / cols;
+	if (rows < 1) rows = 1;
+	cellH = (inner.h - rowGap * (rows - 1)) / rows;
 	if (cellW < 0.0f) cellW = 0.0f;
 	if (cellH < 0.0f) cellH = 0.0f;
 	for (i = 0; i < p->childCount; i++) {

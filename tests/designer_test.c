@@ -129,8 +129,37 @@ static void test_layout(void)
 	rects = (UiRect *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
 		(SIZE_T)d.nodeCount * sizeof(UiRect));
 	CHECK(UiDesign_Layout(&d, w, Ui_Rect(0, 0, 300, 60), rects, d.nodeCount) == 1);
-	CHECK(rects[a].x == 0 && rects[b].x == 60);
-	HeapFree(GetProcessHeap(), 0, rects);
+	/* Grid: 2 列, 0 行=按子节点自动, 间距 10 */
+	UiDesign_Init(&d);
+	g = UiDesign_AddGroup(&d, "g", "G");
+	w = UiDesign_AddWindow(&d, "win", "W", UI_DW_NATIVE, g);
+	root = UiDesign_AddNode(&d, w, UI_DN_GRID, -1, "root", "Root");
+	d.windows[w].root = root;
+	UiDesign_Node(&d, root)->gridCols = 2;
+	UiDesign_Node(&d, root)->gridRows = 0;
+	UiDesign_Node(&d, root)->gridColGap = 10;
+	UiDesign_Node(&d, root)->gridRowGap = 10;
+	a = UiDesign_AddNode(&d, w, UI_DN_LABEL, root, "a", "A");
+	b = UiDesign_AddNode(&d, w, UI_DN_LABEL, root, "b", "B");
+	UiDesign_Node(&d, a)->wMode = UI_DN_SIZE_FIXED;
+	UiDesign_Node(&d, a)->hMode = UI_DN_SIZE_FIXED;
+	UiDesign_Node(&d, a)->w = 40; UiDesign_Node(&d, a)->h = 20;
+	UiDesign_Node(&d, b)->wMode = UI_DN_SIZE_FIXED;
+	UiDesign_Node(&d, b)->hMode = UI_DN_SIZE_FIXED;
+	UiDesign_Node(&d, b)->w = 40; UiDesign_Node(&d, b)->h = 20;
+	{
+		int c3 = UiDesign_AddNode(&d, w, UI_DN_LABEL, root, "c", "C");
+		UiDesign_Node(&d, c3)->wMode = UI_DN_SIZE_FIXED;
+		UiDesign_Node(&d, c3)->hMode = UI_DN_SIZE_FIXED;
+		UiDesign_Node(&d, c3)->w = 40; UiDesign_Node(&d, c3)->h = 20;
+		rects = (UiRect *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+			(SIZE_T)d.nodeCount * sizeof(UiRect));
+		CHECK(UiDesign_Layout(&d, w, Ui_Rect(0, 0, 220, 100), rects, d.nodeCount) == 1);
+		CHECK(rects[a].x == 0 && rects[a].y == 12.5f);
+		CHECK(rects[b].x == 115 && rects[b].y == 12.5f);
+		CHECK(rects[c3].x == 0 && rects[c3].y == 67.5f);
+		HeapFree(GetProcessHeap(), 0, rects);
+	}
 	UiDesign_Free(&d);
 }
 

@@ -39,7 +39,8 @@
 
 - `Absolute`：x/y/w/h + 四边锚点/margin；
 - `Column` / `Row`：主轴 fixed/auto/fill/grow，gap、padding、交叉轴 align；
-- `Grid`：Grid Rows/Cols、行/列/跨度、gap；
+- `Grid`：Grid Cols、Grid Rows（0 = 自动按子节点增长）、行/列间距、
+  子项跨行/跨列；子项默认铺满单元格；
 - `Panel`：视觉容器；
 - 所有节点可嵌套。
 
@@ -48,12 +49,14 @@
 - 宽高模式、宽高、min/max、Grow、Align；
 - Padding L/T/R/B、Gap；
 - X/Y；
-- Grid Cols/Rows、Grid Col/Row、Span。
+- Grid 容器：Grid Cols、Grid Rows (0=自动)、Row Gap、Col Gap；
+- Grid 子项：Grid Row、Grid Col、Row Span、Col Span（-1 = 自动排布）。
 
 设计画布：
 
-- 选中、拖拽（Absolute 父级内）、八向缩放、对齐辅助线/4px 吸附；
-- 组件树拖拽层级目前通过上移/下移与属性 `parent` 控制；
+- 选中、拖拽（Absolute 父级内）、八向缩放（按手柄方向只改对应边）、
+  对齐辅助线/4px 吸附；
+- 组件树支持拖动改父级/排序，`Ctrl` 多选、空白拖动框选；
 - 设计态渲染静态预览，预览态使用真实控件运行时。
 
 ## 3. 运行时
