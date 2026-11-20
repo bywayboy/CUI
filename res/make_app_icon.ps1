@@ -1,7 +1,8 @@
 # make_app_icon.ps1 - build res\cui_app.ico (16 + 48, PNG encoded)
 #
-# Design: blue->violet rounded plate + white cursor arrow (CUI = Cursor UI).
-# Every size is redrawn from proportions; PNG + Up filter keeps it ~1 KB.
+# Design: blue->violet rounded plate + white "CUI" monogram. Letters are
+# drawn as strokes (not scaled text) so the 16 px version stays legible.
+# PNG + Up filter keeps the two-image ICO near 2 KB.
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File res\make_app_icon.ps1
 # NOTE: keep this file ASCII-only (PowerShell 5.1 reads BOM-less UTF-8 as ANSI).
 Add-Type -AssemblyName System.Drawing
@@ -176,36 +177,46 @@ function New-IconBitmap([int]$size) {
     $hl = New-Object System.Drawing.Drawing2D.LinearGradientBrush -ArgumentList @($rect, $ha, $hb, [single]90)
     $g.FillPath($hl, $path)
 
-    # cursor arrow: shadow, then white body with rounded joins
-    $pts = @(
-        [System.Drawing.PointF]::new((P 82 $s),  (P 48 $s)),
-        [System.Drawing.PointF]::new((P 194 $s), (P 136 $s)),
-        [System.Drawing.PointF]::new((P 144 $s), (P 142 $s)),
-        [System.Drawing.PointF]::new((P 168 $s), (P 204 $s)),
-        [System.Drawing.PointF]::new((P 138 $s), (P 216 $s)),
-        [System.Drawing.PointF]::new((P 116 $s), (P 154 $s)),
-        [System.Drawing.PointF]::new((P 82 $s),  (P 184 $s))
-    )
-    $shadow = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $sp = New-Object System.Drawing.PointF[] $pts.Length
-    for ($i = 0; $i -lt $pts.Length; $i++) {
-        $sp[$i] = [System.Drawing.PointF]::new($pts[$i].X + (P 3 $s), $pts[$i].Y + (P 5 $s))
-    }
-    $shadow.AddPolygon($sp)
-    $sb = New-Object System.Drawing.SolidBrush -ArgumentList @([System.Drawing.Color]::FromArgb(46, 20, 20, 70))
-    $g.FillPath($sb, $shadow)
+    # "CUI" monogram, drawn as strokes so 16 px stays legible.
+    $lw = [single](P 26 $s)
+    if ($lw -lt 1.6) { $lw = [single]1.6 }
+    $white = [System.Drawing.Color]::White
+    $cPath = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $cPath.AddArc((P 28 $s), (P 58 $s), (P 72 $s), (P 140 $s),
+        [single]45, [single]270)
+    $uPath = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $uPath.StartFigure()
+    $uPath.AddLine((P 140 $s), (P 60 $s), (P 140 $s), (P 140 $s))
+    $uPath.AddBezier(
+        [System.Drawing.PointF]::new((P 140 $s), (P 140 $s)),
+        [System.Drawing.PointF]::new((P 140 $s), (P 182 $s)),
+        [System.Drawing.PointF]::new((P 182 $s), (P 182 $s)),
+        [System.Drawing.PointF]::new((P 182 $s), (P 140 $s)))
+    $uPath.AddLine((P 182 $s), (P 140 $s), (P 182 $s), (P 60 $s))
 
-    $body = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $body.AddPolygon([System.Drawing.PointF[]]$pts)
-    $wb = New-Object System.Drawing.SolidBrush -ArgumentList @([System.Drawing.Color]::White)
-    $g.FillPath($wb, $body)
-    # round the arrow corners without changing its silhouette
-    $pen = New-Object System.Drawing.Pen -ArgumentList @([System.Drawing.Color]::White, (P 10 $s))
-    if ($pen.Width -lt 1.2) { $pen.Width = [single]1.2 }
+    $pen = New-Object System.Drawing.Pen -ArgumentList @($white, $lw)
     $pen.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
     $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
     $pen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-    $g.DrawPolygon($pen, [System.Drawing.PointF[]]$pts)
+
+    if ($size -ge 32) {
+        # subtle depth; skipped at 16 px where it only blurs the strokes
+        $spen = New-Object System.Drawing.Pen -ArgumentList @(
+            [System.Drawing.Color]::FromArgb(50, 20, 20, 70), $lw)
+        $spen.LineJoin = $pen.LineJoin
+        $spen.StartCap = $pen.StartCap
+        $spen.EndCap = $pen.EndCap
+        $g.TranslateTransform((P 3 $s), (P 5 $s))
+        $g.DrawPath($spen, $cPath)
+        $g.DrawPath($spen, $uPath)
+        $g.DrawLine($spen, (P 222 $s), (P 60 $s), (P 222 $s), (P 200 $s))
+        $g.ResetTransform()
+        $spen.Dispose()
+    }
+    $g.DrawPath($pen, $cPath)
+    $g.DrawPath($pen, $uPath)
+    $g.DrawLine($pen, (P 222 $s), (P 60 $s), (P 222 $s), (P 200 $s))
+    $pen.Dispose()
 
     $g.Dispose()
     return $bmp
