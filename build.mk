@@ -170,93 +170,97 @@ $(OBJ)\mem_avx2.obj: src\lib\mem_avx2.c $(HEADERS) build.mk
 
 # --- link targets -----------------------------------------------------------
 
-$(BIN)\cui_demo.exe: $(CORE_OBJS) $(OBJ)\demo.obj
+$(BIN)\cui_demo.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\demo.obj
 	@echo [cui] link demo
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_minimal.exe: $(CORE_OBJS) $(OBJ)\minimal.obj
+$(BIN)\cui_minimal.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\minimal.obj
 	@echo [cui] link minimal
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_advanced.exe: $(CORE_OBJS) $(OBJ)\advanced.obj
+$(BIN)\cui_advanced.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\advanced.obj
 	@echo [cui] link advanced
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_multi.exe: $(CORE_OBJS) $(OBJ)\multiwindow.obj
+$(BIN)\cui_multi.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\multiwindow.obj
 	@echo [cui] link multiwindow
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_mvvm.exe: $(CORE_OBJS) $(OBJ)\mvvm.obj
+$(BIN)\cui_mvvm.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\mvvm.obj
 	@echo [cui] link mvvm
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_scroll.exe: $(CORE_OBJS) $(OBJ)\scrollview.obj
+$(BIN)\cui_scroll.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\scrollview.obj
 	@echo [cui] link scrollview
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_tabs.exe: $(CORE_OBJS) $(OBJ)\tabs.obj
+$(BIN)\cui_tabs.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\tabs.obj
 	@echo [cui] link tabs
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_icons.exe: $(CORE_OBJS) $(OBJ)\icons.obj
+$(BIN)\cui_icons.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\icons.obj
 	@echo [cui] link icons
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_controls.exe: $(CORE_OBJS) $(OBJ)\controls.obj
+$(BIN)\cui_controls.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\controls.obj
 	@echo [cui] link controls
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_overlays.exe: $(CORE_OBJS) $(OBJ)\overlays.obj
+$(BIN)\cui_overlays.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\overlays.obj
 	@echo [cui] link overlays
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_textarea.exe: $(CORE_OBJS) $(OBJ)\textarea.obj
+$(BIN)\cui_textarea.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\textarea.obj
 	@echo [cui] link textarea
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_datepicker.exe: $(CORE_OBJS) $(OBJ)\datepicker.obj
+$(BIN)\cui_datepicker.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\datepicker.obj
 	@echo [cui] link datepicker
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_net.exe: $(CORE_OBJS) $(OBJ)\net.obj
+$(BIN)\cui_net.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\net.obj
 	@echo [cui] link net
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_image.exe: $(CORE_OBJS) $(OBJ)\image.obj
+$(BIN)\cui_image.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\image.obj
 	@echo [cui] link image
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_ws_server.exe: $(CORE_OBJS) $(OBJ)\ws_server.obj
+$(BIN)\cui_ws_server.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\ws_server.obj
 	@echo [cui] link ws_server
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_nav.exe: $(CORE_OBJS) $(OBJ)\nav.obj
+$(BIN)\cui_nav.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\nav.obj
 	@echo [cui] link nav
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_pagination.exe: $(CORE_OBJS) $(OBJ)\pagination.obj
+$(BIN)\cui_pagination.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\pagination.obj
 	@echo [cui] link pagination
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_grid.exe: $(CORE_OBJS) $(OBJ)\grid.obj
+$(BIN)\cui_grid.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\grid.obj
 	@echo [cui] link grid
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_gallery.exe: $(CORE_OBJS) $(OPT_OBJS) $(WEBVIEW_OBJS) $(OBJ)\gallery.obj $(OBJ)\gallery_docs.obj $(OBJ)\gallery_icons.obj
+$(BIN)\cui_gallery.exe: $(CORE_OBJS) $(OPT_OBJS) $(WEBVIEW_OBJS) $(OBJ)\cui_app.res $(OBJ)\gallery.obj $(OBJ)\gallery_docs.obj $(OBJ)\gallery_icons.obj
 	@echo [cui] link gallery (optional module)
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_webview.exe: $(CORE_OBJS) $(WEBVIEW_OBJS) $(OBJ)\webview.obj
+$(BIN)\cui_webview.exe: $(CORE_OBJS) $(WEBVIEW_OBJS) $(OBJ)\cui_app.res $(OBJ)\webview.obj
 	@echo [cui] link webview (optional module)
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS)
 	@copy /y samples\webview_test.html $(BIN)\webview_test.html >NUL
 
-$(BIN)\cui_svgedit.exe: $(CORE_OBJS) $(OBJ)\svgedit.obj
+$(BIN)\cui_svgedit.exe: $(CORE_OBJS) $(OBJ)\cui_app.res $(OBJ)\svgedit.obj
 	@echo [cui] link svgedit
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS) comdlg32.lib
 
 # Application icon. rc.exe ships with the Windows SDK; vcvars puts it on PATH.
 # The .ico is regenerable from res\make_icon.ps1 (every size is redrawn).
+$(OBJ)\cui_app.res: res\cui_app.rc res\cui_app.ico
+	@echo [cui] res\cui_app.rc
+	@rc /nologo /fo $@ res\cui_app.rc
+
 $(OBJ)\cui_markdown.res: res\cui_markdown.rc res\cui_markdown.ico
 	@echo [cui] res\cui_markdown.rc
 	@rc /nologo /fo $@ res\cui_markdown.rc
@@ -313,7 +317,7 @@ $(BIN)\cui_color_test.exe: $(CORE_OBJS) $(OBJ)\ui_color_test.obj
 	@echo [cui] link ui_color_test
 	@link $(LIBS_CON) /OUT:$@ $** $(LIBS)
 
-$(BIN)\cui_theme_editor.exe: $(CORE_OBJS) $(THEME_EDIT_OBJS) $(OBJ)\theme_editor.obj
+$(BIN)\cui_theme_editor.exe: $(CORE_OBJS) $(THEME_EDIT_OBJS) $(OBJ)\cui_app.res $(OBJ)\theme_editor.obj
 	@echo [cui] link theme_editor
 	@link $(LIBS_WIN) /OUT:$@ $** $(LIBS) comdlg32.lib
 

@@ -1,0 +1,4 @@
+// cui_app.rc - shared application icon for CUI samples (cui_markdown keeps its own)
+// Icon designed by res\make_app_icon.ps1 (blue/violet plate + white cursor arrow).
+
+1 ICON "cui_app.ico"

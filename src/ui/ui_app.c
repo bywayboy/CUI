@@ -565,6 +565,14 @@ int UiApp_Run(const wchar_t *title, int widthDip, int heightDip,
 		HeapFree(GetProcessHeap(), 0, app);
 		return 1;
 	}
+	/* 类图标已用于创建, 再显式挂到窗口上: 任务栏/Alt-Tab 部分路径优先
+	 * 读 WM_GETICON, 只设类图标时个别环境会退回默认图标. */
+	{
+		HICON bi = (HICON)GetClassLongPtrW(hwnd, GCLP_HICON);
+		HICON si = (HICON)GetClassLongPtrW(hwnd, GCLP_HICONSM);
+		if (bi) SendMessageW(hwnd, WM_SETICON, ICON_BIG, (LPARAM)bi);
+		if (si) SendMessageW(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)si);
+	}
 
 	app_apply_dpi(app);
 	app_place_window(app, widthDip, heightDip);
