@@ -136,6 +136,7 @@ struct Gfx {
 	int useDcomp;
 	int dcompTried;
 	int noVsync;
+	int lowLatency;
 	ID3D11Device *d3d;
 	ID3D11DeviceContext *d3dctx;
 	IDXGISwapChain1 *swap;
@@ -3502,6 +3503,11 @@ void Gfx_SetDirtyRect(Gfx *g, const RECT *rcPx)
 	g->dirtyFull = 0;
 }
 
+void Gfx_SetLowLatency(Gfx *g, int on)
+{
+	if (g) g->lowLatency = on ? 1 : 0;
+}
+
 void Gfx_Begin(Gfx *g)
 {
 	if (!g || !g->rt) return;
@@ -3594,7 +3600,8 @@ int Gfx_End(Gfx *g)
 		}
 		/* 新主帧上屏前确保旧快照覆盖层已进入合成 (绘制期间已发出 Commit)。 */
 		if (g->fxBuilt > 0) FxWaitComposited();
-		HRESULT sr = g->swap->Present(g->noVsync ? 0 : 1, 0);
+		HRESULT sr = g->swap->Present(
+			(g->noVsync || g->lowLatency) ? 0 : 1, 0);
 		if (FAILED(sr)) {
 			Log_Write("[gfx] DComp Present failed 0x%08X", (unsigned)sr);
 			FallbackToUlw(g);

@@ -97,7 +97,9 @@ void Gfx_PopAlpha(Gfx *g);
 /* 脏区: 物理像素; 在 Gfx_Begin 前调用。rc=NULL 或空 => 整帧重绘。
  * 未变化的像素保留上一帧内容；resize/设备恢复会自动强制整帧。 */
 void Gfx_SetDirtyRect(Gfx *g, const RECT *rcPx);
-
+/* 拖动/跟踪指针时使用 Present(0): 合成器仍按刷新率上屏, 但 UI 线程
+ * 不再阻塞等 vblank, 鼠标消息不会被 16ms 的 Present 节流. */
+void Gfx_SetLowLatency(Gfx *g, int on);
 /* 当前帧脏区是否与 r 相交。用于在脏区外跳过昂贵的文本排版/UTF-8 转换；
  * 未 Begin 或整帧重绘时返回 1。 */
 int Gfx_IsVisible(Gfx *g, GfxRect r);

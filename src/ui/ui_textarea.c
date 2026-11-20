@@ -1242,7 +1242,6 @@ int Ui_TextArea(UiTextArea *ta, UiContext *ui, UiRect rc, int enabled)
 	ss.glowW = 4.0f;
 	ss.glowMask = UI_GLOW_HOVER | UI_GLOW_FOCUS;
 	st = Ui_DrawSurface(ui, ta->id, rc, &ss, enabled);
-	Ui_SetPressPoll(ui, ta->id, 1);   /* 拖选需要跟随指针重绘 */
 
 	if (ta->lineScale != ui->scale) {
 		ta->lineH = 0.0f;      /* DPI/scale 变化: 行距需按新像素网格重算 */
@@ -1291,6 +1290,10 @@ int Ui_TextArea(UiTextArea *ta, UiContext *ui, UiRect rc, int enabled)
 	contentH = (float)ta->lineCount * lineH;
 	if (contentH < lineH) contentH = lineH;
 	UiScrollView_Begin(&ta->sv, ui, rc, wrapW, contentH);
+	/* ScrollView 会用同一个 id 再注册一次视口控件; 拖选跟随重绘必须
+	 * 打在最后注册的那条上 (WidgetIndex 取最后一个), 否则移动鼠标时
+	 * 无法失效, 选区只能等光标闪烁定时器 (~530ms) 才更新. */
+	Ui_SetPressPoll(ui, ta->id, 1);
 	/* 绘制/命中统一用设备像素对齐后的位移, 避免亚像素相位抖动 */
 	ta->drawOffset = Ui_PxSnap(ui, ta->sv.offset);
 	ta->textRc = ta->sv.inner;

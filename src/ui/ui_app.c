@@ -317,6 +317,17 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		}
 		/* 悬停回调已同步更新控件光标: 立即应用, 不等重绘 */
 		app_apply_cursor(app);
+		/* 按住鼠标拖动时同步出帧: WM_PAINT 优先级低于持续到来的
+		 * WM_MOUSEMOVE, 高回报率鼠标下窗口更新区可能一直得不到绘制
+		 * (选区能慢半秒). 限制到 ~8ms 一次, 既跟手又不过度占用 GPU. */
+		if (app->ui.mouseDown) {
+			static ULONGLONG lastForced;
+			ULONGLONG now = GetTickCount64();
+			if (now - lastForced >= 8) {
+				lastForced = now;
+				UpdateWindow(hwnd);
+			}
+		}
 		return 0;
 	}
 	case WM_MOUSELEAVE:
@@ -333,6 +344,7 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		if (!app) return 0;
 		SetCapture(hwnd);
 		SetFocus(hwnd);
+		Gfx_SetLowLatency(app->gfx, 1);
 		{
 			int was = Ui_AnimBusy(&app->ui);
 			Ui_OnMouseDown(&app->ui, pt.x / app->scale,
@@ -357,6 +369,7 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 			if (!was) app_kick_anim_clock(app);
 		}
 		ReleaseCapture();
+		Gfx_SetLowLatency(app->gfx, 0);
 		return 0;
 	}
 	case WM_RBUTTONDOWN: {
@@ -378,7 +391,10 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	}
 
 	case WM_CAPTURECHANGED:
-		if (app) Ui_OnCaptureChanged(&app->ui);
+		if (app) {
+			Ui_OnCaptureChanged(&app->ui);
+			Gfx_SetLowLatency(app->gfx, 0);
+		}
 		return 0;
 
 	case WM_KEYDOWN:
