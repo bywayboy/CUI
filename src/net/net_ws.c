@@ -375,6 +375,8 @@ int net_ws_on_fail(NetConn *conn, int err)
 		ws_emit_close_(conn, 0, UiNet_StrError(err));
 		return 0;
 	}
+	if (w->openedOnce)
+		net_emit_ws_disconnect(conn->io, w->id, 0, UiNet_StrError(err));
 	ws_schedule_reconnect_(conn);
 	return 1;
 }
@@ -435,6 +437,8 @@ static void ws_handle_close_(NetConn *conn, const char *data, int len)
 		ws_emit_close_(conn, code, "");
 		net_conn_close(conn);
 	} else {
+		if (w->openedOnce)
+			net_emit_ws_disconnect(conn->io, w->id, code, "");
 		ws_schedule_reconnect_(conn);
 	}
 }

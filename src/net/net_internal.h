@@ -86,7 +86,8 @@ enum {
 	NET_EV_SRV_OPEN,
 	NET_EV_SRV_MSG,
 	NET_EV_SRV_CLOSE,
-	NET_EV_SRV_STOPPED
+	NET_EV_SRV_STOPPED,
+	NET_EV_WS_DISCONNECT
 };
 
 /* 服务端定时器按 ownerKind 区分, 编号可与客户端重叠 */
@@ -666,6 +667,8 @@ void net_emit_http(NetIo *io, uint64_t id, NetHttpResult *r);
 void net_emit_ws_open(NetIo *io, uint64_t id);
 void net_emit_ws_msg(NetIo *io, uint64_t id, int opcode, const void *data, int len);
 void net_emit_ws_close(NetIo *io, uint64_t id, int code, const char *reason);
+/* 自动重连期间的临时断开 (句柄仍有效, 后续还会 open). */
+void net_emit_ws_disconnect(NetIo *io, uint64_t id, int code, const char *reason);
 void net_emit_srv_listening(NetIo *io, uint64_t srvId, int port);
 void net_emit_srv_error(NetIo *io, uint64_t srvId, int err, const char *msg);
 void net_emit_srv_open(NetIo *io, NetSrvConn *c, NetSrvOpen *o);

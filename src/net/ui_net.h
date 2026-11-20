@@ -115,6 +115,8 @@ typedef struct UiWsCallbacks {
 	void (*open)(void *user);
 	void (*message)(void *user, const void *data, int len, int opcode); /* 1=text 2=binary */
 	void (*close)(void *user, int code, const char *reason);            /* 只来一次 */
+	/* 自动重连期间的临时断开: 句柄仍有效, 稍后会再次 open. 可为 NULL. */
+	void (*disconnect)(void *user, int code, const char *reason);
 } UiWsCallbacks;
 
 /* 返回句柄 (连接失败也会返回, 错误经 close 回调); net=NULL 返回 NULL。 */

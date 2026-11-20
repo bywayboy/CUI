@@ -6850,7 +6850,26 @@ static void wsc_on_close(void *user, int code, const char *reason)
 	if (g->app) UiApp_Invalidate(g->app);
 }
 
-static const UiWsCallbacks kWscCb = { wsc_on_open, wsc_on_message, wsc_on_close };
+static void wsc_on_disconnect(void *user, int code, const char *reason)
+{
+	Gallery *g = (Gallery *)user;
+	char buf[128];
+	g->wsc.state = 2;
+	if (code && reason && reason[0])
+		wsprintfA(buf, "[ws] 已断开 (code=%d, %s), 自动重连中",
+			code, reason);
+	else if (code)
+		wsprintfA(buf, "[ws] 已断开 (code=%d), 自动重连中", code);
+	else
+		lstrcpynA(buf, "[ws] 已断开, 自动重连中", (int)sizeof(buf));
+	wsc_log(g, buf);
+	set_status(g, "WebSocket 已断开, 自动重连中");
+	if (g->app) UiApp_Invalidate(g->app);
+}
+
+static const UiWsCallbacks kWscCb = {
+	wsc_on_open, wsc_on_message, wsc_on_close, wsc_on_disconnect
+};
 
 static void wsc_connect(Gallery *g);   /* wsc_init 里 autostart 先用 */
 

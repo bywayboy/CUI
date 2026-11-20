@@ -153,6 +153,16 @@ void net_emit_ws_close(NetIo *io, uint64_t id, int code, const char *reason)
 	net_post(io, ev);
 }
 
+void net_emit_ws_disconnect(NetIo *io, uint64_t id, int code,
+	const char *reason)
+{
+	NetEv *ev = net_ev_new(io->owner, NET_EV_WS_DISCONNECT, id);
+	if (!ev) return;
+	ev->code = code;
+	Net_StrCopy(ev->reason, (int)sizeof(ev->reason), reason ? reason : "");
+	net_post(io, ev);
+}
+
 /* ── 命令队列 ───────────────────────────────────────────────────────── */
 
 void net_cmd_post(UiNet *net, NetCmd *cmd)
@@ -966,6 +976,12 @@ static void gui_dispatch_(UiNet *net, NetEv *ev)
 			free(ws);
 		}
 		if (p) free(p);
+		break;
+	}
+	case NET_EV_WS_DISCONNECT: {
+		UiWsH *ws = ws_find_(net, ev->id);
+		if (ws && !ws->closed && ws->cb.disconnect)
+			ws->cb.disconnect(ws->user, ev->code, ev->reason);
 		break;
 	}
 	case NET_EV_SRV_LISTENING: {
