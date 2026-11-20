@@ -65,9 +65,9 @@ enum {
 };
 
 enum {
-	DNA_NEW = 1, DNA_OPEN, DNA_SAVE, DNA_SAVEAS, DNA_GENERATE,
+	DNA_NEW = 1, DNA_OPEN, DNA_SAVE, DNA_SAVEAS, DNA_GENERATE, DNA_EXIT,
 	DNA_UNDO, DNA_REDO, DNA_DUP, DNA_DEL, DNA_UP, DNA_DOWN,
-	DNA_ADDWIN, DNA_ADDDLG, DNA_ADDGRP, DNA_GENALL,
+	DNA_ADDWIN, DNA_ADDDLG, DNA_ADDGRP, DNA_GENALL, DNA_GENWIN,
 	DNA_DESIGN, DNA_PREVIEW
 };
 
@@ -93,6 +93,11 @@ typedef struct Designer {
 	int selSet[128];
 	int selSetN;
 
+	int dragListN;
+	int dragListIdx[128];
+	float dragListX[128];
+	float dragListY[128];
+
 	UiRect treeRowRc[128];
 	int treeRowIdx[128];
 	int treeRowN;
@@ -114,6 +119,7 @@ typedef struct Designer {
 	int preview;
 	UiDesignInstance inst;
 	int instReady;
+	int previewDialogTried;
 
 	UiInput propForm;
 	int propField;
@@ -131,12 +137,13 @@ typedef struct Designer {
 
 	UiNavBar nav;
 	UiNavItem navRoot[5];
-	UiNavItem navFile[5], navEdit[6], navProj[4], navView[2];
+	UiNavItem navFile[6], navEdit[6], navProj[5], navView[2];
 	UiId navAct[24];
 	int navActKind[24];
 	int navActN;
 	UiButtonGroup layoutGroup, compGroup;
 	UiButtonGroup constraintW, constraintH, constraintAlign, constraintKind;
+	UiButtonGroup multiAlign, multiDist;
 	int insertType;
 
 	/* 画布缓存 */
@@ -161,11 +168,13 @@ typedef struct Designer {
 	char status[320];
 	char error[320];
 	WCHAR lastDir[MAX_PATH];
+	WCHAR startupFile[MAX_PATH];
 
 	int genPreview;
 	UiDesignGenFile genFiles[64];
 	int genFileN;
 	WCHAR genDir[MAX_PATH];
+	int titleDirty;
 
 	/* 属性/树行 */
 	DProp props[48];
@@ -415,6 +424,7 @@ static void d_preview_shutdown(void)
 		UiDesignInstance_Shutdown(&g_d.inst);
 		g_d.instReady = 0;
 	}
+	g_d.previewDialogTried = 0;
 }
 
 static void d_reset_selection(void)
@@ -430,14 +440,25 @@ static void d_reset_selection(void)
 	g_d.treeDragIdx = -1;
 	g_d.treeDropIdx = -1;
 	g_d.marquee = 0;
+	g_d.dragListN = 0;
 	g_d.preview = 0;
 	g_d.instReady = 0;
+	g_d.previewDialogTried = 0;
 	g_d.layoutReady = 0;
+}
+
+static int d_confirm_discard(void)
+{
+	if (!g_d.doc.dirty) return 1;
+	return MessageBoxW(g_d.app ? g_d.app->hwnd : NULL,
+		L"当前工程有未保存的修改，是否放弃？", L"CUI Designer",
+		MB_YESNO | MB_ICONWARNING) == IDYES;
 }
 
 static void d_new_doc(void)
 {
 	d_after_edit();
+	if (!d_confirm_discard()) return;
 	d_preview_shutdown();
 	UiDesign_Free(&g_d.doc);
 	UiDesign_DefaultDoc(&g_d.doc);
@@ -450,6 +471,7 @@ static void d_open_file(void)
 {
 	WCHAR file[MAX_PATH] = L"";
 	d_after_edit();
+	if (!d_confirm_discard()) return;
 	if (!d_open_dialog(file, MAX_PATH)) return;
 	d_preview_shutdown();
 	if (!UiDesign_LoadFile(&g_d.doc, file)) {
@@ -480,6 +502,31 @@ static void d_save_file(int saveAs)
 	d_dir_of(file, g_d.lastDir, MAX_PATH);
 	d_undo_reset();
 	d_status("已保存 .cui");
+}
+
+static void d_generate_window(void)
+{
+	WCHAR dir[MAX_PATH] = L".";
+	char report[256], err[256];
+	d_after_edit();
+	if (g_d.selWin < 0 || g_d.selWin >= g_d.doc.windowCount) {
+		d_error("请先选择一个窗口");
+		return;
+	}
+	if (!d_validate(err, sizeof(err))) {
+		d_error(err);
+		return;
+	}
+	if (g_d.doc.path[0]) {
+		WCHAR file[MAX_PATH];
+		d_wide(g_d.doc.path, file, MAX_PATH);
+		d_dir_of(file, dir, MAX_PATH);
+	}
+	if (UiDesign_GenerateWindow(&g_d.doc, g_d.selWin, dir, report,
+	    sizeof(report)) < 0)
+		d_error("单窗口生成失败 (检查输出目录)");
+	else
+		d_status(report);
 }
 
 static void d_generate_commit(void)
@@ -532,6 +579,39 @@ static int d_sel_has(int idx)
 	for (i = 0; i < g_d.selSetN; i++)
 		if (g_d.selSet[i] == idx) return 1;
 	return 0;
+}
+
+static int d_parent_free(int parent)
+{
+	if (parent < 0 || parent >= g_d.doc.nodeCount) return 0;
+	return g_d.doc.nodes[parent].type == UI_DN_ABSOLUTE ||
+		g_d.doc.nodes[parent].type == UI_DN_PANEL;
+}
+
+static void d_drag_begin(int primary)
+{
+	int i;
+	g_d.dragListN = 0;
+	for (i = 0; i < g_d.selSetN; i++) {
+		int idx = g_d.selSet[i];
+		UiDesignNode *n = UiDesign_Node(&g_d.doc, idx);
+		if (!n || n->parent < 0 || !d_parent_free(n->parent)) continue;
+		if (g_d.dragListN >= (int)(sizeof(g_d.dragListIdx) / sizeof(g_d.dragListIdx[0])))
+			break;
+		g_d.dragListIdx[g_d.dragListN] = idx;
+		g_d.dragListX[g_d.dragListN] = n->x;
+		g_d.dragListY[g_d.dragListN] = n->y;
+		g_d.dragListN++;
+	}
+	if (g_d.dragListN == 0) {
+		UiDesignNode *n = UiDesign_Node(&g_d.doc, primary);
+		if (n && n->parent >= 0 && d_parent_free(n->parent)) {
+			g_d.dragListIdx[0] = primary;
+			g_d.dragListX[0] = n->x;
+			g_d.dragListY[0] = n->y;
+			g_d.dragListN = 1;
+		}
+	}
 }
 
 static void d_sel_clear(void)
@@ -1034,20 +1114,84 @@ static void d_del_selected(void)
 	else d_del_node();
 }
 
+static int d_has_selected_ancestor(int idx)
+{
+	int p;
+	if (idx < 0 || idx >= g_d.doc.nodeCount) return 0;
+	p = g_d.doc.nodes[idx].parent;
+	while (p >= 0) {
+		if (d_sel_has(p)) return 1;
+		p = g_d.doc.nodes[p].parent;
+	}
+	return 0;
+}
+
+static void d_unique_all_ids(int win)
+{
+	int i, j;
+	for (i = 0; i < g_d.doc.nodeCount; i++) {
+		UiDesignNode *n = &g_d.doc.nodes[i];
+		if (n->owner != win) continue;
+		for (j = 0; j < i; j++) {
+			if (g_d.doc.nodes[j].owner != win) continue;
+			if (strcmp(g_d.doc.nodes[j].id, n->id) != 0) continue;
+			{
+				char base[UI_DN_ID_MAX], id[UI_DN_ID_MAX];
+				UiDesign_SetText(base, sizeof(base), n->id);
+				d_unique_node_id(win, base, id, sizeof(id));
+				UiDesign_SetText(n->id, UI_DN_ID_MAX, id);
+			}
+			j = -1;
+		}
+	}
+}
+
 static void d_dup_node(void)
 {
-	int dup;
-	if (!d_selnode() || !d_selnode()->parent) return;
+	int i, idx, dup, count = 0, last = -1;
+	int sel[128];
+	if (g_d.selKind != DSEL_NODE) return;
 	d_after_edit();
-	dup = UiDesign_NodeDuplicate(&g_d.doc, g_d.selNode);
-	if (dup < 0) return;
-	g_d.selNode = dup;
+	if (g_d.selSetN <= 1) {
+		if (!d_selnode() || d_selnode()->parent < 0) return;
+		dup = UiDesign_NodeDuplicate(&g_d.doc, g_d.selNode);
+		if (dup < 0) return;
+		d_unique_all_ids(g_d.selWin);
+		g_d.selNode = dup;
+		g_d.selKind = DSEL_NODE;
+		d_sel_single(dup);
+		g_d.doc.dirty = 1;
+		g_d.layoutReady = 0;
+		d_undo_push();
+		d_status("已复制组件");
+		return;
+	}
+	for (i = 0; i < g_d.selSetN && i < 128; i++) sel[i] = g_d.selSet[i];
+	{
+		int n = g_d.selSetN < 128 ? g_d.selSetN : 128;
+		for (i = 0; i < n; i++) {
+			UiDesignNode *sn;
+			idx = sel[i];
+			if (idx < 0 || idx >= g_d.doc.nodeCount) continue;
+			sn = &g_d.doc.nodes[idx];
+			if (sn->parent < 0 || d_has_selected_ancestor(idx)) continue;
+			dup = UiDesign_NodeDuplicate(&g_d.doc, idx);
+			if (dup < 0) continue;
+			sel[count++] = dup;
+			last = dup;
+		}
+	}
+	if (count <= 0) return;
+	d_unique_all_ids(g_d.selWin);
+	d_sel_clear();
+	for (i = 0; i < count && g_d.selSetN < 128; i++)
+		g_d.selSet[g_d.selSetN++] = sel[i];
+	g_d.selNode = last;
 	g_d.selKind = DSEL_NODE;
-	d_sel_single(dup);
 	g_d.doc.dirty = 1;
 	g_d.layoutReady = 0;
 	d_undo_push();
-	d_status("已复制组件");
+	d_status("已复制多个组件");
 }
 
 static void d_move_node(int dir)
@@ -1380,24 +1524,31 @@ static void d_draw_canvas(void)
 			g_d.winScreen = win;
 			Gfx_PushClip(g, body);
 			if (w->kind == UI_DW_DIALOG) {
-				UiRect card, content;
-				Gfx_FillRect(g, body, Ui_ColorAlpha(0xFF000000, 90));
-				card.w = w->w < body.w - 60 ? w->w : body.w - 60;
-				card.h = w->h < body.h - 60 ? w->h : body.h - 60;
-				card.x = body.x + (body.w - card.w) * 0.5f;
-				card.y = body.y + (body.h - card.h) * 0.5f;
-				Gfx_FillRoundRect(g, card, 12.0f, t->card);
-				Gfx_StrokeRoundRect(g, card, 12.0f, t->border, 1.0f);
-				Gfx_Text(g, t->fTitle, w->title,
-					Ui_Rect(card.x + 18, card.y + 8, card.w - 40, 30),
-					t->text, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
-				content = Ui_Rect(card.x + 16, card.y + 44,
-					card.w - 32, card.h - 58);
-				UiDesign_Draw(&g_d.inst, content);
-				Gfx_Text(g, t->fMini, "Esc 退出预览",
-					Ui_Rect(card.x + 16, card.y + card.h - 18,
-						card.w - 32, 16), t->text4,
-					GFX_TEXT_RIGHT | GFX_TEXT_VCENTER);
+				UiRect card;
+				if (UiDesign_DialogIsOpen(&g_d.inst)) {
+					/* 真实 UiDialog 会在整窗遮罩上绘制, 画布不再放占位卡. */
+				} else {
+					Gfx_FillRect(g, body, Ui_ColorAlpha(0xFF000000, 90));
+					card = Ui_Rect(body.x + (body.w - 360.0f) * 0.5f,
+						body.y + (body.h - 150.0f) * 0.5f, 360.0f, 150.0f);
+					Gfx_FillRoundRect(g, card, 12.0f, t->card);
+					Gfx_StrokeRoundRect(g, card, 12.0f, t->border, 1.0f);
+					Gfx_Text(g, t->fTitle, "虚拟 Dialog 预览",
+						Ui_Rect(card.x + 18, card.y + 14, card.w - 36, 28),
+						t->text, GFX_TEXT_VCENTER);
+					Gfx_Text(g, t->fSmall,
+						"使用真实 UiDialog 覆盖层显示，不创建独立窗口",
+						Ui_Rect(card.x + 18, card.y + 48, card.w - 36, 20),
+						t->text3, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+					if (Ui_Button(&g_d.app->ui,
+					    Ui_Id("dsn.preview.reopen", 0, 0),
+					    Ui_Rect(card.x + 18, card.y + 76, 120, 30),
+					    "重新打开", UI_BTYPE_PRIMARY, 1)) {
+						UiDesign_DialogOpen(&g_d.inst,
+							Ui_Id("dsn.preview.owner", 0, 0));
+						g_d.previewDialogTried = 1;
+					}
+				}
 			} else {
 				UiDesign_Draw(&g_d.inst, win);
 			}
@@ -1498,6 +1649,13 @@ static void d_nav_init(void)
 	g_d.navFile[2] = d_nav_leaf("dsn.nav.save", DNA_SAVE, "保存");
 	g_d.navFile[3] = d_nav_leaf("dsn.nav.saveas", DNA_SAVEAS, "另存为");
 	g_d.navFile[4] = d_nav_leaf("dsn.nav.gen", DNA_GENERATE, "生成代码");
+	g_d.navFile[5] = d_nav_leaf("dsn.nav.exit", DNA_EXIT, "退出");
+	g_d.navFile[0].shortcut = "Ctrl+N";
+	g_d.navFile[1].shortcut = "Ctrl+O";
+	g_d.navFile[2].shortcut = "Ctrl+S";
+	g_d.navFile[3].shortcut = "Ctrl+Shift+S";
+	g_d.navFile[4].shortcut = "Ctrl+G";
+	g_d.navFile[5].shortcut = "Alt+F4";
 	g_d.navEdit[0] = d_nav_leaf("dsn.nav.undo", DNA_UNDO, "撤销");
 	g_d.navEdit[1] = d_nav_leaf("dsn.nav.redo", DNA_REDO, "重做");
 	g_d.navEdit[2] = d_nav_leaf("dsn.nav.dup", DNA_DUP, "复制组件");
@@ -1508,11 +1666,12 @@ static void d_nav_init(void)
 	g_d.navProj[1] = d_nav_leaf("dsn.nav.adddlg", DNA_ADDDLG, "新建虚拟 Dialog");
 	g_d.navProj[2] = d_nav_leaf("dsn.nav.addgrp", DNA_ADDGRP, "新建生成组");
 	g_d.navProj[3] = d_nav_leaf("dsn.nav.genall", DNA_GENALL, "生成全部分组");
+	g_d.navProj[4] = d_nav_leaf("dsn.nav.genwin", DNA_GENWIN, "生成当前窗口");
 	g_d.navView[0] = d_nav_leaf("dsn.nav.design", DNA_DESIGN, "设计模式");
 	g_d.navView[1] = d_nav_leaf("dsn.nav.preview", DNA_PREVIEW, "预览模式");
-	g_d.navRoot[0] = d_nav_root(Ui_Id("dsn.nav.root", 0, 0), "文件", 0xE8B7, g_d.navFile, 5);
+	g_d.navRoot[0] = d_nav_root(Ui_Id("dsn.nav.root", 0, 0), "文件", 0xE8B7, g_d.navFile, 6);
 	g_d.navRoot[1] = d_nav_root(Ui_Id("dsn.nav.root", 1, 0), "编辑", 0xE70F, g_d.navEdit, 6);
-	g_d.navRoot[2] = d_nav_root(Ui_Id("dsn.nav.root", 2, 0), "工程", 0xE8A9, g_d.navProj, 4);
+	g_d.navRoot[2] = d_nav_root(Ui_Id("dsn.nav.root", 2, 0), "工程", 0xE8A9, g_d.navProj, 5);
 	g_d.navRoot[3] = d_nav_root(Ui_Id("dsn.nav.root", 3, 0), "视图", 0xE768, g_d.navView, 2);
 	UiNavBar_Init(&g_d.nav, Ui_Id("dsn.nav", 0, 0));
 	UiNavBar_SetItems(&g_d.nav, g_d.navRoot, 4);
@@ -1533,8 +1692,10 @@ static void d_nav_do(int kind)
 	case DNA_OPEN: d_open_file(); break;
 	case DNA_SAVE: d_save_file(0); break;
 	case DNA_SAVEAS: d_save_file(1); break;
+	case DNA_EXIT: UiApp_Close(g_d.app); break;
 	case DNA_GENERATE:
 	case DNA_GENALL: d_generate(); break;
+	case DNA_GENWIN: d_generate_window(); break;
 	case DNA_UNDO: d_undo_step(0); break;
 	case DNA_REDO: d_undo_step(1); break;
 	case DNA_DUP: d_dup_node(); break;
@@ -1577,17 +1738,38 @@ static void d_draw_topbar(void)
 {
 	UiTheme *t = &g_d.app->theme;
 	Gfx *g = g_d.app->gfx;
+	UiContext *ui = &g_d.app->ui;
 	UiRect bar = Ui_Rect(0, 0, g_d.app->w, TOP_H);
 	UiRect navRc = Ui_Rect(10, 3, 560, 34);
 
 	Gfx_FillRoundRectCorners(g, bar,
 		Gfx_Corners(t->windowRadius, t->windowRadius, 0, 0), t->frame);
 	Gfx_Line(g, 0, TOP_H - 1, g_d.app->w, TOP_H - 1, t->border, 1.0f);
-	UiNavBar_Draw(&g_d.nav, &g_d.pm, &g_d.app->ui, navRc, 1);
+	UiNavBar_Draw(&g_d.nav, &g_d.pm, ui, navRc, 1);
 	d_nav_take();
-	Gfx_Text(g, t->fHead, "CUI Designer",
-		Ui_Rect(g_d.app->w - 360, 0, 340, TOP_H), t->text2,
-		GFX_TEXT_VCENTER | GFX_TEXT_RIGHT | GFX_TEXT_ELLIPSIS);
+	{
+		char tb[64];
+		snprintf(tb, sizeof(tb), "CUI Designer%s", g_d.doc.dirty ? " *" : "");
+		Gfx_Text(g, t->fHead, tb,
+			Ui_Rect(g_d.app->w - 400, 0, 344, TOP_H), t->text2,
+			GFX_TEXT_VCENTER | GFX_TEXT_RIGHT | GFX_TEXT_ELLIPSIS);
+	}
+	{
+		UiId cid = Ui_Id("dsn.close", 0, 0);
+		UiRect crc = Ui_Rect(g_d.app->w - 44.0f, 0, 44.0f, TOP_H);
+		UiWidgetState cs = Ui_State(ui, cid, crc, 1);
+		float mx = crc.x + crc.w * 0.5f;
+		float my = crc.y + crc.h * 0.5f;
+		float d = 5.0f;
+		UiColor xc = Ui_ColorMix(t->text3, 0xFFFFFFFF, cs.hover);
+		if (cs.hover > 0.01f)
+			Gfx_FillRoundRect(g, crc, 8.0f,
+				Ui_ColorAlpha(0xFFE81123, (int)(cs.hover * 232.0f)));
+		Gfx_Line(g, mx - d, my - d, mx + d, my + d, xc, 1.5f);
+		Gfx_Line(g, mx - d, my + d, mx + d, my - d, xc, 1.5f);
+		if (cs.hovered) Ui_SetCursor(ui, cid, UI_CURSOR_HAND);
+		if (ui->clicked == cid) UiApp_Close(g_d.app);
+	}
 }
 
 static void d_draw_toolbar(void)
@@ -1829,6 +2011,36 @@ static int d_validate(char *msg, int cap)
 			snprintf(msg, (size_t)cap, "窗口根节点缺失: %s", g_d.doc.windows[i].id);
 			return 0;
 		}
+		if (g_d.doc.windows[i].group < 0) {
+			/* 未分组窗口单独输出, 检查与生成组/其他窗口的路径冲突. */
+			char sym[UI_DN_SYM_MAX], wc[UI_DN_PATH_MAX], wh[UI_DN_PATH_MAX];
+			UiDesign_Symbol(g_d.doc.windows[i].id, sym, sizeof(sym));
+			snprintf(wc, sizeof(wc), "%s.ui.c", sym);
+			snprintf(wh, sizeof(wh), "%s.ui.h", sym);
+			for (j = 0; j < g_d.doc.groupCount; j++) {
+				char cj[UI_DN_PATH_MAX], hj[UI_DN_PATH_MAX];
+				d_group_paths(j, cj, hj, UI_DN_PATH_MAX);
+				if (strcmp(wc, cj) == 0 || strcmp(wc, hj) == 0 ||
+				    strcmp(wh, cj) == 0 || strcmp(wh, hj) == 0) {
+					snprintf(msg, (size_t)cap,
+						"未分组窗口输出与生成组冲突: %s", wc);
+					return 0;
+				}
+			}
+			for (j = 0; j < i; j++) {
+				char sym2[UI_DN_SYM_MAX], cj[UI_DN_PATH_MAX], hj[UI_DN_PATH_MAX];
+				if (g_d.doc.windows[j].group >= 0) continue;
+				UiDesign_Symbol(g_d.doc.windows[j].id, sym2, sizeof(sym2));
+				snprintf(cj, sizeof(cj), "%s.ui.c", sym2);
+				snprintf(hj, sizeof(hj), "%s.ui.h", sym2);
+				if (strcmp(wc, cj) == 0 || strcmp(wc, hj) == 0 ||
+				    strcmp(wh, cj) == 0 || strcmp(wh, hj) == 0) {
+					snprintf(msg, (size_t)cap,
+						"未分组窗口输出冲突: %s", wc);
+					return 0;
+				}
+			}
+		}
 		n = 0;
 		d_collect_nodes(&g_d.doc, g_d.doc.windows[i].root, list, 256, &n);
 		for (j = 0; j < n; j++)
@@ -1903,6 +2115,96 @@ static float d_draw_constraints(UiContext *ui, UiRect panel, float y)
 	return y;
 }
 
+static int d_collect_free_sel(int *out, int cap)
+{
+	int i, n = 0;
+	for (i = 0; i < g_d.selSetN && n < cap; i++) {
+		int idx = g_d.selSet[i];
+		UiDesignNode *nd;
+		if (idx < 0 || idx >= g_d.doc.nodeCount) continue;
+		nd = &g_d.doc.nodes[idx];
+		if (nd->parent < 0 || !d_parent_free(nd->parent)) continue;
+		if (g_d.selWin >= 0 && idx == g_d.doc.windows[g_d.selWin].root) continue;
+		out[n++] = idx;
+	}
+	return n;
+}
+
+static void d_do_align(int action)
+{
+	int list[128], n, i, j;
+	float minX = 0, maxX = 0, minY = 0, maxY = 0;
+	if (!g_d.layoutReady) d_layout_current();
+	n = d_collect_free_sel(list, 128);
+	if (n < 2) {
+		d_status("对齐需要至少两个自由布局组件");
+		return;
+	}
+	minX = g_d.rects[list[0]].x;
+	maxX = minX + g_d.rects[list[0]].w;
+	minY = g_d.rects[list[0]].y;
+	maxY = minY + g_d.rects[list[0]].h;
+	for (i = 1; i < n; i++) {
+		UiRect r = g_d.rects[list[i]];
+		if (r.x < minX) minX = r.x;
+		if (r.x + r.w > maxX) maxX = r.x + r.w;
+		if (r.y < minY) minY = r.y;
+		if (r.y + r.h > maxY) maxY = r.y + r.h;
+	}
+	if (action >= 6) {
+		/* 分布: 首尾不动, 中间按中心等距. */
+		if (n < 3) { d_status("分布需要至少三个组件"); return; }
+		for (i = 1; i < n; i++) {
+			int k = list[i];
+			for (j = i; j > 0; j--) {
+				UiRect a = g_d.rects[list[j - 1]], b = g_d.rects[list[j]];
+				float av = action == 6 ? a.x : a.y;
+				float bv = action == 6 ? b.x : b.y;
+				if (av <= bv) break;
+				list[j - 1] = list[j];
+				list[j] = k;
+			}
+		}
+		{
+			UiRect fr = g_d.rects[list[0]], lr = g_d.rects[list[n - 1]];
+			float c0 = action == 6 ? fr.x + fr.w * 0.5f : fr.y + fr.h * 0.5f;
+			float c1 = action == 6 ? lr.x + lr.w * 0.5f : lr.y + lr.h * 0.5f;
+			float step = (c1 - c0) / (float)(n - 1);
+			for (i = 1; i < n - 1; i++) {
+				int idx = list[i];
+				UiDesignNode *nd = &g_d.doc.nodes[idx];
+				UiRect pr = g_d.rects[nd->parent];
+				float inner = action == 6
+					? pr.x + g_d.doc.nodes[nd->parent].padding[0]
+					: pr.y + g_d.doc.nodes[nd->parent].padding[1];
+				float c = c0 + step * (float)i;
+				if (action == 6) nd->x = c - g_d.rects[idx].w * 0.5f - inner;
+				else nd->y = c - g_d.rects[idx].h * 0.5f - inner;
+			}
+		}
+	} else {
+		for (i = 0; i < n; i++) {
+			int idx = list[i];
+			UiDesignNode *nd = &g_d.doc.nodes[idx];
+			UiRect pr = g_d.rects[nd->parent];
+			float innerX = pr.x + g_d.doc.nodes[nd->parent].padding[0];
+			float innerY = pr.y + g_d.doc.nodes[nd->parent].padding[1];
+			UiRect r = g_d.rects[idx];
+			if (action == 0) nd->x = minX - innerX;
+			else if (action == 1) nd->x = (minX + maxX - r.w) * 0.5f - innerX;
+			else if (action == 2) nd->x = maxX - r.w - innerX;
+			else if (action == 3) nd->y = minY - innerY;
+			else if (action == 4) nd->y = (minY + maxY - r.h) * 0.5f - innerY;
+			else if (action == 5) nd->y = maxY - r.h - innerY;
+		}
+	}
+	g_d.doc.dirty = 1;
+	g_d.layoutReady = 0;
+	d_undo_push();
+	d_status(action >= 6 ? "已分布组件" : "已对齐组件");
+	UiApp_Invalidate(g_d.app);
+}
+
 static void d_draw_props(void)
 {
 	UiTheme *t = &g_d.app->theme;
@@ -1966,6 +2268,34 @@ static void d_draw_props(void)
 		Gfx_PopClip(g);
 		g_d.propContentH = (int)(y - (props.y - (float)g_d.propScroll));
 		if (g_d.propContentH <= (int)props.h) g_d.propScroll = 0;
+		return;
+	}
+
+	if (g_d.propsTab == 0 && g_d.selSetN > 1) {
+		static const char *const aLabels[6] = { "左", "水平", "右", "上", "垂直", "下" };
+		static const char *const dLabels[2] = { "横向分布", "纵向分布" };
+		char b[64];
+		int c;
+		g_d.propN = 0;
+		snprintf(b, sizeof(b), "已选 %d 个组件", g_d.selSetN);
+		Gfx_Text(g, t->fLabel, b,
+			Ui_Rect(props.x, props.y, props.w, 22), t->text2,
+			GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+		UiButtonGroup_SetSelected(&g_d.multiAlign, -1);
+		c = UiButtonGroup_Draw(ui, &g_d.multiAlign,
+			Ui_Rect(props.x, props.y + 26, props.w, 26), aLabels,
+			NULL, NULL, UI_BTN_PRIMARY);
+		if (c >= 0) d_do_align(c);
+		UiButtonGroup_SetSelected(&g_d.multiDist, -1);
+		c = UiButtonGroup_Draw(ui, &g_d.multiDist,
+			Ui_Rect(props.x, props.y + 58, props.w, 26), dLabels,
+			NULL, NULL, UI_BTN_PRIMARY);
+		if (c >= 0) d_do_align(6 + c);
+		Gfx_Text(g, t->fMini, "对齐/分布作用于自由布局子项",
+			Ui_Rect(props.x, props.y + 90, props.w, 16), t->text4,
+			GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+		g_d.propContentH = 110;
+		g_d.propScroll = 0;
 		return;
 	}
 
@@ -2062,7 +2392,8 @@ static void d_draw_status(void)
 	snprintf(b, sizeof(b), "%s%s  ·  Ctrl+滚轮缩放 %d%%  ·  空格+拖动平移  ·  Ctrl+G 生成",
 		g_d.status[0] ? g_d.status : "就绪",
 		g_d.preview ? "  [预览]" : "", (int)(g_d.zoom * 100.0f + 0.5f));
-	Gfx_FillRect(g, bar, t->frame);
+	Gfx_FillRoundRectCorners(g, bar,
+		Gfx_Corners(0, 0, t->windowRadius, t->windowRadius), t->frame);
 	Gfx_Line(g, 0, bar.y, g_d.app->w, bar.y, t->border, 1.0f);
 	Gfx_Text(g, t->fSmall, b,
 		Ui_Rect(12, bar.y, g_d.app->w - 24, bar.h), t->text3,
@@ -2104,8 +2435,10 @@ static void d_draw_gen_preview(void)
 			GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 		if (f->status == 0)
 			snprintf(b, sizeof(b), "%s  %d 行", st, f->newLines);
+		else if (f->status == 1)
+			snprintf(b, sizeof(b), "%s  +%d -%d 行", st, f->added, f->removed);
 		else
-			snprintf(b, sizeof(b), "%s  %d→%d 行", st, f->oldLines, f->newLines);
+			snprintf(b, sizeof(b), "%s  %d 行", st, f->newLines);
 		Gfx_Text(g, t->fSmall, b,
 			Ui_Rect(card.x + card.w - 176, y, 156, 22), sc,
 			GFX_TEXT_VCENTER | GFX_TEXT_RIGHT);
@@ -2168,6 +2501,7 @@ static void d_preview_update(void)
 		if (UiDesignInstance_Init(&g_d.inst, &g_d.doc, g_d.selWin,
 			&g_d.app->ui, &g_d.pm, &g_d.app->ime))
 			g_d.instReady = 1;
+		g_d.previewDialogTried = 0;
 	}
 }
 
@@ -2394,10 +2728,13 @@ static void d_mouse_down(float x, float y)
 		UiDesignNode *p;
 		int additive = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 		if (additive) d_sel_toggle(hitNode);
-		else d_sel_single(hitNode);
+		else if (d_sel_has(hitNode)) {
+			g_d.selNode = hitNode;
+			g_d.selKind = DSEL_NODE;
+		} else d_sel_single(hitNode);
 		n = &g_d.doc.nodes[hitNode];
 		p = n->parent >= 0 ? &g_d.doc.nodes[n->parent] : NULL;
-		if (d_sel_has(hitNode) && p && p->type == UI_DN_ABSOLUTE &&
+		if (d_sel_has(hitNode) && p && d_parent_free(n->parent) &&
 		    hitNode != g_d.doc.windows[g_d.selWin].root) {
 			g_d.dragging = 1;
 			g_d.dragStartX = x;
@@ -2405,6 +2742,7 @@ static void d_mouse_down(float x, float y)
 			g_d.dragNodeX = n->x;
 			g_d.dragNodeY = n->y;
 			g_d.dragMoved = 0;
+			d_drag_begin(hitNode);
 		}
 		UiApp_Invalidate(g_d.app);
 		return;
@@ -2528,9 +2866,17 @@ static void d_mouse_move(float x, float y)
 		if (fabsf_local(dx) + fabsf_local(dy) > 1.5f) g_d.dragMoved = 1;
 		if (g_d.dragging == 1) {
 			float nx = g_d.dragNodeX + dx, ny = g_d.dragNodeY + dy;
+			float sdx, sdy;
+			int i;
 			d_snap_move(n, &nx, &ny);
-			n->x = nx;
-			n->y = ny;
+			sdx = nx - g_d.dragNodeX;
+			sdy = ny - g_d.dragNodeY;
+			for (i = 0; i < g_d.dragListN; i++) {
+				UiDesignNode *dn = UiDesign_Node(&g_d.doc, g_d.dragListIdx[i]);
+				if (!dn) continue;
+				dn->x = g_d.dragListX[i] + sdx;
+				dn->y = g_d.dragListY[i] + sdy;
+			}
 		} else {
 			/* 按抓取的手柄只改对应方向: 上下边只改高, 左右边只改宽,
 			 * 左边/上边同时移动节点原点. 手柄编号见 d_handle_at. */
@@ -2627,6 +2973,7 @@ static void d_mouse_up(void)
 		int moved = g_d.dragMoved;
 		g_d.dragging = 0;
 		g_d.dragMoved = 0;
+		g_d.dragListN = 0;
 		g_d.snapX = g_d.snapY = 0;
 		if (moved) d_undo_push();
 		d_status(moved ? "布局已修改" : "已选中");
@@ -2647,8 +2994,12 @@ static int d_key(UINT vk)
 		return 1;
 	}
 	if (g_d.preview) {
+		if (g_d.instReady && UiDesign_DialogIsOpen(&g_d.inst) &&
+		    UiDialog_Key(&g_d.inst.dialog, &g_d.app->ui, vk))
+			return 1;
 		if (vk == VK_ESCAPE) {
 			g_d.preview = 0;
+			d_preview_shutdown();
 			d_status("设计模式");
 			return 1;
 		}
@@ -2669,7 +3020,10 @@ static int d_key(UINT vk)
 		d_status("选择工具");
 		return 1;
 	}
-	if (ctrl && vk == 'S') { d_save_file(0); return 1; }
+	if (ctrl && vk == 'S') {
+		d_save_file((GetKeyState(VK_SHIFT) & 0x8000) ? 1 : 0);
+		return 1;
+	}
 	if (ctrl && vk == 'O') { d_open_file(); return 1; }
 	if (ctrl && vk == 'N') { d_new_doc(); return 1; }
 	if (ctrl && vk == 'Z') { d_undo_step(0); return 1; }
@@ -2750,6 +3104,10 @@ static void d_on_init(UiApp *app, void *user)
 	UiButtonGroup_Init(&g_d.constraintH, Ui_Id("dsn.ch", 0, 0), UI_BG_SINGLE, 4);
 	UiButtonGroup_Init(&g_d.constraintAlign, Ui_Id("dsn.ca", 0, 0), UI_BG_SINGLE, 3);
 	UiButtonGroup_Init(&g_d.constraintKind, Ui_Id("dsn.ck", 0, 0), UI_BG_SINGLE, 4);
+	UiButtonGroup_Init(&g_d.multiAlign, Ui_Id("dsn.ma", 0, 0), UI_BG_SINGLE, 6);
+	UiButtonGroup_Init(&g_d.multiDist, Ui_Id("dsn.md", 0, 0), UI_BG_SINGLE, 2);
+	UiButtonGroup_SetSelected(&g_d.multiAlign, -1);
+	UiButtonGroup_SetSelected(&g_d.multiDist, -1);
 	g_d.insertType = -1;
 	g_d.zoom = 1.0f;
 	d_nav_init();
@@ -2760,13 +3118,34 @@ static void d_on_init(UiApp *app, void *user)
 	d_reset_selection();
 	d_undo_reset();
 	d_status("就绪 · 打开或新建 .cui 工程");
+	if (g_d.startupFile[0]) {
+		if (UiDesign_LoadFile(&g_d.doc, g_d.startupFile)) {
+			d_reset_selection();
+			d_undo_reset();
+			d_dir_of(g_d.startupFile, g_d.lastDir, MAX_PATH);
+			d_status("已打开 .cui 工程");
+		} else {
+			d_error("打开失败: .cui 解析错误");
+		}
+	}
 }
 
 static void d_on_frame(UiApp *app, void *user)
 {
 	(void)user;
 	UiPopupManager_BeginFrame(&g_d.pm, &app->ui);
+	if (g_d.titleDirty != (g_d.doc.dirty != 0)) {
+		g_d.titleDirty = g_d.doc.dirty != 0;
+		SetWindowTextW(app->hwnd,
+			g_d.titleDirty ? L"CUI Designer *" : L"CUI Designer");
+	}
 	d_preview_update();
+	if (g_d.preview && g_d.instReady && !g_d.previewDialogTried &&
+	    g_d.selWin >= 0 && g_d.selWin < g_d.doc.windowCount &&
+	    g_d.doc.windows[g_d.selWin].kind == UI_DW_DIALOG) {
+		g_d.previewDialogTried = 1;
+		UiDesign_DialogOpen(&g_d.inst, Ui_Id("dsn.preview.owner", 0, 0));
+	}
 	d_draw_all();
 	if (g_d.preview && g_d.instReady) {
 		UiDesign_DrawOverlay(&g_d.inst);
@@ -2788,13 +3167,28 @@ static void d_on_mouse(UiApp *app, int msg, float x, float y, void *user)
 	else if (msg == UI_APP_MOUSE_UP) d_mouse_up();
 }
 
+static int d_on_input(UiApp *app, UINT msg, WPARAM wp, LPARAM lp,
+	LRESULT *result, void *user)
+{
+	(void)wp; (void)lp; (void)user;
+	if (msg == WM_CLOSE && g_d.doc.dirty) {
+		d_after_edit();
+		if (!d_confirm_discard()) {
+			*result = 0;
+			return 1;
+		}
+	}
+	return 0;
+}
+
 static int d_on_nchittest(UiApp *app, int x, int y, LRESULT *hit, void *user)
 {
 	float s = app && app->scale > 0.0f ? app->scale : 1.0f;
 	int top = (int)(TOP_H * s);
 	int navRight = (int)(620.0f * s);
+	int closeLeft = (int)((app->w - 48.0f) * s);
 	(void)user;
-	if (y >= 0 && y < top && x >= navRight) {
+	if (y >= 0 && y < top && x >= navRight && x < closeLeft) {
 		*hit = HTCAPTION;
 		return 1;
 	}
@@ -2889,14 +3283,41 @@ static void d_on_shutdown(UiApp *app, void *user)
 	g_d.rects = NULL;
 }
 
+static void d_parse_startup_file(WCHAR *out, int cap)
+{
+	const WCHAR *p;
+	int n = 0;
+	if (!out || cap <= 0) return;
+	out[0] = 0;
+	p = GetCommandLineW();
+	if (!p) return;
+	if (*p == L'"') {
+		p++;
+		while (*p && *p != L'"') p++;
+		if (*p) p++;
+	} else {
+		while (*p && *p != L' ' && *p != L'\t') p++;
+	}
+	while (*p == L' ' || *p == L'\t') p++;
+	if (*p == L'"') {
+		p++;
+		while (*p && *p != L'"' && n < cap - 1) out[n++] = *p++;
+	} else {
+		while (*p && *p != L' ' && *p != L'\t' && n < cap - 1) out[n++] = *p++;
+	}
+	out[n] = 0;
+}
+
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 {
 	UiAppCallbacks cb;
 	(void)inst; (void)prev; (void)cmd; (void)show;
 	ZeroMemory(&g_d, sizeof(g_d));
+	d_parse_startup_file(g_d.startupFile, MAX_PATH);
 	ZeroMemory(&cb, sizeof(cb));
 	cb.init = d_on_init;
 	cb.frame = d_on_frame;
+	cb.input = d_on_input;
 	cb.after_frame = d_on_after;
 	cb.shutdown = d_on_shutdown;
 	cb.animating = d_animating;

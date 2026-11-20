@@ -258,9 +258,40 @@ static void test_preview(void)
 	UiDesign_SetText(d.windows[0].title, 128, "Changed Title");
 	n = UiDesign_PreviewAll(&d, L"build\\gen", f, 4, report, sizeof(report));
 	CHECK(n == 2 && f[0].status == 1);
-	CHECK(f[0].newLines > 0 && f[0].oldLines > 0);
+	CHECK(f[0].added == 1 && f[0].removed == 1);
 	DeleteFileW(pc);
 	DeleteFileW(ph);
+	UiDesign_Free(&d);
+}
+
+static void test_window_generate(void)
+{
+	UiDesignDoc d;
+	char report[128];
+	WCHAR pc[MAX_PATH], ph[MAX_PATH];
+	int r;
+	UiDesign_Init(&d);
+	UiDesign_DefaultDoc(&d);
+	UiDesign_SetText(d.windows[0].id, UI_DN_ID_MAX, "solo_win");
+	d.windows[0].group = -1;      /* 未分组: 全部生成时单独输出 */
+	CreateDirectoryW(L"build\\gen", NULL);
+	lstrcpyW(pc, L"build\\gen\\solo_win.ui.c");
+	lstrcpyW(ph, L"build\\gen\\solo_win.ui.h");
+	DeleteFileW(pc);
+	DeleteFileW(ph);
+	r = UiDesign_GenerateWindow(&d, 0, L"build\\gen", report, sizeof(report));
+	CHECK(r == 2);
+	CHECK(GetFileAttributesW(pc) != INVALID_FILE_ATTRIBUTES);
+	CHECK(GetFileAttributesW(ph) != INVALID_FILE_ATTRIBUTES);
+	DeleteFileW(pc);
+	DeleteFileW(ph);
+	r = UiDesign_GenerateAll(&d, L"build\\gen", report, sizeof(report));
+	CHECK(r == 4);                /* 空生成组 2 + 未分组窗口 2 */
+	CHECK(GetFileAttributesW(pc) != INVALID_FILE_ATTRIBUTES);
+	DeleteFileW(pc);
+	DeleteFileW(ph);
+	DeleteFileW(L"build\\gen\\main.ui.c");
+	DeleteFileW(L"build\\gen\\main.ui.h");
 	UiDesign_Free(&d);
 }
 
@@ -295,6 +326,7 @@ void __stdcall startup(void)
 	test_layout();
 	test_codegen();
 	test_preview();
+	test_window_generate();
 	test_save_load();
 	test_symbol();
 	sprintf(line, "designer_test: %d passed, %d failed\n", g_pass, g_fail);

@@ -256,6 +256,9 @@ int  UiDesign_Busy(const UiDesignInstance *inst);
  * report 返回错误/摘要文本. */
 int UiDesign_GenerateGroup(const UiDesignDoc *doc, int group,
 	const wchar_t *dir, char *report, int cap);
+/* 单窗口导出: 输出 <窗口ID>.ui.c/.h, 与生成组互不影响. */
+int UiDesign_GenerateWindow(const UiDesignDoc *doc, int win,
+	const wchar_t *dir, char *report, int cap);
 int UiDesign_GenerateAll(const UiDesignDoc *doc, const wchar_t *dir,
 	char *report, int cap);
 
@@ -266,6 +269,8 @@ typedef struct UiDesignGenFile {
 	int status;
 	int oldLines;
 	int newLines;
+	int added;
+	int removed;
 } UiDesignGenFile;
 
 int UiDesign_PreviewAll(const UiDesignDoc *doc, const wchar_t *dir,
