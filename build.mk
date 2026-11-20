@@ -46,7 +46,7 @@ CORE_OBJS = $(OBJ)\edit.obj $(OBJ)\log.obj $(OBJ)\crtstub.obj $(OBJ)\heap.obj \
 
 # Optional modules: linked only into targets that use rich text / Markdown.
 OPT_OBJS = $(OBJ)\gfx_rich.obj $(OBJ)\gfx_math.obj $(OBJ)\ui_md_parse.obj \
-    $(OBJ)\ui_md.obj $(OBJ)\md_math.obj
+    $(OBJ)\ui_md_highlight.obj $(OBJ)\ui_md.obj $(OBJ)\md_math.obj
 
 # WebView2: linked only into the webview sample. 0CRT, WebView2Loader.dll
 # is loaded dynamically at runtime.
@@ -66,6 +66,7 @@ SAMPLE_OBJS = $(OBJ)\demo.obj $(OBJ)\minimal.obj $(OBJ)\advanced.obj \
 
 TEST_OBJS = $(OBJ)\net_test.obj $(OBJ)\gfx_rich_test.obj $(OBJ)\md_test.obj \
     $(OBJ)\md_ui_test.obj $(OBJ)\md_math_test.obj $(OBJ)\gfx_math_test.obj \
+    $(OBJ)\md_highlight_test.obj \
     $(OBJ)\gfx_path_test.obj \
     $(OBJ)\ui_nav_test.obj $(OBJ)\ui_pagination_test.obj \
     $(OBJ)\ui_layout_test.obj $(OBJ)\ui_grid_test.obj \
@@ -80,6 +81,7 @@ TARGETS = $(BIN)\cui_demo.exe $(BIN)\cui_minimal.exe $(BIN)\cui_advanced.exe \
     $(BIN)\cui_net.exe $(BIN)\cui_net_test.exe $(BIN)\cui_image.exe \
     $(BIN)\cui_ws_server.exe $(BIN)\cui_gfx_rich_test.exe $(BIN)\cui_md_test.exe \
     $(BIN)\cui_md_ui_test.exe $(BIN)\cui_md_math_test.exe \
+    $(BIN)\cui_md_highlight_test.exe \
     $(BIN)\cui_gfx_math_test.exe $(BIN)\cui_gfx_path_test.exe $(BIN)\cui_markdown.exe $(BIN)\cui_nav.exe \
     $(BIN)\cui_nav_test.exe $(BIN)\cui_pagination.exe \
     $(BIN)\cui_pagination_test.exe $(BIN)\cui_layout_test.exe \
@@ -295,6 +297,10 @@ $(BIN)\cui_md_ui_test.exe: $(CORE_OBJS) $(OPT_OBJS) $(OBJ)\md_ui_test.obj
 
 $(BIN)\cui_md_math_test.exe: $(CORE_OBJS) $(OBJ)\md_math.obj $(OBJ)\md_math_test.obj
 	@echo [cui] link md_math_test (optional module)
+	@link $(LIBS_CON) /OUT:$@ $** $(LIBS)
+
+$(BIN)\cui_md_highlight_test.exe: $(CORE_OBJS) $(OBJ)\ui_md_highlight.obj $(OBJ)\md_highlight_test.obj
+	@echo [cui] link md_highlight_test
 	@link $(LIBS_CON) /OUT:$@ $** $(LIBS)
 
 $(BIN)\cui_nav_test.exe: $(CORE_OBJS) $(OBJ)\ui_nav_test.obj

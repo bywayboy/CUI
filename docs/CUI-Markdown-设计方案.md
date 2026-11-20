@@ -5,6 +5,7 @@
 > 锚点、HTML 排版容器（`<div>` / `<p>` / `<center>`）、增量复用与解析热路径优化。
 > 剩余：全文选区 / Ctrl+C 复制、代码块复制按钮。
 > 关联：`src/ui/ui_md_parse.*`（新增，纯解析器）、`src/ui/ui_md.*`（新增，组件）、
+> `src/ui/ui_md_highlight.*`（内置语法着色，纯 C）、
 > `src/gfx/gfx_rich.h` + `src/gfx/gfx_rich.cpp` + `src/gfx/gfx_internal.h`
 > （新增，可选富文本模块；`gfx.h` 核心不变）、
 > `src/ui/ui_scroll.*`（复用）、`src/ui/ui_image.h`（块级图片）、
@@ -509,13 +510,16 @@ ScrollView 自身的注册不受影响。链接是否换行、是否与其它 ru
 typedef struct UiMarkdown UiMarkdown;   /* 不透明, 应用持有 */
 
 typedef struct UiMdSpan { int start, len; uint8_t style; } UiMdSpan;
-/* style 用 MD_TOK_* 位 (KEYWORD/STRING/COMMENT/NUMBER), 颜色取 style.tok* */
+/* style: MD_TOK_KEYWORD/STRING/COMMENT/NUMBER/TYPE/FUNCTION/PREPROC/PROPERTY */
 
 typedef void (*UiMarkdownLinkFn)(void *user, const char *url);
 typedef void (*UiMarkdownCopyFn)(void *user, const wchar_t *text16, int len16);
-/* 返回写入 out 的 span 数; start/len 为 UTF-16 码元 */
+/* 返回需要的 span 总数; 可大于 cap, 组件会扩容后重调. start/len 为 UTF-16 */
 typedef int (*UiMarkdownTokenizeFn)(void *user, const char *lang,
     const wchar_t *text16, int len16, UiMdSpan *out, int cap);
+/* 内置实现 (C/C++/Java/C#/JS/TS/JSON/Python/Shell/Go/Rust/SQL), 未设回调时使用 */
+int UiMdHighlight_Tokenize(const char *lang, const wchar_t *text, int len,
+    UiMdSpan *out, int cap);
 
 typedef struct UiMarkdownStyle {
     /* 字体: NULL = 按主题字号/字重自动创建 (h1..h6 由 body 梯度派生) */
@@ -537,6 +541,7 @@ typedef struct UiMarkdownStyle {
     UiColor quoteBar, quoteBg, tableBorder, tableHeaderBg;
     UiColor ruleColor, markerColor;
     UiColor tokKeyword, tokString, tokComment, tokNumber;  /* tokenizer 用 */
+    UiColor tokType, tokFunction, tokPreproc, tokProperty;
 } UiMarkdownStyle;
 
 /* 内置两套样式: 返回完整具体值 (字体项为 NULL, 由组件按主题派生) */
@@ -894,10 +899,19 @@ float UiMarkdown_ContentHeight(const UiMarkdown *md);
 
 语法高亮：
 
-- 内置通用词法器：`//`、`/* */`、`#` 注释；`" ' \`` 字符串；数字；常见
-  C/C++/JS/TS/Java/C#/Go/Rust/Python 关键字 → 主题 token 颜色。
-- `UiMarkdown_SetTokenizeFn` 优先于内置词法器；span 使用
-  `MD_TOK_KEYWORD/STRING/COMMENT/NUMBER`。
+- 内置语言感知 tokenizer（`src/ui/ui_md_highlight.*`，纯 C、零分配）：
+  按围栏 info string 识别 C/C++/Java/C#、JS/TS、JSON、Python、Shell、Go、Rust、SQL；
+  未知语言走通用规则。
+- token 类别：`KEYWORD / STRING / COMMENT / NUMBER / TYPE / FUNCTION /
+  PREPROC / PROPERTY`，样式结构提供对应 8 个颜色令牌；浅色/深色/主题派生
+  三套都给出默认值。
+- 处理行注释、块注释（Rust 支持嵌套）、字符串/字符字面量、Python 三引号、
+  装饰器、C 预处理指令、shell 变量、Rust 宏、JSON 键；函数名按“标识符 +
+  (` 判定，C/Go/Rust 类型名单列。
+- `UiMarkdown_SetTokenizeFn` 优先于内置 tokenizer；span 仍使用
+  `MD_TOK_*`。回调返回所需 span 总数，超过容量时组件自动扩容重试，不再有
+  512 条截断。
+- `tests/md_highlight_test.c` 覆盖 8 类 token、各语言与扩容协议。
 
 实现中修正：
 

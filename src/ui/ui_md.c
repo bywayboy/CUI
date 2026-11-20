@@ -206,6 +206,7 @@ struct UiMarkdown {
 	UiColor cQuoteBar, cQuoteBg, cRule, cMarker;
 	UiColor cTableBorder, cTableHeader;
 	UiColor cTokKeyword, cTokString, cTokComment, cTokNumber;
+	UiColor cTokType, cTokFunction, cTokPreproc, cTokProperty;
 
 	float contentW;
 	int needEstimate;
@@ -308,6 +309,10 @@ UiMarkdownStyle UiMarkdownStyle_Light(void)
 	s.tokString = 0xFF0A3069;
 	s.tokComment = 0xFF6E7781;
 	s.tokNumber = 0xFF0550AE;
+	s.tokType = 0xFF953800;
+	s.tokFunction = 0xFF8250DF;
+	s.tokPreproc = 0xFF9A6700;
+	s.tokProperty = 0xFF116329;
 	return s;
 }
 
@@ -333,6 +338,10 @@ UiMarkdownStyle UiMarkdownStyle_Dark(void)
 	s.tokString = 0xFFA5D6FF;
 	s.tokComment = 0xFF8B949E;
 	s.tokNumber = 0xFF79C0FF;
+	s.tokType = 0xFFFFA657;
+	s.tokFunction = 0xFFD2A8FF;
+	s.tokPreproc = 0xFFE3B341;
+	s.tokProperty = 0xFF7EE787;
 	return s;
 }
 
@@ -361,6 +370,10 @@ UiMarkdownStyle UiMarkdownStyle_FromTheme(const UiTheme *t)
 	s.tokString = t->blue;
 	s.tokComment = t->text3;
 	s.tokNumber = t->blue2;
+	s.tokType = t->orange;
+	s.tokFunction = t->green;
+	s.tokPreproc = t->gold;
+	s.tokProperty = t->text2;
 	return s;
 }
 
@@ -473,6 +486,14 @@ static void md_resolve_style(UiMarkdown *md, const UiTheme *t)
 		: (t ? t->text3 : 0xFF6E7781);
 	md->cTokNumber = md->st.tokNumber ? md->st.tokNumber
 		: (t ? t->blue2 : 0xFF0550AE);
+	md->cTokType = md->st.tokType ? md->st.tokType
+		: (t ? t->orange : 0xFF953800);
+	md->cTokFunction = md->st.tokFunction ? md->st.tokFunction
+		: (t ? t->green : 0xFF8250DF);
+	md->cTokPreproc = md->st.tokPreproc ? md->st.tokPreproc
+		: (t ? t->gold : 0xFF9A6700);
+	md->cTokProperty = md->st.tokProperty ? md->st.tokProperty
+		: (t ? t->text2 : 0xFF116329);
 
 	/* 容器: 标题/色条用与浅色底有足够对比的固定语义色.
 	 * 不能取 role.text: primary.text 是主按钮上的白字, 浅色标题会看不见. */
@@ -1111,116 +1132,54 @@ static void md_apply_runs(UiMarkdown *md, GfxRichText *rt, const MdRun *runs,
 	}
 }
 
-static int md_keyword(const wchar_t *w, int n)
+static UiColor md_tok_color(UiMarkdown *md, uint8_t style)
 {
-	static const char *kws[] = {
-		"int", "char", "float", "double", "void", "bool", "long", "short",
-		"unsigned", "signed", "struct", "union", "enum", "typedef", "const",
-		"static", "extern", "return", "if", "else", "for", "while", "do",
-		"switch", "case", "break", "continue", "goto", "sizeof", "class",
-		"public", "private", "protected", "virtual", "override", "namespace",
-		"using", "template", "typename", "new", "delete", "this", "nullptr",
-		"true", "false", "def", "import", "from", "as", "pass", "elif",
-		"try", "except", "finally", "with", "lambda", "yield", "None", "True",
-		"False", "async", "await", "func", "var", "let", "package", "type",
-		"interface", "map", "chan", "go", "defer", "select", "fn", "impl",
-		"mut", "pub", "use", "match", "loop", "in", "not", "and", "or"
-	};
-	int i, k;
-	for (i = 0; i < (int)(sizeof(kws) / sizeof(kws[0])); i++) {
-		const char *s = kws[i];
-		for (k = 0; k < n && s[k]; k++)
-			if (w[k] != (wchar_t)(unsigned char)s[k]) break;
-		if (k == n && s[k] == 0) return 1;
-	}
-	return 0;
-}
-
-static int md_wordch(wchar_t c)
-{
-	return (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') ||
-		(c >= L'0' && c <= L'9') || c == L'_';
-}
-
-static void md_highlight_builtin(UiMarkdown *md, GfxRichText *rt, const MdBlock *b)
-{
-	const wchar_t *t = b->p.text.text16;
-	int n = b->p.text.len16, i = 0;
-	while (i < n) {
-		wchar_t c = t[i];
-		if (c == L'/' && i + 1 < n && t[i + 1] == L'/') {
-			int s = i;
-			while (i < n && t[i] != L'\n') i++;
-			Gfx_RichColor(rt, s, i - s, md->cTokComment);
-			continue;
-		}
-		if (c == L'/' && i + 1 < n && t[i + 1] == L'*') {
-			int s = i;
-			i += 2;
-			while (i + 1 < n && !(t[i] == L'*' && t[i + 1] == L'/')) i++;
-			if (i + 1 < n) i += 2;
-			Gfx_RichColor(rt, s, i - s, md->cTokComment);
-			continue;
-		}
-		if (c == L'#') {
-			int s = i;
-			while (i < n && t[i] != L'\n') i++;
-			Gfx_RichColor(rt, s, i - s, md->cTokComment);
-			continue;
-		}
-		if (c == L'"' || c == L'\'' || c == L'`') {
-			wchar_t q = c;
-			int s = i;
-			i++;
-			while (i < n) {
-				if (t[i] == L'\\' && i + 1 < n) { i += 2; continue; }
-				if (t[i] == q) { i++; break; }
-				if (t[i] == L'\n') break;
-				i++;
-			}
-			Gfx_RichColor(rt, s, i - s, md->cTokString);
-			continue;
-		}
-		if (c >= L'0' && c <= L'9') {
-			int s = i;
-			i++;
-			while (i < n && (md_wordch(t[i]) || t[i] == L'.')) i++;
-			Gfx_RichColor(rt, s, i - s, md->cTokNumber);
-			continue;
-		}
-		if ((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') || c == L'_') {
-			int s = i;
-			while (i < n && md_wordch(t[i])) i++;
-			if (md_keyword(t + s, i - s))
-				Gfx_RichColor(rt, s, i - s, md->cTokKeyword);
-			continue;
-		}
-		i++;
+	switch (style) {
+	case MD_TOK_KEYWORD: return md->cTokKeyword;
+	case MD_TOK_STRING: return md->cTokString;
+	case MD_TOK_COMMENT: return md->cTokComment;
+	case MD_TOK_NUMBER: return md->cTokNumber;
+	case MD_TOK_TYPE: return md->cTokType;
+	case MD_TOK_FUNCTION: return md->cTokFunction;
+	case MD_TOK_PREPROC: return md->cTokPreproc;
+	case MD_TOK_PROPERTY: return md->cTokProperty;
+	default: return 0;
 	}
 }
 
 static void md_highlight(UiMarkdown *md, GfxRichText *rt, const MdBlock *b)
 {
-	if (!rt || !b) return;
-	if (md->tokFn) {
-		int cap = 512, n, i;
-		UiMdSpan *sp = (UiMdSpan *)md_alloc_(cap * (int)sizeof(UiMdSpan));
+	const char *lang;
+	int len16 = b->p.text.len16;
+	int cap = 512, n = 0, i;
+	UiMdSpan *sp;
+
+	if (!rt || !b || len16 <= 0) return;
+	lang = MdDoc_Url(&md->doc, b->u.code.langOff);
+	if (cap > len16 + 1) cap = len16 + 1;
+	for (;;) {
+		sp = (UiMdSpan *)md_alloc_(cap * (int)sizeof(UiMdSpan));
 		if (!sp) return;
-		n = md->tokFn(md->tokUser, MdDoc_Url(&md->doc, b->u.code.langOff),
-			b->p.text.text16, b->p.text.len16, sp, cap);
-		if (n > cap) n = cap;
+		if (md->tokFn)
+			n = md->tokFn(md->tokUser, lang, b->p.text.text16, len16,
+				sp, cap);
+		else
+			n = UiMdHighlight_Tokenize(lang, b->p.text.text16, len16,
+				sp, cap);
+		if (n <= cap) break;
+		md_free_(sp);
+		sp = NULL;
+		if (n > len16 + 1) n = len16 + 1;
+		if (n <= cap) break;
+		cap = n;
+	}
+	if (sp) {
 		for (i = 0; i < n; i++) {
-			UiColor c = 0;
-			if (sp[i].style == MD_TOK_KEYWORD) c = md->cTokKeyword;
-			else if (sp[i].style == MD_TOK_STRING) c = md->cTokString;
-			else if (sp[i].style == MD_TOK_COMMENT) c = md->cTokComment;
-			else if (sp[i].style == MD_TOK_NUMBER) c = md->cTokNumber;
+			UiColor c = md_tok_color(md, sp[i].style);
 			if (c) Gfx_RichColor(rt, sp[i].start, sp[i].len, c);
 		}
 		md_free_(sp);
-		return;
 	}
-	md_highlight_builtin(md, rt, b);
 }
 
 static void md_inl_ensure(UiMarkdown *md, int index)

@@ -14,25 +14,17 @@
 #include "net/ui_net.h"
 #include "ui/ui_context.h"
 #include "ui/ui_theme.h"
+#include "ui/ui_md_highlight.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef struct UiMarkdown UiMarkdown;
-typedef struct UiMdSpan { int start, len; uint8_t style; } UiMdSpan;
-
-/* UiMdSpan.style (tokenizer 回调) */
-enum {
-	MD_TOK_KEYWORD = 1,
-	MD_TOK_STRING = 2,
-	MD_TOK_COMMENT = 3,
-	MD_TOK_NUMBER = 4
-};
 
 typedef void (*UiMarkdownLinkFn)(void *user, const char *url);
 typedef void (*UiMarkdownCopyFn)(void *user, const wchar_t *text16, int len16);
-/* 返回写入 out 的 span 数; start/len 为 UTF-16 码元 */
+/* 返回需要的 span 总数 (可大于 cap, 组件扩容后重调); start/len 为 UTF-16 */
 typedef int (*UiMarkdownTokenizeFn)(void *user, const char *lang,
 	const wchar_t *text16, int len16, UiMdSpan *out, int cap);
 
@@ -57,6 +49,7 @@ typedef struct UiMarkdownStyle {
 	UiColor quoteBar, quoteBg, tableBorder, tableHeaderBg;
 	UiColor ruleColor, markerColor;
 	UiColor tokKeyword, tokString, tokComment, tokNumber;
+	UiColor tokType, tokFunction, tokPreproc, tokProperty;
 } UiMarkdownStyle;
 
 /* 内置两套样式: 返回完整具体值 (字体项为 NULL, 由组件派生) */
