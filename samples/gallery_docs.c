@@ -3395,6 +3395,81 @@ static const char EVENTS_SVGEDIT[] =
 	"`Ui_SvgEdit_Key`。右键回调用 `Ui_SvgEdit_RightDown`, 需要菜单时由宿主\n"
 	"用 `UiMenu_OpenAt` 打开右键菜单。\n";
 
+static const char DOC_FEECARD[] =
+	"# FeeCard 费率卡片\n"
+	"\n"
+	"`UiFeeCard` 复刻费率编辑卡片: 标题/状态标签、5 个标量参数、7×24 小时\n"
+	"单价网格、拖选编辑对话框与删除确认。\n"
+	"\n"
+	"- 价格按 **分** 存储, 输入框按 **元** 显示; 金额最多 9 位整数 +\n"
+	"  2 位小数, 失焦/保存后按 `xxxx.xx` 回显; 折扣范围 1~100;\n"
+	"- 网格单击选中, **双击单格** 或拖动框选后松开打开编辑弹窗;\n"
+	"- 封顶格橙色显示两行: 封顶价 / 小时价;\n"
+	"- 保存、删除只发回调, 网络与 Toast 由宿主处理;\n"
+	"- 表单脏时热更新不覆盖用户正在编辑的内容。\n";
+
+static const char API_FEECARD[] =
+	"# FeeCard API\n"
+	"\n"
+	"```c\n"
+	"UiFeeCard_Init(&card, Ui_Id(\"fee\", 0, 0), &pm, &ime);\n"
+	"UiFeeCard_SetInfo(&card, &info);\n"
+	"UiFeeCard_SetFee(&card, &model); /* NULL = 未配置 */\n"
+	"UiFeeCard_SetCallbacks(&card, &cb, user);\n"
+	"```\n"
+	"\n"
+	"| 函数 | 说明 |\n"
+	"|:--|:--|\n"
+	"| `UiFeeCard_Init / Shutdown` | 初始化 / 释放内部输入与下拉 |\n"
+	"| `UiFeeCard_SetInfo` | 标题、状态、引用数、权限、saving |\n"
+	"| `UiFeeCard_SetFee / Reset` | 回显模型；Reset 强制覆盖编辑 |\n"
+	"| `Ui_FeeCard(card, ui, rc)` | 绘制卡片，返回事件位 |\n"
+	"| `UiFeeCard_DrawOverlay` | 帧末画下拉/编辑对话框/删除确认 |\n"
+	"| `UiFeeCard_Key / Char / OnIme / Blink` | 输入转发 |\n"
+	"| `UiFeeCard_MouseDown / Move / Up` | 鼠标转发 |\n"
+	"| `UiFeeCard_Tick` | 喂对话框动画 dt |\n"
+	"| `UiFeeCard_MeasureHeight` | 建议高度 |\n"
+	"| `UiFeeCard_Validate` | 校验规则与错误文案 |\n";
+
+static const char BEST_FEECARD[] =
+	"# FeeCard 最佳实践\n"
+	"\n"
+	"- **数据所有权**: 组件只持有表单副本；保存成功后由宿主更新源数据并\n"
+	"  重新 `SetFee`，再由同步推送热更新。\n"
+	"- **热更新**: 表单已脏时 `SetFee` 不覆盖编辑；切区域/等级时需要显式\n"
+	"  `Reset` 或重建组件。\n"
+	"- **绘制顺序**: `Ui_FeeCard` 在页面中间画；`UiFeeCard_DrawOverlay`\n"
+	"  必须在帧末调用，否则下拉与模态对话框会被后续控件盖住。\n"
+	"- **动画**: 对话框开合与下拉滚动期间，`UiFeeCard_Busy` 返回 1，\n"
+	"  宿主应继续出帧。\n"
+	"- **不要** 在保存回调里直接销毁组件；回调返回后再更新状态。\n";
+
+static const char EVENTS_FEECARD[] =
+	"# FeeCard 事件连接\n"
+	"\n"
+	"```c\n"
+	"static int on_key(UiApp *app, UINT vk, void *user) {\n"
+	"    Gallery *g = user;\n"
+	"    if (UiFeeCard_Key(&g->fee.card, &app->ui, vk)) return 1;\n"
+	"    return 0;\n"
+	"}\n"
+	"static int on_chr(UiApp *app, wchar_t ch, void *user) {\n"
+	"    return UiFeeCard_Char(&((Gallery *)user)->fee.card, ch);\n"
+	"}\n"
+	"static void on_ime(UiApp *app, void *user) {\n"
+	"    UiFeeCard_OnIme(&((Gallery *)user)->fee.card);\n"
+	"}\n"
+	"static void on_timer(UiApp *app, void *user) {\n"
+	"    UiFeeCard_Blink(&((Gallery *)user)->fee.card);\n"
+	"}\n"
+	"static void on_mouse(UiApp *app, int msg, float x, float y, void *user) {\n"
+	"    UiFeeCard *c = &((Gallery *)user)->fee.card;\n"
+	"    if (msg == UI_APP_MOUSE_DOWN) UiFeeCard_MouseDown(c, &app->ui, x, y);\n"
+	"    else if (msg == UI_APP_MOUSE_MOVE) UiFeeCard_MouseMove(c, x, y);\n"
+	"    else if (msg == UI_APP_MOUSE_UP) UiFeeCard_MouseUp(c);\n"
+	"}\n"
+	"```\n";
+
 /* ── 表 ───────────────────────────────────────────────────────────── */
 
 static const GalleryDocText kDocs[PG_COUNT] = {
@@ -3432,6 +3507,7 @@ static const GalleryDocText kDocs[PG_COUNT] = {
 	/* PG_WSSRV     */ { 0, DOC_WSSRV, API_WSSRV, BEST_WSSRV, EVENTS_WSSRV },
 	/* PG_WEBVIEW   */ { 0, DOC_WEBVIEW2, API_WEBVIEW2, BEST_WEBVIEW2, EVENTS_WEBVIEW2 },
 	/* PG_SVGEDIT   */ { 0, DOC_SVGEDIT, API_SVGEDIT, BEST_SVGEDIT, EVENTS_SVGEDIT },
+	/* PG_FEECARD   */ { 0, DOC_FEECARD, API_FEECARD, BEST_FEECARD, EVENTS_FEECARD },
 	/* PG_APP       */ { 0, DOC_APP, API_APP, BEST_APP, EVENTS_APP },
 };
 

@@ -37,6 +37,7 @@
 #include "ui/ui_popup.h"
 #include "ui/ui_image.h"
 #include "ui/ui_md.h"
+#include "ui/ui_feecard.h"
 #include "net/ui_net.h"
 #include "net/ui_ws_server.h"
 #include "ui/ui_webview.h"
@@ -415,6 +416,16 @@ typedef struct Gallery {
 		SvgDoc *doc;
 		UiSvgEdit *ed;
 	} svg;
+
+	/* FeeCard */
+	struct {
+		UiFeeCard card;
+		UiFeeModel model;
+		int hasFee;
+		int refCount;
+		int saving;
+		uint64_t saveTimer;
+	} fee;
 } Gallery;
 
 static Gallery g_gl;
@@ -662,6 +673,7 @@ static const SideRow kSide[] = {
 	{ NULL, PG_PROGRESS },
 	{ NULL, PG_IMAGE },
 	{ NULL, PG_MARKDOWN },
+	{ NULL, PG_FEECARD },
 	{ "绘图", -1 },
 	{ NULL, PG_SVGEDIT },
 	{ "系统能力", -1 },
@@ -7779,6 +7791,162 @@ static void svg_page_mouse(Gallery *g, int msg, float x, float y)
 		Ui_SvgEdit_RightDown(g->svg.ed, x, y);
 }
 
+static void fee_apply_info(Gallery *g, int saving)
+{
+	UiFeeCardInfo info;
+	ZeroMemory(&info, sizeof(info));
+	info.title = "A 区 · 1-3 号机";
+	info.hasFee = g->fee.hasFee;
+	info.active = g->fee.hasFee;
+	info.refCount = g->fee.refCount;
+	info.updatedAt = g->fee.hasFee ? "2026-11-20 12:00" : NULL;
+	info.canCreate = 1;
+	info.canUpdate = 1;
+	info.canDelete = 1;
+	info.saving = saving;
+	UiFeeCard_SetInfo(&g->fee.card, &info);
+}
+
+static void fee_save_done(void *user, uint64_t id)
+{
+	Gallery *g = (Gallery *)user;
+	(void)id;
+	g->fee.saving = 0;
+	g->fee.saveTimer = 0;
+	fee_apply_info(g, 0);
+	set_status(g, "费率已保存 (演示)");
+	UiApp_Invalidate(g->app);
+}
+
+static void fee_on_save(void *user, UiFeeCard *card, const UiFeeModel *model)
+{
+	Gallery *g = (Gallery *)user;
+	int had = g->fee.hasFee;
+	g->fee.model = *model;
+	g->fee.hasFee = 1;
+	if (!had) g->fee.refCount = 0;
+	g->fee.saving = 1;
+	if (g->fee.saveTimer) UiTimer_Cancel(g->app->timer, g->fee.saveTimer);
+	g->fee.saveTimer = UiTimer_After(g->app->timer, 700, fee_save_done, g);
+	UiFeeCard_SetFee(card, model);
+	fee_apply_info(g, 1);
+	set_status(g, had ? "保存费率 (演示)…" : "创建费率 (演示)…");
+}
+
+static void fee_on_delete(void *user, UiFeeCard *card)
+{
+	Gallery *g = (Gallery *)user;
+	g->fee.hasFee = 0;
+	g->fee.refCount = 0;
+	g->fee.saving = 0;
+	if (g->fee.saveTimer) {
+		UiTimer_Cancel(g->app->timer, g->fee.saveTimer);
+		g->fee.saveTimer = 0;
+	}
+	UiFeeCard_SetFee(card, NULL);
+	fee_apply_info(g, 0);
+	set_status(g, "费率已删除 (演示)");
+}
+
+static void fee_on_invalid(void *user, UiFeeCard *card, const char *msg)
+{
+	Gallery *g = (Gallery *)user;
+	(void)card;
+	set_status(g, msg ? msg : "费率校验失败");
+}
+
+static const UiFeeCardCallbacks kFeeCb = {
+	fee_on_save, fee_on_delete, fee_on_invalid
+};
+
+static void fee_init(Gallery *g)
+{
+	UiFeeModel *m = &g->fee.model;
+	int i;
+	UiFeeCard_Init(&g->fee.card, Ui_Id("gl.fee", 0, 0), &g->pm, &g->app->ime);
+	UiFeeCard_SetCallbacks(&g->fee.card, &kFeeCb, g);
+	ZeroMemory(m, sizeof(*m));
+	m->startPrice = 500;
+	m->minPrice = 100;
+	m->ignoreTime = 3;
+	m->timeUnit = 1;
+	m->discount = 100;
+	for (i = 0; i < UI_FEE_CARD_LEN; i++) {
+		int day = i / UI_FEE_CARD_HOURS;
+		int hour = i % UI_FEE_CARD_HOURS;
+		m->prices[i].price = 1000 + hour * 50;
+		if (day >= 5 && hour >= 18) {
+			m->prices[i].pack = 1;
+			m->prices[i].packPrice = 3500;
+		}
+	}
+	g->fee.hasFee = 1;
+	g->fee.refCount = 2;
+	fee_apply_info(g, 0);
+	UiFeeCard_SetFee(&g->fee.card, m);
+}
+
+static void fee_demo(Gallery *g, UiRect rc)
+{
+	UiRect card = Ui_Rect(rc.x + 18.0f, rc.y + 12.0f,
+		rc.w - 36.0f, 0.0f);
+	float h = UiFeeCard_MeasureHeight(card.w);
+	card.h = h;
+	Ui_FeeCard(&g->fee.card, &g->app->ui, card);
+}
+
+static int fee_key(Gallery *g, UINT vk)
+{
+	return UiFeeCard_Key(&g->fee.card, &g->app->ui, vk);
+}
+
+static int fee_chr(Gallery *g, wchar_t ch)
+{
+	return UiFeeCard_Char(&g->fee.card, ch);
+}
+
+static void fee_ime(Gallery *g)
+{
+	UiFeeCard_OnIme(&g->fee.card);
+}
+
+static void fee_blink(Gallery *g)
+{
+	UiFeeCard_Blink(&g->fee.card);
+}
+
+static void fee_mouse(Gallery *g, int msg, float x, float y)
+{
+	UiFeeCard *c = &g->fee.card;
+	if (msg == UI_APP_MOUSE_DOWN) UiFeeCard_MouseDown(c, &g->app->ui, x, y);
+	else if (msg == UI_APP_MOUSE_MOVE) UiFeeCard_MouseMove(c, x, y);
+	else if (msg == UI_APP_MOUSE_UP) UiFeeCard_MouseUp(c);
+}
+
+static void fee_tick(Gallery *g, double dtMs)
+{
+	UiFeeCard_Tick(&g->fee.card, &g->app->ui, dtMs);
+}
+
+static void fee_popups(Gallery *g)
+{
+	UiFeeCard_DrawOverlay(&g->fee.card, &g->app->ui);
+}
+
+static int fee_animating(Gallery *g)
+{
+	return UiFeeCard_Busy(&g->fee.card);
+}
+
+static void fee_shutdown(Gallery *g)
+{
+	if (g->fee.saveTimer) {
+		UiTimer_Cancel(g->app->timer, g->fee.saveTimer);
+		g->fee.saveTimer = 0;
+	}
+	UiFeeCard_Shutdown(&g->fee.card);
+}
+
 static const GalleryPage kPages[PG_COUNT] = {
 	/* PG_WELCOME */
 	{ "欢迎与导览", "CUI 组件画廊", "左侧选择组件 · 每页六个标签",
@@ -7918,6 +8086,10 @@ static const GalleryPage kPages[PG_COUNT] = {
 		"矢量绘制 · 节点/变换 · 渐变 · 文本转路径 · 撤销导出",
 		svg_page_init, svg_page_demo, NULL, svg_page_key, NULL, NULL,
 		NULL, svg_page_mouse, NULL, NULL, NULL },
+	/* PG_FEECARD */
+	{ "FeeCard 费率", "FeeCard 费率卡片", "5 个标量参数 · 7×24 单价网格 · 拖选编辑",
+		fee_init, fee_demo, NULL, fee_key, fee_chr, fee_ime, fee_blink,
+		fee_mouse, fee_tick, fee_popups, fee_animating },
 	/* PG_APP */
 	{ "App 框架", "UiApp 应用框架", "回调监视器 · 壳接管一切",
 		appf_init, appf_demo, NULL, NULL, NULL, NULL, NULL, NULL,
@@ -8167,6 +8339,7 @@ static void on_shutdown(UiApp *app, void *user)
 		else if (i == PG_IMAGE) img_shutdown(g);
 		else if (i == PG_MARKDOWN) mdp_shutdown(g);
 		else if (i == PG_SVGEDIT) svg_page_shutdown(g);
+		else if (i == PG_FEECARD) fee_shutdown(g);
 	}
 	net_shutdown(g);
 	wsc_shutdown(g);
@@ -8215,6 +8388,7 @@ static int page_from_cmd(const char *name)
 		{ "ws", PG_WS }, { "wssrv", PG_WSSRV },
 		{ "webview", PG_WEBVIEW },
 		{ "svg", PG_SVGEDIT }, { "svgedit", PG_SVGEDIT },
+		{ "fee", PG_FEECARD }, { "feecard", PG_FEECARD },
 		{ "app", PG_APP }
 	};
 	int i;
