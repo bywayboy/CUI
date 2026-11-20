@@ -3322,6 +3322,72 @@ static const char EVENTS_WEBVIEW2[] =
 	"ev.new_window = on_new_window;   /* handled=1 后宿主接管 */\n"
 	"```\n";
 
+/* ── SVG 编辑器 ───────────────────────────────────────────────────── */
+
+static const char DOC_SVGEDIT[] =
+	"# SVG 编辑器\n"
+	"\n"
+	"`UiSvgEdit` 是画布编辑组件: 缩放平移、矩形/椭圆/直线/多边形/钢笔/\n"
+	"贝塞尔/文本绘制、选择与多选、移动/缩放手柄/旋转、节点编辑、渐变\n"
+	"填充、组与图层、撤销重做与 SVG 导出都由组件负责。\n"
+	"\n"
+	"## 基本用法\n"
+	"\n"
+	"```c\n"
+	"SvgDoc *doc = SvgDoc_Create(800.0f, 600.0f);\n"
+	"UiSvgEdit *ed = Ui_SvgEdit_Create(doc, Ui_Id(\"svg.canvas\", 0, 0));\n"
+	"// 每帧:\n"
+	"UiSvgEdit_Frame(ed, &app->ui, canvasRc);\n"
+	"// 键盘:\n"
+	"if (!focused) Ui_SvgEdit_Key(ed, &app->ui, vk);\n"
+	"```\n"
+	"\n"
+	"画布交互由组件内部完成; 宿主只需绘制工具箱/属性面板并调用公开 API。\n";
+
+static const char API_SVGEDIT[] =
+	"# UiSvgEdit API\n"
+	"\n"
+	"| API | 说明 |\n"
+	"|:--|:--|\n"
+	"| `Ui_SvgEdit_Create/Destroy` | 绑定 `SvgDoc` 生命周期 |\n"
+	"| `Ui_SvgEdit_Frame` | 每帧绘制与鼠标/滚轮交互 |\n"
+	"| `SetTool/Tool` | 选择/节点/直线/矩形/椭圆/多边形/钢笔/贝塞尔/文本 |\n"
+	"| `SelectIndex/SelectAll/DeleteSel/DuplicateSel` | 选择与编辑 |\n"
+	"| `CopySel/Paste/Nudge/Align` | 剪贴板、微移、对齐分布 |\n"
+	"| `Group/Ungroup/MoveOut/Reorder` | 层级与顺序 |\n"
+	"| `GetStyle/SetStyle/SetStyleLive` | 样式读写 (拖动取色不提交历史) |\n"
+	"| `TextTarget/SetTextContent/SetTextFont/TextToPath` | 文本编辑 |\n"
+	"| `PolySides/SetPolySides` | 多边形边数 3..64 |\n"
+	"| `Undo/Redo/Commit/CanUndo/CanRedo` | 历史 |\n"
+	"| `ZoomAt/ZoomFit/ZoomReset/WorldToScreen` | 视口与坐标 |\n"
+	"| `GradientHandles` | 当前单选渐变的两端手柄屏幕坐标 |\n";
+
+static const char BEST_SVGEDIT[] =
+	"# 最佳实践\n"
+	"\n"
+	"- 画布尺寸变化时把新的视口矩形传给 `Frame`; 首次自动适应。\n"
+	"- 宿主用 `GetStyle` 初始化属性面板, 用户改动后 `SetStyle` (会提交历史)。\n"
+	"- 取色器连续拖动用 `SetStyleLive`, 关闭/松手时再 `Commit`。\n"
+	"- 删除/改层级必须走组件 API, 让缓存与历史保持一致。\n"
+	"- 大文档可用视口裁剪与元素 bounds 缓存, 避免每帧全量展平。\n";
+
+static const char EVENTS_SVGEDIT[] =
+	"# 事件连接\n"
+	"\n"
+	"组件不回调业务事件; 宿主在帧循环中查询状态:\n"
+	"\n"
+	"```c\n"
+	"UiSvgEdit_Frame(ed, &app->ui, canvasRc);\n"
+	"int n = Ui_SvgEdit_SelCount(ed);\n"
+	"int idx = Ui_SvgEdit_SelIndex(ed, 0);\n"
+	"const char *hint = Ui_SvgEdit_Hint(ed);\n"
+	"if (Ui_SvgEdit_CanUndo(ed)) { /* 更新按钮可用态 */ }\n"
+	"```\n"
+	"\n"
+	"鼠标/键盘路由: `Frame` 处理画布内鼠标; 宿主把未聚焦的按键交给\n"
+	"`Ui_SvgEdit_Key`。右键回调用 `Ui_SvgEdit_RightDown`, 需要菜单时由宿主\n"
+	"用 `UiMenu_OpenAt` 打开右键菜单。\n";
+
 /* ── 表 ───────────────────────────────────────────────────────────── */
 
 static const GalleryDocText kDocs[PG_COUNT] = {
@@ -3358,6 +3424,7 @@ static const GalleryDocText kDocs[PG_COUNT] = {
 	/* PG_WS        */ { 0, DOC_WS, API_WS, BEST_WS, EVENTS_WS },
 	/* PG_WSSRV     */ { 0, DOC_WSSRV, API_WSSRV, BEST_WSSRV, EVENTS_WSSRV },
 	/* PG_WEBVIEW   */ { 0, DOC_WEBVIEW2, API_WEBVIEW2, BEST_WEBVIEW2, EVENTS_WEBVIEW2 },
+	/* PG_SVGEDIT   */ { 0, DOC_SVGEDIT, API_SVGEDIT, BEST_SVGEDIT, EVENTS_SVGEDIT },
 	/* PG_APP       */ { 0, DOC_APP, API_APP, BEST_APP, EVENTS_APP },
 };
 

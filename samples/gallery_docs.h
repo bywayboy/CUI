@@ -42,6 +42,7 @@ enum {
 	PG_WS,
 	PG_WSSRV,
 	PG_WEBVIEW,
+	PG_SVGEDIT,
 	PG_APP,
 	PG_COUNT
 };

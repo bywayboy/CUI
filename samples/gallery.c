@@ -32,6 +32,7 @@
 #include "ui/ui_toast.h"
 #include "ui/ui_loading.h"
 #include "ui/ui_color_select.h"
+#include "ui/ui_svg_edit.h"
 #include "ui/ui_progress.h"
 #include "ui/ui_popup.h"
 #include "ui/ui_image.h"
@@ -408,6 +409,12 @@ typedef struct Gallery {
 		int shown;
 		char status[160];
 	} web;
+
+	/* SVG 编辑器 */
+	struct {
+		SvgDoc *doc;
+		UiSvgEdit *ed;
+	} svg;
 } Gallery;
 
 static Gallery g_gl;
@@ -655,6 +662,8 @@ static const SideRow kSide[] = {
 	{ NULL, PG_PROGRESS },
 	{ NULL, PG_IMAGE },
 	{ NULL, PG_MARKDOWN },
+	{ "绘图", -1 },
+	{ NULL, PG_SVGEDIT },
 	{ "系统能力", -1 },
 	{ NULL, PG_THEME },
 	{ NULL, PG_NET },
@@ -7617,6 +7626,138 @@ static void welcome_demo(Gallery *g, UiRect rc)
  * 页面表
  * ════════════════════════════════════════════════════════════════════ */
 
+/* ── SVG 编辑器 ────────────────────────────────────────────────────── */
+
+static void svg_page_init(Gallery *g)
+{
+	SvgDoc *d = SvgDoc_Create(640.0f, 420.0f);
+	SvgElement *r, *el, *te;
+	SvgGradStop gs[2];
+	if (!d) return;
+	d->background = 0xFFFFFFFFu;
+	r = SvgDoc_Add(d, SVG_EL_RECT);
+	r->p.rect.x = 70.0f; r->p.rect.y = 70.0f;
+	r->p.rect.w = 230.0f; r->p.rect.h = 160.0f;
+	gs[0].offset = 0.0f; gs[0].color = 0xFF6FA8FFu;
+	gs[1].offset = 1.0f; gs[1].color = 0xFF2D5BE3u;
+	r->style.fill.kind = SVG_PAINT_LINEAR;
+	r->style.fill.angleDeg = 35.0f;
+	Svg_StyleSetFillStops(&r->style.fill, gs, 2);
+	Svg_ElementTouch(r);
+	el = SvgDoc_Add(d, SVG_EL_ELLIPSE);
+	el->p.ellipse.cx = 450.0f; el->p.ellipse.cy = 150.0f;
+	el->p.ellipse.rx = 85.0f; el->p.ellipse.ry = 62.0f;
+	el->style.fill.kind = SVG_PAINT_SOLID;
+	el->style.fill.color = 0xFFF4C27Au;
+	el->style.stroke.kind = SVG_PAINT_SOLID;
+	el->style.stroke.color = 0xFFC98A2Eu;
+	el->style.strokeWidth = 4.0f;
+	Svg_ElementTouch(el);
+	te = SvgDoc_Add(d, SVG_EL_TEXT);
+	te->p.text.x = 76.0f; te->p.text.y = 280.0f;
+	te->fontSize = 44.0f;
+	te->style.fill.kind = SVG_PAINT_SOLID;
+	te->style.fill.color = 0xFF202020u;
+	SvgDoc_SetText(d, (int)(te - d->els), "SVG 编辑器");
+	Svg_History_Commit(d);
+	g->svg.doc = d;
+	g->svg.ed = Ui_SvgEdit_Create(d, Ui_Id("gl.svg.canvas", 0, 0));
+}
+
+static void svg_page_shutdown(Gallery *g)
+{
+	if (g->svg.ed) Ui_SvgEdit_Destroy(g->svg.ed);
+	if (g->svg.doc) SvgDoc_Destroy(g->svg.doc);
+	g->svg.ed = NULL;
+	g->svg.doc = NULL;
+}
+
+static void svg_tool_btn(Gallery *g, UiRect rc, const char *label, int tool)
+{
+	UiButtonStyle st = UiButtonStyle_Make(
+		Ui_SvgEdit_Tool(g->svg.ed) == tool ? UI_BTYPE_PRIMARY : UI_BTYPE_DEFAULT,
+		0, 0, 0);
+	if (Ui_ButtonEx(&g->app->ui, Ui_Id("gl.svg.tool", tool, 0), rc, label,
+		&st, 1)) {
+		Ui_SvgEdit_SetTool(g->svg.ed, tool);
+		set_status(g, label);
+		UiApp_Invalidate(g->app);
+	}
+}
+
+static void svg_page_demo(Gallery *g, UiRect rc)
+{
+	UiTheme *t = &g->app->theme;
+	UiContext *ui = &g->app->ui;
+	Gfx *gfx = g->app->gfx;
+	UiButtonStyle plain = UiButtonStyle_Make(UI_BTYPE_DEFAULT, 0, 0, 0);
+	UiRect card = rc;
+	float bx, by;
+	UiRect canvas;
+	static const char *labels[8] = {
+		"选择", "节点", "直线", "矩形", "椭圆", "多边", "钢笔", "文本"
+	};
+	static const int tools[8] = {
+		UI_SVG_TOOL_SELECT, UI_SVG_TOOL_NODE, UI_SVG_TOOL_LINE,
+		UI_SVG_TOOL_RECT, UI_SVG_TOOL_ELLIPSE, UI_SVG_TOOL_POLYGON,
+		UI_SVG_TOOL_PEN, UI_SVG_TOOL_TEXT
+	};
+	int i;
+
+	Gfx_FillRoundRect(gfx, card, 10.0f, t->card);
+	Gfx_StrokeRoundRect(gfx, card, 10.0f, t->btnBorder, 1.0f);
+	bx = card.x + 12.0f;
+	by = card.y + 12.0f;
+
+	for (i = 0; i < 8; i++)
+		svg_tool_btn(g, Ui_Rect(bx + (float)i * 56.0f, by, 52.0f, 30.0f),
+			labels[i], tools[i]);
+	if (Ui_ButtonEx(ui, Ui_Id("gl.svg.undo", 0, 0),
+		Ui_Rect(bx + 452.0f, by, 52.0f, 30.0f), "撤销", &plain,
+		Ui_SvgEdit_CanUndo(g->svg.ed))) {
+		Ui_SvgEdit_Undo(g->svg.ed, ui);
+		UiApp_Invalidate(g->app);
+	}
+	if (Ui_ButtonEx(ui, Ui_Id("gl.svg.redo", 0, 0),
+		Ui_Rect(bx + 508.0f, by, 52.0f, 30.0f), "重做", &plain,
+		Ui_SvgEdit_CanRedo(g->svg.ed))) {
+		Ui_SvgEdit_Redo(g->svg.ed, ui);
+		UiApp_Invalidate(g->app);
+	}
+	{
+		UiButtonStyle gs = UiButtonStyle_Make(
+			Ui_SvgEdit_GridOn(g->svg.ed) ? UI_BTYPE_PRIMARY : UI_BTYPE_DEFAULT,
+			0, 0, 0);
+		if (Ui_ButtonEx(ui, Ui_Id("gl.svg.grid", 0, 0),
+			Ui_Rect(bx + 564.0f, by, 52.0f, 30.0f), "网格", &gs, 1)) {
+			Ui_SvgEdit_SetGrid(g->svg.ed, !Ui_SvgEdit_GridOn(g->svg.ed),
+				8.0f);
+			UiApp_Invalidate(g->app);
+		}
+	}
+
+	canvas = Ui_Rect(card.x + 12.0f, by + 40.0f, card.w - 24.0f,
+		card.h - 40.0f - 28.0f);
+	if (canvas.w < 200.0f) canvas.w = 200.0f;
+	if (canvas.h < 140.0f) canvas.h = 140.0f;
+	Ui_SvgEdit_Frame(g->svg.ed, ui, canvas);
+	Gfx_Text(gfx, t->fSmall, Ui_SvgEdit_Hint(g->svg.ed),
+		Ui_Rect(card.x + 14.0f, card.y + card.h - 22.0f, card.w - 28.0f,
+			18.0f), t->text3, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+}
+
+static int svg_page_key(Gallery *g, UINT vk)
+{
+	if (g->subTab[PG_SVGEDIT] != 0) return 0;
+	return Ui_SvgEdit_Key(g->svg.ed, &g->app->ui, vk);
+}
+
+static void svg_page_mouse(Gallery *g, int msg, float x, float y)
+{
+	if (msg == UI_APP_MOUSE_RDOWN && g->subTab[PG_SVGEDIT] == 0)
+		Ui_SvgEdit_RightDown(g->svg.ed, x, y);
+}
+
 static const GalleryPage kPages[PG_COUNT] = {
 	/* PG_WELCOME */
 	{ "欢迎与导览", "CUI 组件画廊", "左侧选择组件 · 每页六个标签",
@@ -7751,6 +7892,11 @@ static const GalleryPage kPages[PG_COUNT] = {
 		"纯 C COM · DComp 视觉托管 / ULW 回退 · 默认百度",
 		NULL, webview_demo, NULL, NULL, NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL },
+	/* PG_SVGEDIT */
+	{ "SVG 编辑器", "SVG 画布编辑器",
+		"矢量绘制 · 节点/变换 · 渐变 · 文本转路径 · 撤销导出",
+		svg_page_init, svg_page_demo, NULL, svg_page_key, NULL, NULL,
+		NULL, svg_page_mouse, NULL, NULL, NULL },
 	/* PG_APP */
 	{ "App 框架", "UiApp 应用框架", "回调监视器 · 壳接管一切",
 		appf_init, appf_demo, NULL, NULL, NULL, NULL, NULL, NULL,
@@ -7999,6 +8145,7 @@ static void on_shutdown(UiApp *app, void *user)
 		else if (i == PG_DIALOG) dlg_shutdown(g);
 		else if (i == PG_IMAGE) img_shutdown(g);
 		else if (i == PG_MARKDOWN) mdp_shutdown(g);
+		else if (i == PG_SVGEDIT) svg_page_shutdown(g);
 	}
 	net_shutdown(g);
 	wsc_shutdown(g);
@@ -8046,6 +8193,7 @@ static int page_from_cmd(const char *name)
 		{ "theme", PG_THEME }, { "net", PG_NET },
 		{ "ws", PG_WS }, { "wssrv", PG_WSSRV },
 		{ "webview", PG_WEBVIEW },
+		{ "svg", PG_SVGEDIT }, { "svgedit", PG_SVGEDIT },
 		{ "app", PG_APP }
 	};
 	int i;
