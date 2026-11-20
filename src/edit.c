@@ -485,20 +485,38 @@ void Edit_Draw(UiContext *ui, UiId id, UiRect rc, UiEdit *e, const wchar_t *hint
 	e->textHDip = th;
 }
 
+static int is_high_surr(wchar_t c) { return c >= 0xD800 && c <= 0xDBFF; }
+static int is_low_surr(wchar_t c) { return c >= 0xDC00 && c <= 0xDFFF; }
+
+/* 鼠标 x → 光标列: 前缀宽度单调, 二分查找 O(log n).
+ * 逐列测量在长输入框拖选时是 O(n^2), 会明显掉帧. */
+static int edit_caret_at_x(UiEdit *e, Gfx *g, GfxFont *f, float target)
+{
+	int lo = 0, hi = e->len, best;
+	float xl, xr, xh;
+	if (hi <= 0 || target <= 0.0f) return 0;
+	xh = measure_disp(e, g, f, hi);
+	if (target >= xh) return hi;
+	while (lo + 1 < hi) {
+		int mid = (lo + hi) / 2;
+		if (measure_disp(e, g, f, mid) <= target) lo = mid;
+		else hi = mid;
+	}
+	xl = measure_disp(e, g, f, lo);
+	xr = measure_disp(e, g, f, hi);
+	best = (target - xl <= xr - target) ? lo : hi;
+	if (best > 0 && best < e->len &&
+		is_high_surr(e->text[best - 1]) && is_low_surr(e->text[best]))
+		best--;
+	return best;
+}
+
 void Edit_PlaceCaret(UiEdit *e, Gfx *g, GfxFont *f, UiRect rc, float mouseX)
 {
 	float innerX = rc.x + 10.0f;
 	float innerW = rc.w - 20.0f;
 	float target = mouseX - innerX + e->scrollX;
-	int i, best = 0;
-	float bestD = 1e9f;
-	for (i = 0; i <= e->len; i++) {
-		float w = measure_disp(e, g, f, i);
-		float d = w > target ? (w - target) : (target - w);
-		if (d < bestD) { bestD = d; best = i; }
-		if (w >= target) break;
-	}
-	if (best > e->len) best = e->len;
+	int best = edit_caret_at_x(e, g, f, target);
 	e->caret = e->anchor = best;
 	e->dragging = 1;
 	ensure_caret_visible(e, g, f, innerW);
@@ -509,16 +527,8 @@ void Edit_DragTo(UiEdit *e, Gfx *g, GfxFont *f, UiRect rc, float mouseX)
 	float innerX = rc.x + 10.0f;
 	float innerW = rc.w - 20.0f;
 	float target = mouseX - innerX + e->scrollX;
-	int i, best = 0;
-	float bestD = 1e9f;
 	if (!e->dragging) return;
-	for (i = 0; i <= e->len; i++) {
-		float w = measure_disp(e, g, f, i);
-		float d = w > target ? (w - target) : (target - w);
-		if (d < bestD) { bestD = d; best = i; }
-		if (w >= target) break;
-	}
-	e->caret = best;
+	e->caret = edit_caret_at_x(e, g, f, target);
 	ensure_caret_visible(e, g, f, innerW);
 }
 

@@ -598,45 +598,35 @@ static int ta_col_of(const UiTextArea *ta, int line, int pos)
 
 static float ta_x_of(UiTextArea *ta, Gfx *g, GfxFont *f, int line, int col)
 {
-	int i = ta->lineStart[line];
-	int end = i + col;
-	float w = 0.0f;
-	int step;
-	if (end > i + ta->lineLen[line]) end = i + ta->lineLen[line];
-	while (i < end) {
-		step = 1;
-		if (ta_is_high(ta->text[i]) && i + 1 < ta->len &&
-			ta_is_low(ta->text[i + 1]))
-			step = 2;
-		if (i + step > end) step = 1;
-		w += ta_measure(ta, g, f, i, step);
-		i += step;
-	}
-	return w;
+	if (col <= 0) return 0.0f;
+	if (col >= ta->lineLen[line]) return ta->lineW[line];
+	/* 整段前缀一次测量: 比逐字符累加快, 且包含正确的 shaping/字距. */
+	return ta_measure(ta, g, f, ta->lineStart[line], col);
 }
 
 static int ta_col_at_x(UiTextArea *ta, Gfx *g, GfxFont *f, int line,
 	float targetX)
 {
-	int i = ta->lineStart[line];
-	int end = i + ta->lineLen[line];
-	int best = 0, step;
-	float w = 0.0f, bestD = 1.0e9f;
-	while (i < end) {
-		float d = w > targetX ? w - targetX : targetX - w;
-		if (d < bestD) { bestD = d; best = i - ta->lineStart[line]; }
-		step = 1;
-		if (ta_is_high(ta->text[i]) && i + 1 < ta->len &&
-			ta_is_low(ta->text[i + 1]))
-			step = 2;
-		if (i + step > end) step = 1;
-		w += ta_measure(ta, g, f, i, step);
-		i += step;
-		/* 跨过目标的字符之后也是一个候选列; 绝不能把候选列直接
-		 * 写成 lineLen, 否则鼠标在行内也会跳到行末. */
-		d = w > targetX ? w - targetX : targetX - w;
-		if (d < bestD) { bestD = d; best = i - ta->lineStart[line]; }
-		if (w >= targetX) break;
+	int lo = 0, hi = ta->lineLen[line], best;
+	float xl, xr, xh;
+	if (hi <= 0) return 0;
+	xh = ta_x_of(ta, g, f, line, hi);
+	if (targetX <= 0.0f) return 0;
+	if (targetX >= xh) return hi;
+	/* 前缀宽度单调递增: 二分定位到最近列, 每帧只需 log(n) 次测量. */
+	while (lo + 1 < hi) {
+		int mid = (lo + hi) / 2;
+		if (ta_x_of(ta, g, f, line, mid) <= targetX) lo = mid;
+		else hi = mid;
+	}
+	xl = ta_x_of(ta, g, f, line, lo);
+	xr = ta_x_of(ta, g, f, line, hi);
+	best = (targetX - xl <= xr - targetX) ? lo : hi;
+	/* 不允许光标停在代理对中间 */
+	if (best > 0 && best < ta->lineLen[line]) {
+		int p = ta->lineStart[line] + best;
+		if (ta_is_high(ta->text[p - 1]) && ta_is_low(ta->text[p]))
+			best--;
 	}
 	return best;
 }
@@ -1158,13 +1148,18 @@ static void ta_draw_selection(UiTextArea *ta, Gfx *g, GfxFont *f,
 		int x1i = b < le ? b : le;
 		float y = ta->textRc.y + (float)i * ta->lineH - ta->drawOffset;
 		if (x1i > x0i) {
-			float x0 = ta->textRc.x + ta_x_of(ta, g, f, i, x0i - ls);
-			float x1 = ta->textRc.x + ta_x_of(ta, g, f, i, x1i - ls);
-			Gfx_FillRect(g, Ui_Rect(x0, y + 1.0f, x1 - x0,
-				ta->lineH - 2.0f), col);
+			/* 整行选中直接用布局缓存的 lineW: 避免每行都从行首逐字符
+			 * 测量 (长文拖选时这是主要开销). */
+			float x0 = x0i == ls ? 0.0f
+				: ta_x_of(ta, g, f, i, x0i - ls);
+			float x1 = x1i == le ? ta->lineW[i]
+				: ta_x_of(ta, g, f, i, x1i - ls);
+			if (x1 < x0) x1 = x0;
+			Gfx_FillRect(g, Ui_Rect(ta->textRc.x + x0, y + 1.0f,
+				x1 - x0, ta->lineH - 2.0f), col);
 		}
 		if (b > le && a <= le && le < ta->len && ta->text[le] == L'\n') {
-			float x = ta->textRc.x + ta_x_of(ta, g, f, i, ta->lineLen[i]);
+			float x = ta->textRc.x + ta->lineW[i];
 			Gfx_FillRect(g, Ui_Rect(x, y + 1.0f, 4.0f,
 				ta->lineH - 2.0f), col);
 		}

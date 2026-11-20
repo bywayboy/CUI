@@ -384,6 +384,23 @@ static void test_shape_drag(void)
 	SvgDoc_Destroy(doc);
 }
 
+static void test_edit_caret(void)
+{
+	UiEdit e;
+	UiRect rc = Ui_Rect(0, 0, 300, 32);
+	float w2, w4;
+	Edit_Init(&e, 64, 0, NULL);
+	Edit_SetTextUtf8(&e, "abcdef");
+	w2 = Gfx_TextWidth(g_gfx, g_theme.fInput, "ab");
+	w4 = Gfx_TextWidth(g_gfx, g_theme.fInput, "abcd");
+	Edit_PlaceCaret(&e, g_gfx, g_theme.fInput, rc, rc.x + 10.0f + w2 + 0.1f);
+	CHECK(e.caret == 2);
+	Edit_DragTo(&e, g_gfx, g_theme.fInput, rc, rc.x + 10.0f + w4 + 0.1f);
+	CHECK(e.caret == 4);
+	Edit_StopDrag(&e);
+	Edit_Shutdown(&e);
+}
+
 void __stdcall startup(void)
 {
 	WNDCLASSEXW wc;
@@ -409,6 +426,8 @@ void __stdcall startup(void)
 	UiTheme_Init(&g_theme, g_gfx);
 	Ui_ContextInit(&g_ctx, hwnd, g_gfx, &g_theme);
 	Ui_SetViewport(&g_ctx, 800.0f, 600.0f, 1.0f);
+
+	test_edit_caret();
 
 	/* 表单字段容量: 编辑器检查器用到 14 个输入框, 不能被静默截断 (文本页崩溃根因) */
 	{
