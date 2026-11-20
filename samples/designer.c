@@ -2142,6 +2142,11 @@ static int d_handle_at(int idx, float x, float y)
 	return -1;
 }
 
+static float d_round4(float v)
+{
+	return (float)(int)(v / 4.0f + (v >= 0 ? 0.5f : -0.5f)) * 4.0f;
+}
+
 static int d_container_at(float x, float y)
 {
 	int hit;
@@ -2470,14 +2475,33 @@ static void d_mouse_move(float x, float y)
 			n->x = nx;
 			n->y = ny;
 		} else {
-			float w = g_d.dragNodeW + dx;
-			float h = g_d.dragNodeH + dy;
-			if (w < 8) w = 8;
-			if (h < 8) h = 8;
-			n->w = (float)((int)(w / 4.0f + 0.5f)) * 4.0f;
-			n->h = (float)((int)(h / 4.0f + 0.5f)) * 4.0f;
-			n->wMode = UI_DN_SIZE_FIXED;
-			n->hMode = UI_DN_SIZE_FIXED;
+			/* 按抓取的手柄只改对应方向: 上下边只改高, 左右边只改宽,
+			 * 左边/上边同时移动节点原点. 手柄编号见 d_handle_at. */
+			int k = g_d.dragHandle;
+			int left = (k == 0 || k == 3 || k == 5);
+			int right = (k == 2 || k == 4 || k == 7);
+			int top = (k == 0 || k == 1 || k == 2);
+			int bottom = (k == 5 || k == 6 || k == 7);
+			float nx = g_d.dragNodeX, ny = g_d.dragNodeY;
+			float nw = g_d.dragNodeW, nh = g_d.dragNodeH;
+			if (left) { nx += dx; nw -= dx; }
+			else if (right) nw += dx;
+			if (top) { ny += dy; nh -= dy; }
+			else if (bottom) nh += dy;
+			if (nw < 8.0f) {
+				if (left) nx = g_d.dragNodeX + g_d.dragNodeW - 8.0f;
+				nw = 8.0f;
+			}
+			if (nh < 8.0f) {
+				if (top) ny = g_d.dragNodeY + g_d.dragNodeH - 8.0f;
+				nh = 8.0f;
+			}
+			n->x = d_round4(nx);
+			n->y = d_round4(ny);
+			n->w = d_round4(nw);
+			n->h = d_round4(nh);
+			if (left || right) n->wMode = UI_DN_SIZE_FIXED;
+			if (top || bottom) n->hMode = UI_DN_SIZE_FIXED;
 			g_d.snapX = g_d.snapY = 0;
 		}
 		if (d_node_overflow(n))
