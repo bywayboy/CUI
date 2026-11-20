@@ -628,6 +628,12 @@ static void test_ws_server_api(void)
 	CHECK(strcmp(UiWsConn_Protocol(S.conn), "chat") == 0);
 	CHECK(strcmp(UiWsConn_Peer(S.conn), S.peer) == 0);
 
+	/* 文本帧约定 UTF-8: 非法字节/非法 opcode 在发送侧直接拒绝 */
+	CHECK(UiWs_Send(w1, "\xC3\x28", 2, 1) == 0);
+	CHECK(UiWs_Send(w1, "x", 1, 3) == 0);
+	CHECK(UiWsServer_Send(S.conn, "\xFF", 1, 1) == 0);
+	CHECK(UiWsServer_Broadcast(srv, "\xFF", 1, 1) == 0);
+
 	CHECK(UiWs_Send(w1, "hello", 5, 1) == 1);
 	CHECK(live_wait(&C1.msgs, 5000));
 	CHECK(C1.lastOp == 1 && C1.lastLen == 5 && memcmp(C1.bin, "hello", 5) == 0);
@@ -651,6 +657,21 @@ static void test_ws_server_api(void)
 			MsgWaitForMultipleObjectsEx(0, NULL, 50, QS_ALLINPUT, MWMO_ALERTABLE);
 	}
 	CHECK(C1.msgs >= 3 && C1.lastLen == 2 && memcmp(C1.bin, "bc", 2) == 0);
+
+	/* 合法 UTF-8 文本按原字节往返 */
+	{
+		const char *cn = "\xE4\xBD\xA0\xE5\xA5\xBD"; /* 你好 */
+		uint64_t t0;
+		CHECK(UiWs_Send(w1, cn, 6, 1) == 1);
+		t0 = GetTickCount64();
+		while (C1.msgs < 4 && GetTickCount64() - t0 < 5000)
+			MsgWaitForMultipleObjectsEx(0, NULL, 50, QS_ALLINPUT, MWMO_ALERTABLE);
+		CHECK(C1.msgs >= 4);
+		CHECK(C1.lastOp == 1 && C1.lastLen == 6 &&
+			memcmp(C1.bin, cn, 6) == 0);
+		CHECK(S.lastOp == 1 && S.lastLen == 6 &&
+			memcmp(S.last, cn, 6) == 0);
+	}
 
 	/* 第二个连接: 服务端主动关闭 */
 	w2 = UiWs_Open(net, url, &o, &wcb, &C2);

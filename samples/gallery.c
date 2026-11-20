@@ -6831,8 +6831,8 @@ static void wsc_on_message(void *user, const void *data, int len, int opcode)
 	g->wsc.msgCount++;
 	buf[0] = 0;
 	for (i = 0; i < n; i++) {
-		char c = ((const char *)data)[i];
-		buf[i] = (c >= 0x20 && c < 0x7F) ? c : '.';
+		unsigned char c = ((const unsigned char *)data)[i];
+		buf[i] = (c >= 0x20 || c == '\t') ? (char)c : '.';
 	}
 	buf[n] = 0;
 	wsc_log(g, buf);
@@ -7015,7 +7015,8 @@ static void wsc_props(Gallery *g, UiRect rc)
 		"UiWsOptions opt;   /* autoReconnect=1 退避重连 */\n"
 		"void *ws = UiWs_Open(net, \"ws://127.0.0.1:18082/ws\",\n"
 		"    &opt, &cb, user);\n"
-		"UiWs_Send(ws, \"hello\", 5, 1);   /* 1=text */\n"
+		"UiWs_Send(ws, \"hello\", 5, 1);   /* 1=text, 必须是 UTF-8 */\n"
+		"/* 非法 UTF-8 / 非 1,2 opcode: 返回 0, 不入队 */\n"
 		"UiWs_Close(ws, 1000, \"再见\");\n"
 		"/* 状态: UiWs_State(ws); */\n");
 
@@ -7125,8 +7126,8 @@ static void wss_srv_message(void *user, UiWsConn *conn, const void *data, int le
 	g->wss.msgCount++;
 	b[0] = 0;
 	for (i = 0; i < n; i++) {
-		char c = ((const char *)data)[i];
-		b[i] = (c >= 0x20 && c < 0x7F) ? c : '.';
+		unsigned char c = ((const unsigned char *)data)[i];
+		b[i] = (c >= 0x20 || c == '\t') ? (char)c : '.';
 	}
 	b[n] = 0;
 	wss_log(g, b);
@@ -7309,6 +7310,7 @@ static void wss_props(Gallery *g, UiRect rc)
 		"\n"
 		"UiWsServer_Broadcast(srv, msg, len, 1);\n"
 		"UiWsServer_Send(conn, data, len, opcode);\n"
+		"/* 1=text 按 UTF-8 收发; 非法文本发送返回 0, 收到回 1007 */\n"
 		"UiWsServer_CloseAll(srv, 1000, \"再见\");\n"
 		"UiWsServer_Destroy(srv);\n");
 

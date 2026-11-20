@@ -3710,7 +3710,8 @@ UiWsServer_Destroy(srv);      /* 停监听 + 关闭全部连接, 返回后不再
 - Upgrade：只接受 GET / HTTP/1.1 / Version 13；路径精确匹配，按配置挑选子协议；
   400/404/405/408/426/431/500/503 等错误带 `Connection: close`。
 - 帧：强制客户端掩码；拒绝 RSV、非法控制帧；分片重组、UTF-8 校验、二进制含
-  NUL；ping 自动回 pong；`maxMessageSize` / `maxSendBuffer` 防内存膨胀。
+  NUL；文本帧统一 UTF-8，两端发送前校验、非法发送返回 0，服务端收到非法
+  文本回 1007；ping 自动回 pong；`maxMessageSize` / `maxSendBuffer` 防内存膨胀。
 - 生命周期：`Create` 同步等到 listening/error（端口 0 可立即取实际端口）；
   `close` 对已 open 连接只来一次，服务端主动关闭也会投递；回调里不得
   `Destroy`（可 `Close`/`Send`）。`Destroy` 后连接与服务器句柄全部失效。

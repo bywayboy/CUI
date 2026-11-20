@@ -65,7 +65,7 @@ typedef struct UiWsConnH UiWsConn;
 typedef struct UiWsServerCallbacks {
 	void (*listening)(void *user, int port);
 	void (*open)(void *user, UiWsConn *conn, const UiWsServerRequest *req);
-	/* opcode: 1=text 2=binary; data 仅在回调期间有效 */
+	/* opcode: 1=text(UTF-8) 2=binary; data 仅在回调期间有效 */
 	void (*message)(void *user, UiWsConn *conn, const void *data, int len, int opcode);
 	/* 只对已 open 的连接回调一次; 回调返回后 conn 失效 */
 	void (*close)(void *user, UiWsConn *conn, int code, const char *reason);
@@ -83,10 +83,12 @@ int UiWsServer_Port(const UiWsServer *srv);      /* 0 = 尚未监听 */
 int UiWsServer_State(const UiWsServer *srv);     /* UiWsServerState */
 int UiWsServer_ConnCount(const UiWsServer *srv);
 
-/* 1=已入队 (data 可立即释放); 0=失败/未 open/正在关闭. opcode 1 或 2. */
+/* 1=已入队 (data 可立即释放); 0=失败/未 open/正在关闭.
+ * opcode 仅接受 1=text 2=binary; text 必须是合法 UTF-8, 否则返回 0. */
 int UiWsServer_Send(UiWsConn *conn, const void *data, int len, int opcode);
 
-/* 向当前所有已 open 连接发送; 返回入队前的连接数. */
+/* 向当前所有已 open 连接发送; 返回入队前的连接数.
+ * text 同样按 UTF-8 校验, 非法时返回 0. */
 int UiWsServer_Broadcast(UiWsServer *srv, const void *data, int len, int opcode);
 
 /* 幂等; 发起关闭握手, close 回调后 conn 失效. */

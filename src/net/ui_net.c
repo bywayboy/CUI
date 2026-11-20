@@ -1428,6 +1428,8 @@ int UiWs_Send(void *handle, const void *data, int len, int opcode)
 	if (!ws || ws->closed || !ws->net || !ws->net->alive) return 0;
 	if (len < 0) return 0;
 	if (len > 0 && !data) return 0;
+	if (opcode != 1 && opcode != 2) return 0;
+	if (opcode == 1 && len > 0 && !net_ws_utf8_valid(data, len)) return 0;
 	c = (NetCmd *)calloc(1, sizeof(NetCmd));
 	d = (NetWsData *)malloc(sizeof(NetWsData) + (size_t)(len > 0 ? len : 0));
 	if (!c || !d) { if (c) free(c); if (d) free(d); return 0; }
@@ -1500,6 +1502,8 @@ static int srv_send_post_(UiWsSrvH *s, UiWsConnH *c, const void *data, int len,
 
 	if (!s || s->closed || !s->net || !s->net->alive) return 0;
 	if (len < 0 || (len > 0 && !data)) return 0;
+	if (opcode != 1 && opcode != 2) return 0;
+	if (opcode == 1 && len > 0 && !net_ws_utf8_valid(data, len)) return 0;
 	cmd = (NetCmd *)calloc(1, sizeof(NetCmd));
 	m = (NetSrvSend *)calloc(1, sizeof(NetSrvSend) + (size_t)(len > 0 ? len : 0));
 	if (!cmd || !m) { if (cmd) free(cmd); if (m) free(m); return 0; }

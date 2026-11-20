@@ -113,7 +113,7 @@ typedef struct UiWsOptions {
 
 typedef struct UiWsCallbacks {
 	void (*open)(void *user);
-	void (*message)(void *user, const void *data, int len, int opcode); /* 1=text 2=binary */
+	void (*message)(void *user, const void *data, int len, int opcode); /* 1=text(UTF-8) 2=binary */
 	void (*close)(void *user, int code, const char *reason);            /* 只来一次 */
 	/* 自动重连期间的临时断开: 句柄仍有效, 稍后会再次 open. 可为 NULL. */
 	void (*disconnect)(void *user, int code, const char *reason);
@@ -123,7 +123,8 @@ typedef struct UiWsCallbacks {
 void *UiWs_Open(UiNet *net, const char *url, const UiWsOptions *opt,
 	const UiWsCallbacks *cb, void *user);
 
-/* 1=已入队 (调用返回后 data 可释放); 0=失败/未连接。 */
+/* 1=已入队 (调用返回后 data 可释放); 0=失败/未连接.
+ * opcode 仅接受 1=text 2=binary; text 必须是合法 UTF-8, 否则返回 0. */
 int UiWs_Send(void *ws, const void *data, int len, int opcode);
 
 /* 幂等; 关闭完成后 close 回调, 之后句柄失效。 */

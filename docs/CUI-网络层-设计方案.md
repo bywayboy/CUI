@@ -411,8 +411,9 @@ QueryContextAttributes(SECPKG_ATTR_REMOTE_CERT_CONTEXT, &cert)
 
 **帧会话**：服务端**强制要求客户端帧掩码**，拒绝 RSV 位、非法控制帧（FIN=0
 或 >125 字节）、未协商扩展；支持 16/64 位长度、分片重组、消息总量上限
-`maxMessageSize`、二进制含 NUL；控制帧优先，ping 自动回 pong；文本在 FIN 时
-做 UTF-8 校验（失败 1007）；单连接待发送缓冲受 `maxSendBuffer` 约束（超限即
+`maxMessageSize`、二进制含 NUL；控制帧优先，ping 自动回 pong；文本帧统一按
+UTF-8：客户端/服务端发送前校验字节（非法直接拒绝入队），服务端收到非法文本
+在 FIN 时回 1007；单连接待发送缓冲受 `maxSendBuffer` 约束（超限即
 失败，避免内存膨胀）。`pingIntervalMs` 主动心跳、`idleTimeoutMs` 入站空闲、
 `closeTimeoutMs` 关闭握手超时；收到 close 先回 echo 再关闭。
 
