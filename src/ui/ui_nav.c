@@ -1189,6 +1189,22 @@ int UiNavBar_Draw(UiNavBar *nav, UiPopupManager *pm, UiContext *ui,
 		nav->openDepth = 0;
 		nav->openOverflow = 0;
 	}
+	/* 鼠标在导航栏与已展开面板之外按下: 释放键盘焦点, 否则用户用
+	 * 方向键选过菜单后, 在任何输入控件里按回车都会重新弹出菜单. */
+	if (ui->mouseDown && !Ui_RectContains(rc, ui->mouseX, ui->mouseY)) {
+		int inside = 0, lv;
+		for (lv = 0; lv < nav->openDepth; lv++) {
+			if (nav->panelRc[lv].w > 0.0f &&
+			    Ui_RectContains(nav->panelRc[lv], ui->mouseX, ui->mouseY)) {
+				inside = 1;
+				break;
+			}
+		}
+		if (!inside) {
+			nav->keyFocusVisible = 0;
+			nav->keyRoot = UI_ID_NONE;
+		}
+	}
 	nav->rootAnchor = nav_empty();
 
 	Gfx_FillRoundRect(ui->gfx, rc, s->radius,
@@ -1592,6 +1608,9 @@ int UiNavBar_Key(UiNavBar *nav, UiPopupManager *pm, UiContext *ui, UINT vk)
 		return nav_root_key_home(nav, 1);
 	case VK_RETURN:
 	case VK_SPACE:
+		/* 没有键盘焦点 (方向键进入或面板打开) 时不要自动选中并激活
+		 * 第一个菜单: 否则任意控件里的回车都会弹出导航菜单. */
+		if (!nav->keyFocusVisible) return 0;
 		if (nav->keyRoot == nav->moreId) {
 			nav_open_overflow(nav, pm, ui,
 				nav->moreRc.w > 0.0f ? nav->moreRc : nav->rc, 1);

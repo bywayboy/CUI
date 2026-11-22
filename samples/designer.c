@@ -3593,10 +3593,20 @@ static int d_on_nchittest(UiApp *app, int x, int y, LRESULT *hit, void *user)
 static int d_on_key(UiApp *app, UINT vk, void *user)
 {
 	(void)user;
-	if (UiNavBar_Key(&g_d.nav, &g_d.pm, &app->ui, vk)) return 1;
-	if (!g_d.editActive && UiPopupManager_Key(&g_d.pm, &app->ui, vk))
+	if (g_d.genPreview) return d_key(vk);
+	if (g_d.preview) {
+		if (UiPopupManager_Key(&g_d.pm, &app->ui, vk)) return 1;
+		return d_key(vk);
+	}
+	/* 菜单面板打开时它优先 (模态); 其余情况先让输入框/画布消费按键,
+	 * 否则编辑中的方向键、空格、回车会被导航栏截走. */
+	if (UiPopupManager_IsOpen(&g_d.pm, g_d.nav.id) &&
+	    UiNavBar_Key(&g_d.nav, &g_d.pm, &app->ui, vk))
 		return 1;
-	return d_key(vk);
+	if (d_key(vk)) return 1;
+	if (UiPopupManager_Key(&g_d.pm, &app->ui, vk)) return 1;
+	if (UiNavBar_Key(&g_d.nav, &g_d.pm, &app->ui, vk)) return 1;
+	return 0;
 }
 
 static int d_on_chr(UiApp *app, wchar_t ch, void *user)

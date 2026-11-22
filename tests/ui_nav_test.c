@@ -256,6 +256,45 @@ static void test_panel_flip_no_overlap(void)
 	UiNavBar_Shutdown(&nav);
 }
 
+static void test_no_focus_enter(void)
+{
+	UiNavBar nav;
+	UiPopupManager pm;
+	UiRect rc = { 20, 20, 460, 44 };
+	UiPopupManager_Init(&pm);
+	UiNavBar_Init(&nav, Ui_Id("nav.enter", 0, 0));
+	UiNavBar_SetItems(&nav, kRootFull,
+		(int)(sizeof(kRootFull) / sizeof(kRootFull[0])));
+	UiNavBar_SetSelected(&nav, NULL, 0);
+	frame_nav(&nav, &pm, rc, 0);
+
+	/* 没有键盘焦点: 回车/空格不能自动弹第一个菜单 */
+	CHECK(nav.keyFocusVisible == 0);
+	CHECK(UiNavBar_Key(&nav, &pm, &g_ctx, VK_RETURN) == 0);
+	CHECK(UiPopupManager_AnyOpen(&pm) == 0);
+	CHECK(UiNavBar_Key(&nav, &pm, &g_ctx, VK_SPACE) == 0);
+	CHECK(UiPopupManager_AnyOpen(&pm) == 0);
+
+	/* 方向键取得焦点后, 回车仍可打开 */
+	CHECK(UiNavBar_Key(&nav, &pm, &g_ctx, VK_RIGHT) == 1);
+	CHECK(nav.keyFocusVisible == 1);
+	CHECK(UiNavBar_Key(&nav, &pm, &g_ctx, VK_RETURN) == 1);
+	CHECK(UiPopupManager_IsOpen(&pm, nav.id) == 1);
+	CHECK(UiNavBar_Key(&nav, &pm, &g_ctx, VK_ESCAPE) == 1);
+	CHECK(nav.openDepth == 0);
+
+	/* 鼠标在导航栏外按下会释放键盘焦点 */
+	Ui_OnMouseMove(&g_ctx, 200, 400);
+	Ui_OnMouseDown(&g_ctx, 200, 400);
+	frame_nav(&nav, &pm, rc, 0);
+	CHECK(nav.keyFocusVisible == 0);
+	CHECK(nav.keyRoot == UI_ID_NONE);
+	Ui_OnMouseUp(&g_ctx, 200, 400);
+	CHECK(UiNavBar_Key(&nav, &pm, &g_ctx, VK_RETURN) == 0);
+	CHECK(UiPopupManager_AnyOpen(&pm) == 0);
+	UiNavBar_Shutdown(&nav);
+}
+
 static void test_overflow(void)
 {
 	UiNavBar nav;
@@ -486,6 +525,7 @@ void __stdcall startup(void)
 			build_wide();
 			test_selected_path();
 			test_keyboard_levels();
+			test_no_focus_enter();
 			test_panel_flip_no_overlap();
 			test_overflow();
 			test_vertical_rail();
