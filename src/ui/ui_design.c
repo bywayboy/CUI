@@ -5,6 +5,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include "ui/ui_design.h"
+#include "ui/ui_frame.h"
 #include "ui/ui_layout.h"
 #include "ui/ui_widgets.h"
 
@@ -106,7 +107,11 @@ static const struct {
 	{ "progress", 160, 10, 0 },
 	{ "select", 180, 34, 0 },
 	{ "image", 160, 100, 0 },
-	{ "separator", 2, 2, 0 }
+	{ "separator", 2, 2, 0 },
+	{ "tabs", 320, 220, 1 },
+	{ "textarea", 240, 120, 0 },
+	{ "datepicker", 200, 34, 0 },
+	{ "colorsel", 180, 34, 0 }
 };
 
 const char *UiDesign_TypeName(int type)
@@ -277,6 +282,7 @@ int UiDesign_AddNode(UiDesignDoc *doc, int win, int type, int parent,
 	n->rowSpan = 1;
 	n->colSpan = 1;
 	n->value = 0.5f;
+	n->color = 0xFF3B82F6u;
 	UiDesign_SetText(n->id, UI_DN_ID_MAX, id ? id : "node");
 	UiDesign_SetText(n->name, UI_DN_NAME_MAX, name ? name : id ? id : "组件");
 	if (parent >= 0) UiDesign_NodeAddChild(doc, parent, idx);
@@ -556,6 +562,11 @@ static void ds_num(UiDStr *s, float v)
 	ds_add(s, b);
 }
 
+static void ds_color(UiDStr *s, unsigned c)
+{
+	ds_addf(s, "\"#%08X\"", c);
+}
+
 static void ds_node(UiDStr *s, const UiDesignDoc *doc, int index);
 
 static void ds_node(UiDStr *s, const UiDesignDoc *doc, int index)
@@ -606,6 +617,8 @@ static void ds_node(UiDStr *s, const UiDesignDoc *doc, int index)
 	ds_add(s, ",\"value\":"); ds_num(s, n->value);
 	ds_addf(s, ",\"checked\":%d,\"enabled\":%d,\"selected\":%d,\"variant\":%d",
 		n->checked, n->enabled, n->selected, n->variant);
+	ds_addf(s, ",\"mode\":%d,\"readonly\":%d,\"color\":", n->mode, n->readonly);
+	ds_color(s, n->color);
 	ds_add(s, "},\"onClick\":");
 	ds_json_str(s, n->onClick);
 	ds_add(s, ",\"onChange\":");
@@ -772,6 +785,39 @@ static int jp_bool(JP *j, int *v)
 	return 0;
 }
 
+static int jp_hexval(char c)
+{
+	if (c >= '0' && c <= '9') return c - '0';
+	if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+	if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+	return -1;
+}
+
+/* "#RRGGBB" 补 FF alpha; "#RRGGBBAA" 原样. 失败不改 *out. */
+static int jp_color(JP *j, unsigned *out)
+{
+	char b[16];
+	int i, n = 0;
+	unsigned v = 0;
+	jp_ws(j);
+	if (j->p >= j->end || *j->p != '"') return 0;
+	j->p++;
+	while (j->p < j->end && *j->p != '"' && n < (int)sizeof(b) - 1)
+		b[n++] = *j->p++;
+	b[n] = 0;
+	if (j->p >= j->end || *j->p != '"') return 0;
+	j->p++;
+	if (b[0] != '#' || (n != 7 && n != 9)) return 0;
+	for (i = 1; i < n; i++) {
+		int h = jp_hexval(b[i]);
+		if (h < 0) return 0;
+		v = (v << 4) | (unsigned)h;
+	}
+	if (n == 7) v |= 0xFF000000u;
+	*out = v;
+	return 1;
+}
+
 static int jp_skip(JP *j)
 {
 	char b[8];
@@ -900,6 +946,9 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 				else if (strcmp(pk, "enabled") == 0) jp_bool(j, &doc->nodes[idx].enabled);
 				else if (strcmp(pk, "selected") == 0) jp_int(j, &doc->nodes[idx].selected);
 				else if (strcmp(pk, "variant") == 0) jp_int(j, &doc->nodes[idx].variant);
+				else if (strcmp(pk, "mode") == 0) jp_int(j, &doc->nodes[idx].mode);
+				else if (strcmp(pk, "readonly") == 0) jp_bool(j, &doc->nodes[idx].readonly);
+				else if (strcmp(pk, "color") == 0) jp_color(j, &doc->nodes[idx].color);
 				else if (!jp_skip(j)) return 0;
 				jp_ws(j);
 				if (jp_ch(j, ',')) continue;
@@ -1197,6 +1246,14 @@ static float dn_natural_h(const UiDesignNode *n)
 	return h;
 }
 
+/* 与 UiTabStyle_Line/Pill/Card 的默认高度一致. */
+static float dn_tabs_header_h(int variant)
+{
+	if (variant == UI_TAB_PILL) return 34.0f;
+	if (variant == UI_TAB_CARD) return 36.0f;
+	return 38.0f;
+}
+
 static void dn_inset(UiRect r, const float *pad, UiRect *out)
 {
 	out->x = r.x + pad[0];
@@ -1369,6 +1426,20 @@ static void dn_layout_node(const UiDesignDoc *doc, int index, UiRect rect,
 	rects[index] = rect;
 	if (!n->visible || n->childCount <= 0) return;
 	dn_inset(rect, n->padding, &inner);
+	if (n->type == UI_DN_TABS) {
+		float hh = dn_tabs_header_h(n->variant);
+		UiRect page;
+		int i;
+		if (hh > inner.h) hh = inner.h;
+		page = Ui_Rect(inner.x, inner.y + hh, inner.w, inner.h - hh);
+		if (page.h < 0.0f) page.h = 0.0f;
+		/* 页与页重叠: 只显示 selected, 但每页都按同一页区布局. */
+		for (i = 0; i < n->childCount; i++) {
+			rects[n->children[i]] = page;
+			dn_layout_node(doc, n->children[i], page, rects);
+		}
+		return;
+	}
 	switch (n->type) {
 	case UI_DN_COLUMN: dn_layout_linear(doc, n, inner, 0, rects); break;
 	case UI_DN_ROW: dn_layout_linear(doc, n, inner, 1, rects); break;
@@ -1398,9 +1469,19 @@ static int dn_hit_node(const UiDesignDoc *doc, int index, const UiRect *rects,
 	if (index < 0 || index >= doc->nodeCount) return -1;
 	n = &doc->nodes[index];
 	if (!n->visible) return -1;
-	for (i = n->childCount - 1; i >= 0; i--) {
-		int hit = dn_hit_node(doc, n->children[i], rects, x, y);
-		if (hit >= 0) return hit;
+	{
+		int first = 0, last = n->childCount;
+		if (n->type == UI_DN_TABS && n->childCount > 0) {
+			int sel = n->selected;
+			if (sel < 0) sel = 0;
+			if (sel >= n->childCount) sel = n->childCount - 1;
+			first = sel;
+			last = sel + 1;
+		}
+		for (i = last - 1; i >= first; i--) {
+			int hit = dn_hit_node(doc, n->children[i], rects, x, y);
+			if (hit >= 0) return hit;
+		}
 	}
 	if (Ui_RectContains(rects[index], x, y)) return index;
 	return -1;
@@ -1491,6 +1572,45 @@ static void dn_state_init(UiDesignInstance *inst, int idx)
 		st->selCache[0] = 0;
 		dn_select_parse(inst, idx, n, st);
 		break;
+	case UI_DN_TEXTAREA:
+		UiTextArea_Init(&st->ta, dn_widget_id(inst, idx, 7),
+			(UI_DN_TEXT_MAX - 1) / 4);
+		UiTextArea_AttachIme(&st->ta, inst->ime);
+		UiTextArea_SetTextUtf8(&st->ta, st->text);
+		MultiByteToWideChar(CP_UTF8, 0, n->hint[0] ? n->hint : "多行文本",
+			-1, st->taHint, 128);
+		UiTextArea_SetPlaceholder(&st->ta, st->taHint);
+		UiTextArea_SetReadonly(&st->ta, n->readonly);
+		break;
+	case UI_DN_DATEPICKER: {
+		int mode = n->mode >= 0 && n->mode <= UI_DP_RANGE_DATETIME
+			? n->mode : UI_DP_DATE;
+		UiDatePicker_Init(&st->dp, dn_widget_id(inst, idx, 8), mode);
+		UiDatePicker_AttachIme(&st->dp, inst->ime);
+		if (n->hint[0]) UiDatePicker_SetPlaceholder(&st->dp, n->hint);
+		if (mode >= UI_DP_RANGE_DATE) {
+			UiDateTime a, b;
+			if (n->text[0] && n->options[0] &&
+			    UiDate_Parse(n->text, st->dp.format, &a) &&
+			    UiDate_Parse(n->options, st->dp.format, &b))
+				UiDatePicker_SetRange(&st->dp, &a, &b);
+		} else if (n->text[0]) {
+			UiDateTime v;
+			if (UiDate_Parse(n->text, st->dp.format, &v))
+				UiDatePicker_SetValue(&st->dp, &v);
+		}
+		break;
+	}
+	case UI_DN_COLORSEL:
+		UiColorSelect_Init(&st->cs, dn_widget_id(inst, idx, 9), n->color);
+		UiColorSelect_AttachIme(&st->cs, inst->ime);
+		break;
+	case UI_DN_TABS:
+		st->barCount = n->childCount > 32 ? 32 : n->childCount;
+		UiTabBar_Init(&st->bar, dn_widget_id(inst, idx, 6), st->barCount);
+		if (n->selected >= 0 && n->selected < st->barCount)
+			UiTabBar_SetSelected(&st->bar, n->selected);
+		break;
 	default:
 		break;
 	}
@@ -1532,6 +1652,12 @@ void UiDesignInstance_Shutdown(UiDesignInstance *inst)
 		if (!st->inited) continue;
 		UiInput_Shutdown(&st->input);
 		UiSelect_Shutdown(&st->select);
+		if (inst->doc->nodes[i].type == UI_DN_TEXTAREA)
+			UiTextArea_Shutdown(&st->ta);
+		else if (inst->doc->nodes[i].type == UI_DN_DATEPICKER)
+			UiDatePicker_Shutdown(&st->dp);
+		else if (inst->doc->nodes[i].type == UI_DN_COLORSEL)
+			UiColorSelect_Shutdown(&st->cs);
 	}
 	dn_free(inst->rects);
 	dn_free(inst->states);
@@ -1567,7 +1693,9 @@ const char *UiDesign_GetText(UiDesignInstance *inst, const char *nodeId)
 	if (!inst || !nodeId) return "";
 	idx = UiDesign_FindNode(inst->doc, inst->win, nodeId);
 	if (idx < 0) return "";
-	if (inst->states[idx].inited && inst->doc->nodes[idx].type == UI_DN_INPUT)
+	if (inst->states[idx].inited &&
+	    (inst->doc->nodes[idx].type == UI_DN_INPUT ||
+	     inst->doc->nodes[idx].type == UI_DN_TEXTAREA))
 		return inst->states[idx].text;
 	st = &inst->states[idx];
 	if (!st->inited) return inst->doc->nodes[idx].text;
@@ -1589,6 +1717,13 @@ void UiDesign_SetTextValue(UiDesignInstance *inst, const char *nodeId,
 	UiDesign_SetText(st->text, UI_DN_TEXT_MAX, text);
 	if (inst->doc->nodes[idx].type == UI_DN_INPUT)
 		Edit_SetTextUtf8(UiInput_Edit(&st->input, 0), text);
+	else if (inst->doc->nodes[idx].type == UI_DN_TEXTAREA)
+		UiTextArea_SetTextUtf8(&st->ta, text);
+	else if (inst->doc->nodes[idx].type == UI_DN_DATEPICKER) {
+		UiDateTime v;
+		if (text[0] && UiDate_Parse(text, st->dp.format, &v))
+			UiDatePicker_SetValue(&st->dp, &v);
+	}
 }
 
 static void dn_draw_node(UiDesignInstance *inst, int idx)
@@ -1603,6 +1738,44 @@ static void dn_draw_node(UiDesignInstance *inst, int idx)
 	if (!n->visible || r.w <= 0.0f || r.h <= 0.0f) return;
 	dn_state_init(inst, idx);
 	st = dn_state(inst, idx);
+	if (n->type == UI_DN_TABS) {
+		const char *labels[32];
+		UiTabStyle stl;
+		UiRect inner, page;
+		int cnt, i, sel, ci;
+		float hh;
+		if (!st) return;
+		cnt = n->childCount > 32 ? 32 : n->childCount;
+		if (cnt != st->barCount) {
+			UiTabBar_SetCount(&st->bar, cnt);
+			st->barCount = cnt;
+		}
+		for (i = 0; i < cnt; i++)
+			labels[i] = inst->doc->nodes[n->children[i]].name;
+		sel = n->selected;
+		if (sel < 0) sel = 0;
+		if (sel >= cnt) sel = cnt > 0 ? cnt - 1 : -1;
+		UiTabBar_SetSelected(&st->bar, sel);
+		if (n->variant == 1) stl = UiTabStyle_Pill();
+		else if (n->variant == 2) stl = UiTabStyle_Card();
+		else stl = UiTabStyle_Line();
+		dn_inset(r, n->padding, &inner);
+		ci = UiTabBar_Draw(&st->bar, ui, inner, labels, &stl, n->enabled);
+		if (ci >= 0) {
+			n->selected = ci;
+			dn_emit_event(inst, idx, 2);
+		}
+		hh = dn_tabs_header_h(n->variant);
+		if (hh > inner.h) hh = inner.h;
+		page = Ui_Rect(inner.x, inner.y + hh, inner.w, inner.h - hh);
+		if (page.h < 0.0f) page.h = 0.0f;
+		if (cnt > 0 && n->selected >= 0 && n->selected < cnt)
+			dn_draw_node(inst, n->children[n->selected]);
+		else
+			Gfx_Text(g, t->fSmall, "标签页: 无子页", page, t->text4,
+				GFX_TEXT_CENTER | GFX_TEXT_VCENTER);
+		return;
+	}
 	if (UiDesign_IsContainer(n->type)) {
 		if (n->type == UI_DN_PANEL)
 			Gfx_FillRoundRect(g, r, 8.0f, t->card);
@@ -1672,6 +1845,46 @@ static void dn_draw_node(UiDesignInstance *inst, int idx)
 		Gfx_Text(g, t->fSmall, n->text[0] ? n->text : "Image", r,
 			t->text3, GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 		break;
+	case UI_DN_TEXTAREA:
+		if (!st) break;
+		UiTextArea_SetReadonly(&st->ta, n->readonly);
+		if (Ui_TextArea(&st->ta, ui, r, n->enabled)) {
+			UiTextArea_TextUtf8(&st->ta, st->text, UI_DN_TEXT_MAX);
+			UiDesign_SetText(n->text, UI_DN_TEXT_MAX, st->text);
+			dn_emit_event(inst, idx, 2);
+		}
+		break;
+	case UI_DN_DATEPICKER:
+		if (!st) break;
+		Ui_DatePicker(&st->dp, inst->pm, ui, r,
+			n->hint[0] ? n->hint : NULL, n->enabled);
+		if (st->dp.changed || st->dp.committed) {
+			if (st->dp.hasValue)
+				UiDate_Format(&st->dp.value, st->dp.format, n->text,
+					UI_DN_TEXT_MAX);
+			else n->text[0] = 0;
+			if (st->dp.mode >= UI_DP_RANGE_DATE) {
+				if (st->dp.hasEnd)
+					UiDate_Format(&st->dp.end, st->dp.format, n->options,
+						UI_DN_TEXT_MAX);
+				else n->options[0] = 0;
+			}
+			st->dp.changed = 0;
+			st->dp.committed = 0;
+			dn_emit_event(inst, idx, 2);
+		}
+		break;
+	case UI_DN_COLORSEL:
+		if (!st) break;
+		if (UiColorSelect_Draw(&st->cs, inst->pm, ui, r, n->enabled)) {
+			n->color = UiColorSelect_GetColor(&st->cs);
+			dn_emit_event(inst, idx, 2);
+		}
+		if (st->cs.committed) {
+			st->cs.committed = 0;
+			n->color = UiColorSelect_GetColor(&st->cs);
+		}
+		break;
 	case UI_DN_SEPARATOR:
 		Gfx_Line(g, r.x, r.y + r.h * 0.5f, r.x + r.w, r.y + r.h * 0.5f,
 			t->border, 1.0f);
@@ -1705,8 +1918,24 @@ void UiDesign_DrawOverlay(UiDesignInstance *inst)
 	if (!inst) return;
 	for (i = 0; i < inst->stateCount; i++) {
 		UiDesignNodeState *st = &inst->states[i];
-		if (st->inited && inst->doc->nodes[i].type == UI_DN_SELECT)
+		if (!st->inited) continue;
+		if (inst->doc->nodes[i].type == UI_DN_SELECT)
 			UiSelect_DrawPopup(&st->select, inst->pm, inst->ui);
+		else if (inst->doc->nodes[i].type == UI_DN_DATEPICKER)
+			UiDatePicker_DrawPopup(&st->dp, inst->pm, inst->ui);
+		else if (inst->doc->nodes[i].type == UI_DN_COLORSEL)
+			UiColorSelect_DrawPopup(&st->cs, inst->pm, inst->ui);
+	}
+}
+
+void UiDesign_EndFrame(UiDesignInstance *inst)
+{
+	int i;
+	if (!inst) return;
+	for (i = 0; i < inst->stateCount; i++) {
+		UiDesignNodeState *st = &inst->states[i];
+		if (st->inited && inst->doc->nodes[i].type == UI_DN_COLORSEL)
+			UiColorSelect_EndFrame(&st->cs, UiFrame_Now());
 	}
 }
 
@@ -1746,16 +1975,41 @@ static int dn_hit_input(UiDesignInstance *inst, UiId hit)
 	return -1;
 }
 
+static void dn_color_end(UiDesignInstance *inst)
+{
+	int i;
+	for (i = 0; i < inst->stateCount; i++) {
+		UiDesignNodeState *st = &inst->states[i];
+		if (st->inited && inst->doc->nodes[i].type == UI_DN_COLORSEL)
+			UiColorSelect_EndFrame(&st->cs, UiFrame_Now());
+	}
+}
+
 void UiDesign_MouseDown(UiDesignInstance *inst, float x, float y)
 {
 	UiId hit;
-	int target, i;
+	int target, i, used = 0;
 	if (!inst || !inst->ui) return;
+	for (i = 0; i < inst->stateCount; i++) {
+		UiDesignNodeState *st = &inst->states[i];
+		if (st->inited && inst->doc->nodes[i].type == UI_DN_COLORSEL)
+			used |= UiColorSelect_Mouse(&st->cs, inst->ui,
+				UI_COLOR_MOUSE_DOWN, x, y);
+	}
+	if (used) {
+		dn_color_end(inst);
+		return;
+	}
 	hit = Ui_HitTest(inst->ui, x, y);
 	target = dn_hit_input(inst, hit);
 	if (target >= 0) {
 		for (i = 0; i < inst->stateCount; i++)
 			if (i != target) inst->states[i].input.focus = -1;
+	} else {
+		/* 点到输入框以外: 释放 UiInput 焦点, 让 TextArea/DatePicker
+		 * 等自管焦点的控件能拿到 focusId. */
+		for (i = 0; i < inst->stateCount; i++)
+			inst->states[i].input.focus = -1;
 	}
 	for (i = 0; i < inst->stateCount; i++) {
 		UiDesignNodeState *st = &inst->states[i];
@@ -1766,9 +2020,18 @@ void UiDesign_MouseDown(UiDesignInstance *inst, float x, float y)
 
 void UiDesign_MouseMove(UiDesignInstance *inst, float x, float y)
 {
-	int i;
-	(void)y;
+	int i, used = 0;
 	if (!inst) return;
+	for (i = 0; i < inst->stateCount; i++) {
+		UiDesignNodeState *st = &inst->states[i];
+		if (st->inited && inst->doc->nodes[i].type == UI_DN_COLORSEL)
+			used |= UiColorSelect_Mouse(&st->cs, inst->ui,
+				UI_COLOR_MOUSE_MOVE, x, y);
+	}
+	if (used) {
+		dn_color_end(inst);
+		return;
+	}
 	for (i = 0; i < inst->stateCount; i++) {
 		UiDesignNodeState *st = &inst->states[i];
 		if (st->inited && inst->doc->nodes[i].type == UI_DN_INPUT)
@@ -1778,8 +2041,18 @@ void UiDesign_MouseMove(UiDesignInstance *inst, float x, float y)
 
 void UiDesign_MouseUp(UiDesignInstance *inst)
 {
-	int i;
+	int i, used = 0;
 	if (!inst) return;
+	for (i = 0; i < inst->stateCount; i++) {
+		UiDesignNodeState *st = &inst->states[i];
+		if (st->inited && inst->doc->nodes[i].type == UI_DN_COLORSEL)
+			used |= UiColorSelect_Mouse(&st->cs, inst->ui,
+				UI_COLOR_MOUSE_UP, 0.0f, 0.0f);
+	}
+	if (used) {
+		dn_color_end(inst);
+		return;
+	}
 	for (i = 0; i < inst->stateCount; i++) {
 		UiDesignNodeState *st = &inst->states[i];
 		if (st->inited && inst->doc->nodes[i].type == UI_DN_INPUT)
@@ -1797,7 +2070,31 @@ static int dn_focus_index(UiDesignInstance *inst)
 
 int UiDesign_Key(UiDesignInstance *inst, UINT vk)
 {
-	int i = dn_focus_index(inst);
+	int i;
+	if (!inst) return 0;
+	for (i = 0; i < inst->stateCount; i++) {
+		UiDesignNodeState *st = &inst->states[i];
+		UiDesignNode *n;
+		if (!st->inited) continue;
+		n = &inst->doc->nodes[i];
+		if (n->type == UI_DN_DATEPICKER) {
+			if (UiDatePicker_Key(&st->dp, inst->pm, inst->ui, vk)) return 1;
+		} else if (n->type == UI_DN_COLORSEL) {
+			if (UiColorSelect_Key(&st->cs, inst->pm, inst->ui, vk)) return 1;
+		} else if (n->type == UI_DN_TEXTAREA) {
+			if (UiTextArea_Key(&st->ta, inst->ui, vk)) return 1;
+		} else if (n->type == UI_DN_TABS) {
+			int before = st->bar.selected;
+			if (UiTabBar_Key(&st->bar, inst->ui, vk)) {
+				if (st->bar.selected != before) {
+					n->selected = st->bar.selected;
+					dn_emit_event(inst, i, 2);
+				}
+				return 1;
+			}
+		}
+	}
+	i = dn_focus_index(inst);
 	if (i < 0) return 0;
 	return UiInput_Key(&inst->states[i].input, inst->ui->hwnd, vk);
 }
@@ -1805,34 +2102,78 @@ int UiDesign_Key(UiDesignInstance *inst, UINT vk)
 int UiDesign_Char(UiDesignInstance *inst, wchar_t ch)
 {
 	int i = dn_focus_index(inst);
+	if (!inst) return 0;
+	for (i = 0; i < inst->stateCount; i++) {
+		UiDesignNodeState *st = &inst->states[i];
+		UiDesignNode *n;
+		if (!st->inited) continue;
+		n = &inst->doc->nodes[i];
+		if (n->type == UI_DN_DATEPICKER) {
+			if (UiDatePicker_Char(&st->dp, inst->ui, ch)) return 1;
+		} else if (n->type == UI_DN_COLORSEL) {
+			if (UiColorSelect_Char(&st->cs, inst->ui, ch)) return 1;
+		} else if (n->type == UI_DN_TEXTAREA) {
+			if (UiTextArea_Char(&st->ta, inst->ui, ch)) return 1;
+		}
+	}
+	i = dn_focus_index(inst);
 	if (i < 0) return 0;
 	return UiInput_Char(&inst->states[i].input, ch);
 }
 
 void UiDesign_OnIme(UiDesignInstance *inst)
 {
-	int i = dn_focus_index(inst);
-	if (i >= 0) UiInput_OnIme(&inst->states[i].input);
+	int i, focus;
+	if (!inst) return;
+	for (i = 0; i < inst->stateCount; i++) {
+		UiDesignNodeState *st = &inst->states[i];
+		if (!st->inited) continue;
+		if (inst->doc->nodes[i].type == UI_DN_DATEPICKER)
+			UiDatePicker_OnIme(&st->dp, inst->ui);
+		else if (inst->doc->nodes[i].type == UI_DN_COLORSEL)
+			UiColorSelect_OnIme(&st->cs, inst->ui);
+		else if (inst->doc->nodes[i].type == UI_DN_TEXTAREA)
+			UiTextArea_OnIme(&st->ta, inst->ui);
+	}
+	focus = dn_focus_index(inst);
+	if (focus >= 0) UiInput_OnIme(&inst->states[focus].input);
 }
 
 void UiDesign_Blink(UiDesignInstance *inst)
 {
 	int i;
 	if (!inst) return;
-	for (i = 0; i < inst->stateCount; i++)
-		if (inst->states[i].inited &&
-		    inst->doc->nodes[i].type == UI_DN_INPUT)
-			UiInput_Blink(&inst->states[i].input);
+	for (i = 0; i < inst->stateCount; i++) {
+		UiDesignNodeState *st = &inst->states[i];
+		if (!st->inited) continue;
+		if (inst->doc->nodes[i].type == UI_DN_INPUT)
+			UiInput_Blink(&st->input);
+		else if (inst->doc->nodes[i].type == UI_DN_DATEPICKER)
+			UiDatePicker_Blink(&st->dp, inst->ui);
+		else if (inst->doc->nodes[i].type == UI_DN_COLORSEL)
+			UiColorSelect_Blink(&st->cs, inst->ui);
+		else if (inst->doc->nodes[i].type == UI_DN_TEXTAREA)
+			UiTextArea_Blink(&st->ta, inst->ui);
+	}
 }
 
 int UiDesign_Busy(const UiDesignInstance *inst)
 {
 	int i;
 	if (!inst) return 0;
-	for (i = 0; i < inst->stateCount; i++)
-		if (inst->states[i].inited &&
-		    inst->doc->nodes[i].type == UI_DN_SELECT &&
-		    UiSelect_Busy(&inst->states[i].select)) return 1;
+	for (i = 0; i < inst->stateCount; i++) {
+		UiDesignNodeState *st = &inst->states[i];
+		if (!st->inited) continue;
+		if (inst->doc->nodes[i].type == UI_DN_SELECT) {
+			if (UiSelect_Busy(&st->select)) return 1;
+		} else if (inst->doc->nodes[i].type == UI_DN_TEXTAREA) {
+			if (UiTextArea_Busy(&st->ta)) return 1;
+		} else if (inst->doc->nodes[i].type == UI_DN_DATEPICKER) {
+			if (inst->pm && UiPopupManager_IsOpen(inst->pm, st->dp.id)) return 1;
+		} else if (inst->doc->nodes[i].type == UI_DN_COLORSEL) {
+			if (inst->pm && UiColorSelect_IsOpen(inst->pm, &st->cs)) return 1;
+		}
+	}
 	if (inst->dialogReady && UiDialog_Busy(&inst->dialog)) return 1;
 	return 0;
 }
@@ -1931,6 +2272,8 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int winNew,
 	ds_addf(s, "    p%d->value=", old); cg_num(s, n->value);
 	ds_addf(s, "; p%d->checked=%d; p%d->selected=%d; p%d->variant=%d;\n",
 		old, n->checked, old, n->selected, old, n->variant);
+	ds_addf(s, "    p%d->mode=%d; p%d->readonly=%d; p%d->color=0x%08Xu;\n",
+		old, n->mode, old, n->readonly, old, n->color);
 	ds_addf(s, "    UiDesign_NodeSetText(p%d, ", old); cg_quote(s, n->text); ds_add(s, ");\n");
 	ds_addf(s, "    UiDesign_NodeSetHint(p%d, ", old); cg_quote(s, n->hint); ds_add(s, ");\n");
 	ds_addf(s, "    UiDesign_NodeSetOptions(p%d, ", old); cg_quote(s, n->options); ds_add(s, ");\n");

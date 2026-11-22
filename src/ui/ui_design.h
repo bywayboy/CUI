@@ -7,13 +7,17 @@
 #ifndef CUI_UI_DESIGN_H
 #define CUI_UI_DESIGN_H
 
+#include "ui/ui_color_select.h"
 #include "ui/ui_context.h"
 #include "ui/ui_controls.h"
+#include "ui/ui_datepicker.h"
 #include "ui/ui_dialog.h"
 #include "ui/ui_ime.h"
 #include "ui/ui_input.h"
 #include "ui/ui_popup.h"
 #include "ui/ui_select.h"
+#include "ui/ui_tab.h"
+#include "ui/ui_textarea.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -21,7 +25,7 @@ extern "C" {
 
 #define UI_DN_ID_MAX    64
 #define UI_DN_NAME_MAX  64
-#define UI_DN_TEXT_MAX  256
+#define UI_DN_TEXT_MAX  1024
 #define UI_DN_PATH_MAX  260
 #define UI_DN_SYM_MAX   64
 
@@ -41,6 +45,10 @@ typedef enum {
 	UI_DN_SELECT,
 	UI_DN_IMAGE,
 	UI_DN_SEPARATOR,
+	UI_DN_TABS,        /* 容器: 子节点即页, 页签文字取子节点名称 */
+	UI_DN_TEXTAREA,
+	UI_DN_DATEPICKER,
+	UI_DN_COLORSEL,
 	UI_DN_COUNT
 } UiDesignType;
 
@@ -99,6 +107,9 @@ typedef struct UiDesignNode {
 	char options[UI_DN_TEXT_MAX];
 	float value;
 	int checked, enabled, selected, variant;
+	int mode;           /* DatePicker: UiDatePickerMode */
+	int readonly;       /* TextArea */
+	unsigned color;     /* ColorSelect: 0xAARRGGBB */
 	char onClick[UI_DN_ID_MAX];
 	char onChange[UI_DN_ID_MAX];
 } UiDesignNode;
@@ -202,6 +213,12 @@ typedef struct UiDesignNodeState {
 	UiSwitch sw;
 	UiSlider slider;
 	UiSelect select;
+	UiTextArea ta;
+	UiDatePicker dp;
+	UiColorSelect cs;
+	UiTabBar bar;
+	int barCount;
+	wchar_t taHint[128];   /* TextArea placeholder 由控件保存指针, 需自持 */
 	char text[UI_DN_TEXT_MAX];
 	char selItems[8][48];
 	const char *selPtrs[8];
@@ -238,6 +255,9 @@ void UiDesign_SetTextValue(UiDesignInstance *inst, const char *nodeId,
 	const char *text);
 void UiDesign_Draw(UiDesignInstance *inst, UiRect rc);
 void UiDesign_DrawOverlay(UiDesignInstance *inst);
+/* Gfx_End 之后调用: 同步 ColorSelect 的合成器交互层. 使用颜色控件的
+ * 宿主必须每帧调用 (设计器/生成代码的宿主跳过后颜色条不刷新). */
+void UiDesign_EndFrame(UiDesignInstance *inst);
 int  UiDesign_DialogIsOpen(const UiDesignInstance *inst);
 int  UiDesign_DialogOpen(UiDesignInstance *inst, UiId owner);
 void UiDesign_DialogDraw(UiDesignInstance *inst);

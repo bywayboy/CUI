@@ -16,6 +16,7 @@
 #include "ui/ui_popup.h"
 #include "ui/ui_dialog.h"
 #include "ui/ui_design.h"
+#include "ui/ui_frame.h"
 #include "ui/ui_nav.h"
 #include "ui/ui_button_group.h"
 
@@ -48,7 +49,8 @@ enum {
 	DPK_FLOAT,
 	DPK_ENUM,
 	DPK_BOOL,
-	DPK_READONLY
+	DPK_READONLY,
+	DPK_COLOR
 };
 
 enum {
@@ -61,7 +63,8 @@ enum {
 	DK_N_X, DK_N_Y, DK_N_TEXT, DK_N_HINT, DK_N_OPTIONS, DK_N_VALUE,
 	DK_N_CHECKED, DK_N_ENABLED, DK_N_VARIANT, DK_N_CLICK, DK_N_CHANGE,
 	DK_N_GRIDCOLS, DK_N_GRIDROWS, DK_N_GRIDROW, DK_N_GRIDCOL,
-	DK_N_ROWSPAN, DK_N_COLSPAN, DK_N_GRIDROWGAP, DK_N_GRIDCOLGAP
+	DK_N_ROWSPAN, DK_N_COLSPAN, DK_N_GRIDROWGAP, DK_N_GRIDCOLGAP,
+	DK_N_MODE, DK_N_READONLY, DK_N_COLOR, DK_N_SELECTED
 };
 
 enum {
@@ -127,6 +130,9 @@ typedef struct Designer {
 	int propDrag, propDragKey;
 	float propDragX, propDragVal;
 	int propDragIsInt;
+	UiColorSelect propColor;   /* 属性面板颜色行 */
+	int propColorReady;
+	int propColorNode;
 	int propsTab;          /* 0=属性 1=组件表 */
 	int palettePage;
 	int propScroll;
@@ -243,6 +249,59 @@ static void d_fmt(char *b, int cap, float v)
 static float d_clampf(float v, float lo, float hi)
 {
 	return v < lo ? lo : (v > hi ? hi : v);
+}
+
+static void d_fmt_color(char *b, int cap, unsigned c)
+{
+	snprintf(b, (size_t)cap, "#%02X%02X%02X%02X",
+		(c >> 16) & 0xFFu, (c >> 8) & 0xFFu, c & 0xFFu, (c >> 24) & 0xFFu);
+}
+
+static unsigned d_parse_color(const char *s, unsigned fallback)
+{
+	unsigned v = 0;
+	int n = 0, i;
+	if (!s || s[0] != '#') return fallback;
+	for (i = 1; s[i] && n < 8; i++, n++) {
+		char c = s[i];
+		int h;
+		if (c >= '0' && c <= '9') h = c - '0';
+		else if (c >= 'a' && c <= 'f') h = c - 'a' + 10;
+		else if (c >= 'A' && c <= 'F') h = c - 'A' + 10;
+		else return fallback;
+		v = (v << 4) | (unsigned)h;
+	}
+	if (n == 6) v |= 0xFF000000u;
+	else if (n != 8) return fallback;
+	return v;
+}
+
+static int d_option_count(const char *s)
+{
+	int c = 1;
+	if (!s || !s[0]) return 0;
+	while (*s) {
+		if (*s == ',') c++;
+		s++;
+	}
+	return c;
+}
+
+static const char *d_dp_mode_name(int m)
+{
+	switch (m) {
+	case UI_DP_DATETIME: return "DateTime";
+	case UI_DP_RANGE_DATE: return "Range Date";
+	case UI_DP_RANGE_DATETIME: return "Range DateTime";
+	default: return "Date";
+	}
+}
+
+static float d_tabs_header_h(int variant)
+{
+	if (variant == UI_TAB_PILL) return 34.0f;
+	if (variant == UI_TAB_CARD) return 36.0f;
+	return 38.0f;
 }
 
 static void d_inset(UiRect r, const float *pad, UiRect *out)
@@ -619,6 +678,26 @@ static void d_sel_clear(void)
 	g_d.selSetN = 0;
 }
 
+static void d_tabs_reveal(int idx)
+{
+	while (idx >= 0 && idx < g_d.doc.nodeCount) {
+		UiDesignNode *n = &g_d.doc.nodes[idx];
+		int p = n->parent;
+		int i;
+		if (p < 0) break;
+		if (g_d.doc.nodes[p].type == UI_DN_TABS) {
+			UiDesignNode *pn = &g_d.doc.nodes[p];
+			for (i = 0; i < pn->childCount; i++)
+				if (pn->children[i] == idx) break;
+			if (i < pn->childCount && pn->selected != i) {
+				pn->selected = i;
+				g_d.layoutReady = 0;
+			}
+		}
+		idx = p;
+	}
+}
+
 static void d_sel_single(int idx)
 {
 	d_sel_clear();
@@ -627,6 +706,7 @@ static void d_sel_single(int idx)
 		g_d.selSetN = 1;
 		g_d.selNode = idx;
 		g_d.selKind = DSEL_NODE;
+		d_tabs_reveal(idx);
 	}
 }
 
@@ -638,6 +718,7 @@ static void d_sel_toggle(int idx)
 			g_d.selSet[g_d.selSetN++] = idx;
 		g_d.selNode = idx;
 		g_d.selKind = DSEL_NODE;
+		d_tabs_reveal(idx);
 		return;
 	}
 	for (i = 0; i < g_d.selSetN; i++)
@@ -777,13 +858,40 @@ static void d_build_props(void)
 			d_prop_add(DK_N_ROWSPAN, DPK_INT, "Row Span", b);
 		}
 		g_d.propSection = 3;
-		d_prop_add(DK_N_TEXT, DPK_TEXT, "Text", n->text);
-		d_prop_add(DK_N_HINT, DPK_TEXT, "Hint", n->hint);
-		d_prop_add(DK_N_OPTIONS, DPK_TEXT, "Options", n->options);
-		d_fmt(b, sizeof(b), n->value); d_prop_add(DK_N_VALUE, DPK_FLOAT, "Value", b);
-		d_prop_add(DK_N_CHECKED, DPK_BOOL, "Checked", n->checked ? "1" : "0");
-		d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
-		d_prop_add(DK_N_VARIANT, DPK_ENUM, "Variant", n->variant == 2 ? "Danger" : (n->variant == 1 ? "Primary" : "Default"));
+		if (n->type == UI_DN_TABS) {
+			snprintf(b, sizeof(b), "%d", n->selected);
+			d_prop_add(DK_N_SELECTED, DPK_ENUM, "当前页", b);
+			d_prop_add(DK_N_VARIANT, DPK_ENUM, "页签样式",
+				n->variant == 1 ? "Pill" : (n->variant == 2 ? "Card" : "Line"));
+		} else if (n->type == UI_DN_TEXTAREA) {
+			d_prop_add(DK_N_TEXT, DPK_TEXT, "Text", n->text);
+			d_prop_add(DK_N_HINT, DPK_TEXT, "Hint", n->hint);
+			d_prop_add(DK_N_READONLY, DPK_BOOL, "只读", n->readonly ? "1" : "0");
+			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
+		} else if (n->type == UI_DN_DATEPICKER) {
+			d_prop_add(DK_N_MODE, DPK_ENUM, "模式", d_dp_mode_name(n->mode));
+			d_prop_add(DK_N_HINT, DPK_TEXT, "Hint", n->hint);
+			d_prop_add(DK_N_TEXT, DPK_TEXT, "值", n->text);
+			if (n->mode >= 2)
+				d_prop_add(DK_N_OPTIONS, DPK_TEXT, "结束值", n->options);
+			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
+		} else if (n->type == UI_DN_COLORSEL) {
+			d_fmt_color(b, sizeof(b), n->color);
+			d_prop_add(DK_N_COLOR, DPK_COLOR, "颜色", b);
+			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
+		} else {
+			d_prop_add(DK_N_TEXT, DPK_TEXT, "Text", n->text);
+			d_prop_add(DK_N_HINT, DPK_TEXT, "Hint", n->hint);
+			d_prop_add(DK_N_OPTIONS, DPK_TEXT, "Options", n->options);
+			if (n->type == UI_DN_SELECT) {
+				snprintf(b, sizeof(b), "%d", n->selected);
+				d_prop_add(DK_N_SELECTED, DPK_ENUM, "Selected", b);
+			}
+			d_fmt(b, sizeof(b), n->value); d_prop_add(DK_N_VALUE, DPK_FLOAT, "Value", b);
+			d_prop_add(DK_N_CHECKED, DPK_BOOL, "Checked", n->checked ? "1" : "0");
+			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
+			d_prop_add(DK_N_VARIANT, DPK_ENUM, "Variant", n->variant == 2 ? "Danger" : (n->variant == 1 ? "Primary" : "Default"));
+		}
 		g_d.propSection = 4;
 		d_prop_add(DK_N_CLICK, DPK_TEXT, "OnClick", n->onClick);
 		d_prop_add(DK_N_CHANGE, DPK_TEXT, "OnChange", n->onChange);
@@ -811,6 +919,7 @@ static void d_prop_cycle(int key)
 	UiDesignWindow *w;
 	if (g_d.preview) return;
 	n = d_selnode();
+	w = d_selwindow();
 	if (g_d.selKind == DSEL_WINDOW && w) {
 		if (key == DK_W_KIND) w->kind = w->kind == UI_DW_DIALOG ? UI_DW_NATIVE : UI_DW_DIALOG;
 		else if (key == DK_W_GROUP) d_cycle_group(1);
@@ -822,6 +931,12 @@ static void d_prop_cycle(int key)
 		else if (key == DK_N_VARIANT) n->variant = (n->variant + 1) % 3;
 		else if (key == DK_N_CHECKED) n->checked = !n->checked;
 		else if (key == DK_N_ENABLED) n->enabled = !n->enabled;
+		else if (key == DK_N_SELECTED) {
+			int cnt = n->childCount;
+			if (n->type == UI_DN_SELECT) cnt = d_option_count(n->options);
+			if (cnt > 0) n->selected = (n->selected + 1) % cnt;
+		} else if (key == DK_N_MODE) n->mode = (n->mode + 1) % 4;
+		else if (key == DK_N_READONLY) n->readonly = !n->readonly;
 	}
 	g_d.doc.dirty = 1;
 	d_undo_push();
@@ -875,6 +990,7 @@ static void d_prop_apply_text(int key, const char *text)
 		else if (key == DK_N_GRIDCOLGAP) n->gridColGap = (float)d_atof(text);
 		else if (key == DK_N_COLSPAN) n->colSpan = d_atoi(text) > 0 ? d_atoi(text) : 1;
 		else if (key == DK_N_ROWSPAN) n->rowSpan = d_atoi(text) > 0 ? d_atoi(text) : 1;
+		else if (key == DK_N_COLOR) n->color = d_parse_color(text, n->color);
 	}
 	g_d.doc.dirty = 1;
 	g_d.layoutReady = 0;
@@ -890,6 +1006,7 @@ static void d_prop_start_edit(int row)
 		if (p->kind != DPK_READONLY) d_prop_cycle(p->key);
 		return;
 	}
+	if (p->kind == DPK_COLOR) return;
 	d_after_edit();
 	g_d.editActive = 1;
 	g_d.editKey = p->key;
@@ -926,7 +1043,16 @@ static int d_unique_node_id(int win, const char *base, char *out, int cap)
 static int d_container_parent(void)
 {
 	UiDesignNode *n = d_selnode();
-	if (n && UiDesign_IsContainer(n->type)) return g_d.selNode;
+	if (n && UiDesign_IsContainer(n->type)) {
+		if (n->type == UI_DN_TABS && n->childCount > 0) {
+			int sel = n->selected;
+			if (sel < 0) sel = 0;
+			if (sel >= n->childCount) sel = n->childCount - 1;
+			if (UiDesign_IsContainer(g_d.doc.nodes[n->children[sel]].type))
+				return n->children[sel];
+		}
+		return g_d.selNode;
+	}
 	if (n && n->parent >= 0) return n->parent;
 	if (g_d.selWin >= 0) return g_d.doc.windows[g_d.selWin].root;
 	return -1;
@@ -939,6 +1065,26 @@ static void d_grid_defaults(UiDesignNode *n)
 	n->gridRows = 0;              /* 0 = 行数随子节点自动增长 */
 	if (n->gridColGap <= 0.0f) n->gridColGap = 8.0f;
 	if (n->gridRowGap <= 0.0f) n->gridRowGap = 8.0f;
+}
+
+static void d_tabs_add_pages(int win, int tabsIdx)
+{
+	int i;
+	for (i = 0; i < 2; i++) {
+		char id[UI_DN_ID_MAX], name[UI_DN_NAME_MAX], base[24];
+		UiDesignNode *pg;
+		int ci;
+		snprintf(base, sizeof(base), "page%d", i + 1);
+		d_unique_node_id(win, base, id, sizeof(id));
+		snprintf(name, sizeof(name), "页 %d", i + 1);
+		ci = UiDesign_AddNode(&g_d.doc, win, UI_DN_PANEL, tabsIdx, id, name);
+		pg = UiDesign_Node(&g_d.doc, ci);
+		if (!pg) continue;
+		pg->wMode = UI_DN_SIZE_FILL;
+		pg->hMode = UI_DN_SIZE_FILL;
+		pg->padding[0] = pg->padding[1] = pg->padding[2] = pg->padding[3] = 12.0f;
+		pg->gap = 8.0f;
+	}
 }
 
 static void d_add_node(int type)
@@ -979,6 +1125,15 @@ static void d_add_node(int type)
 			UiDesign_NodeSetOptions(n, "选项1,选项2,选项3");
 			UiDesign_NodeSetHint(n, "请选择");
 		} else if (type == UI_DN_IMAGE) UiDesign_NodeSetText(n, "Image");
+		else if (type == UI_DN_TEXTAREA) UiDesign_NodeSetHint(n, "多行文本");
+		else if (type == UI_DN_DATEPICKER) UiDesign_NodeSetHint(n, "选择日期");
+	}
+	if (type == UI_DN_TABS) {
+		n->h = 220.0f;
+		n->padding[0] = n->padding[1] = n->padding[2] = n->padding[3] = 10.0f;
+		n->gap = 0.0f;
+		n->selected = 0;
+		d_tabs_add_pages(win, idx);
 	}
 	d_sel_single(idx);
 	g_d.doc.dirty = 1;
@@ -1226,6 +1381,96 @@ static void d_select_node(int idx)
 
 /* ── 静态预览绘制 ───────────────────────────────────────────────────── */
 
+static int d_tabs_item_at(int idx, float x, float y)
+{
+	UiDesignNode *n = &g_d.doc.nodes[idx];
+	UiTheme *t = &g_d.app->theme;
+	Gfx *g = g_d.app->gfx;
+	UiRect r = g_d.rects[idx], inner;
+	float hh, cursor, gap, padX;
+	int i, cnt = n->childCount;
+	if (cnt <= 0) return -1;
+	d_inset(r, n->padding, &inner);
+	hh = d_tabs_header_h(n->variant);
+	if (hh > inner.h) hh = inner.h;
+	if (y < inner.y || y > inner.y + hh) return -1;
+	gap = n->variant == 1 ? 2.0f : 4.0f;
+	padX = n->variant == 1 ? 16.0f : 14.0f;
+	cursor = inner.x + (n->variant == 1 ? 3.0f : 0.0f);
+	if (n->variant == 1)
+		inner.w -= 6.0f;
+	for (i = 0; i < cnt; i++) {
+		float w;
+		if (n->variant == 1)
+			w = (inner.w - gap * (cnt - 1)) / cnt;
+		else {
+			w = Gfx_TextWidth(g, t->fLabel,
+				g_d.doc.nodes[n->children[i]].name) + padX * 2.0f;
+			if (w < 44.0f) w = 44.0f;
+		}
+		if (x >= cursor && x < cursor + w) return i;
+		cursor += w + gap;
+	}
+	return -1;
+}
+
+static void d_tabs_draw_header(int idx)
+{
+	UiDesignNode *n = &g_d.doc.nodes[idx];
+	UiTheme *t = &g_d.app->theme;
+	Gfx *g = g_d.app->gfx;
+	UiRect r = g_d.rects[idx], inner;
+	float hh, cursor, gap, padX;
+	int i, cnt = n->childCount;
+	if (cnt <= 0) return;
+	d_inset(r, n->padding, &inner);
+	hh = d_tabs_header_h(n->variant);
+	if (hh > inner.h) hh = inner.h;
+	if (hh <= 0.0f) return;
+	gap = n->variant == 1 ? 2.0f : 4.0f;
+	padX = n->variant == 1 ? 16.0f : 14.0f;
+	if (n->variant == 1) {
+		Gfx_FillRoundRect(g, Ui_Rect(inner.x, inner.y, inner.w, hh), 8.0f,
+			t->neutral.soft);
+		cursor = inner.x + 3.0f;
+		inner.w -= 6.0f;
+	} else {
+		cursor = inner.x;
+		Gfx_Line(g, inner.x, inner.y + hh - 1, inner.x + inner.w,
+			inner.y + hh - 1, t->border, 1.0f);
+	}
+	for (i = 0; i < cnt; i++) {
+		const char *label = g_d.doc.nodes[n->children[i]].name;
+		float w;
+		UiRect item;
+		int sel = i == n->selected;
+		if (n->variant == 1)
+			w = (inner.w - gap * (cnt - 1)) / cnt;
+		else {
+			w = Gfx_TextWidth(g, t->fLabel, label) + padX * 2.0f;
+			if (w < 44.0f) w = 44.0f;
+		}
+		item = Ui_Rect(cursor, inner.y, w, hh);
+		if (sel && n->variant == 2) {
+			Gfx_FillRoundRect(g, Ui_Rect(item.x, item.y, item.w, item.h), 6.0f,
+				t->card);
+			Gfx_StrokeRoundRect(g, Ui_Rect(item.x, item.y, item.w, item.h),
+				6.0f, t->border, 1.0f);
+		} else if (sel && n->variant == 1) {
+			Gfx_FillRoundRect(g, Ui_Rect(item.x, item.y, item.w, item.h),
+				6.0f, t->primary.soft);
+		}
+		Gfx_Text(g, t->fLabel, label, item,
+			sel ? t->primary.base : t->text2,
+			GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+		if (sel && n->variant == 0) {
+			Gfx_FillRect(g, Ui_Rect(item.x + 8.0f, item.y + item.h - 2.0f,
+				item.w - 16.0f, 2.0f), t->primary.base);
+		}
+		cursor += w + gap;
+	}
+}
+
 static void d_draw_static_node(int idx)
 {
 	UiTheme *t = &g_d.app->theme;
@@ -1234,6 +1479,29 @@ static void d_draw_static_node(int idx)
 	UiRect r = g_d.rects[idx];
 	int i;
 	if (!n->visible || r.w <= 0 || r.h <= 0) return;
+	if (n->type == UI_DN_TABS) {
+		UiRect inner;
+		float hh;
+		d_inset(r, n->padding, &inner);
+		hh = d_tabs_header_h(n->variant);
+		if (hh > inner.h) hh = inner.h;
+		if (n->variant == 2 && n->childCount > 0) {
+			Gfx_StrokeRoundRectCornersDashed(g, Ui_Rect(inner.x,
+				inner.y + hh, inner.w, inner.h - hh), Gfx_Corners(0, 0, 8, 8),
+				Ui_ColorAlpha(t->text3, 75), 1.0f);
+		}
+		d_tabs_draw_header(idx);
+		if (n->childCount > 0) {
+			int sel = n->selected;
+			if (sel < 0 || sel >= n->childCount) sel = 0;
+			d_draw_static_node(n->children[sel]);
+		} else {
+			Gfx_Text(g, t->fSmall, "标签页: 无子页",
+				Ui_Rect(inner.x, inner.y + hh, inner.w, inner.h - hh),
+				t->text4, GFX_TEXT_CENTER | GFX_TEXT_VCENTER);
+		}
+		return;
+	}
 	if (UiDesign_IsContainer(n->type)) {
 		if (n->type == UI_DN_PANEL)
 			Gfx_FillRoundRect(g, r, 8.0f, t->card);
@@ -1319,6 +1587,45 @@ static void d_draw_static_node(int idx)
 		Gfx_Text(g, t->fSmall, n->text[0] ? n->text : "Image", r, t->text3,
 			GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 		break;
+	case UI_DN_TEXTAREA: {
+		uint32_t fl = GFX_TEXT_WRAP | (n->align == UI_DN_ALIGN_CENTER ? GFX_TEXT_CENTER : 0);
+		const char *txt = n->text[0] ? n->text : (n->hint[0] ? n->hint : "多行文本");
+		Gfx_FillRoundRect(g, r, 6.0f, t->inputBg);
+		Gfx_StrokeRoundRect(g, r, 6.0f, t->inputBorder, 1.0f);
+		Gfx_PushClip(g, Ui_Rect(r.x + 8, r.y + 6, r.w - 16, r.h - 12));
+		Gfx_Text(g, t->fBody, txt, Ui_Rect(r.x + 8, r.y + 6, r.w - 16, r.h - 12),
+			n->text[0] ? t->text : t->text4, fl);
+		Gfx_PopClip(g);
+		break;
+	}
+	case UI_DN_DATEPICKER: {
+		const char *txt = n->text[0] ? n->text : (n->hint[0] ? n->hint : "选择日期");
+		float cx = r.x + r.w - 16.0f, cy = r.y + r.h * 0.5f;
+		Gfx_FillRoundRect(g, r, 6.0f, t->inputBg);
+		Gfx_StrokeRoundRect(g, r, 6.0f, t->inputBorder, 1.0f);
+		Gfx_Text(g, t->fInput, txt, Ui_Rect(r.x + 8, r.y, r.w - 36, r.h),
+			n->text[0] ? t->text : t->text4, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+		Gfx_StrokeRoundRect(g, Ui_Rect(cx - 6, cy - 7, 14, 14), 2.0f,
+			t->text3, 1.2f);
+		Gfx_Line(g, cx - 9, cy - 3, cx + 5, cy - 3, t->text3, 1.2f);
+		break;
+	}
+	case UI_DN_COLORSEL: {
+		UiColor c = n->color;
+		UiRect sw = Ui_Rect(r.x + 5, r.y + 5, 24, r.h - 10);
+		Gfx_FillRoundRect(g, r, 6.0f, t->inputBg);
+		Gfx_StrokeRoundRect(g, r, 6.0f, t->inputBorder, 1.0f);
+		Gfx_FillRoundRect(g, sw, 4.0f, 0xFF000000u | (c & 0x00FFFFFFu));
+		Gfx_StrokeRoundRect(g, sw, 4.0f, Ui_ColorAlpha(t->text3, 90), 1.0f);
+		{
+			char hx[16];
+			snprintf(hx, sizeof(hx), "#%02X%02X%02X",
+				(c >> 16) & 0xFFu, (c >> 8) & 0xFFu, c & 0xFFu);
+			Gfx_Text(g, t->fInput, hx, Ui_Rect(sw.x + sw.w + 8, r.y,
+				r.w - sw.w - 16, r.h), t->text, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+		}
+		break;
+	}
 	case UI_DN_SEPARATOR:
 		Gfx_Line(g, r.x, r.y + r.h * 0.5f, r.x + r.w, r.y + r.h * 0.5f,
 			t->border, 1.0f);
@@ -1781,15 +2088,17 @@ static void d_draw_toolbar(void)
 	static const char *const layoutLabels[6] = {
 		"选择", "自由", "列", "行", "Grid", "面板"
 	};
-	static const char *const compLabels[10] = {
-		"标签", "按钮", "输入", "复选", "开关", "滑块", "进度", "下拉", "图片", "分隔"
+	static const char *const compLabels[14] = {
+		"标签", "按钮", "输入", "复选", "开关", "滑块", "进度",
+		"下拉", "图片", "分隔", "标签页", "多行", "日期", "颜色"
 	};
 	static const int layoutTypes[6] = {
 		-1, UI_DN_ABSOLUTE, UI_DN_COLUMN, UI_DN_ROW, UI_DN_GRID, UI_DN_PANEL
 	};
-	static const int compTypes[10] = {
+	static const int compTypes[14] = {
 		UI_DN_LABEL, UI_DN_BUTTON, UI_DN_INPUT, UI_DN_CHECKBOX, UI_DN_SWITCH,
-		UI_DN_SLIDER, UI_DN_PROGRESS, UI_DN_SELECT, UI_DN_IMAGE, UI_DN_SEPARATOR
+		UI_DN_SLIDER, UI_DN_PROGRESS, UI_DN_SELECT, UI_DN_IMAGE, UI_DN_SEPARATOR,
+		UI_DN_TABS, UI_DN_TEXTAREA, UI_DN_DATEPICKER, UI_DN_COLORSEL
 	};
 	float x = 12.0f;
 	int clicked;
@@ -1805,7 +2114,7 @@ static void d_draw_toolbar(void)
 	}
 	x += 342;
 	clicked = UiButtonGroup_Draw(ui, &g_d.compGroup,
-		Ui_Rect(x, TOP_H + 6, 540, 30), compLabels, NULL, NULL, UI_BTN_PRIMARY);
+		Ui_Rect(x, TOP_H + 6, 700, 30), compLabels, NULL, NULL, UI_BTN_PRIMARY);
 	if (clicked >= 0) {
 		UiButtonGroup_SetSelected(&g_d.layoutGroup, -1);
 		g_d.insertType = compTypes[clicked];
@@ -2349,6 +2658,23 @@ static void d_draw_props(void)
 			Gfx_Text(g, t->fSmall, p->label,
 				Ui_Rect(rr.x + 4, rr.y, 120, rr.h), t->text3,
 				GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+			if (p->kind == DPK_COLOR) {
+				UiDesignNode *cn = d_selnode();
+				if (cn && g_d.propColorReady) {
+					if (g_d.propColorNode != g_d.selNode) {
+						UiColorSelect_SetColor(&g_d.propColor, cn->color);
+						g_d.propColorNode = g_d.selNode;
+					}
+					if (UiColorSelect_Draw(&g_d.propColor, &g_d.pm, ui, vr,
+					    cn->enabled)) {
+						cn->color = UiColorSelect_GetColor(&g_d.propColor);
+						g_d.doc.dirty = 1;
+						UiApp_Invalidate(g_d.app);
+					}
+				}
+				y += PROP_ROW_H;
+				continue;
+			}
 			if (!(g_d.editActive && g_d.editKey == p->key)) {
 				Gfx_FillRoundRect(g, vr, 4.0f, t->inputBg);
 				Gfx_StrokeRoundRect(g, vr, 4.0f, t->inputBorder, 1.0f);
@@ -2540,8 +2866,18 @@ static int d_container_at(float x, float y)
 	if (hit < 0 && g_d.selWin >= 0)
 		hit = g_d.doc.windows[g_d.selWin].root;
 	while (hit >= 0) {
-		if (UiDesign_IsContainer(g_d.doc.nodes[hit].type)) return hit;
-		hit = g_d.doc.nodes[hit].parent;
+		UiDesignNode *n = &g_d.doc.nodes[hit];
+		if (UiDesign_IsContainer(n->type)) {
+			if (n->type == UI_DN_TABS && n->childCount > 0) {
+				int sel = n->selected;
+				if (sel < 0) sel = 0;
+				if (sel >= n->childCount) sel = n->childCount - 1;
+				if (UiDesign_IsContainer(g_d.doc.nodes[n->children[sel]].type))
+					return n->children[sel];
+			}
+			return hit;
+		}
+		hit = n->parent;
 	}
 	return g_d.selWin >= 0 ? g_d.doc.windows[g_d.selWin].root : -1;
 }
@@ -2586,6 +2922,17 @@ static void d_insert_at(float x, float y)
 			UiDesign_NodeSetOptions(n, "选项1,选项2,选项3");
 			UiDesign_NodeSetHint(n, "请选择");
 		} else if (g_d.insertType == UI_DN_IMAGE) UiDesign_NodeSetText(n, "Image");
+		else if (g_d.insertType == UI_DN_TEXTAREA) UiDesign_NodeSetHint(n, "多行文本");
+		else if (g_d.insertType == UI_DN_DATEPICKER) UiDesign_NodeSetHint(n, "选择日期");
+	}
+	if (g_d.insertType == UI_DN_TABS) {
+		n->h = 220.0f;
+		n->padding[0] = n->padding[1] = n->padding[2] = n->padding[3] = 10.0f;
+		n->gap = 0.0f;
+		n->selected = 0;
+		d_tabs_add_pages(g_d.selWin, idx);
+		p = &g_d.doc.nodes[parent];
+		n = &g_d.doc.nodes[idx];
 	}
 	if (p->type == UI_DN_ABSOLUTE || p->type == UI_DN_PANEL) {
 		UiRect pr = g_d.rects[parent];
@@ -2726,7 +3073,22 @@ static void d_mouse_down(float x, float y)
 	hitNode = UiDesign_FindNodeAt(&g_d.doc, g_d.selWin, g_d.rects, x, y);
 	if (hitNode >= 0) {
 		UiDesignNode *p;
+		UiDesignNode *hn = &g_d.doc.nodes[hitNode];
 		int additive = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+		if (hn->type == UI_DN_TABS && hn->childCount > 0) {
+			int ti = d_tabs_item_at(hitNode, x, y);
+			if (ti >= 0) {
+				if (hn->selected != ti) {
+					hn->selected = ti;
+					g_d.doc.dirty = 1;
+					g_d.layoutReady = 0;
+					d_undo_push();
+				}
+				d_sel_single(hn->children[ti]);
+				UiApp_Invalidate(g_d.app);
+				return;
+			}
+		}
 		if (additive) d_sel_toggle(hitNode);
 		else if (d_sel_has(hitNode)) {
 			g_d.selNode = hitNode;
@@ -3006,6 +3368,9 @@ static int d_key(UINT vk)
 		if (g_d.instReady && UiDesign_Key(&g_d.inst, vk)) return 1;
 		return 0;
 	}
+	if (!g_d.editActive && g_d.propColorReady &&
+	    UiColorSelect_Key(&g_d.propColor, &g_d.pm, &g_d.app->ui, vk))
+		return 1;
 	if (g_d.editActive) {
 		if (vk == VK_ESCAPE || vk == VK_RETURN || vk == VK_TAB) {
 			d_after_edit();
@@ -3060,6 +3425,9 @@ static int d_chr(wchar_t ch)
 {
 	if (g_d.genPreview) return 0;
 	if (g_d.preview) return g_d.instReady ? UiDesign_Char(&g_d.inst, ch) : 0;
+	if (!g_d.editActive && g_d.propColorReady &&
+	    UiColorSelect_Char(&g_d.propColor, &g_d.app->ui, ch))
+		return 1;
 	if (g_d.editActive) return UiInput_Char(&g_d.propForm, ch);
 	return 0;
 }
@@ -3068,18 +3436,25 @@ static void d_ime(void)
 {
 	if (g_d.preview) { if (g_d.instReady) UiDesign_OnIme(&g_d.inst); }
 	else if (g_d.editActive) UiInput_OnIme(&g_d.propForm);
+	else if (g_d.propColorReady) UiColorSelect_OnIme(&g_d.propColor, &g_d.app->ui);
 }
 
 static void d_blink(void)
 {
 	if (g_d.preview) { if (g_d.instReady) UiDesign_Blink(&g_d.inst); }
-	else if (g_d.editActive) UiInput_Blink(&g_d.propForm);
+	else {
+		if (g_d.editActive) UiInput_Blink(&g_d.propForm);
+		else if (g_d.propColorReady) UiColorSelect_Blink(&g_d.propColor, &g_d.app->ui);
+	}
 }
 
 static int d_animating(UiApp *app, void *user)
 {
 	(void)app; (void)user;
 	if (g_d.preview && g_d.instReady) return UiDesign_Busy(&g_d.inst);
+	if (!g_d.preview && g_d.propColorReady &&
+	    UiColorSelect_IsOpen(&g_d.pm, &g_d.propColor))
+		return 1;
 	return 0;
 }
 
@@ -3094,11 +3469,16 @@ static void d_on_init(UiApp *app, void *user)
 	g_d.propForm.count = 0;
 	g_d.propField = UiInput_Add(&g_d.propForm, Ui_Id("dsn.prop", 0, 0),
 		256, 0, NULL, NULL);
+	UiColorSelect_Init(&g_d.propColor, Ui_Id("dsn.propcolor", 0, 0),
+		0xFF3B82F6u);
+	UiColorSelect_AttachIme(&g_d.propColor, &app->ime);
+	g_d.propColorReady = 1;
+	g_d.propColorNode = -1;
 	UiButtonGroup_Init(&g_d.layoutGroup, Ui_Id("dsn.layoutgrp", 0, 0),
 		UI_BG_SINGLE, 6);
 	UiButtonGroup_SetSelected(&g_d.layoutGroup, 0);
 	UiButtonGroup_Init(&g_d.compGroup, Ui_Id("dsn.compgrp", 0, 0),
-		UI_BG_SINGLE, 10);
+		UI_BG_SINGLE, 14);
 	UiButtonGroup_SetSelected(&g_d.compGroup, -1);
 	UiButtonGroup_Init(&g_d.constraintW, Ui_Id("dsn.cw", 0, 0), UI_BG_SINGLE, 4);
 	UiButtonGroup_Init(&g_d.constraintH, Ui_Id("dsn.ch", 0, 0), UI_BG_SINGLE, 4);
@@ -3151,17 +3531,32 @@ static void d_on_frame(UiApp *app, void *user)
 		UiDesign_DrawOverlay(&g_d.inst);
 		if (UiDesign_DialogIsOpen(&g_d.inst)) UiDesign_DialogDraw(&g_d.inst);
 	}
+	if (!g_d.preview && !g_d.genPreview && g_d.propColorReady)
+		UiColorSelect_DrawPopup(&g_d.propColor, &g_d.pm, &app->ui);
 	UiNavBar_DrawPopups(&g_d.nav, &g_d.pm, &app->ui);
 }
 
 static void d_on_after(UiApp *app, void *user)
 {
 	(void)app; (void)user;
+	if (g_d.preview && g_d.instReady) UiDesign_EndFrame(&g_d.inst);
+	if (g_d.propColorReady) {
+		if (g_d.propColor.committed) {
+			g_d.propColor.committed = 0;
+			d_undo_push();
+		}
+		UiColorSelect_EndFrame(&g_d.propColor, UiFrame_Now());
+	}
 }
 
 static void d_on_mouse(UiApp *app, int msg, float x, float y, void *user)
 {
-	(void)app; (void)user;
+	if (!g_d.preview && !g_d.genPreview && g_d.propColorReady &&
+	    UiColorSelect_Mouse(&g_d.propColor, &app->ui, msg, x, y)) {
+		UiColorSelect_EndFrame(&g_d.propColor, UiFrame_Now());
+		UiApp_Invalidate(app);
+		return;
+	}
 	if (msg == UI_APP_MOUSE_DOWN) d_mouse_down(x, y);
 	else if (msg == UI_APP_MOUSE_MOVE) d_mouse_move(x, y);
 	else if (msg == UI_APP_MOUSE_UP) d_mouse_up();
@@ -3272,6 +3667,10 @@ static void d_on_shutdown(UiApp *app, void *user)
 {
 	(void)app; (void)user;
 	d_after_edit();
+	if (g_d.propColorReady) {
+		UiColorSelect_Shutdown(&g_d.propColor);
+		g_d.propColorReady = 0;
+	}
 	if (g_d.instReady) {
 		UiDesignInstance_Shutdown(&g_d.inst);
 		g_d.instReady = 0;

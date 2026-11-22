@@ -319,6 +319,111 @@ static void test_symbol(void)
 	CHECK(strcmp(b, "Ui_123abc") == 0);
 }
 
+static void test_components(void)
+{
+	UiDesignDoc a, b;
+	UiRect *rects;
+	char *json;
+	char report[128];
+	static char buf[32768];
+	int g, w, root, tabs, p1, p2, ta, dp, cs, hit;
+	WCHAR pc[MAX_PATH], ph[MAX_PATH];
+	UiDesignNode *n;
+
+	UiDesign_Init(&a);
+	g = UiDesign_AddGroup(&a, "g", "G");
+	w = UiDesign_AddWindow(&a, "win", "W", UI_DW_NATIVE, g);
+	root = UiDesign_AddNode(&a, w, UI_DN_COLUMN, -1, "root", "Root");
+	a.windows[w].root = root;
+	UiDesign_Node(&a, root)->wMode = UI_DN_SIZE_FILL;
+	UiDesign_Node(&a, root)->hMode = UI_DN_SIZE_FILL;
+	tabs = UiDesign_AddNode(&a, w, UI_DN_TABS, root, "tabs", "标签页");
+	n = UiDesign_Node(&a, tabs);
+	n->wMode = UI_DN_SIZE_FILL;
+	n->hMode = UI_DN_SIZE_FIXED;
+	n->h = 220.0f;
+	n->padding[0] = n->padding[1] = n->padding[2] = n->padding[3] = 10.0f;
+	n->selected = 1;
+	p1 = UiDesign_AddNode(&a, w, UI_DN_PANEL, tabs, "page1", "页 1");
+	p2 = UiDesign_AddNode(&a, w, UI_DN_PANEL, tabs, "page2", "页 2");
+	UiDesign_Node(&a, p1)->wMode = UI_DN_SIZE_FILL;
+	UiDesign_Node(&a, p1)->hMode = UI_DN_SIZE_FILL;
+	UiDesign_Node(&a, p2)->wMode = UI_DN_SIZE_FILL;
+	UiDesign_Node(&a, p2)->hMode = UI_DN_SIZE_FILL;
+	ta = UiDesign_AddNode(&a, w, UI_DN_TEXTAREA, p1, "ta", "多行");
+	UiDesign_NodeSetText(UiDesign_Node(&a, ta), "第一行");
+	UiDesign_NodeSetHint(UiDesign_Node(&a, ta), "输入内容");
+	UiDesign_Node(&a, ta)->readonly = 1;
+	dp = UiDesign_AddNode(&a, w, UI_DN_DATEPICKER, p1, "dp", "日期");
+	UiDesign_Node(&a, dp)->mode = 3;
+	UiDesign_NodeSetText(UiDesign_Node(&a, dp), "2026-01-02 03:04");
+	UiDesign_NodeSetOptions(UiDesign_Node(&a, dp), "2026-02-03 04:05");
+	cs = UiDesign_AddNode(&a, w, UI_DN_COLORSEL, p2, "cs", "颜色");
+	UiDesign_Node(&a, cs)->color = 0x80336699u;
+
+	CHECK(UiDesign_TypeFromName("tabs") == UI_DN_TABS);
+	CHECK(UiDesign_TypeFromName("textarea") == UI_DN_TEXTAREA);
+	CHECK(UiDesign_TypeFromName("datepicker") == UI_DN_DATEPICKER);
+	CHECK(UiDesign_TypeFromName("colorsel") == UI_DN_COLORSEL);
+	CHECK(UiDesign_TypeFromName(UiDesign_TypeName(UI_DN_COLORSEL)) == UI_DN_COLORSEL);
+
+	/* 布局: 所有页共用 header 下方的页区 */
+	rects = (UiRect *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+		(SIZE_T)a.nodeCount * sizeof(UiRect));
+	CHECK(UiDesign_Layout(&a, w, Ui_Rect(0, 0, 300, 300), rects, a.nodeCount) == 1);
+	CHECK(rects[p1].x == 10 && rects[p1].w == 280);
+	CHECK(rects[p1].y == 48 && rects[p1].h == 162);
+	CHECK(rects[p2].x == rects[p1].x && rects[p2].y == rects[p1].y);
+	CHECK(rects[p2].w == rects[p1].w && rects[p2].h == rects[p1].h);
+	hit = UiDesign_FindNodeAt(&a, w, rects, 20, 20);
+	CHECK(hit == tabs);
+	hit = UiDesign_FindNodeAt(&a, w, rects, 20, 60);
+	CHECK(hit == cs || hit == p2);
+	HeapFree(GetProcessHeap(), 0, rects);
+	json = UiDesign_ToJson(&a);
+	CHECK(json != NULL);
+	if (json) CHECK(has_sub(json, "\"mode\":3"));
+	CHECK(json && has_sub(json, "\"color\":\"#80336699\""));
+	CHECK(json && has_sub(json, "\"readonly\":1"));
+	CHECK(json && has_sub(json, "\"type\":\"tabs\""));
+	UiDesign_Init(&b);
+	if (json && UiDesign_FromJson(&b, json)) {
+		int bt = UiDesign_FindNode(&b, 0, "tabs");
+		int bta = UiDesign_FindNode(&b, 0, "ta");
+		int bdp = UiDesign_FindNode(&b, 0, "dp");
+		int bcs = UiDesign_FindNode(&b, 0, "cs");
+		CHECK(bt >= 0 && UiDesign_Node(&b, bt)->type == UI_DN_TABS);
+		CHECK(bt >= 0 && UiDesign_Node(&b, bt)->selected == 1);
+		CHECK(bta >= 0 && UiDesign_Node(&b, bta)->readonly == 1);
+		CHECK(bdp >= 0 && UiDesign_Node(&b, bdp)->mode == 3);
+		CHECK(bdp >= 0 && strcmp(UiDesign_Node(&b, bdp)->options, "2026-02-03 04:05") == 0);
+		CHECK(bcs >= 0 && UiDesign_Node(&b, bcs)->color == 0x80336699u);
+	} else {
+		CHECK(0);
+	}
+	if (json) HeapFree(GetProcessHeap(), 0, json);
+
+	/* 代码生成包含新字段 */
+	UiDesign_SetText(a.groups[g].outputC, UI_DN_PATH_MAX, "designer_comp.ui.c");
+	UiDesign_SetText(a.groups[g].outputH, UI_DN_PATH_MAX, "designer_comp.ui.h");
+	CreateDirectoryW(L"build\\gen", NULL);
+	lstrcpyW(pc, L"build\\gen\\designer_comp.ui.c");
+	lstrcpyW(ph, L"build\\gen\\designer_comp.ui.h");
+	DeleteFileW(pc);
+	DeleteFileW(ph);
+	CHECK(UiDesign_GenerateGroup(&a, g, L"build\\gen", report, sizeof(report)) == 2);
+	CHECK(read_all(pc, buf, sizeof(buf)) == 1);
+	CHECK(has_sub(buf, "->type=15"));
+	CHECK(has_sub(buf, "->mode=3"));
+	CHECK(has_sub(buf, "->readonly=1"));
+	CHECK(has_sub(buf, "->color=0x80336699u"));
+	DeleteFileW(pc);
+	DeleteFileW(ph);
+
+	UiDesign_Free(&a);
+	UiDesign_Free(&b);
+}
+
 void __stdcall startup(void)
 {
 	char line[160];
@@ -329,6 +434,7 @@ void __stdcall startup(void)
 	test_window_generate();
 	test_save_load();
 	test_symbol();
+	test_components();
 	sprintf(line, "designer_test: %d passed, %d failed\n", g_pass, g_fail);
 	out_(line);
 	ExitProcess(g_fail ? 1u : 0u);
