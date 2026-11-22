@@ -64,6 +64,7 @@ enum {
 	DK_N_CHECKED, DK_N_ENABLED, DK_N_VARIANT, DK_N_CLICK, DK_N_CHANGE,
 	DK_N_GRIDCOLS, DK_N_GRIDROWS, DK_N_GRIDROW, DK_N_GRIDCOL,
 	DK_N_ROWSPAN, DK_N_COLSPAN, DK_N_GRIDROWGAP, DK_N_GRIDCOLGAP,
+	DK_N_GRIDCOLTRACKS,
 	DK_N_MODE, DK_N_READONLY, DK_N_COLOR, DK_N_SELECTED
 };
 
@@ -285,6 +286,19 @@ static int d_option_count(const char *s)
 		s++;
 	}
 	return c;
+}
+
+static int d_track_count(const char *s)
+{
+	int n = 0;
+	if (!s) return 0;
+	while (*s) {
+		while (*s == ',' || *s == ' ' || *s == '\t') s++;
+		if (!*s) break;
+		n++;
+		while (*s && *s != ',') s++;
+	}
+	return n;
 }
 
 static const char *d_dp_mode_name(int m)
@@ -846,6 +860,8 @@ static void d_build_props(void)
 			d_prop_add(DK_N_GRIDROWGAP, DPK_FLOAT, "Row Gap", b);
 			d_fmt(b, sizeof(b), n->gridColGap);
 			d_prop_add(DK_N_GRIDCOLGAP, DPK_FLOAT, "Col Gap", b);
+			d_prop_add(DK_N_GRIDCOLTRACKS, DPK_TEXT, "列宽",
+				n->gridColTracks);
 		} else if (n->parent >= 0 &&
 		    g_d.doc.nodes[n->parent].type == UI_DN_GRID) {
 			snprintf(b, sizeof(b), "%d", n->gridRow);
@@ -988,6 +1004,12 @@ static void d_prop_apply_text(int key, const char *text)
 		else if (key == DK_N_GRIDCOL) n->gridCol = d_atoi(text);
 		else if (key == DK_N_GRIDROWGAP) n->gridRowGap = (float)d_atof(text);
 		else if (key == DK_N_GRIDCOLGAP) n->gridColGap = (float)d_atof(text);
+		else if (key == DK_N_GRIDCOLTRACKS) {
+			int tn = d_track_count(text);
+			UiDesign_SetText(n->gridColTracks, UI_DN_GRID_TRACKS_MAX, text);
+			if (tn > n->gridCols) n->gridCols = tn;
+			d_status("列宽: 120 固定 / 1fr 弹性 / auto 随子项, 空=均分");
+		}
 		else if (key == DK_N_COLSPAN) n->colSpan = d_atoi(text) > 0 ? d_atoi(text) : 1;
 		else if (key == DK_N_ROWSPAN) n->rowSpan = d_atoi(text) > 0 ? d_atoi(text) : 1;
 		else if (key == DK_N_COLOR) n->color = d_parse_color(text, n->color);
@@ -1689,17 +1711,19 @@ static UiRect d_canvas_area(void)
 static void d_draw_grid_cells(const UiDesignNode *n, UiRect inner, GfxColor c)
 {
 	Gfx *g = g_d.app->gfx;
-	int cols = n->gridCols > 0 ? n->gridCols : 1;
+	float xs[UI_DN_GRID_MAX_COLS], ws[UI_DN_GRID_MAX_COLS];
+	int cols = UiDesign_GridColumns(&g_d.doc, n, inner, xs, ws,
+		UI_DN_GRID_MAX_COLS);
 	int rows = n->gridRows > 0 ? n->gridRows
 		: (n->childCount + cols - 1) / cols;
-	float cw, rh;
+	float rh;
 	int i;
+	if (cols < 1) cols = 1;
 	if (rows < 1) rows = 1;
-	cw = (inner.w - n->gridColGap * (cols - 1)) / cols;
 	rh = (inner.h - n->gridRowGap * (rows - 1)) / rows;
 	for (i = 1; i < cols; i++)
-		Gfx_Line(g, inner.x + i * (cw + n->gridColGap), inner.y,
-			inner.x + i * (cw + n->gridColGap), inner.y + inner.h, c, 1.0f);
+		Gfx_Line(g, xs[i] - n->gridColGap * 0.5f, inner.y,
+			xs[i] - n->gridColGap * 0.5f, inner.y + inner.h, c, 1.0f);
 	for (i = 1; i < rows; i++)
 		Gfx_Line(g, inner.x, inner.y + i * (rh + n->gridRowGap),
 			inner.x + inner.w, inner.y + i * (rh + n->gridRowGap), c, 1.0f);

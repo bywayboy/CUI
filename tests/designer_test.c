@@ -424,6 +424,116 @@ static void test_components(void)
 	UiDesign_Free(&b);
 }
 
+static void test_grid_columns(void)
+{
+	UiDesignDoc d, b;
+	UiRect *rects;
+	char *json;
+	char report[128];
+	static char buf[32768];
+	int g, w, root, a, c1, c2, sp;
+	WCHAR pc[MAX_PATH], ph[MAX_PATH];
+	UiDesignNode *n;
+
+	UiDesign_Init(&d);
+	g = UiDesign_AddGroup(&d, "g", "G");
+	w = UiDesign_AddWindow(&d, "win", "W", UI_DW_NATIVE, g);
+	root = UiDesign_AddNode(&d, w, UI_DN_GRID, -1, "root", "Root");
+	d.windows[w].root = root;
+	n = UiDesign_Node(&d, root);
+	n->wMode = UI_DN_SIZE_FILL;
+	n->hMode = UI_DN_SIZE_FILL;
+	n->gridCols = 3;
+	n->gridRows = 1;
+	n->gridColGap = 10.0f;
+	n->gridRowGap = 0.0f;
+	UiDesign_SetText(n->gridColTracks, UI_DN_GRID_TRACKS_MAX, "100,1fr,auto");
+	a = UiDesign_AddNode(&d, w, UI_DN_LABEL, root, "a", "A");
+	c1 = UiDesign_AddNode(&d, w, UI_DN_LABEL, root, "b", "B");
+	c2 = UiDesign_AddNode(&d, w, UI_DN_LABEL, root, "c", "C");
+	UiDesign_Node(&d, a)->wMode = UI_DN_SIZE_FILL;
+	UiDesign_Node(&d, c1)->wMode = UI_DN_SIZE_FILL;
+	n = UiDesign_Node(&d, c2);
+	n->wMode = UI_DN_SIZE_FIXED;
+	n->w = 60.0f;
+	n->gridCol = 2;
+	UiDesign_Node(&d, a)->hMode = UI_DN_SIZE_FIXED;
+	UiDesign_Node(&d, a)->h = 20.0f;
+	UiDesign_Node(&d, c1)->hMode = UI_DN_SIZE_FIXED;
+	UiDesign_Node(&d, c1)->h = 20.0f;
+	UiDesign_Node(&d, c2)->hMode = UI_DN_SIZE_FIXED;
+	UiDesign_Node(&d, c2)->h = 20.0f;
+
+	rects = (UiRect *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+		(SIZE_T)d.nodeCount * sizeof(UiRect));
+	CHECK(UiDesign_Layout(&d, w, Ui_Rect(0, 0, 300, 100), rects, d.nodeCount) == 1);
+	/* 300 - 2*10 = 280; 固定 100 + auto 60, 剩余 120 给 1fr */
+	CHECK(rects[a].x == 0.0f && rects[a].w == 100.0f);
+	CHECK(rects[c1].x == 110.0f && rects[c1].w == 120.0f);
+	CHECK(rects[c2].x == 240.0f && rects[c2].w == 60.0f);
+
+	/* 跨列单元格宽度 = 两列宽 + 中间 gap */
+	sp = UiDesign_AddNode(&d, w, UI_DN_LABEL, root, "sp", "Span");
+	n = UiDesign_Node(&d, sp);
+	n->wMode = UI_DN_SIZE_FILL;
+	n->hMode = UI_DN_SIZE_FIXED;
+	n->h = 20.0f;
+	n->gridCol = 0;
+	n->colSpan = 2;
+	{
+		UiRect *r2 = (UiRect *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+			(SIZE_T)d.nodeCount * sizeof(UiRect));
+		CHECK(UiDesign_Layout(&d, w, Ui_Rect(0, 0, 300, 100), r2,
+			d.nodeCount) == 1);
+		CHECK(r2[sp].x == 0.0f && r2[sp].w == 230.0f);
+		HeapFree(GetProcessHeap(), 0, r2);
+	}
+
+	/* 空规格 = 三列均分 */
+	HeapFree(GetProcessHeap(), 0, rects);
+	rects = (UiRect *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+		(SIZE_T)d.nodeCount * sizeof(UiRect));
+	UiDesign_SetText(UiDesign_Node(&d, root)->gridColTracks,
+		UI_DN_GRID_TRACKS_MAX, "");
+	CHECK(UiDesign_Layout(&d, w, Ui_Rect(0, 0, 300, 100), rects, d.nodeCount) == 1);
+	CHECK(rects[a].w > 93.2f && rects[a].w < 93.5f);
+	CHECK(rects[c1].x > 103.2f && rects[c1].x < 103.5f);
+	UiDesign_SetText(UiDesign_Node(&d, root)->gridColTracks,
+		UI_DN_GRID_TRACKS_MAX, "100,1fr,auto");
+	HeapFree(GetProcessHeap(), 0, rects);
+
+	/* JSON 往返 */
+	json = UiDesign_ToJson(&d);
+	CHECK(json != NULL);
+	CHECK(json && has_sub(json, "\"gridColTracks\":\"100,1fr,auto\""));
+	UiDesign_Init(&b);
+	if (json && UiDesign_FromJson(&b, json)) {
+		int br = UiDesign_FindNode(&b, 0, "root");
+		CHECK(br >= 0 && strcmp(UiDesign_Node(&b, br)->gridColTracks,
+			"100,1fr,auto") == 0);
+	} else {
+		CHECK(0);
+	}
+	if (json) HeapFree(GetProcessHeap(), 0, json);
+
+	/* 代码生成带列宽规格 */
+	UiDesign_SetText(d.groups[g].outputC, UI_DN_PATH_MAX, "designer_grid.ui.c");
+	UiDesign_SetText(d.groups[g].outputH, UI_DN_PATH_MAX, "designer_grid.ui.h");
+	CreateDirectoryW(L"build\\gen", NULL);
+	lstrcpyW(pc, L"build\\gen\\designer_grid.ui.c");
+	lstrcpyW(ph, L"build\\gen\\designer_grid.ui.h");
+	DeleteFileW(pc);
+	DeleteFileW(ph);
+	CHECK(UiDesign_GenerateGroup(&d, g, L"build\\gen", report, sizeof(report)) == 2);
+	CHECK(read_all(pc, buf, sizeof(buf)) == 1);
+	CHECK(has_sub(buf, "gridColTracks, UI_DN_GRID_TRACKS_MAX, \"100,1fr,auto\""));
+	DeleteFileW(pc);
+	DeleteFileW(ph);
+
+	UiDesign_Free(&d);
+	UiDesign_Free(&b);
+}
+
 void __stdcall startup(void)
 {
 	char line[160];
@@ -435,6 +545,7 @@ void __stdcall startup(void)
 	test_save_load();
 	test_symbol();
 	test_components();
+	test_grid_columns();
 	sprintf(line, "designer_test: %d passed, %d failed\n", g_pass, g_fail);
 	out_(line);
 	ExitProcess(g_fail ? 1u : 0u);

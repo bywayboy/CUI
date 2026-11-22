@@ -608,6 +608,8 @@ static void ds_node(UiDStr *s, const UiDesignDoc *doc, int index)
 	ds_add(s, ",\"gridColGap\":"); ds_num(s, n->gridColGap);
 	ds_addf(s, ",\"gridRow\":%d,\"gridCol\":%d,\"rowSpan\":%d,\"colSpan\":%d",
 		n->gridRow, n->gridCol, n->rowSpan, n->colSpan);
+	ds_add(s, ",\"gridColTracks\":");
+	ds_json_str(s, n->gridColTracks);
 	ds_add(s, "},\"props\":{\"text\":");
 	ds_json_str(s, n->text);
 	ds_add(s, ",\"hint\":");
@@ -927,6 +929,9 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 				else if (strcmp(lk, "gridCol") == 0) jp_int(j, &doc->nodes[idx].gridCol);
 				else if (strcmp(lk, "rowSpan") == 0) jp_int(j, &doc->nodes[idx].rowSpan);
 				else if (strcmp(lk, "colSpan") == 0) jp_int(j, &doc->nodes[idx].colSpan);
+				else if (strcmp(lk, "gridColTracks") == 0)
+					jp_string(j, doc->nodes[idx].gridColTracks,
+						UI_DN_GRID_TRACKS_MAX);
 				else if (!jp_skip(j)) return 0;
 				jp_ws(j);
 				if (jp_ch(j, ',')) continue;
@@ -1362,22 +1367,160 @@ static void dn_layout_linear(const UiDesignDoc *doc, const UiDesignNode *p,
 	}
 }
 
+enum { DN_TRACK_FIXED = 0, DN_TRACK_FR, DN_TRACK_AUTO };
+
+/* "120,1fr,auto" -> kinds/vals; 无效项按 1fr. 返回轨道数. */
+static int dn_parse_col_tracks(const char *spec, int *kinds, float *vals, int cap)
+{
+	int n = 0;
+	const char *p = spec;
+	while (p && *p && n < cap) {
+		char tok[32];
+		int len = 0, digits = 0, isFr = 0, neg = 0;
+		float v = 0.0f;
+		const char *q;
+		while (*p == ' ' || *p == '\t') p++;
+		if (!*p) break;
+		while (*p && *p != ',' && len < (int)sizeof(tok) - 1)
+			tok[len++] = *p++;
+		if (*p == ',') p++;
+		tok[len] = 0;
+		while (len > 0 && (tok[len - 1] == ' ' || tok[len - 1] == '\t'))
+			tok[--len] = 0;
+		if (!len) continue;
+		if ((tok[0] == 'a' || tok[0] == 'A') &&
+		    (tok[1] == 'u' || tok[1] == 'U') &&
+		    (tok[2] == 't' || tok[2] == 'T') &&
+		    (tok[3] == 'o' || tok[3] == 'O') && !tok[4]) {
+			kinds[n] = DN_TRACK_AUTO;
+			vals[n] = 0.0f;
+			n++;
+			continue;
+		}
+		q = tok;
+		if (*q == '-') { neg = 1; q++; }
+		while (*q >= '0' && *q <= '9') {
+			v = v * 10.0f + (float)(*q - '0');
+			q++;
+			digits = 1;
+		}
+		if (*q == '.') {
+			float f = 0.0f, div = 1.0f;
+			q++;
+			while (*q >= '0' && *q <= '9') {
+				f = f * 10.0f + (float)(*q - '0');
+				div *= 10.0f;
+				q++;
+				digits = 1;
+			}
+			v += f / div;
+		}
+		if (neg) v = -v;
+		if (*q == 'f' || *q == 'F') {
+			isFr = 1;
+			q++;
+			if (*q == 'r' || *q == 'R') q++;
+		} else if (*q == 'p' || *q == 'P') {
+			q++;
+			if (*q == 'x' || *q == 'X') q++;
+		}
+		if (!digits) {
+			kinds[n] = DN_TRACK_FR;
+			vals[n] = 1.0f;
+		} else if (isFr || v <= 0.0f) {
+			kinds[n] = DN_TRACK_FR;
+			vals[n] = v > 0.0f ? v : 1.0f;
+		} else {
+			kinds[n] = DN_TRACK_FIXED;
+			vals[n] = v;
+		}
+		n++;
+	}
+	return n;
+}
+
+static void dn_grid_auto_widths(const UiDesignDoc *doc, const UiDesignNode *p,
+	int cols, float *widths)
+{
+	int i;
+	for (i = 0; i < p->childCount; i++) {
+		UiDesignNode *n = &doc->nodes[p->children[i]];
+		int c, cs;
+		if (!n->visible) continue;
+		c = n->gridCol >= 0 ? n->gridCol : i % cols;
+		cs = n->colSpan > 0 ? n->colSpan : 1;
+		if (c < 0) c = 0;
+		if (c >= cols) c = cols - 1;
+		if (cs > 1) continue;   /* 跨列项不参与 AUTO 列宽 */
+		{
+			float w = dn_natural_w(n);
+			if (w > widths[c]) widths[c] = w;
+		}
+	}
+}
+
+int UiDesign_GridColumns(const UiDesignDoc *doc, const UiDesignNode *n,
+	UiRect inner, float *xs, float *ws, int cap)
+{
+	int kinds[UI_DN_GRID_MAX_COLS];
+	float vals[UI_DN_GRID_MAX_COLS];
+	float widths[UI_DN_GRID_MAX_COLS];
+	float fixedSum = 0.0f, frSum = 0.0f, autoSum = 0.0f;
+	float avail, remain, cursor = inner.x;
+	int ntok, cols, i;
+	if (!doc || !n || !xs || !ws || cap <= 0) return 0;
+	ntok = dn_parse_col_tracks(n->gridColTracks, kinds, vals,
+		UI_DN_GRID_MAX_COLS);
+	cols = n->gridCols > 0 ? n->gridCols : (ntok > 0 ? ntok : 1);
+	if (cols < 1) cols = 1;
+	if (cols > UI_DN_GRID_MAX_COLS) cols = UI_DN_GRID_MAX_COLS;
+	if (cols > cap) cols = cap;
+	for (i = 0; i < cols; i++) {
+		if (i >= ntok) {
+			kinds[i] = DN_TRACK_FR;
+			vals[i] = 1.0f;
+		}
+		widths[i] = 0.0f;
+	}
+	dn_grid_auto_widths(doc, n, cols, widths);
+	avail = inner.w - n->gridColGap * (float)(cols - 1);
+	if (avail < 0.0f) avail = 0.0f;
+	for (i = 0; i < cols; i++) {
+		if (kinds[i] == DN_TRACK_FIXED) fixedSum += vals[i];
+		else if (kinds[i] == DN_TRACK_AUTO) autoSum += widths[i];
+		else frSum += vals[i];
+	}
+	remain = avail - fixedSum - autoSum;
+	if (remain < 0.0f) remain = 0.0f;
+	for (i = 0; i < cols; i++) {
+		float w;
+		if (kinds[i] == DN_TRACK_FIXED) w = vals[i];
+		else if (kinds[i] == DN_TRACK_AUTO) w = widths[i];
+		else w = frSum > 0.0f ? remain * vals[i] / frSum : 0.0f;
+		if (w < 0.0f) w = 0.0f;
+		xs[i] = cursor;
+		ws[i] = w;
+		cursor += w + n->gridColGap;
+	}
+	return cols;
+}
+
 static void dn_layout_grid(const UiDesignDoc *doc, const UiDesignNode *p,
 	UiRect inner, UiRect *rects)
 {
-	int cols = p->gridCols > 0 ? p->gridCols : 1;
+	float xs[UI_DN_GRID_MAX_COLS], ws[UI_DN_GRID_MAX_COLS];
+	int cols;
 	int rows;
 	float rowGap = p->gridRowGap;
-	float colGap = p->gridColGap;
-	float cellW = (inner.w - colGap * (cols - 1)) / cols;
 	float cellH;
 	int i;
+	cols = UiDesign_GridColumns(doc, p, inner, xs, ws, UI_DN_GRID_MAX_COLS);
+	if (cols < 1) cols = 1;
 	/* gridRows <= 0: 按子节点数量自动确定行数. */
 	rows = p->gridRows > 0 ? p->gridRows
 		: (p->childCount + cols - 1) / cols;
 	if (rows < 1) rows = 1;
 	cellH = (inner.h - rowGap * (rows - 1)) / rows;
-	if (cellW < 0.0f) cellW = 0.0f;
 	if (cellH < 0.0f) cellH = 0.0f;
 	for (i = 0; i < p->childCount; i++) {
 		int ci = p->children[i];
@@ -1393,9 +1536,9 @@ static void dn_layout_grid(const UiDesignDoc *doc, const UiDesignNode *p,
 		if (c >= cols) c = cols - 1;
 		if (rs > rows - r) rs = rows - r;
 		if (cs > cols - c) cs = cols - c;
-		cell.x = inner.x + c * (cellW + colGap);
+		cell.x = xs[c];
 		cell.y = inner.y + r * (cellH + rowGap);
-		cell.w = cellW * cs + colGap * (cs - 1);
+		cell.w = xs[c + cs - 1] + ws[c + cs - 1] - xs[c];
 		cell.h = cellH * rs + rowGap * (rs - 1);
 		w = n->wMode == UI_DN_SIZE_FIXED ? n->w
 			: (n->wMode == UI_DN_SIZE_AUTO ? dn_natural_w(n) : cell.w);
@@ -2269,6 +2412,12 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int winNew,
 	ds_addf(s, "; p%d->gridColGap=", old); cg_num(s, n->gridColGap);
 	ds_addf(s, "; p%d->gridRow=%d; p%d->gridCol=%d; p%d->rowSpan=%d; p%d->colSpan=%d;\n",
 		old, n->gridRow, old, n->gridCol, old, n->rowSpan, old, n->colSpan);
+	if (n->type == UI_DN_GRID) {
+		ds_addf(s, "    UiDesign_SetText(p%d->gridColTracks, UI_DN_GRID_TRACKS_MAX, ",
+			old);
+		cg_quote(s, n->gridColTracks);
+		ds_add(s, ");\n");
+	}
 	ds_addf(s, "    p%d->value=", old); cg_num(s, n->value);
 	ds_addf(s, "; p%d->checked=%d; p%d->selected=%d; p%d->variant=%d;\n",
 		old, n->checked, old, n->selected, old, n->variant);

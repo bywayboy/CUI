@@ -28,6 +28,8 @@ extern "C" {
 #define UI_DN_TEXT_MAX  1024
 #define UI_DN_PATH_MAX  260
 #define UI_DN_SYM_MAX   64
+#define UI_DN_GRID_MAX_COLS    16
+#define UI_DN_GRID_TRACKS_MAX  128
 
 typedef enum {
 	UI_DN_ABSOLUTE = 0,
@@ -100,6 +102,9 @@ typedef struct UiDesignNode {
 	int gridRows, gridCols;
 	float gridRowGap, gridColGap;
 	int gridRow, gridCol, rowSpan, colSpan;
+	/* 列宽轨道: "120,1fr,auto" (px / fr 权重 / auto=列内子项设计宽);
+	 * 空 = 均分. 列数由 gridCols 决定 (0 = 取轨道数). */
+	char gridColTracks[UI_DN_GRID_TRACKS_MAX];
 
 	/* 数据 */
 	char text[UI_DN_TEXT_MAX];
@@ -203,6 +208,12 @@ int UiDesign_Layout(const UiDesignDoc *doc, int win, UiRect client,
 	UiRect *rects, int rectCap);
 int UiDesign_FindNodeAt(const UiDesignDoc *doc, int win,
 	const UiRect *rects, float x, float y);
+
+/* 解析/求解 Grid 列轨道并输出每列绝对位置.
+ * xs/ws 长度 >= UI_DN_GRID_MAX_COLS; 返回有效列数 (>=1).
+ * 规格空或无效时各列 1fr 均分; AUTO 取该列子项的设计宽度. */
+int UiDesign_GridColumns(const UiDesignDoc *doc, const UiDesignNode *n,
+	UiRect inner, float *xs, float *ws, int cap);
 
 /* ── 运行时 ─────────────────────────────────────────────────────────── */
 
