@@ -1117,8 +1117,13 @@ int UiNavBar_TakeChanged(UiNavBar *nav, UiId *path, int cap)
 	if (!nav || !nav->changed) return 0;
 	nav->changed = 0;
 	depth = nav->activatedDepth;
-	if (path && cap > 0)
-		for (i = 0; i < depth && i < cap; i++) path[i] = nav->activated[i];
+	if (path && cap > 0) {
+		int n = depth < cap ? depth : cap;
+		for (i = 0; i < n; i++) path[i] = nav->activated[i];
+		/* 深度之后的槽位清零: 调用方常靠"遇到 0 停"数路径深度,
+		 * 残留栈垃圾会让末项匹配错位 (顶级项点击整体失效). */
+		for (; i < cap; i++) path[i] = UI_ID_NONE;
+	}
 	return 1;
 }
 

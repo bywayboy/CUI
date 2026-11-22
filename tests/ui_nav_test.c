@@ -224,8 +224,11 @@ static void test_keyboard_levels(void)
 	d = UiNavBar_GetSelected(&nav, got, 8);
 	CHECK(d == 3);
 	CHECK(got[0] == 10 && got[1] == 31 && got[2] == 11);
+	got[3] = 0x5A5A5A5A;
 	CHECK(UiNavBar_TakeChanged(&nav, got, 8) == 1);
 	CHECK(got[0] == 10 && got[1] == 31 && got[2] == 11);
+	/* 深度之后的槽位必须清零: 调用方靠 0 判路径末尾 */
+	CHECK(got[3] == UI_ID_NONE && got[7] == UI_ID_NONE);
 	CHECK(UiNavBar_TakeChanged(&nav, got, 8) == 0);
 	UiNavBar_Shutdown(&nav);
 }

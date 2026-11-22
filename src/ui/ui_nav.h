@@ -141,7 +141,8 @@ int  UiNavBar_Draw(UiNavBar *nav, UiPopupManager *pm, UiContext *ui,
 	UiRect rc, int enabled);
 /* 帧末画所有已展开面板. */
 void UiNavBar_DrawPopups(UiNavBar *nav, UiPopupManager *pm, UiContext *ui);
-/* 取走一次选中变化; 返回 1 = 有变化, path/cap 可为 NULL/0. */
+/* 取走一次选中变化; 返回 1 = 有变化, path/cap 可为 NULL/0.
+ * 深度之后的槽位会清零, 调用方可以按 0 判断路径末尾. */
 int  UiNavBar_TakeChanged(UiNavBar *nav, UiId *path, int cap);
 
 int  UiNavBar_Key(UiNavBar *nav, UiPopupManager *pm, UiContext *ui, UINT vk);
