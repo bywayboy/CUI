@@ -25,13 +25,22 @@ static void app_apply_dpi(UiApp *app)
 static void app_place_window(UiApp *app, int widthDip, int heightDip)
 {
 	RECT wa;
-	int w = (int)(widthDip * app->scale);
-	int h = (int)(heightDip * app->scale);
+	int wwan, whan, w, h, x, y;
 	SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
-	SetWindowPos(app->hwnd, NULL,
-		wa.left + ((wa.right - wa.left) - w) / 2,
-		wa.top + ((wa.bottom - wa.top) - h) / 2,
-		w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+	wwan = wa.right - wa.left;
+	whan = wa.bottom - wa.top;
+	w = (int)(widthDip * app->scale + 0.5f);
+	h = (int)(heightDip * app->scale + 0.5f);
+	/* 低分辨率/高缩放下请求尺寸可能大于显示器工作区: 先夹到工作区,
+	 * 否则窗口初始位置和右下部分会直接跑到屏幕外. */
+	if (w > wwan) w = wwan;
+	if (h > whan) h = whan;
+	if (w < 1) w = 1;
+	if (h < 1) h = 1;
+	x = wa.left + (wwan - w) / 2;
+	y = wa.top + (whan - h) / 2;
+	SetWindowPos(app->hwnd, NULL, x, y, w, h,
+		SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 static void app_invalidate_rect(UiApp *app, UiRect rc, float pad)
@@ -467,9 +476,27 @@ static LRESULT CALLBACK AppWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	case WM_DPICHANGED: {
 		const RECT *sugg = (const RECT *)lp;
 		if (app) {
+			RECT rc = *sugg;
+			MONITORINFO mi;
 			app_apply_dpi(app);
-			SetWindowPos(hwnd, NULL, sugg->left, sugg->top,
-				sugg->right - sugg->left, sugg->bottom - sugg->top,
+			/* 小屏 + 大 DPI 时建议尺寸/位置也可能越界, 按新监视器
+			 * 工作区夹一次, 保证整个窗口仍可见. */
+			mi.cbSize = sizeof(mi);
+			if (GetMonitorInfoW(MonitorFromWindow(hwnd,
+			    MONITOR_DEFAULTTONEAREST), &mi)) {
+				int ww = mi.rcWork.right - mi.rcWork.left;
+				int wh = mi.rcWork.bottom - mi.rcWork.top;
+				if (rc.right - rc.left > ww) rc.right = rc.left + ww;
+				if (rc.bottom - rc.top > wh) rc.bottom = rc.top + wh;
+				if (rc.left < mi.rcWork.left) rc.left = mi.rcWork.left;
+				if (rc.top < mi.rcWork.top) rc.top = mi.rcWork.top;
+				if (rc.right > mi.rcWork.right)
+					rc.right = mi.rcWork.right;
+				if (rc.bottom > mi.rcWork.bottom)
+					rc.bottom = mi.rcWork.bottom;
+			}
+			SetWindowPos(hwnd, NULL, rc.left, rc.top,
+				rc.right - rc.left, rc.bottom - rc.top,
 				SWP_NOZORDER | SWP_NOACTIVATE);
 			InvalidateRect(hwnd, NULL, FALSE);
 		}
