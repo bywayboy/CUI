@@ -59,7 +59,7 @@ enum {
 	DK_G_ID = 40, DK_G_NAME, DK_G_OUTC, DK_G_OUTH, DK_G_SYM,
 	DK_N_ID = 80, DK_N_NAME, DK_N_TYPE,
 	DK_N_WMODE, DK_N_W, DK_N_HMODE, DK_N_H, DK_N_GROW,
-	DK_N_ALIGN, DK_N_GAP, DK_N_PADL, DK_N_PADT, DK_N_PADR, DK_N_PADB,
+	DK_N_ALIGN, DK_N_TEXTALIGN, DK_N_TEXTVALIGN, DK_N_GAP, DK_N_PADL, DK_N_PADT, DK_N_PADR, DK_N_PADB,
 	DK_N_X, DK_N_Y, DK_N_TEXT, DK_N_HINT, DK_N_OPTIONS, DK_N_VALUE,
 	DK_N_CHECKED, DK_N_ENABLED, DK_N_VARIANT, DK_N_CLICK, DK_N_CHANGE,
 	DK_N_GRIDCOLS, DK_N_GRIDROWS, DK_N_GRIDROW, DK_N_GRIDCOL,
@@ -890,6 +890,12 @@ static void d_build_props(void)
 		switch (n->type) {
 		case UI_DN_LABEL:
 			d_prop_add(DK_N_TEXT, DPK_TEXT, "Text", n->text);
+			d_prop_add(DK_N_TEXTALIGN, DPK_ENUM, "水平对齐",
+				n->textAlign == UI_DN_ALIGN_CENTER ? "Center" :
+				(n->textAlign == UI_DN_ALIGN_END ? "End" : "Start"));
+			d_prop_add(DK_N_TEXTVALIGN, DPK_ENUM, "垂直对齐",
+				n->textVAlign == UI_DN_VALIGN_CENTER ? "Center" :
+				(n->textVAlign == UI_DN_VALIGN_BOTTOM ? "Bottom" : "Top"));
 			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
 			break;
 		case UI_DN_BUTTON:
@@ -1000,6 +1006,8 @@ static void d_prop_cycle(int key)
 		if (key == DK_N_WMODE) n->wMode = (n->wMode + 1) % 4;
 		else if (key == DK_N_HMODE) n->hMode = (n->hMode + 1) % 4;
 		else if (key == DK_N_ALIGN) n->align = (n->align + 1) % 3;
+		else if (key == DK_N_TEXTALIGN) n->textAlign = (n->textAlign + 1) % 3;
+		else if (key == DK_N_TEXTVALIGN) n->textVAlign = (n->textVAlign + 1) % 3;
 		else if (key == DK_N_VARIANT) n->variant = (n->variant + 1) % 3;
 		else if (key == DK_N_CHECKED) n->checked = !n->checked;
 		else if (key == DK_N_ENABLED) n->enabled = !n->enabled;
@@ -1155,7 +1163,7 @@ static void d_tabs_add_pages(int win, int tabsIdx)
 		snprintf(base, sizeof(base), "page%d", i + 1);
 		d_unique_node_id(win, base, id, sizeof(id));
 		snprintf(name, sizeof(name), "页 %d", i + 1);
-		ci = UiDesign_AddNode(&g_d.doc, win, UI_DN_PANEL, tabsIdx, id, name);
+		ci = UiDesign_AddNode(&g_d.doc, win, UI_DN_COLUMN, tabsIdx, id, name);
 		pg = UiDesign_Node(&g_d.doc, ci);
 		if (!pg) continue;
 		pg->wMode = UI_DN_SIZE_FILL;
@@ -1192,9 +1200,22 @@ static void d_add_node(int type)
 		n->hMode = UI_DN_SIZE_FIXED;
 		n->w = UiDesign_DefaultW(type);
 		n->h = UiDesign_DefaultH(type);
-		if (parent >= 0 && g_d.doc.nodes[parent].type == UI_DN_GRID) {
-			n->wMode = UI_DN_SIZE_FILL;
-			n->hMode = UI_DN_SIZE_FILL;
+		/* 线性布局里按交叉轴铺满, 与普通 UI 的预期一致. */
+		if (parent >= 0) {
+			int pt = g_d.doc.nodes[parent].type;
+			if (pt == UI_DN_GRID) {
+				n->wMode = UI_DN_SIZE_FILL;
+				n->hMode = UI_DN_SIZE_FILL;
+			} else if (pt == UI_DN_COLUMN) {
+				n->wMode = UI_DN_SIZE_FILL;
+			} else if (pt == UI_DN_ROW) {
+				n->hMode = UI_DN_SIZE_FILL;
+			} else if (pt == UI_DN_PANEL &&
+			    g_d.doc.nodes[parent].parent >= 0 &&
+			    g_d.doc.nodes[g_d.doc.nodes[parent].parent].type == UI_DN_TABS) {
+				/* 旧文档的 Tabs 页仍是自由 Panel, 同样按页宽铺满. */
+				n->wMode = UI_DN_SIZE_FILL;
+			}
 		}
 		if (type == UI_DN_LABEL) UiDesign_NodeSetText(n, "Label");
 		else if (type == UI_DN_BUTTON) UiDesign_NodeSetText(n, "Button");
@@ -1592,10 +1613,19 @@ static void d_draw_static_node(int idx)
 	}
 	switch (n->type) {
 	case UI_DN_LABEL: {
-		uint32_t fl = GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS;
-		if (n->align == UI_DN_ALIGN_CENTER) fl |= GFX_TEXT_CENTER;
-		else if (n->align == UI_DN_ALIGN_END) fl |= GFX_TEXT_RIGHT;
-		Gfx_Text(g, t->fBody, n->text, r, n->enabled ? t->text : t->text4, fl);
+		uint32_t fl = GFX_TEXT_ELLIPSIS;
+		UiRect tr = r;
+		if (n->textAlign == UI_DN_ALIGN_CENTER) fl |= GFX_TEXT_CENTER;
+		else if (n->textAlign == UI_DN_ALIGN_END) fl |= GFX_TEXT_RIGHT;
+		if (n->textVAlign == UI_DN_VALIGN_CENTER) fl |= GFX_TEXT_VCENTER;
+		else if (n->textVAlign == UI_DN_VALIGN_BOTTOM) {
+			float th = Gfx_TextHeight(g, t->fBody);
+			if (th < tr.h) {
+				tr.y += tr.h - th;
+				tr.h = th;
+			}
+		}
+		Gfx_Text(g, t->fBody, n->text, tr, n->enabled ? t->text : t->text4, fl);
 		break;
 	}
 	case UI_DN_BUTTON: {
@@ -2990,10 +3020,17 @@ static void d_insert_at(float x, float y)
 		n->hMode = UI_DN_SIZE_FIXED;
 		n->w = UiDesign_DefaultW(g_d.insertType);
 		n->h = UiDesign_DefaultH(g_d.insertType);
+		/* Grid 子项铺满单元格; Column/Row 按交叉轴铺满容器. */
 		if (p->type == UI_DN_GRID) {
-			/* Grid 子项默认铺满单元格, 插入后就能看到网格效果. */
 			n->wMode = UI_DN_SIZE_FILL;
 			n->hMode = UI_DN_SIZE_FILL;
+		} else if (p->type == UI_DN_COLUMN) {
+			n->wMode = UI_DN_SIZE_FILL;
+		} else if (p->type == UI_DN_ROW) {
+			n->hMode = UI_DN_SIZE_FILL;
+		} else if (p->type == UI_DN_PANEL && p->parent >= 0 &&
+		    g_d.doc.nodes[p->parent].type == UI_DN_TABS) {
+			n->wMode = UI_DN_SIZE_FILL;
 		}
 		if (g_d.insertType == UI_DN_LABEL) UiDesign_NodeSetText(n, "Label");
 		else if (g_d.insertType == UI_DN_BUTTON) UiDesign_NodeSetText(n, "Button");

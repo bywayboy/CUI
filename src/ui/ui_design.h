@@ -68,6 +68,12 @@ enum {
 };
 
 enum {
+	UI_DN_VALIGN_TOP = 0,
+	UI_DN_VALIGN_CENTER,   /* 默认: 与旧文档一致 */
+	UI_DN_VALIGN_BOTTOM
+};
+
+enum {
 	UI_DN_ANCHOR_LEFT = 1u << 0,
 	UI_DN_ANCHOR_TOP = 1u << 1,
 	UI_DN_ANCHOR_RIGHT = 1u << 2,
@@ -89,7 +95,9 @@ typedef struct UiDesignNode {
 	int wMode, hMode;
 	float w, h, minW, minH, maxW, maxH;
 	float grow;
-	int align;
+	int align;          /* 布局交叉轴对齐: UI_DN_ALIGN_* */
+	int textAlign;      /* 单行文本水平对齐: UI_DN_ALIGN_* */
+	int textVAlign;     /* 单行文本垂直对齐: UI_DN_VALIGN_* */
 	float margin[4];    /* 左/上/右/下 */
 	float padding[4];
 	float gap;

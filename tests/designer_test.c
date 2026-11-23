@@ -38,6 +38,8 @@ static void test_json_roundtrip(void)
 	CHECK(UiDesign_Node(&a, a.windows[0].root) != NULL);
 	label = UiDesign_FindNode(&a, 0, "title");
 	CHECK(label >= 0);
+	UiDesign_Node(&a, label)->textAlign = UI_DN_ALIGN_END;
+	UiDesign_Node(&a, label)->textVAlign = UI_DN_VALIGN_TOP;
 	json = UiDesign_ToJson(&a);
 	CHECK(json != NULL && strlen(json) > 100);
 	if (!UiDesign_FromJson(&b, json)) {
@@ -53,6 +55,10 @@ static void test_json_roundtrip(void)
 	CHECK(UiDesign_FindNode(&b, 0, "title") >= 0);
 	CHECK(strcmp(UiDesign_Node(&b, UiDesign_FindNode(&b, 0, "title"))->text,
 		"新建窗口") == 0);
+	CHECK(UiDesign_Node(&b, UiDesign_FindNode(&b, 0, "title"))->textAlign ==
+		UI_DN_ALIGN_END);
+	CHECK(UiDesign_Node(&b, UiDesign_FindNode(&b, 0, "title"))->textVAlign ==
+		UI_DN_VALIGN_TOP);
 	HeapFree(GetProcessHeap(), 0, json);
 	UiDesign_Free(&a);
 	UiDesign_Free(&b);
@@ -160,6 +166,58 @@ static void test_layout(void)
 		CHECK(rects[c3].x == 0 && rects[c3].y == 67.5f);
 		HeapFree(GetProcessHeap(), 0, rects);
 	}
+	UiDesign_Free(&d);
+
+	/* Column/Row 交叉轴 FILL: 子控件应铺满容器 */
+	UiDesign_Init(&d);
+	g = UiDesign_AddGroup(&d, "g", "G");
+	w = UiDesign_AddWindow(&d, "win", "W", UI_DW_NATIVE, g);
+	root = UiDesign_AddNode(&d, w, UI_DN_COLUMN, -1, "root", "Root");
+	d.windows[w].root = root;
+	UiDesign_Node(&d, root)->wMode = UI_DN_SIZE_FILL;
+	UiDesign_Node(&d, root)->hMode = UI_DN_SIZE_FILL;
+	UiDesign_Node(&d, root)->padding[0] = 10;
+	UiDesign_Node(&d, root)->padding[1] = 10;
+	UiDesign_Node(&d, root)->padding[2] = 10;
+	UiDesign_Node(&d, root)->padding[3] = 10;
+	UiDesign_Node(&d, root)->gap = 8;
+	a = UiDesign_AddNode(&d, w, UI_DN_LABEL, root, "a", "A");
+	UiDesign_Node(&d, a)->wMode = UI_DN_SIZE_FILL;
+	UiDesign_Node(&d, a)->hMode = UI_DN_SIZE_FIXED;
+	UiDesign_Node(&d, a)->h = 20;
+	b = UiDesign_AddNode(&d, w, UI_DN_INPUT, root, "b", "B");
+	UiDesign_Node(&d, b)->wMode = UI_DN_SIZE_FILL;
+	UiDesign_Node(&d, b)->hMode = UI_DN_SIZE_FIXED;
+	UiDesign_Node(&d, b)->h = 34;
+	rects = (UiRect *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+		(SIZE_T)d.nodeCount * sizeof(UiRect));
+	CHECK(UiDesign_Layout(&d, w, Ui_Rect(0, 0, 300, 120), rects, d.nodeCount) == 1);
+	CHECK(rects[a].x == 10 && rects[a].w == 280);
+	CHECK(rects[b].x == 10 && rects[b].w == 280);
+	CHECK(rects[b].y == 38);
+	HeapFree(GetProcessHeap(), 0, rects);
+	UiDesign_Free(&d);
+
+	UiDesign_Init(&d);
+	g = UiDesign_AddGroup(&d, "g", "G");
+	w = UiDesign_AddWindow(&d, "win", "W", UI_DW_NATIVE, g);
+	root = UiDesign_AddNode(&d, w, UI_DN_ROW, -1, "root", "Root");
+	d.windows[w].root = root;
+	UiDesign_Node(&d, root)->wMode = UI_DN_SIZE_FILL;
+	UiDesign_Node(&d, root)->hMode = UI_DN_SIZE_FILL;
+	UiDesign_Node(&d, root)->padding[0] = 10;
+	UiDesign_Node(&d, root)->padding[1] = 10;
+	UiDesign_Node(&d, root)->padding[2] = 10;
+	UiDesign_Node(&d, root)->padding[3] = 10;
+	a = UiDesign_AddNode(&d, w, UI_DN_INPUT, root, "a", "A");
+	UiDesign_Node(&d, a)->wMode = UI_DN_SIZE_FIXED;
+	UiDesign_Node(&d, a)->hMode = UI_DN_SIZE_FILL;
+	UiDesign_Node(&d, a)->w = 80;
+	rects = (UiRect *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+		(SIZE_T)d.nodeCount * sizeof(UiRect));
+	CHECK(UiDesign_Layout(&d, w, Ui_Rect(0, 0, 300, 100), rects, d.nodeCount) == 1);
+	CHECK(rects[a].x == 10 && rects[a].y == 10 && rects[a].h == 80);
+	HeapFree(GetProcessHeap(), 0, rects);
 	UiDesign_Free(&d);
 }
 
@@ -457,6 +515,9 @@ static void test_grid_columns(void)
 	c1 = UiDesign_AddNode(&d, w, UI_DN_LABEL, root, "b", "B");
 	c2 = UiDesign_AddNode(&d, w, UI_DN_LABEL, root, "c", "C");
 	UiDesign_Node(&d, a)->wMode = UI_DN_SIZE_FILL;
+	UiDesign_Node(&d, a)->align = UI_DN_ALIGN_CENTER;
+	UiDesign_Node(&d, a)->textAlign = UI_DN_ALIGN_CENTER;
+	UiDesign_Node(&d, a)->textVAlign = UI_DN_VALIGN_TOP;
 	UiDesign_Node(&d, c1)->wMode = UI_DN_SIZE_FILL;
 	n = UiDesign_Node(&d, c2);
 	n->wMode = UI_DN_SIZE_FIXED;
@@ -532,6 +593,9 @@ static void test_grid_columns(void)
 	CHECK(UiDesign_GenerateGroup(&d, g, L"build\\gen", report, sizeof(report)) == 2);
 	CHECK(read_all(pc, buf, sizeof(buf)) == 1);
 	CHECK(has_sub(buf, "gridColTracks, UI_DN_GRID_TRACKS_MAX, \"100,1fr,auto\""));
+	CHECK(has_sub(buf, "p1->align=1;"));
+	CHECK(has_sub(buf, "p1->textAlign=1;"));
+	CHECK(has_sub(buf, "p1->textVAlign=0;"));
 	DeleteFileW(pc);
 	DeleteFileW(ph);
 

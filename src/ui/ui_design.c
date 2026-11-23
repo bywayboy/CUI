@@ -274,6 +274,8 @@ int UiDesign_AddNode(UiDesignDoc *doc, int win, int type, int parent,
 	n->w = UiDesign_DefaultW(type);
 	n->h = UiDesign_DefaultH(type);
 	n->align = UI_DN_ALIGN_START;
+	n->textAlign = UI_DN_ALIGN_START;
+	n->textVAlign = UI_DN_VALIGN_CENTER;
 	n->gap = 8.0f;
 	n->gridRows = 1;
 	n->gridCols = 1;
@@ -595,6 +597,7 @@ static void ds_node(UiDStr *s, const UiDesignDoc *doc, int index)
 	ds_add(s, ",\"maxH\":"); ds_num(s, n->maxH);
 	ds_add(s, ",\"grow\":"); ds_num(s, n->grow);
 	ds_addf(s, ",\"align\":%d", n->align);
+	ds_addf(s, ",\"textAlign\":%d,\"textVAlign\":%d", n->textAlign, n->textVAlign);
 	ds_add(s, ",\"margin\":[");
 	for (i = 0; i < 4; i++) { if (i) ds_add(s, ","); ds_num(s, n->margin[i]); }
 	ds_add(s, "],\"padding\":[");
@@ -915,6 +918,9 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 				else if (strcmp(lk, "maxH") == 0) jp_number(j, &doc->nodes[idx].maxH);
 				else if (strcmp(lk, "grow") == 0) jp_number(j, &doc->nodes[idx].grow);
 				else if (strcmp(lk, "align") == 0) jp_int(j, &doc->nodes[idx].align);
+				else if (strcmp(lk, "valign") == 0) jp_int(j, &doc->nodes[idx].textVAlign);
+				else if (strcmp(lk, "textAlign") == 0) jp_int(j, &doc->nodes[idx].textAlign);
+				else if (strcmp(lk, "textVAlign") == 0) jp_int(j, &doc->nodes[idx].textVAlign);
 				else if (strcmp(lk, "margin") == 0) jp_array_float(j, doc->nodes[idx].margin, 4);
 				else if (strcmp(lk, "padding") == 0) jp_array_float(j, doc->nodes[idx].padding, 4);
 				else if (strcmp(lk, "gap") == 0) jp_number(j, &doc->nodes[idx].gap);
@@ -1928,10 +1934,19 @@ static void dn_draw_node(UiDesignInstance *inst, int idx)
 	}
 	switch (n->type) {
 	case UI_DN_LABEL: {
-		uint32_t flags = GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS;
-		if (n->align == UI_DN_ALIGN_CENTER) flags |= GFX_TEXT_CENTER;
-		else if (n->align == UI_DN_ALIGN_END) flags |= GFX_TEXT_RIGHT;
-		Gfx_Text(g, t->fBody, n->text, r,
+		uint32_t flags = GFX_TEXT_ELLIPSIS;
+		UiRect tr = r;
+		if (n->textAlign == UI_DN_ALIGN_CENTER) flags |= GFX_TEXT_CENTER;
+		else if (n->textAlign == UI_DN_ALIGN_END) flags |= GFX_TEXT_RIGHT;
+		if (n->textVAlign == UI_DN_VALIGN_CENTER) flags |= GFX_TEXT_VCENTER;
+		else if (n->textVAlign == UI_DN_VALIGN_BOTTOM) {
+			float th = Gfx_TextHeight(g, t->fBody);
+			if (th < tr.h) {
+				tr.y += tr.h - th;
+				tr.h = th;
+			}
+		}
+		Gfx_Text(g, t->fBody, n->text, tr,
 			n->enabled ? t->text : t->btnDisabledText, flags);
 		break;
 	}
@@ -2477,6 +2492,12 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int winNew,
 	}
 	if (n->align != UI_DN_ALIGN_START)
 		ds_addf(s, "    p%d->align=%d;\n", old, n->align);
+	if (n->type == UI_DN_LABEL) {
+		if (n->textAlign != UI_DN_ALIGN_START)
+			ds_addf(s, "    p%d->textAlign=%d;\n", old, n->textAlign);
+		if (n->textVAlign != UI_DN_VALIGN_CENTER)
+			ds_addf(s, "    p%d->textVAlign=%d;\n", old, n->textVAlign);
+	}
 	if ((n->type == UI_DN_COLUMN || n->type == UI_DN_ROW) &&
 	    n->gap != 8.0f) {
 		ds_addf(s, "    p%d->gap=", old); cg_num(s, n->gap); ds_add(s, ";\n");
