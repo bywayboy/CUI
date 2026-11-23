@@ -413,10 +413,15 @@ static void test_components(void)
 	DeleteFileW(ph);
 	CHECK(UiDesign_GenerateGroup(&a, g, L"build\\gen", report, sizeof(report)) == 2);
 	CHECK(read_all(pc, buf, sizeof(buf)) == 1);
-	CHECK(has_sub(buf, "->type=15"));
+	CHECK(has_sub(buf, ", 15, "));
 	CHECK(has_sub(buf, "->mode=3"));
 	CHECK(has_sub(buf, "->readonly=1"));
 	CHECK(has_sub(buf, "->color=0x80336699u"));
+	/* 默认值/该类型用不到的字段不应生成 */
+	CHECK(!has_sub(buf, "p0->type="));
+	CHECK(!has_sub(buf, "p0->value="));
+	CHECK(!has_sub(buf, "p0->checked="));
+	CHECK(!has_sub(buf, "p0->color="));
 	DeleteFileW(pc);
 	DeleteFileW(ph);
 

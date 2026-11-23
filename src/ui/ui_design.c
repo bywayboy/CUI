@@ -1944,11 +1944,16 @@ static void dn_draw_node(UiDesignInstance *inst, int idx)
 		break;
 	}
 	case UI_DN_INPUT: {
+		char buf[UI_DN_TEXT_MAX];
 		if (!st) break;
 		UiInput_SetRect(&st->input, 0, r);
 		UiInput_Draw(&st->input, 0);
-		Edit_TextUtf8(UiInput_Edit(&st->input, 0), st->text,
-			UI_DN_TEXT_MAX);
+		Edit_TextUtf8(UiInput_Edit(&st->input, 0), buf, UI_DN_TEXT_MAX);
+		if (strcmp(buf, st->text) != 0) {
+			UiDesign_SetText(st->text, UI_DN_TEXT_MAX, buf);
+			UiDesign_SetText(n->text, UI_DN_TEXT_MAX, buf);
+			dn_emit_event(inst, idx, 2);
+		}
 		break;
 	}
 	case UI_DN_CHECKBOX: {
@@ -2367,10 +2372,70 @@ static void cg_num(UiDStr *s, float v)
 	ds_addf(s, "%.3ff", v);
 }
 
+static int cg_uses_enabled(int t)
+{
+	switch (t) {
+	case UI_DN_LABEL: case UI_DN_BUTTON: case UI_DN_INPUT:
+	case UI_DN_CHECKBOX: case UI_DN_SWITCH: case UI_DN_SLIDER:
+	case UI_DN_SELECT: case UI_DN_TEXTAREA: case UI_DN_DATEPICKER:
+	case UI_DN_COLORSEL: case UI_DN_TABS:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+static int cg_uses_text(int t)
+{
+	switch (t) {
+	case UI_DN_LABEL: case UI_DN_BUTTON: case UI_DN_INPUT:
+	case UI_DN_CHECKBOX: case UI_DN_SWITCH: case UI_DN_IMAGE:
+	case UI_DN_TEXTAREA: case UI_DN_DATEPICKER:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+static int cg_uses_hint(int t)
+{
+	return t == UI_DN_INPUT || t == UI_DN_SELECT ||
+		t == UI_DN_TEXTAREA || t == UI_DN_DATEPICKER;
+}
+
+static int cg_uses_change(int t)
+{
+	switch (t) {
+	case UI_DN_INPUT: case UI_DN_CHECKBOX: case UI_DN_SWITCH:
+	case UI_DN_SLIDER: case UI_DN_SELECT: case UI_DN_TEXTAREA:
+	case UI_DN_DATEPICKER: case UI_DN_COLORSEL: case UI_DN_TABS:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+static int cg_parent_type(const UiDesignDoc *doc, const UiDesignNode *n,
+	int wantFree, int wantGrid)
+{
+	int pt;
+	if (!doc || !n || n->parent < 0 || n->parent >= doc->nodeCount) return 0;
+	pt = doc->nodes[n->parent].type;
+	if (wantFree) return pt == UI_DN_ABSOLUTE || pt == UI_DN_PANEL;
+	return pt == UI_DN_GRID;
+}
+
 static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int winNew,
 	int parentOld, int *rootOut)
 {
 	const UiDesignNode *n = &doc->nodes[old];
+	float defW = UiDesign_DefaultW(n->type);
+	float defH = UiDesign_DefaultH(n->type);
+	int freeParent = cg_parent_type(doc, n, 1, 0);
+	int gridParent = cg_parent_type(doc, n, 0, 1);
+	/* 根节点由宿主窗口定尺寸; Tabs 子页由页区定尺寸, 生成这些值无效. */
+	int sized = n->parent >= 0 &&
+		doc->nodes[n->parent].type != UI_DN_TABS;
 	int i;
 	ds_addf(s, "    int n%d = UiDesign_AddNode(&gDoc, %d, ",
 		old, winNew);
@@ -2382,54 +2447,141 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int winNew,
 	cg_quote(s, n->name);
 	ds_add(s, ");\n");
 	ds_addf(s, "    UiDesignNode *p%d = UiDesign_Node(&gDoc, n%d);\n", old, old);
-	ds_addf(s, "    p%d->type=%d; p%d->visible=%d; p%d->locked=%d; p%d->enabled=%d;\n",
-		old, n->type, old, n->visible, old, n->locked, old, n->enabled);
-	ds_addf(s, "    p%d->wMode=%d; p%d->hMode=%d; p%d->w=", old, n->wMode, old, n->hMode, old);
-	cg_num(s, n->w);
-	ds_addf(s, "; p%d->h=", old); cg_num(s, n->h);
-	ds_addf(s, "; p%d->minW=", old); cg_num(s, n->minW);
-	ds_addf(s, "; p%d->minH=", old); cg_num(s, n->minH);
-	ds_addf(s, "; p%d->maxW=", old); cg_num(s, n->maxW);
-	ds_addf(s, "; p%d->maxH=", old); cg_num(s, n->maxH);
-	ds_addf(s, "; p%d->grow=", old); cg_num(s, n->grow);
-	ds_addf(s, "; p%d->align=%d; p%d->gap=", old, n->align, old);
-	cg_num(s, n->gap);
-	ds_add(s, ";\n");
-	for (i = 0; i < 4; i++) {
-		ds_addf(s, "    p%d->margin[%d]=", old, i); cg_num(s, n->margin[i]); ds_add(s, ";");
+	/* AddNode 已写入类型与默认布局; 只输出与默认值不同的项, 且跳过
+	 * 该类型用不到的字段, 避免生成代码臃肿. */
+	if (!n->visible)
+		ds_addf(s, "    p%d->visible=0;\n", old);
+	if (!n->enabled && cg_uses_enabled(n->type))
+		ds_addf(s, "    p%d->enabled=0;\n", old);
+	if (n->wMode != UI_DN_SIZE_FILL && sized)
+		ds_addf(s, "    p%d->wMode=%d;\n", old, n->wMode);
+	if (n->hMode != UI_DN_SIZE_FIXED && sized)
+		ds_addf(s, "    p%d->hMode=%d;\n", old, n->hMode);
+	if (n->w != defW && sized) {
+		ds_addf(s, "    p%d->w=", old); cg_num(s, n->w); ds_add(s, ";\n");
 	}
-	ds_add(s, "\n");
-	for (i = 0; i < 4; i++) {
-		ds_addf(s, "    p%d->padding[%d]=", old, i); cg_num(s, n->padding[i]); ds_add(s, ";");
+	if (n->h != defH && sized) {
+		ds_addf(s, "    p%d->h=", old); cg_num(s, n->h); ds_add(s, ";\n");
 	}
-	ds_add(s, "\n");
-	ds_addf(s, "    p%d->x=", old); cg_num(s, n->x);
-	ds_addf(s, "; p%d->y=", old); cg_num(s, n->y);
-	ds_addf(s, "; p%d->anchors=%u;\n", old, n->anchors);
-	ds_addf(s, "    p%d->gridRows=%d; p%d->gridCols=%d; p%d->gridRowGap=",
-		old, n->gridRows, old, n->gridCols);
-	cg_num(s, n->gridRowGap);
-	ds_addf(s, "; p%d->gridColGap=", old); cg_num(s, n->gridColGap);
-	ds_addf(s, "; p%d->gridRow=%d; p%d->gridCol=%d; p%d->rowSpan=%d; p%d->colSpan=%d;\n",
-		old, n->gridRow, old, n->gridCol, old, n->rowSpan, old, n->colSpan);
+	if (n->minW != 0.0f && sized) {
+		ds_addf(s, "    p%d->minW=", old); cg_num(s, n->minW); ds_add(s, ";\n");
+	}
+	if (n->minH != 0.0f && sized) {
+		ds_addf(s, "    p%d->minH=", old); cg_num(s, n->minH); ds_add(s, ";\n");
+	}
+	if (n->maxW != 0.0f && sized) {
+		ds_addf(s, "    p%d->maxW=", old); cg_num(s, n->maxW); ds_add(s, ";\n");
+	}
+	if (n->maxH != 0.0f && sized) {
+		ds_addf(s, "    p%d->maxH=", old); cg_num(s, n->maxH); ds_add(s, ";\n");
+	}
+	if (n->align != UI_DN_ALIGN_START)
+		ds_addf(s, "    p%d->align=%d;\n", old, n->align);
+	if ((n->type == UI_DN_COLUMN || n->type == UI_DN_ROW) &&
+	    n->gap != 8.0f) {
+		ds_addf(s, "    p%d->gap=", old); cg_num(s, n->gap); ds_add(s, ";\n");
+	}
+	if (UiDesign_IsContainer(n->type)) {
+		for (i = 0; i < 4; i++)
+			if (n->padding[i] != 0.0f) {
+				ds_addf(s, "    p%d->padding[%d]=", old, i);
+				cg_num(s, n->padding[i]);
+				ds_add(s, ";\n");
+			}
+	}
+	if (freeParent) {
+		if (n->x != 0.0f) {
+			ds_addf(s, "    p%d->x=", old); cg_num(s, n->x); ds_add(s, ";\n");
+		}
+		if (n->y != 0.0f) {
+			ds_addf(s, "    p%d->y=", old); cg_num(s, n->y); ds_add(s, ";\n");
+		}
+		for (i = 0; i < 4; i++)
+			if (n->margin[i] != 0.0f) {
+				ds_addf(s, "    p%d->margin[%d]=", old, i);
+				cg_num(s, n->margin[i]);
+				ds_add(s, ";\n");
+			}
+		if (n->anchors)
+			ds_addf(s, "    p%d->anchors=%u;\n", old, n->anchors);
+	}
 	if (n->type == UI_DN_GRID) {
-		ds_addf(s, "    UiDesign_SetText(p%d->gridColTracks, UI_DN_GRID_TRACKS_MAX, ",
-			old);
-		cg_quote(s, n->gridColTracks);
+		if (n->gridCols != 1)
+			ds_addf(s, "    p%d->gridCols=%d;\n", old, n->gridCols);
+		if (n->gridRows != 1)
+			ds_addf(s, "    p%d->gridRows=%d;\n", old, n->gridRows);
+		if (n->gridRowGap != 0.0f) {
+			ds_addf(s, "    p%d->gridRowGap=", old);
+			cg_num(s, n->gridRowGap);
+			ds_add(s, ";\n");
+		}
+		if (n->gridColGap != 0.0f) {
+			ds_addf(s, "    p%d->gridColGap=", old);
+			cg_num(s, n->gridColGap);
+			ds_add(s, ";\n");
+		}
+		if (n->gridColTracks[0]) {
+			ds_addf(s, "    UiDesign_SetText(p%d->gridColTracks, UI_DN_GRID_TRACKS_MAX, ",
+				old);
+			cg_quote(s, n->gridColTracks);
+			ds_add(s, ");\n");
+		}
+	}
+	if (gridParent) {
+		if (n->gridRow != -1)
+			ds_addf(s, "    p%d->gridRow=%d;\n", old, n->gridRow);
+		if (n->gridCol != -1)
+			ds_addf(s, "    p%d->gridCol=%d;\n", old, n->gridCol);
+		if (n->rowSpan != 1)
+			ds_addf(s, "    p%d->rowSpan=%d;\n", old, n->rowSpan);
+		if (n->colSpan != 1)
+			ds_addf(s, "    p%d->colSpan=%d;\n", old, n->colSpan);
+	}
+	if (cg_uses_text(n->type) && n->text[0]) {
+		ds_addf(s, "    UiDesign_NodeSetText(p%d, ", old);
+		cg_quote(s, n->text);
 		ds_add(s, ");\n");
 	}
-	ds_addf(s, "    p%d->value=", old); cg_num(s, n->value);
-	ds_addf(s, "; p%d->checked=%d; p%d->selected=%d; p%d->variant=%d;\n",
-		old, n->checked, old, n->selected, old, n->variant);
-	ds_addf(s, "    p%d->mode=%d; p%d->readonly=%d; p%d->color=0x%08Xu;\n",
-		old, n->mode, old, n->readonly, old, n->color);
-	ds_addf(s, "    UiDesign_NodeSetText(p%d, ", old); cg_quote(s, n->text); ds_add(s, ");\n");
-	ds_addf(s, "    UiDesign_NodeSetHint(p%d, ", old); cg_quote(s, n->hint); ds_add(s, ");\n");
-	ds_addf(s, "    UiDesign_NodeSetOptions(p%d, ", old); cg_quote(s, n->options); ds_add(s, ");\n");
-	ds_addf(s, "    UiDesign_SetText(p%d->onClick, UI_DN_ID_MAX, ", old);
-	cg_quote(s, n->onClick); ds_add(s, ");\n");
-	ds_addf(s, "    UiDesign_SetText(p%d->onChange, UI_DN_ID_MAX, ", old);
-	cg_quote(s, n->onChange); ds_add(s, ");\n");
+	if (cg_uses_hint(n->type) && n->hint[0]) {
+		ds_addf(s, "    UiDesign_NodeSetHint(p%d, ", old);
+		cg_quote(s, n->hint);
+		ds_add(s, ");\n");
+	}
+	if ((n->type == UI_DN_SELECT ||
+	    (n->type == UI_DN_DATEPICKER && n->mode >= UI_DP_RANGE_DATE)) &&
+	    n->options[0]) {
+		ds_addf(s, "    UiDesign_NodeSetOptions(p%d, ", old);
+		cg_quote(s, n->options);
+		ds_add(s, ");\n");
+	}
+	if ((n->type == UI_DN_SLIDER || n->type == UI_DN_PROGRESS) &&
+	    n->value != 0.5f) {
+		ds_addf(s, "    p%d->value=", old);
+		cg_num(s, n->value);
+		ds_add(s, ";\n");
+	}
+	if ((n->type == UI_DN_CHECKBOX || n->type == UI_DN_SWITCH) && n->checked)
+		ds_addf(s, "    p%d->checked=1;\n", old);
+	if ((n->type == UI_DN_SELECT || n->type == UI_DN_TABS) && n->selected)
+		ds_addf(s, "    p%d->selected=%d;\n", old, n->selected);
+	if ((n->type == UI_DN_BUTTON || n->type == UI_DN_TABS) && n->variant)
+		ds_addf(s, "    p%d->variant=%d;\n", old, n->variant);
+	if (n->type == UI_DN_DATEPICKER && n->mode)
+		ds_addf(s, "    p%d->mode=%d;\n", old, n->mode);
+	if (n->type == UI_DN_TEXTAREA && n->readonly)
+		ds_addf(s, "    p%d->readonly=1;\n", old);
+	if (n->type == UI_DN_COLORSEL && n->color != 0xFF3B82F6u)
+		ds_addf(s, "    p%d->color=0x%08Xu;\n", old, n->color);
+	if (n->type == UI_DN_BUTTON && n->onClick[0]) {
+		ds_addf(s, "    UiDesign_SetText(p%d->onClick, UI_DN_ID_MAX, ", old);
+		cg_quote(s, n->onClick);
+		ds_add(s, ");\n");
+	}
+	if (cg_uses_change(n->type) && n->onChange[0]) {
+		ds_addf(s, "    UiDesign_SetText(p%d->onChange, UI_DN_ID_MAX, ", old);
+		cg_quote(s, n->onChange);
+		ds_add(s, ");\n");
+	}
 	if (rootOut) *rootOut = old;
 	for (i = 0; i < n->childCount; i++)
 		cg_node(s, doc, n->children[i], winNew, old, NULL);

@@ -835,24 +835,38 @@ static void d_build_props(void)
 	}
 	{
 		UiDesignNode *n = d_selnode();
+		int freeParent, gridParent;
 		if (!n) return;
+		freeParent = n->parent >= 0 &&
+			(g_d.doc.nodes[n->parent].type == UI_DN_ABSOLUTE ||
+			 g_d.doc.nodes[n->parent].type == UI_DN_PANEL);
+		gridParent = n->parent >= 0 &&
+			g_d.doc.nodes[n->parent].type == UI_DN_GRID;
 		d_prop_add(DK_N_ID, DPK_TEXT, "ID", n->id);
 		d_prop_add(DK_N_NAME, DPK_TEXT, "名称", n->name);
 		d_prop_add(DK_N_TYPE, DPK_READONLY, "类型", UiDesign_TypeName(n->type));
 		g_d.propSection = 2;
-		d_fmt(b, sizeof(b), n->w); d_prop_add(DK_N_W, DPK_FLOAT, "宽", b);
-		d_fmt(b, sizeof(b), n->h); d_prop_add(DK_N_H, DPK_FLOAT, "高", b);
-		d_fmt(b, sizeof(b), n->x); d_prop_add(DK_N_X, DPK_FLOAT, "X", b);
-		d_fmt(b, sizeof(b), n->y); d_prop_add(DK_N_Y, DPK_FLOAT, "Y", b);
+		if (n->parent >= 0 &&
+		    g_d.doc.nodes[n->parent].type != UI_DN_TABS) {
+			d_fmt(b, sizeof(b), n->w); d_prop_add(DK_N_W, DPK_FLOAT, "宽", b);
+			d_fmt(b, sizeof(b), n->h); d_prop_add(DK_N_H, DPK_FLOAT, "高", b);
+		}
+		if (freeParent) {
+			d_fmt(b, sizeof(b), n->x); d_prop_add(DK_N_X, DPK_FLOAT, "X", b);
+			d_fmt(b, sizeof(b), n->y); d_prop_add(DK_N_Y, DPK_FLOAT, "Y", b);
+		}
 		g_d.propSection = 1;
-		d_fmt(b, sizeof(b), n->grow); d_prop_add(DK_N_GROW, DPK_FLOAT, "Grow", b);
-		d_fmt(b, sizeof(b), n->gap); d_prop_add(DK_N_GAP, DPK_FLOAT, "Gap", b);
-		d_fmt(b, sizeof(b), n->padding[0]); d_prop_add(DK_N_PADL, DPK_FLOAT, "Padding L", b);
-		d_fmt(b, sizeof(b), n->padding[1]); d_prop_add(DK_N_PADT, DPK_FLOAT, "Padding T", b);
-		d_fmt(b, sizeof(b), n->padding[2]); d_prop_add(DK_N_PADR, DPK_FLOAT, "Padding R", b);
-		d_fmt(b, sizeof(b), n->padding[3]); d_prop_add(DK_N_PADB, DPK_FLOAT, "Padding B", b);
-		snprintf(b, sizeof(b), "%d", n->gridCols);
+		if (UiDesign_IsContainer(n->type)) {
+			d_fmt(b, sizeof(b), n->padding[0]); d_prop_add(DK_N_PADL, DPK_FLOAT, "Padding L", b);
+			d_fmt(b, sizeof(b), n->padding[1]); d_prop_add(DK_N_PADT, DPK_FLOAT, "Padding T", b);
+			d_fmt(b, sizeof(b), n->padding[2]); d_prop_add(DK_N_PADR, DPK_FLOAT, "Padding R", b);
+			d_fmt(b, sizeof(b), n->padding[3]); d_prop_add(DK_N_PADB, DPK_FLOAT, "Padding B", b);
+		}
+		if (n->type == UI_DN_COLUMN || n->type == UI_DN_ROW) {
+			d_fmt(b, sizeof(b), n->gap); d_prop_add(DK_N_GAP, DPK_FLOAT, "Gap", b);
+		}
 		if (n->type == UI_DN_GRID) {
+			snprintf(b, sizeof(b), "%d", n->gridCols);
 			d_prop_add(DK_N_GRIDCOLS, DPK_INT, "Grid Cols", b);
 			snprintf(b, sizeof(b), "%d", n->gridRows);
 			d_prop_add(DK_N_GRIDROWS, DPK_INT, "Grid Rows (0=自动)", b);
@@ -862,8 +876,7 @@ static void d_build_props(void)
 			d_prop_add(DK_N_GRIDCOLGAP, DPK_FLOAT, "Col Gap", b);
 			d_prop_add(DK_N_GRIDCOLTRACKS, DPK_TEXT, "列宽",
 				n->gridColTracks);
-		} else if (n->parent >= 0 &&
-		    g_d.doc.nodes[n->parent].type == UI_DN_GRID) {
+		} else if (gridParent) {
 			snprintf(b, sizeof(b), "%d", n->gridRow);
 			d_prop_add(DK_N_GRIDROW, DPK_INT, "Grid Row", b);
 			snprintf(b, sizeof(b), "%d", n->gridCol);
@@ -874,43 +887,86 @@ static void d_build_props(void)
 			d_prop_add(DK_N_ROWSPAN, DPK_INT, "Row Span", b);
 		}
 		g_d.propSection = 3;
-		if (n->type == UI_DN_TABS) {
+		switch (n->type) {
+		case UI_DN_LABEL:
+			d_prop_add(DK_N_TEXT, DPK_TEXT, "Text", n->text);
+			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
+			break;
+		case UI_DN_BUTTON:
+			d_prop_add(DK_N_TEXT, DPK_TEXT, "Text", n->text);
+			d_prop_add(DK_N_VARIANT, DPK_ENUM, "Variant",
+				n->variant == 2 ? "Danger" : (n->variant == 1 ? "Primary" : "Default"));
+			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
+			break;
+		case UI_DN_INPUT:
+			d_prop_add(DK_N_TEXT, DPK_TEXT, "Text", n->text);
+			d_prop_add(DK_N_HINT, DPK_TEXT, "Hint", n->hint);
+			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
+			break;
+		case UI_DN_CHECKBOX:
+		case UI_DN_SWITCH:
+			d_prop_add(DK_N_TEXT, DPK_TEXT, "Text", n->text);
+			d_prop_add(DK_N_CHECKED, DPK_BOOL, "Checked", n->checked ? "1" : "0");
+			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
+			break;
+		case UI_DN_SLIDER:
+			d_fmt(b, sizeof(b), n->value); d_prop_add(DK_N_VALUE, DPK_FLOAT, "Value", b);
+			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
+			break;
+		case UI_DN_PROGRESS:
+			d_fmt(b, sizeof(b), n->value); d_prop_add(DK_N_VALUE, DPK_FLOAT, "Value", b);
+			break;
+		case UI_DN_SELECT:
+			d_prop_add(DK_N_OPTIONS, DPK_TEXT, "Options", n->options);
+			snprintf(b, sizeof(b), "%d", n->selected);
+			d_prop_add(DK_N_SELECTED, DPK_ENUM, "Selected", b);
+			d_prop_add(DK_N_HINT, DPK_TEXT, "Hint", n->hint);
+			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
+			break;
+		case UI_DN_IMAGE:
+			d_prop_add(DK_N_TEXT, DPK_TEXT, "Text", n->text);
+			break;
+		case UI_DN_TABS:
 			snprintf(b, sizeof(b), "%d", n->selected);
 			d_prop_add(DK_N_SELECTED, DPK_ENUM, "当前页", b);
 			d_prop_add(DK_N_VARIANT, DPK_ENUM, "页签样式",
 				n->variant == 1 ? "Pill" : (n->variant == 2 ? "Card" : "Line"));
-		} else if (n->type == UI_DN_TEXTAREA) {
+			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
+			break;
+		case UI_DN_TEXTAREA:
 			d_prop_add(DK_N_TEXT, DPK_TEXT, "Text", n->text);
 			d_prop_add(DK_N_HINT, DPK_TEXT, "Hint", n->hint);
 			d_prop_add(DK_N_READONLY, DPK_BOOL, "只读", n->readonly ? "1" : "0");
 			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
-		} else if (n->type == UI_DN_DATEPICKER) {
+			break;
+		case UI_DN_DATEPICKER:
 			d_prop_add(DK_N_MODE, DPK_ENUM, "模式", d_dp_mode_name(n->mode));
 			d_prop_add(DK_N_HINT, DPK_TEXT, "Hint", n->hint);
-			d_prop_add(DK_N_TEXT, DPK_TEXT, "值", n->text);
+			d_prop_add(DK_N_TEXT, DPK_TEXT, "起始值", n->text);
 			if (n->mode >= 2)
 				d_prop_add(DK_N_OPTIONS, DPK_TEXT, "结束值", n->options);
 			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
-		} else if (n->type == UI_DN_COLORSEL) {
+			break;
+		case UI_DN_COLORSEL:
 			d_fmt_color(b, sizeof(b), n->color);
 			d_prop_add(DK_N_COLOR, DPK_COLOR, "颜色", b);
 			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
-		} else {
-			d_prop_add(DK_N_TEXT, DPK_TEXT, "Text", n->text);
-			d_prop_add(DK_N_HINT, DPK_TEXT, "Hint", n->hint);
-			d_prop_add(DK_N_OPTIONS, DPK_TEXT, "Options", n->options);
-			if (n->type == UI_DN_SELECT) {
-				snprintf(b, sizeof(b), "%d", n->selected);
-				d_prop_add(DK_N_SELECTED, DPK_ENUM, "Selected", b);
-			}
-			d_fmt(b, sizeof(b), n->value); d_prop_add(DK_N_VALUE, DPK_FLOAT, "Value", b);
-			d_prop_add(DK_N_CHECKED, DPK_BOOL, "Checked", n->checked ? "1" : "0");
-			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
-			d_prop_add(DK_N_VARIANT, DPK_ENUM, "Variant", n->variant == 2 ? "Danger" : (n->variant == 1 ? "Primary" : "Default"));
+			break;
+		default:
+			break;
 		}
 		g_d.propSection = 4;
-		d_prop_add(DK_N_CLICK, DPK_TEXT, "OnClick", n->onClick);
-		d_prop_add(DK_N_CHANGE, DPK_TEXT, "OnChange", n->onChange);
+		if (n->type == UI_DN_BUTTON)
+			d_prop_add(DK_N_CLICK, DPK_TEXT, "OnClick", n->onClick);
+		switch (n->type) {
+		case UI_DN_INPUT: case UI_DN_CHECKBOX: case UI_DN_SWITCH:
+		case UI_DN_SLIDER: case UI_DN_SELECT: case UI_DN_TEXTAREA:
+		case UI_DN_DATEPICKER: case UI_DN_COLORSEL: case UI_DN_TABS:
+			d_prop_add(DK_N_CHANGE, DPK_TEXT, "OnChange", n->onChange);
+			break;
+		default:
+			break;
+		}
 	}
 }
 
