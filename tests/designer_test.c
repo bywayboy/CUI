@@ -396,7 +396,7 @@ static void test_components(void)
 	char *json;
 	char report[128];
 	static char buf[32768];
-	int g, w, root, tabs, p1, p2, ta, dp, cs, hit;
+	int g, w, root, tabs, p1, p2, ta, dp, cs, img, hit;
 	WCHAR pc[MAX_PATH], ph[MAX_PATH];
 	UiDesignNode *n;
 
@@ -420,6 +420,7 @@ static void test_components(void)
 	UiDesign_Node(&a, p1)->hMode = UI_DN_SIZE_FILL;
 	UiDesign_Node(&a, p2)->wMode = UI_DN_SIZE_FILL;
 	UiDesign_Node(&a, p2)->hMode = UI_DN_SIZE_FILL;
+	UiDesign_Node(&a, p1)->radius = 4.0f;
 	ta = UiDesign_AddNode(&a, w, UI_DN_TEXTAREA, p1, "ta", "多行");
 	UiDesign_NodeSetText(UiDesign_Node(&a, ta), "第一行");
 	UiDesign_NodeSetHint(UiDesign_Node(&a, ta), "输入内容");
@@ -430,6 +431,9 @@ static void test_components(void)
 	UiDesign_NodeSetOptions(UiDesign_Node(&a, dp), "2026-02-03 04:05");
 	cs = UiDesign_AddNode(&a, w, UI_DN_COLORSEL, p2, "cs", "颜色");
 	UiDesign_Node(&a, cs)->color = 0x80336699u;
+	img = UiDesign_AddNode(&a, w, UI_DN_IMAGE, p2, "img", "图片");
+	UiDesign_Node(&a, img)->radius = 10.0f;
+	UiDesign_Node(&a, img)->x = 200.0f;
 
 	CHECK(UiDesign_TypeFromName("tabs") == UI_DN_TABS);
 	CHECK(UiDesign_TypeFromName("textarea") == UI_DN_TEXTAREA);
@@ -456,6 +460,8 @@ static void test_components(void)
 	CHECK(json && has_sub(json, "\"color\":\"#80336699\""));
 	CHECK(json && has_sub(json, "\"readonly\":1"));
 	CHECK(json && has_sub(json, "\"type\":\"tabs\""));
+	CHECK(json && has_sub(json, "\"radius\":4.000"));
+	CHECK(json && has_sub(json, "\"radius\":10.000"));
 	UiDesign_Init(&b);
 	if (json && UiDesign_FromJson(&b, json)) {
 		int bt = UiDesign_FindNode(&b, 0, "tabs");
@@ -487,6 +493,8 @@ static void test_components(void)
 	CHECK(has_sub(buf, "->mode=3"));
 	CHECK(has_sub(buf, "->readonly=1"));
 	CHECK(has_sub(buf, "->color=0x80336699u"));
+	CHECK(has_sub(buf, "p2->radius=4.000f;"));
+	CHECK(has_sub(buf, "p7->radius=10.000f;"));
 	/* 默认值/该类型用不到的字段不应生成 */
 	CHECK(!has_sub(buf, "p0->type="));
 	CHECK(!has_sub(buf, "p0->value="));

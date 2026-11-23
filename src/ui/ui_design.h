@@ -102,6 +102,7 @@ typedef struct UiDesignNode {
 	float margin[4];    /* 左/上/右/下 */
 	float padding[4];
 	float gap;
+	float radius;       /* Panel 圆角, DIP */
 
 	/* Absolute */
 	float x, y;

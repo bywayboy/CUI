@@ -66,7 +66,7 @@ enum {
 	DK_N_CHECKED, DK_N_ENABLED, DK_N_VARIANT, DK_N_CLICK, DK_N_CHANGE,
 	DK_N_GRIDCOLS, DK_N_GRIDROWS, DK_N_GRIDROW, DK_N_GRIDCOL,
 	DK_N_ROWSPAN, DK_N_COLSPAN, DK_N_GRIDROWGAP, DK_N_GRIDCOLGAP,
-	DK_N_GRIDCOLTRACKS,
+	DK_N_GRIDCOLTRACKS, DK_N_RADIUS,
 	DK_N_MODE, DK_N_READONLY, DK_N_COLOR, DK_N_SELECTED
 };
 
@@ -920,6 +920,10 @@ static void d_build_props(void)
 		if (n->type == UI_DN_COLUMN || n->type == UI_DN_ROW) {
 			d_fmt(b, sizeof(b), n->gap); d_prop_add(DK_N_GAP, DPK_FLOAT, "Gap", b);
 		}
+		if (n->type == UI_DN_PANEL || n->type == UI_DN_IMAGE) {
+			d_fmt(b, sizeof(b), n->radius);
+			d_prop_add(DK_N_RADIUS, DPK_FLOAT, "圆角", b);
+		}
 		if (n->type == UI_DN_GRID) {
 			snprintf(b, sizeof(b), "%d", n->gridCols);
 			d_prop_add(DK_N_GRIDCOLS, DPK_INT, "Grid Cols", b);
@@ -1125,6 +1129,7 @@ static void d_prop_apply_text(int key, const char *text)
 		else if (key == DK_N_H) n->h = (float)d_atof(text);
 		else if (key == DK_N_GROW) n->grow = (float)d_atof(text);
 		else if (key == DK_N_GAP) n->gap = (float)d_atof(text);
+		else if (key == DK_N_RADIUS) n->radius = (float)d_atof(text);
 		else if (key == DK_N_PADL) n->padding[0] = (float)d_atof(text);
 		else if (key == DK_N_PADT) n->padding[1] = (float)d_atof(text);
 		else if (key == DK_N_PADR) n->padding[2] = (float)d_atof(text);
@@ -1796,7 +1801,8 @@ static void d_draw_static_node(int idx)
 	}
 	if (UiDesign_IsContainer(n->type)) {
 		if (n->type == UI_DN_PANEL)
-			Gfx_FillRoundRect(g, r, 8.0f, t->card);
+			Gfx_FillRoundRect(g, r, n->radius > 0.0f ? n->radius : 0.0f,
+				t->card);
 		else if (n->type != UI_DN_COLUMN && n->type != UI_DN_ROW) {
 			Gfx_StrokeRoundRectCornersDashed(g, r, Gfx_Corners(0, 0, 0, 0),
 				Ui_ColorAlpha(t->text3, 75), 1.0f);
@@ -1882,12 +1888,14 @@ static void d_draw_static_node(int idx)
 			4.0f, t->primary.base);
 		break;
 	}
-	case UI_DN_IMAGE:
-		Gfx_FillRoundRect(g, r, 6.0f, Ui_ColorMix(t->card, t->primary.soft, 0.35f));
-		Gfx_StrokeRoundRect(g, r, 6.0f, t->border, 1.0f);
+	case UI_DN_IMAGE: {
+		float rad = n->radius > 0.0f ? n->radius : 0.0f;
+		Gfx_FillRoundRect(g, r, rad, Ui_ColorMix(t->card, t->primary.soft, 0.35f));
+		Gfx_StrokeRoundRect(g, r, rad, t->border, 1.0f);
 		Gfx_Text(g, t->fSmall, n->text[0] ? n->text : "Image", r, t->text3,
 			GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 		break;
+	}
 	case UI_DN_TEXTAREA: {
 		uint32_t fl = GFX_TEXT_WRAP | (n->align == UI_DN_ALIGN_CENTER ? GFX_TEXT_CENTER : 0);
 		const char *txt = n->text[0] ? n->text : (n->hint[0] ? n->hint : "多行文本");

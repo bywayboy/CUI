@@ -377,6 +377,7 @@ int UiDesign_AddNode(UiDesignDoc *doc, int view, int type, int parent,
 	n->textAlign = UI_DN_ALIGN_START;
 	n->textVAlign = UI_DN_VALIGN_CENTER;
 	n->gap = 8.0f;
+	n->radius = type == UI_DN_IMAGE ? 6.0f : 8.0f;
 	n->gridRows = 1;
 	n->gridCols = 1;
 	n->gridRow = -1;
@@ -716,6 +717,9 @@ static void ds_node(UiDStr *s, const UiDesignDoc *doc, int index)
 	ds_add(s, "],\"padding\":[");
 	for (i = 0; i < 4; i++) { if (i) ds_add(s, ","); ds_num(s, n->padding[i]); }
 	ds_add(s, "],\"gap\":"); ds_num(s, n->gap);
+	if (n->type == UI_DN_PANEL || n->type == UI_DN_IMAGE) {
+		ds_add(s, ",\"radius\":"); ds_num(s, n->radius);
+	}
 	ds_add(s, ",\"x\":"); ds_num(s, n->x);
 	ds_add(s, ",\"y\":"); ds_num(s, n->y);
 	ds_addf(s, ",\"anchors\":%u", n->anchors);
@@ -1013,7 +1017,7 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 {
 	char key[64], val[UI_DN_TEXT_MAX];
 	int idx, type = UI_DN_LABEL;
-	int gotType = 0;
+	int gotType = 0, gotRadius = 0;
 	if (!jp_ch(j, '{')) return 0;
 	idx = UiDesign_AddNode(doc, win, type, parent, "node", "组件");
 	if (idx < 0) return 0;
@@ -1058,6 +1062,10 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 				else if (strcmp(lk, "margin") == 0) jp_array_float(j, doc->nodes[idx].margin, 4);
 				else if (strcmp(lk, "padding") == 0) jp_array_float(j, doc->nodes[idx].padding, 4);
 				else if (strcmp(lk, "gap") == 0) jp_number(j, &doc->nodes[idx].gap);
+				else if (strcmp(lk, "radius") == 0) {
+					jp_number(j, &doc->nodes[idx].radius);
+					gotRadius = 1;
+				}
 				else if (strcmp(lk, "x") == 0) jp_number(j, &doc->nodes[idx].x);
 				else if (strcmp(lk, "y") == 0) jp_number(j, &doc->nodes[idx].y);
 				else if (strcmp(lk, "anchors") == 0) jp_int(j, (int *)&doc->nodes[idx].anchors);
@@ -1116,6 +1124,8 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 		if (jp_ch(j, ',')) continue;
 	}
 	(void)gotType;
+	if (!gotRadius)
+		doc->nodes[idx].radius = doc->nodes[idx].type == UI_DN_IMAGE ? 6.0f : 8.0f;
 	return 1;
 }
 
@@ -2179,7 +2189,8 @@ static void dn_draw_node(UiDesignInstance *inst, int idx)
 	}
 	if (UiDesign_IsContainer(n->type)) {
 		if (n->type == UI_DN_PANEL)
-			Gfx_FillRoundRect(g, r, 8.0f, t->card);
+			Gfx_FillRoundRect(g, r, n->radius > 0.0f ? n->radius : 0.0f,
+				t->card);
 		for (i = 0; i < n->childCount; i++)
 			dn_draw_node(inst, n->children[i]);
 		return;
@@ -2254,12 +2265,14 @@ static void dn_draw_node(UiDesignInstance *inst, int idx)
 		}
 		break;
 	}
-	case UI_DN_IMAGE:
-		Gfx_FillRoundRect(g, r, 6.0f, Ui_ColorMix(t->card, t->primary.soft, 0.35f));
-		Gfx_StrokeRoundRect(g, r, 6.0f, t->border, 1.0f);
+	case UI_DN_IMAGE: {
+		float rad = n->radius > 0.0f ? n->radius : 0.0f;
+		Gfx_FillRoundRect(g, r, rad, Ui_ColorMix(t->card, t->primary.soft, 0.35f));
+		Gfx_StrokeRoundRect(g, r, rad, t->border, 1.0f);
 		Gfx_Text(g, t->fSmall, n->text[0] ? n->text : "Image", r,
 			t->text3, GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 		break;
+	}
 	case UI_DN_TEXTAREA:
 		if (!st) break;
 		UiTextArea_SetReadonly(&st->ta, n->readonly);
@@ -2754,6 +2767,10 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int viewNew,
 	if ((n->type == UI_DN_COLUMN || n->type == UI_DN_ROW) &&
 	    n->gap != 8.0f) {
 		ds_addf(s, "    p%d->gap=", old); cg_num(s, n->gap); ds_add(s, ";\n");
+	}
+	if ((n->type == UI_DN_PANEL || n->type == UI_DN_IMAGE) &&
+	    n->radius != (n->type == UI_DN_IMAGE ? 6.0f : 8.0f)) {
+		ds_addf(s, "    p%d->radius=", old); cg_num(s, n->radius); ds_add(s, ";\n");
 	}
 	if (UiDesign_IsContainer(n->type)) {
 		for (i = 0; i < 4; i++)
