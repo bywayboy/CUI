@@ -181,6 +181,9 @@ typedef struct UiDesignDoc {
 
 void UiDesign_Init(UiDesignDoc *doc);
 void UiDesign_Free(UiDesignDoc *doc);
+/* 把旧的 AUTO/GROW 尺寸模式归一化为 FIXED/FILL:
+ * AUTO 宽高为 0 时取类型默认值, GROW 视作 FILL. */
+void UiDesign_NormalizeSizeModes(UiDesignDoc *doc);
 
 int UiDesign_AddGroup(UiDesignDoc *doc, const char *id, const char *name);
 int UiDesign_AddView(UiDesignDoc *doc, const char *id, const char *name);

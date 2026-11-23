@@ -698,6 +698,31 @@ static void test_view_host_model(void)
 	UiDesign_Free(&d);
 }
 
+static void test_size_mode_normalize(void)
+{
+	UiDesignDoc d;
+	int g, v, root;
+	UiDesignNode *n;
+	UiDesign_Init(&d);
+	g = UiDesign_AddGroup(&d, "g", "G");
+	v = mk_view_host(&d, g, UI_DH_WINDOW, "win");
+	root = UiDesign_AddNode(&d, v, UI_DN_COLUMN, -1, "root", "Root");
+	UiDesign_View(&d, v)->root = root;
+	n = UiDesign_Node(&d, UiDesign_AddNode(&d, v, UI_DN_LABEL, root, "a", "A"));
+	UiDesign_Node(&d, root)->wMode = UI_DN_SIZE_GROW;
+	UiDesign_Node(&d, root)->hMode = UI_DN_SIZE_FILL;
+	n->wMode = UI_DN_SIZE_AUTO;
+	n->hMode = UI_DN_SIZE_AUTO;
+	n->w = 0.0f;
+	n->h = 0.0f;
+	UiDesign_NormalizeSizeModes(&d);
+	CHECK(UiDesign_Node(&d, root)->wMode == UI_DN_SIZE_FILL);
+	CHECK(UiDesign_Node(&d, root)->hMode == UI_DN_SIZE_FILL);
+	CHECK(n->wMode == UI_DN_SIZE_FIXED && n->w == UiDesign_DefaultW(UI_DN_LABEL));
+	CHECK(n->hMode == UI_DN_SIZE_FIXED && n->h == UiDesign_DefaultH(UI_DN_LABEL));
+	UiDesign_Free(&d);
+}
+
 void __stdcall startup(void)
 {
 	char line[160];
@@ -711,6 +736,7 @@ void __stdcall startup(void)
 	test_components();
 	test_grid_columns();
 	test_view_host_model();
+	test_size_mode_normalize();
 	sprintf(line, "designer_test: %d passed, %d failed\n", g_pass, g_fail);
 	out_(line);
 	ExitProcess(g_fail ? 1u : 0u);

@@ -444,6 +444,16 @@ static int d_host_root(int host)
 	return g_d.doc.views[v].root;
 }
 
+static int d_mode_index(int mode)
+{
+	return mode == UI_DN_SIZE_FILL || mode == UI_DN_SIZE_GROW ? 1 : 0;
+}
+
+static void d_normalize_modes(void)
+{
+	UiDesign_NormalizeSizeModes(&g_d.doc);
+}
+
 static void d_undo_step(int redo)
 {
 	int np;
@@ -460,6 +470,7 @@ static void d_undo_step(int redo)
 		d_error("撤销失败: 模型解析错误");
 		return;
 	}
+	d_normalize_modes();
 	g_d.undoPos = np;
 	if (g_d.selWin >= g_d.doc.hostCount) g_d.selWin = g_d.doc.hostCount > 0 ? 0 : -1;
 	if (g_d.selGroup >= g_d.doc.groupCount) g_d.selGroup = g_d.doc.groupCount > 0 ? 0 : -1;
@@ -573,6 +584,7 @@ static void d_open_file(void)
 		d_error("打开失败: .cui 解析错误");
 		return;
 	}
+	d_normalize_modes();
 	d_dir_of(file, g_d.lastDir, MAX_PATH);
 	d_reset_selection();
 	d_undo_reset();
@@ -2757,8 +2769,8 @@ static float d_draw_constraints(UiContext *ui, UiRect panel, float y)
 {
 	UiTheme *t = &g_d.app->theme;
 	UiDesignNode *n = d_selnode();
-	static const char *const wLabels[4] = { "固定", "自动", "填充", "伸展" };
-	static const char *const hLabels[4] = { "固定", "自动", "填充", "伸展" };
+	static const char *const wLabels[2] = { "固定", "填充" };
+	static const char *const hLabels[2] = { "固定", "填充" };
 	static const char *const aLabels[3] = { "起点", "居中", "末端" };
 	static const char *const kLabels[4] = { "列", "行", "Grid", "自由" };
 	int c;
@@ -2768,19 +2780,31 @@ static float d_draw_constraints(UiContext *ui, UiRect panel, float y)
 	y += 22;
 	Gfx_Text(g_d.app->gfx, t->fSmall, "宽",
 		Ui_Rect(panel.x + 4, y, 26, 26), t->text3, GFX_TEXT_VCENTER);
-	UiButtonGroup_SetSelected(&g_d.constraintW, n->wMode);
+	UiButtonGroup_SetSelected(&g_d.constraintW, d_mode_index(n->wMode));
 	c = UiButtonGroup_Draw(ui, &g_d.constraintW,
 		Ui_Rect(panel.x + 32, y, panel.w - 36, 26), wLabels, NULL, NULL,
 		UI_BTN_PRIMARY);
-	if (c >= 0) { n->wMode = c; g_d.doc.dirty = 1; g_d.layoutReady = 0; d_undo_push(); UiApp_Invalidate(g_d.app); }
+	if (c >= 0) {
+		n->wMode = c ? UI_DN_SIZE_FILL : UI_DN_SIZE_FIXED;
+		g_d.doc.dirty = 1;
+		g_d.layoutReady = 0;
+		d_undo_push();
+		UiApp_Invalidate(g_d.app);
+	}
 	y += 30;
 	Gfx_Text(g_d.app->gfx, t->fSmall, "高",
 		Ui_Rect(panel.x + 4, y, 26, 26), t->text3, GFX_TEXT_VCENTER);
-	UiButtonGroup_SetSelected(&g_d.constraintH, n->hMode);
+	UiButtonGroup_SetSelected(&g_d.constraintH, d_mode_index(n->hMode));
 	c = UiButtonGroup_Draw(ui, &g_d.constraintH,
 		Ui_Rect(panel.x + 32, y, panel.w - 36, 26), hLabels, NULL, NULL,
 		UI_BTN_PRIMARY);
-	if (c >= 0) { n->hMode = c; g_d.doc.dirty = 1; g_d.layoutReady = 0; d_undo_push(); UiApp_Invalidate(g_d.app); }
+	if (c >= 0) {
+		n->hMode = c ? UI_DN_SIZE_FILL : UI_DN_SIZE_FIXED;
+		g_d.doc.dirty = 1;
+		g_d.layoutReady = 0;
+		d_undo_push();
+		UiApp_Invalidate(g_d.app);
+	}
 	y += 30;
 	Gfx_Text(g_d.app->gfx, t->fSmall, "对齐",
 		Ui_Rect(panel.x + 4, y, 42, 26), t->text3, GFX_TEXT_VCENTER);
@@ -3876,8 +3900,8 @@ static void d_on_init(UiApp *app, void *user)
 	UiButtonGroup_Init(&g_d.compGroup, Ui_Id("dsn.compgrp", 0, 0),
 		UI_BG_SINGLE, 14);
 	UiButtonGroup_SetSelected(&g_d.compGroup, -1);
-	UiButtonGroup_Init(&g_d.constraintW, Ui_Id("dsn.cw", 0, 0), UI_BG_SINGLE, 4);
-	UiButtonGroup_Init(&g_d.constraintH, Ui_Id("dsn.ch", 0, 0), UI_BG_SINGLE, 4);
+	UiButtonGroup_Init(&g_d.constraintW, Ui_Id("dsn.cw", 0, 0), UI_BG_SINGLE, 2);
+	UiButtonGroup_Init(&g_d.constraintH, Ui_Id("dsn.ch", 0, 0), UI_BG_SINGLE, 2);
 	UiButtonGroup_Init(&g_d.constraintAlign, Ui_Id("dsn.ca", 0, 0), UI_BG_SINGLE, 3);
 	UiButtonGroup_Init(&g_d.constraintKind, Ui_Id("dsn.ck", 0, 0), UI_BG_SINGLE, 4);
 	UiButtonGroup_Init(&g_d.multiAlign, Ui_Id("dsn.ma", 0, 0), UI_BG_SINGLE, 6);
@@ -3896,6 +3920,7 @@ static void d_on_init(UiApp *app, void *user)
 	d_status("就绪 · 打开或新建 .cui 工程");
 	if (g_d.startupFile[0]) {
 		if (UiDesign_LoadFile(&g_d.doc, g_d.startupFile)) {
+			d_normalize_modes();
 			d_reset_selection();
 			d_undo_reset();
 			d_dir_of(g_d.startupFile, g_d.lastDir, MAX_PATH);

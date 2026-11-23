@@ -87,6 +87,27 @@ void UiDesign_Free(UiDesignDoc *doc)
 	memset(doc, 0, sizeof(*doc));
 }
 
+void UiDesign_NormalizeSizeModes(UiDesignDoc *doc)
+{
+	int i;
+	if (!doc) return;
+	for (i = 0; i < doc->nodeCount; i++) {
+		UiDesignNode *n = &doc->nodes[i];
+		if (n->wMode == UI_DN_SIZE_AUTO) {
+			if (n->w <= 0.0f) n->w = UiDesign_DefaultW(n->type);
+			n->wMode = UI_DN_SIZE_FIXED;
+		} else if (n->wMode == UI_DN_SIZE_GROW) {
+			n->wMode = UI_DN_SIZE_FILL;
+		}
+		if (n->hMode == UI_DN_SIZE_AUTO) {
+			if (n->h <= 0.0f) n->h = UiDesign_DefaultH(n->type);
+			n->hMode = UI_DN_SIZE_FIXED;
+		} else if (n->hMode == UI_DN_SIZE_GROW) {
+			n->hMode = UI_DN_SIZE_FILL;
+		}
+	}
+}
+
 /* ── 组件类型 ───────────────────────────────────────────────────────── */
 
 static const struct {
