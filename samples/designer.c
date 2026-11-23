@@ -39,6 +39,7 @@ int strcmp(const char *a, const char *b);
 
 typedef enum {
 	DSEL_WINDOW = 0,
+	DSEL_VIEW,
 	DSEL_GROUP,
 	DSEL_NODE
 } DSelKind;
@@ -55,7 +56,8 @@ enum {
 
 enum {
 	DK_W_ID = 1, DK_W_NAME, DK_W_TITLE, DK_W_KIND, DK_W_GROUP,
-	DK_W_W, DK_W_H, DK_W_MINW, DK_W_MINH, DK_W_THEME,
+	DK_W_W, DK_W_H, DK_W_MINW, DK_W_MINH, DK_W_THEME, DK_W_VIEW,
+	DK_V_ID = 20, DK_V_NAME, DK_V_W, DK_V_H, DK_V_GROUP,
 	DK_G_ID = 40, DK_G_NAME, DK_G_OUTC, DK_G_OUTH, DK_G_SYM,
 	DK_N_ID = 80, DK_N_NAME, DK_N_TYPE,
 	DK_N_WMODE, DK_N_W, DK_N_HMODE, DK_N_H, DK_N_GROW,
@@ -71,7 +73,7 @@ enum {
 enum {
 	DNA_NEW = 1, DNA_OPEN, DNA_SAVE, DNA_SAVEAS, DNA_GENERATE, DNA_EXIT,
 	DNA_UNDO, DNA_REDO, DNA_DUP, DNA_DEL, DNA_UP, DNA_DOWN,
-	DNA_ADDWIN, DNA_ADDDLG, DNA_ADDGRP, DNA_GENALL, DNA_GENWIN,
+	DNA_ADDWIN, DNA_ADDDLG, DNA_ADDPANEL, DNA_ADDGRP, DNA_GENALL, DNA_GENWIN,
 	DNA_DESIGN, DNA_PREVIEW
 };
 
@@ -91,7 +93,8 @@ typedef struct Designer {
 	UiDesignDoc doc;
 
 	int selKind;
-	int selWin;
+	int selWin;          /* 选中宿主 */
+	int selView;         /* 当前画布/组件树视图 */
 	int selGroup;
 	int selNode;
 	int selSet[128];
@@ -144,7 +147,7 @@ typedef struct Designer {
 
 	UiNavBar nav;
 	UiNavItem navRoot[5];
-	UiNavItem navFile[6], navEdit[6], navProj[5], navView[2];
+	UiNavItem navFile[6], navEdit[6], navProj[6], navView[2];
 	UiId navAct[24];
 	int navActKind[24];
 	int navActN;
@@ -363,7 +366,7 @@ static void d_doc_path_wide(WCHAR *out, int cap)
 	d_wide(g_d.doc.path, out, cap);
 }
 
-static void d_autosize_window(UiDesignWindow *w)
+static void d_autosize_window(UiDesignHost *w)
 {
 	if (!w) return;
 	if (w->w < 120) w->w = 800;
@@ -425,6 +428,22 @@ static void d_after_edit(void)
 	d_undo_push();
 }
 
+static int d_view_root(void)
+{
+	if (g_d.selView >= 0 && g_d.selView < g_d.doc.viewCount)
+		return g_d.doc.views[g_d.selView].root;
+	return -1;
+}
+
+static int d_host_root(int host)
+{
+	int v;
+	if (host < 0 || host >= g_d.doc.hostCount) return -1;
+	v = g_d.doc.hosts[host].view;
+	if (v < 0 || v >= g_d.doc.viewCount) return -1;
+	return g_d.doc.views[v].root;
+}
+
 static void d_undo_step(int redo)
 {
 	int np;
@@ -442,14 +461,15 @@ static void d_undo_step(int redo)
 		return;
 	}
 	g_d.undoPos = np;
-	if (g_d.selWin >= g_d.doc.windowCount) g_d.selWin = 0;
-	if (g_d.selGroup >= g_d.doc.groupCount) g_d.selGroup = 0;
+	if (g_d.selWin >= g_d.doc.hostCount) g_d.selWin = g_d.doc.hostCount > 0 ? 0 : -1;
+	if (g_d.selGroup >= g_d.doc.groupCount) g_d.selGroup = g_d.doc.groupCount > 0 ? 0 : -1;
+	if (g_d.selView >= g_d.doc.viewCount) g_d.selView = g_d.doc.viewCount > 0 ? 0 : -1;
+	if (g_d.selWin >= 0) g_d.selView = g_d.doc.hosts[g_d.selWin].view;
 	g_d.selNode = -1;
-	g_d.selKind = g_d.doc.windowCount > 0 ? DSEL_WINDOW : DSEL_NODE;
+	g_d.selKind = g_d.selView >= 0 ? DSEL_VIEW : DSEL_WINDOW;
 	d_sel_clear();
-	if (g_d.selWin >= 0 && g_d.selWin < g_d.doc.windowCount &&
-	    g_d.doc.windows[g_d.selWin].root >= 0) {
-		g_d.selNode = g_d.doc.windows[g_d.selWin].root;
+	if (d_view_root() >= 0) {
+		g_d.selNode = d_view_root();
 		g_d.selSet[0] = g_d.selNode;
 		g_d.selSetN = 1;
 	}
@@ -502,12 +522,14 @@ static void d_preview_shutdown(void)
 
 static void d_reset_selection(void)
 {
-	int wi = g_d.doc.windowCount > 0 ? 0 : -1;
+	int wi = g_d.doc.hostCount > 0 ? 0 : -1;
 	d_preview_shutdown();
 	g_d.selWin = wi;
+	g_d.selView = wi >= 0 ? g_d.doc.hosts[wi].view : (g_d.doc.viewCount > 0 ? 0 : -1);
+	if (g_d.selView < 0 && g_d.doc.viewCount > 0) g_d.selView = 0;
 	g_d.selGroup = g_d.doc.groupCount > 0 ? 0 : -1;
-	g_d.selKind = wi >= 0 ? DSEL_WINDOW : DSEL_NODE;
-	g_d.selNode = wi >= 0 ? g_d.doc.windows[wi].root : -1;
+	g_d.selKind = g_d.selView >= 0 ? DSEL_VIEW : DSEL_WINDOW;
+	g_d.selNode = d_view_root();
 	d_sel_clear();
 	if (g_d.selNode >= 0) { g_d.selSet[0] = g_d.selNode; g_d.selSetN = 1; }
 	g_d.treeDragIdx = -1;
@@ -582,8 +604,8 @@ static void d_generate_window(void)
 	WCHAR dir[MAX_PATH] = L".";
 	char report[256], err[256];
 	d_after_edit();
-	if (g_d.selWin < 0 || g_d.selWin >= g_d.doc.windowCount) {
-		d_error("请先选择一个窗口");
+	if (g_d.selWin < 0 || g_d.selWin >= g_d.doc.hostCount) {
+		d_error("请先选择一个宿主");
 		return;
 	}
 	if (!d_validate(err, sizeof(err))) {
@@ -595,9 +617,9 @@ static void d_generate_window(void)
 		d_wide(g_d.doc.path, file, MAX_PATH);
 		d_dir_of(file, dir, MAX_PATH);
 	}
-	if (UiDesign_GenerateWindow(&g_d.doc, g_d.selWin, dir, report,
+	if (UiDesign_GenerateHost(&g_d.doc, g_d.selWin, dir, report,
 	    sizeof(report)) < 0)
-		d_error("单窗口生成失败 (检查输出目录)");
+		d_error("单宿主生成失败 (检查输出目录)");
 	else
 		d_status(report);
 }
@@ -755,9 +777,14 @@ static void d_sel_prune(void)
 	if (g_d.selNode >= g_d.doc.nodeCount) g_d.selNode = n > 0 ? g_d.selSet[n - 1] : -1;
 }
 
-static UiDesignWindow *d_selwindow(void)
+static UiDesignHost *d_selwindow(void)
 {
-	return g_d.selWin >= 0 ? UiDesign_Window(&g_d.doc, g_d.selWin) : NULL;
+	return g_d.selWin >= 0 ? UiDesign_Host(&g_d.doc, g_d.selWin) : NULL;
+}
+
+static UiDesignView *d_selview(void)
+{
+	return g_d.selView >= 0 ? UiDesign_View(&g_d.doc, g_d.selView) : NULL;
 }
 
 static UiDesignGroup *d_selgroup(void)
@@ -807,19 +834,35 @@ static void d_build_props(void)
 	g_d.propN = 0;
 	g_d.propSection = 0;
 	if (g_d.selKind == DSEL_WINDOW) {
-		UiDesignWindow *w = d_selwindow();
+		UiDesignHost *w = d_selwindow();
 		if (!w) return;
 		d_prop_add(DK_W_ID, DPK_TEXT, "ID", w->id);
 		d_prop_add(DK_W_NAME, DPK_TEXT, "名称", w->name);
 		d_prop_add(DK_W_TITLE, DPK_TEXT, "标题", w->title);
 		d_prop_add(DK_W_THEME, DPK_ENUM, "主题", w->theme == UI_THEME_DARK ? "Dark" : "Light");
 		g_d.propSection = 2;
-		d_prop_add(DK_W_KIND, DPK_ENUM, "类型", w->kind == UI_DW_DIALOG ? "Virtual Dialog" : "Native");
+		d_prop_add(DK_W_KIND, DPK_ENUM, "宿主类型",
+			w->kind == UI_DH_DIALOG ? "Dialog" :
+			(w->kind == UI_DH_PANEL ? "Panel" : "Window"));
+		d_prop_add(DK_W_VIEW, DPK_ENUM, "挂载视图",
+			w->view >= 0 && w->view < g_d.doc.viewCount
+				? g_d.doc.views[w->view].name : "未挂载");
 		d_prop_add(DK_W_GROUP, DPK_ENUM, "生成组", d_group_name(w->group));
 		d_fmt(b, sizeof(b), w->w); d_prop_add(DK_W_W, DPK_FLOAT, "宽", b);
 		d_fmt(b, sizeof(b), w->h); d_prop_add(DK_W_H, DPK_FLOAT, "高", b);
 		d_fmt(b, sizeof(b), w->minW); d_prop_add(DK_W_MINW, DPK_FLOAT, "最小宽", b);
 		d_fmt(b, sizeof(b), w->minH); d_prop_add(DK_W_MINH, DPK_FLOAT, "最小高", b);
+		return;
+	}
+	if (g_d.selKind == DSEL_VIEW) {
+		UiDesignView *v = d_selview();
+		if (!v) return;
+		d_prop_add(DK_V_ID, DPK_TEXT, "ID", v->id);
+		d_prop_add(DK_V_NAME, DPK_TEXT, "名称", v->name);
+		g_d.propSection = 2;
+		d_prop_add(DK_V_GROUP, DPK_ENUM, "生成组", d_group_name(v->group));
+		d_fmt(b, sizeof(b), v->w); d_prop_add(DK_V_W, DPK_FLOAT, "设计宽", b);
+		d_fmt(b, sizeof(b), v->h); d_prop_add(DK_V_H, DPK_FLOAT, "设计高", b);
 		return;
 	}
 	if (g_d.selKind == DSEL_GROUP) {
@@ -980,7 +1023,7 @@ static void d_build_props(void)
 
 static void d_cycle_group(int dir)
 {
-	UiDesignWindow *w = d_selwindow();
+	UiDesignHost *w = d_selwindow();
 	int g;
 	if (!w) return;
 	g = w->group;
@@ -994,14 +1037,28 @@ static void d_cycle_group(int dir)
 static void d_prop_cycle(int key)
 {
 	UiDesignNode *n;
-	UiDesignWindow *w;
+	UiDesignHost *w;
 	if (g_d.preview) return;
 	n = d_selnode();
 	w = d_selwindow();
 	if (g_d.selKind == DSEL_WINDOW && w) {
-		if (key == DK_W_KIND) w->kind = w->kind == UI_DW_DIALOG ? UI_DW_NATIVE : UI_DW_DIALOG;
-		else if (key == DK_W_GROUP) d_cycle_group(1);
+		if (key == DK_W_KIND) w->kind = (w->kind + 1) % 3;
+		else if (key == DK_W_VIEW) {
+			int v = w->view + 1;
+			if (v >= g_d.doc.viewCount) v = -1;
+			w->view = v;
+			if (v >= 0) g_d.selView = v;
+			g_d.layoutReady = 0;
+			d_preview_shutdown();
+		} else if (key == DK_W_GROUP) d_cycle_group(1);
 		else if (key == DK_W_THEME) w->theme = w->theme == UI_THEME_DARK ? UI_THEME_LIGHT : UI_THEME_DARK;
+	} else if (g_d.selKind == DSEL_VIEW && d_selview()) {
+		UiDesignView *v = d_selview();
+		if (key == DK_V_GROUP) {
+			int g = v->group + 1;
+			if (g >= g_d.doc.groupCount) g = -1;
+			v->group = g;
+		}
 	} else if (g_d.selKind == DSEL_NODE && n) {
 		if (key == DK_N_WMODE) n->wMode = (n->wMode + 1) % 4;
 		else if (key == DK_N_HMODE) n->hMode = (n->hMode + 1) % 4;
@@ -1026,7 +1083,7 @@ static void d_prop_cycle(int key)
 static void d_prop_apply_text(int key, const char *text)
 {
 	UiDesignNode *n = d_selnode();
-	UiDesignWindow *w = d_selwindow();
+	UiDesignHost *w = d_selwindow();
 	UiDesignGroup *gr = d_selgroup();
 	if (g_d.selKind == DSEL_WINDOW && w) {
 		if (key == DK_W_ID) UiDesign_SetText(w->id, UI_DN_ID_MAX, text);
@@ -1037,6 +1094,12 @@ static void d_prop_apply_text(int key, const char *text)
 		else if (key == DK_W_MINW) w->minW = (float)d_atof(text);
 		else if (key == DK_W_MINH) w->minH = (float)d_atof(text);
 		d_autosize_window(w);
+	} else if (g_d.selKind == DSEL_VIEW && d_selview()) {
+		UiDesignView *v = d_selview();
+		if (key == DK_V_ID) UiDesign_SetText(v->id, UI_DN_ID_MAX, text);
+		else if (key == DK_V_NAME) UiDesign_SetText(v->name, UI_DN_NAME_MAX, text);
+		else if (key == DK_V_W) v->w = (float)d_atof(text);
+		else if (key == DK_V_H) v->h = (float)d_atof(text);
 	} else if (g_d.selKind == DSEL_GROUP && gr) {
 		if (key == DK_G_ID) UiDesign_SetText(gr->id, UI_DN_ID_MAX, text);
 		else if (key == DK_G_NAME) UiDesign_SetText(gr->name, UI_DN_NAME_MAX, text);
@@ -1140,8 +1203,7 @@ static int d_container_parent(void)
 		return g_d.selNode;
 	}
 	if (n && n->parent >= 0) return n->parent;
-	if (g_d.selWin >= 0) return g_d.doc.windows[g_d.selWin].root;
-	return -1;
+	return d_view_root();
 }
 
 static void d_grid_defaults(UiDesignNode *n)
@@ -1176,16 +1238,16 @@ static void d_tabs_add_pages(int win, int tabsIdx)
 static void d_add_node(int type)
 {
 	int parent = d_container_parent();
-	int win = g_d.selWin;
+	int view = g_d.selView;
 	int idx;
 	char id[UI_DN_ID_MAX];
 	char name[UI_DN_NAME_MAX];
 	UiDesignNode *n;
-	if (win < 0 || parent < 0) return;
+	if (view < 0 || parent < 0) return;
 	d_after_edit();
-	d_unique_node_id(win, UiDesign_TypeName(type), id, sizeof(id));
+	d_unique_node_id(view, UiDesign_TypeName(type), id, sizeof(id));
 	UiDesign_SetText(name, sizeof(name), UiDesign_TypeName(type));
-	idx = UiDesign_AddNode(&g_d.doc, win, type, parent, id, name);
+	idx = UiDesign_AddNode(&g_d.doc, view, type, parent, id, name);
 	n = UiDesign_Node(&g_d.doc, idx);
 	if (!n) return;
 	if (UiDesign_IsContainer(type)) {
@@ -1232,7 +1294,7 @@ static void d_add_node(int type)
 		n->padding[0] = n->padding[1] = n->padding[2] = n->padding[3] = 10.0f;
 		n->gap = 0.0f;
 		n->selected = 0;
-		d_tabs_add_pages(win, idx);
+		d_tabs_add_pages(view, idx);
 	}
 	d_sel_single(idx);
 	g_d.doc.dirty = 1;
@@ -1243,9 +1305,10 @@ static void d_add_node(int type)
 
 static void d_add_window(int kind)
 {
-	int wi, gi = g_d.selGroup;
+	int wi, vi, gi = g_d.selGroup;
 	int root;
 	char id[UI_DN_ID_MAX], name[UI_DN_NAME_MAX];
+	char vid[UI_DN_ID_MAX], vname[UI_DN_NAME_MAX];
 	if (g_d.doc.groupCount <= 0) {
 		UiDesign_AddGroup(&g_d.doc, "group1", "分组 1");
 		gi = 0;
@@ -1255,13 +1318,23 @@ static void d_add_window(int kind)
 		int i;
 		for (i = 1; i < 100; i++) {
 			snprintf(id, sizeof(id), "win%d", i);
-			if (UiDesign_FindWindow(&g_d.doc, id) < 0) break;
+			if (UiDesign_FindHost(&g_d.doc, id) < 0) break;
 		}
 	}
-	snprintf(name, sizeof(name), kind == UI_DW_DIALOG ? "Dialog %d" : "窗口 %d",
-		g_d.doc.windowCount + 1);
-	wi = UiDesign_AddWindow(&g_d.doc, id, name, kind, gi);
-	root = UiDesign_AddNode(&g_d.doc, wi, UI_DN_COLUMN, -1, "root", "根容器");
+	snprintf(name, sizeof(name), kind == UI_DH_DIALOG ? "Dialog %d" : "窗口 %d",
+		g_d.doc.hostCount + 1);
+	{
+		int i;
+		for (i = 1; i < 1000; i++) {
+			snprintf(vid, sizeof(vid), "%s_view%d", id, i);
+			if (UiDesign_FindView(&g_d.doc, vid) < 0) break;
+		}
+	}
+	snprintf(vname, sizeof(vname), "%s 视图", name);
+	vi = UiDesign_AddView(&g_d.doc, vid, vname);
+	UiDesign_View(&g_d.doc, vi)->group = gi;
+	wi = UiDesign_AddHost(&g_d.doc, id, name, kind, gi);
+	root = UiDesign_AddNode(&g_d.doc, vi, UI_DN_COLUMN, -1, "root", "根容器");
 	UiDesign_Node(&g_d.doc, root)->wMode = UI_DN_SIZE_FILL;
 	UiDesign_Node(&g_d.doc, root)->hMode = UI_DN_SIZE_FILL;
 	UiDesign_Node(&g_d.doc, root)->padding[0] = 16;
@@ -1269,18 +1342,20 @@ static void d_add_window(int kind)
 	UiDesign_Node(&g_d.doc, root)->padding[2] = 16;
 	UiDesign_Node(&g_d.doc, root)->padding[3] = 16;
 	UiDesign_Node(&g_d.doc, root)->gap = 8;
-	g_d.doc.windows[wi].root = root;
-	g_d.doc.windows[wi].w = 800;
-	g_d.doc.windows[wi].h = 540;
+	UiDesign_View(&g_d.doc, vi)->root = root;
+	UiDesign_Host(&g_d.doc, wi)->view = vi;
+	UiDesign_Host(&g_d.doc, wi)->w = 800;
+	UiDesign_Host(&g_d.doc, wi)->h = 540;
 	g_d.selWin = wi;
-	g_d.selKind = DSEL_WINDOW;
+	g_d.selView = vi;
+	g_d.selKind = DSEL_VIEW;
 	g_d.selNode = root;
 	d_sel_clear();
 	if (root >= 0) { g_d.selSet[0] = root; g_d.selSetN = 1; }
 	g_d.doc.dirty = 1;
 	g_d.layoutReady = 0;
 	d_undo_push();
-	d_status(kind == UI_DW_DIALOG ? "已添加虚拟 Dialog" : "已添加窗口");
+	d_status(kind == UI_DH_DIALOG ? "已添加虚拟 Dialog" : "已添加窗口");
 }
 
 static void d_add_group(void)
@@ -1324,32 +1399,117 @@ static void d_del_node(void)
 static void d_del_window(void)
 {
 	int wi = g_d.selWin, i;
-	if (g_d.preview || wi < 0 || wi >= g_d.doc.windowCount) return;
+	if (g_d.preview || wi < 0 || wi >= g_d.doc.hostCount) return;
 	d_preview_shutdown();
-	for (i = 0; i < g_d.doc.nodeCount; i++)
-		if (g_d.doc.nodes[i].owner > wi) g_d.doc.nodes[i].owner--;
-	for (i = wi + 1; i < g_d.doc.windowCount; i++)
-		g_d.doc.windows[i - 1] = g_d.doc.windows[i];
-	g_d.doc.windowCount--;
-	g_d.selWin = g_d.doc.windowCount > 0
-		? (wi >= g_d.doc.windowCount ? g_d.doc.windowCount - 1 : wi) : -1;
-	g_d.selKind = DSEL_WINDOW;
-	g_d.selNode = g_d.selWin >= 0 ? g_d.doc.windows[g_d.selWin].root : -1;
+	for (i = wi + 1; i < g_d.doc.hostCount; i++)
+		g_d.doc.hosts[i - 1] = g_d.doc.hosts[i];
+	g_d.doc.hostCount--;
+	g_d.selWin = g_d.doc.hostCount > 0
+		? (wi >= g_d.doc.hostCount ? g_d.doc.hostCount - 1 : wi) : -1;
+	if (g_d.selWin >= 0) g_d.selView = g_d.doc.hosts[g_d.selWin].view;
+	g_d.selKind = g_d.selView >= 0 ? DSEL_VIEW : DSEL_WINDOW;
+	g_d.selNode = d_view_root();
 	d_sel_clear();
 	if (g_d.selNode >= 0) { g_d.selSet[0] = g_d.selNode; g_d.selSetN = 1; }
 	g_d.doc.dirty = 1;
 	g_d.layoutReady = 0;
 	d_undo_push();
-	d_status("已删除窗口/Dialog");
+	d_status("已删除宿主");
+}
+
+static void d_del_view(void)
+{
+	int vi = g_d.selView;
+	if (g_d.preview || vi < 0 || vi >= g_d.doc.viewCount) return;
+	d_preview_shutdown();
+	UiDesign_ViewRemove(&g_d.doc, vi);
+	if (g_d.selView >= g_d.doc.viewCount)
+		g_d.selView = g_d.doc.viewCount - 1;
+	g_d.selNode = -1;
+	d_sel_clear();
+	if (g_d.selView >= 0) {
+		g_d.selKind = DSEL_VIEW;
+		g_d.selNode = d_view_root();
+		if (g_d.selNode >= 0) {
+			g_d.selSet[0] = g_d.selNode;
+			g_d.selSetN = 1;
+		}
+	} else {
+		g_d.selKind = g_d.selWin >= 0 ? DSEL_WINDOW : DSEL_NODE;
+	}
+	g_d.doc.dirty = 1;
+	g_d.layoutReady = 0;
+	d_undo_push();
+	d_status("已删除视图");
+}
+
+static void d_add_view(void)
+{
+	int vi, root, gi = g_d.selGroup;
+	char id[UI_DN_ID_MAX], name[UI_DN_NAME_MAX];
+	int i;
+	for (i = 1; i < 1000; i++) {
+		snprintf(id, sizeof(id), "view%d", i);
+		if (UiDesign_FindView(&g_d.doc, id) < 0) break;
+	}
+	snprintf(name, sizeof(name), "视图 %d", g_d.doc.viewCount + 1);
+	vi = UiDesign_AddView(&g_d.doc, id, name);
+	UiDesign_View(&g_d.doc, vi)->group = gi;
+	root = UiDesign_AddNode(&g_d.doc, vi, UI_DN_COLUMN, -1, "root", "根容器");
+	UiDesign_Node(&g_d.doc, root)->wMode = UI_DN_SIZE_FILL;
+	UiDesign_Node(&g_d.doc, root)->hMode = UI_DN_SIZE_FILL;
+	UiDesign_Node(&g_d.doc, root)->padding[0] = 16;
+	UiDesign_Node(&g_d.doc, root)->padding[1] = 16;
+	UiDesign_Node(&g_d.doc, root)->padding[2] = 16;
+	UiDesign_Node(&g_d.doc, root)->padding[3] = 16;
+	UiDesign_Node(&g_d.doc, root)->gap = 8;
+	UiDesign_View(&g_d.doc, vi)->root = root;
+	g_d.selView = vi;
+	g_d.selKind = DSEL_VIEW;
+	g_d.selNode = root;
+	d_sel_clear();
+	g_d.selSet[0] = root;
+	g_d.selSetN = 1;
+	g_d.doc.dirty = 1;
+	g_d.layoutReady = 0;
+	d_undo_push();
+	d_status("已添加视图 · 可被窗口/Dialog/Panel 复用");
+}
+
+static void d_add_panel_host(void)
+{
+	int vi = g_d.selView, hi;
+	char id[UI_DN_ID_MAX], name[UI_DN_NAME_MAX];
+	int i;
+	if (vi < 0) {
+		d_add_view();
+		vi = g_d.selView;
+	}
+	for (i = 1; i < 1000; i++) {
+		snprintf(id, sizeof(id), "panel%d", i);
+		if (UiDesign_FindHost(&g_d.doc, id) < 0) break;
+	}
+	snprintf(name, sizeof(name), "Panel %d", g_d.doc.hostCount + 1);
+	hi = UiDesign_AddHost(&g_d.doc, id, name, UI_DH_PANEL, g_d.selGroup);
+	UiDesign_Host(&g_d.doc, hi)->view = vi;
+	g_d.selWin = hi;
+	g_d.selKind = DSEL_WINDOW;
+	g_d.doc.dirty = 1;
+	d_undo_push();
+	d_status("已添加 Panel 宿主 (引用当前视图)");
 }
 
 static void d_del_group(void)
 {
 	int gi = g_d.selGroup, i;
 	if (g_d.preview || gi < 0 || gi >= g_d.doc.groupCount) return;
-	for (i = 0; i < g_d.doc.windowCount; i++) {
-		if (g_d.doc.windows[i].group == gi) g_d.doc.windows[i].group = -1;
-		else if (g_d.doc.windows[i].group > gi) g_d.doc.windows[i].group--;
+	for (i = 0; i < g_d.doc.hostCount; i++) {
+		if (g_d.doc.hosts[i].group == gi) g_d.doc.hosts[i].group = -1;
+		else if (g_d.doc.hosts[i].group > gi) g_d.doc.hosts[i].group--;
+	}
+	for (i = 0; i < g_d.doc.viewCount; i++) {
+		if (g_d.doc.views[i].group == gi) g_d.doc.views[i].group = -1;
+		else if (g_d.doc.views[i].group > gi) g_d.doc.views[i].group--;
 	}
 	for (i = gi + 1; i < g_d.doc.groupCount; i++)
 		g_d.doc.groups[i - 1] = g_d.doc.groups[i];
@@ -1364,6 +1524,7 @@ static void d_del_group(void)
 static void d_del_selected(void)
 {
 	if (g_d.selKind == DSEL_WINDOW) d_del_window();
+	else if (g_d.selKind == DSEL_VIEW) d_del_view();
 	else if (g_d.selKind == DSEL_GROUP) d_del_group();
 	else d_del_node();
 }
@@ -1410,7 +1571,7 @@ static void d_dup_node(void)
 		if (!d_selnode() || d_selnode()->parent < 0) return;
 		dup = UiDesign_NodeDuplicate(&g_d.doc, g_d.selNode);
 		if (dup < 0) return;
-		d_unique_all_ids(g_d.selWin);
+		d_unique_all_ids(g_d.selView);
 		g_d.selNode = dup;
 		g_d.selKind = DSEL_NODE;
 		d_sel_single(dup);
@@ -1436,7 +1597,7 @@ static void d_dup_node(void)
 		}
 	}
 	if (count <= 0) return;
-	d_unique_all_ids(g_d.selWin);
+	d_unique_all_ids(g_d.selView);
 	d_sel_clear();
 	for (i = 0; i < count && g_d.selSetN < 128; i++)
 		g_d.selSet[g_d.selSetN++] = sel[i];
@@ -1462,12 +1623,32 @@ static void d_move_node(int dir)
 
 static void d_select_window(int wi)
 {
-	if (wi < 0 || wi >= g_d.doc.windowCount) return;
+	if (wi < 0 || wi >= g_d.doc.hostCount) return;
 	g_d.selWin = wi;
+	g_d.selView = g_d.doc.hosts[wi].view;
 	g_d.selKind = DSEL_WINDOW;
-	g_d.selNode = g_d.doc.windows[wi].root;
+	g_d.selNode = d_view_root();
 	d_sel_clear();
 	if (g_d.selNode >= 0) { g_d.selSet[0] = g_d.selNode; g_d.selSetN = 1; }
+	g_d.layoutReady = 0;
+	d_preview_shutdown();
+}
+
+static void d_select_view(int vi)
+{
+	int i, host = -1;
+	if (vi < 0 || vi >= g_d.doc.viewCount) return;
+	g_d.selView = vi;
+	g_d.selKind = DSEL_VIEW;
+	g_d.selNode = -1;
+	d_sel_clear();
+	/* 预览跟随一个引用该视图的宿主. */
+	if (g_d.selWin < 0 || g_d.selWin >= g_d.doc.hostCount ||
+	    g_d.doc.hosts[g_d.selWin].view != vi) {
+		for (i = 0; i < g_d.doc.hostCount; i++)
+			if (g_d.doc.hosts[i].view == vi) { host = i; break; }
+		if (host >= 0) g_d.selWin = host;
+	}
 	g_d.layoutReady = 0;
 	d_preview_shutdown();
 }
@@ -1766,9 +1947,7 @@ static void d_draw_handles(int idx)
 
 static void d_layout_current(void)
 {
-	UiDesignWindow *w;
-	if (g_d.selWin < 0 || g_d.selWin >= g_d.doc.windowCount) return;
-	w = &g_d.doc.windows[g_d.selWin];
+	if (g_d.selView < 0 || g_d.selView >= g_d.doc.viewCount) return;
 	if (!g_d.rects || g_d.rectCount < g_d.doc.nodeCount) {
 		UiRect *np;
 		if (g_d.rects)
@@ -1781,7 +1960,7 @@ static void d_layout_current(void)
 		g_d.rects = np;
 		g_d.rectCount = g_d.doc.nodeCount;
 	}
-	UiDesign_Layout(&g_d.doc, g_d.selWin, g_d.winRc, g_d.rects, g_d.rectCount);
+	UiDesign_Layout(&g_d.doc, g_d.selView, g_d.winRc, g_d.rects, g_d.rectCount);
 	g_d.layoutReady = 1;
 }
 
@@ -1903,44 +2082,54 @@ static void d_draw_canvas(void)
 	int i;
 
 	Ui_Panel(ui, area);
-	for (i = 0; i < g_d.doc.windowCount; i++) {
-		UiDesignWindow *w = &g_d.doc.windows[i];
+	for (i = 0; i < g_d.doc.viewCount; i++) {
+		UiDesignView *v = &g_d.doc.views[i];
 		float bw = 110.0f;
 		UiRect rc = Ui_Rect(tabs.x + x, tabs.y + 2.0f, bw, 26.0f);
 		UiWidgetState st;
-		UiId id = Ui_IdIndex("dsn.wintab", i, 0, 0);
+		UiId id = Ui_IdIndex("dsn.viewtab", i, 0, 0);
 		if (rc.x + bw > tabs.x + tabs.w) break;
 		st = Ui_StateInstant(ui, id, rc, 1);
-		if (i == g_d.selWin) Gfx_FillRoundRect(g, rc, 5.0f, t->primary.soft);
+		if (i == g_d.selView) Gfx_FillRoundRect(g, rc, 5.0f, t->primary.soft);
 		else if (st.hovered) Gfx_FillRoundRect(g, rc, 5.0f, t->rowOn);
-		Gfx_Text(g, t->fSmall, w->name, rc,
-			i == g_d.selWin ? t->primary.base : t->text2,
+		Gfx_Text(g, t->fSmall, v->name, rc,
+			i == g_d.selView ? t->primary.base : t->text2,
 			GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 		if (ui->clicked == id) {
-			d_select_window(i);
+			d_select_view(i);
 			UiApp_Invalidate(g_d.app);
 		}
 		x += bw + 6.0f;
 	}
 
-	if (g_d.selWin < 0 || g_d.selWin >= g_d.doc.windowCount) {
+	if (g_d.selView < 0 || g_d.selView >= g_d.doc.viewCount) {
 		Gfx_Text(g, t->fBody, "新建或打开一个 .cui 工程", body, t->text3,
 			GFX_TEXT_CENTER | GFX_TEXT_VCENTER);
 		return;
 	}
+	if (g_d.preview && (g_d.selWin < 0 || g_d.selWin >= g_d.doc.hostCount)) {
+		Gfx_Text(g, t->fBody, "预览需要一个宿主", body, t->text3,
+			GFX_TEXT_CENTER | GFX_TEXT_VCENTER);
+		return;
+	}
 	{
-		UiDesignWindow *w = &g_d.doc.windows[g_d.selWin];
+		UiDesignHost *w = (g_d.selWin >= 0 && g_d.selWin < g_d.doc.hostCount)
+			? &g_d.doc.hosts[g_d.selWin] : NULL;
+		UiDesignView *vw = g_d.selView >= 0 && g_d.selView < g_d.doc.viewCount
+			? &g_d.doc.views[g_d.selView] : NULL;
+		float dw = vw ? vw->w : 800.0f;
+		float dh = vw ? vw->h : 540.0f;
 		UiRect win;
 		d_autosize_window(w);
-		if (g_d.preview && g_d.instReady) {
+		if (g_d.preview && g_d.instReady && w) {
 			/* 预览不做缩放: 运行时控件命中仍使用屏幕坐标 */
-			win.w = w->w;
-			win.h = w->h;
+			win.w = w->kind == UI_DH_PANEL ? dw : w->w;
+			win.h = w->kind == UI_DH_PANEL ? dh : w->h;
 			win.x = body.x + (body.w - win.w) * 0.5f;
 			win.y = body.y + 10.0f;
 			g_d.winScreen = win;
 			Gfx_PushClip(g, body);
-			if (w->kind == UI_DW_DIALOG) {
+			if (w->kind == UI_DH_DIALOG) {
 				UiRect card;
 				if (UiDesign_DialogIsOpen(&g_d.inst)) {
 					/* 真实 UiDialog 会在整窗遮罩上绘制, 画布不再放占位卡. */
@@ -1971,33 +2160,33 @@ static void d_draw_canvas(void)
 			}
 			Gfx_PopClip(g);
 		} else {
-			UiRect base = Ui_Rect(0, 0, w->w, w->h);
+			UiRect base = Ui_Rect(0, 0, dw, dh);
 			g_d.winRc = base;
-			g_d.viewTx = body.x + (body.w - w->w * g_d.zoom) * 0.5f + g_d.panX;
+			g_d.viewTx = body.x + (body.w - dw * g_d.zoom) * 0.5f + g_d.panX;
 			g_d.viewTy = body.y + 10.0f + g_d.panY;
 			g_d.winScreen = Ui_Rect(g_d.viewTx, g_d.viewTy,
-				w->w * g_d.zoom, w->h * g_d.zoom);
+				dw * g_d.zoom, dh * g_d.zoom);
 			d_layout_current();
 			Gfx_PushClip(g, body);
 			Gfx_PushScaleTranslate(g, g_d.zoom, g_d.viewTx, g_d.viewTy);
-			Gfx_FillRoundRect(g, Ui_Rect(-5, -5, w->w + 10, w->h + 10),
+			Gfx_FillRoundRect(g, Ui_Rect(-5, -5, dw + 10, dh + 10),
 				10.0f, Ui_ColorAlpha(0xFF000000, 24));
 			Gfx_FillRoundRect(g, base, 0.0f, t->page);
 			Gfx_StrokeRoundRect(g, base, 0.0f, t->border, 1.0f);
-			if (w->root >= 0) {
-				d_draw_static_node(w->root);
+			if (d_view_root() >= 0) {
+				d_draw_static_node(d_view_root());
 				{
 					int si;
 					for (si = 0; si < g_d.selSetN; si++) {
 						int ni = g_d.selSet[si];
 						if (ni == g_d.selNode || ni < 0 || ni >= g_d.doc.nodeCount) continue;
-						if (g_d.doc.nodes[ni].owner != g_d.selWin) continue;
+						if (g_d.doc.nodes[ni].owner != g_d.selView) continue;
 						Gfx_StrokeRoundRect(g, g_d.rects[ni], 1.0f,
 							Ui_ColorAlpha(t->primary.base, 190), 1.5f);
 					}
 				}
 				if (g_d.selKind == DSEL_NODE && g_d.selNode >= 0 &&
-				    g_d.doc.nodes[g_d.selNode].owner == g_d.selWin) {
+				    g_d.doc.nodes[g_d.selNode].owner == g_d.selView) {
 					d_draw_layout_guides();
 					d_draw_handles(g_d.selNode);
 				}
@@ -2081,14 +2270,15 @@ static void d_nav_init(void)
 	g_d.navEdit[5] = d_nav_leaf("dsn.nav.down", DNA_DOWN, "下移");
 	g_d.navProj[0] = d_nav_leaf("dsn.nav.addwin", DNA_ADDWIN, "新建窗口");
 	g_d.navProj[1] = d_nav_leaf("dsn.nav.adddlg", DNA_ADDDLG, "新建虚拟 Dialog");
-	g_d.navProj[2] = d_nav_leaf("dsn.nav.addgrp", DNA_ADDGRP, "新建生成组");
-	g_d.navProj[3] = d_nav_leaf("dsn.nav.genall", DNA_GENALL, "生成全部分组");
-	g_d.navProj[4] = d_nav_leaf("dsn.nav.genwin", DNA_GENWIN, "生成当前窗口");
+	g_d.navProj[2] = d_nav_leaf("dsn.nav.addpanel", DNA_ADDPANEL, "新建 Panel 宿主");
+	g_d.navProj[3] = d_nav_leaf("dsn.nav.addgrp", DNA_ADDGRP, "新建生成组");
+	g_d.navProj[4] = d_nav_leaf("dsn.nav.genall", DNA_GENALL, "生成全部分组");
+	g_d.navProj[5] = d_nav_leaf("dsn.nav.genwin", DNA_GENWIN, "生成当前宿主");
 	g_d.navView[0] = d_nav_leaf("dsn.nav.design", DNA_DESIGN, "设计模式");
 	g_d.navView[1] = d_nav_leaf("dsn.nav.preview", DNA_PREVIEW, "预览模式");
 	g_d.navRoot[0] = d_nav_root(Ui_Id("dsn.nav.root", 0, 0), "文件", 0xE8B7, g_d.navFile, 6);
 	g_d.navRoot[1] = d_nav_root(Ui_Id("dsn.nav.root", 1, 0), "编辑", 0xE70F, g_d.navEdit, 6);
-	g_d.navRoot[2] = d_nav_root(Ui_Id("dsn.nav.root", 2, 0), "工程", 0xE8A9, g_d.navProj, 5);
+	g_d.navRoot[2] = d_nav_root(Ui_Id("dsn.nav.root", 2, 0), "工程", 0xE8A9, g_d.navProj, 6);
 	g_d.navRoot[3] = d_nav_root(Ui_Id("dsn.nav.root", 3, 0), "视图", 0xE768, g_d.navView, 2);
 	UiNavBar_Init(&g_d.nav, Ui_Id("dsn.nav", 0, 0));
 	UiNavBar_SetItems(&g_d.nav, g_d.navRoot, 4);
@@ -2119,8 +2309,9 @@ static void d_nav_do(int kind)
 	case DNA_DEL: d_del_selected(); break;
 	case DNA_UP: d_move_node(0); break;
 	case DNA_DOWN: d_move_node(1); break;
-	case DNA_ADDWIN: d_add_window(UI_DW_NATIVE); break;
-	case DNA_ADDDLG: d_add_window(UI_DW_DIALOG); break;
+	case DNA_ADDWIN: d_add_window(UI_DH_WINDOW); break;
+	case DNA_ADDDLG: d_add_window(UI_DH_DIALOG); break;
+	case DNA_ADDPANEL: d_add_panel_host(); break;
 	case DNA_ADDGRP: d_add_group(); break;
 	case DNA_DESIGN:
 		g_d.preview = 0;
@@ -2128,6 +2319,11 @@ static void d_nav_do(int kind)
 		d_status("设计模式");
 		break;
 	case DNA_PREVIEW:
+		if (g_d.selWin < 0 || g_d.selWin >= g_d.doc.hostCount ||
+		    g_d.doc.hosts[g_d.selWin].view < 0) {
+			d_error("预览需要一个挂载了视图的宿主");
+			break;
+		}
 		g_d.preview = 1;
 		g_d.instReady = 0;
 		d_status("预览模式");
@@ -2249,9 +2445,15 @@ static void d_draw_toolbar(void)
 			&icDown, "下移", &bs, g_d.selKind == DSEL_NODE)) d_move_node(1);
 		if (Ui_ButtonExIcon(ui, Ui_Id("dsn.act.preview", 0, 0), Ui_Rect(bx + 260, TOP_H + 6, 72, 30),
 			&icView, "预览", &bs, 1)) {
-			g_d.preview = !g_d.preview;
-			g_d.instReady = 0;
-			d_status(g_d.preview ? "预览模式" : "设计模式");
+			if (!g_d.preview && (g_d.selWin < 0 ||
+			    g_d.selWin >= g_d.doc.hostCount ||
+			    g_d.doc.hosts[g_d.selWin].view < 0)) {
+				d_error("预览需要一个挂载了视图的宿主");
+			} else {
+				g_d.preview = !g_d.preview;
+				g_d.instReady = 0;
+				d_status(g_d.preview ? "预览模式" : "设计模式");
+			}
 		}
 	}
 }
@@ -2316,20 +2518,29 @@ static void d_draw_left(void)
 	int i;
 
 	Ui_Panel(ui, panel);
-	Gfx_Text(g, t->fLabel, "工程 / 生成分组",
-		Ui_Rect(panel.x + 12, panel.y + 8, panel.w - 24, 18),
+	y = panel.y + 8;
+	Gfx_Text(g, t->fLabel, "宿主 (窗口/Dialog/Panel)",
+		Ui_Rect(panel.x + 12, y, panel.w - 50, 18),
 		t->text2, GFX_TEXT_VCENTER);
-	y = panel.y + 30;
-	for (i = 0; i < g_d.doc.windowCount && i < 10; i++) {
-		UiDesignWindow *w = &g_d.doc.windows[i];
+	if (Ui_Button(ui, Ui_Id("dsn.add.host", 0, 0),
+	    Ui_Rect(panel.x + panel.w - 34, y - 2, 24, 20), "+",
+	    UI_BTYPE_DEFAULT, 1)) {
+		d_add_window(UI_DH_WINDOW);
+		UiApp_Invalidate(g_d.app);
+	}
+	y += 24;
+	for (i = 0; i < g_d.doc.hostCount && i < 4; i++) {
+		UiDesignHost *w = &g_d.doc.hosts[i];
 		UiRect rc = Ui_Rect(panel.x + 8, y, panel.w - 16, ROW_H);
 		UiWidgetState st = Ui_StateInstant(ui, Ui_IdIndex("dsn.winrow", i, 0, 0), rc, 1);
 		char b[128];
+		const char *badge = w->kind == UI_DH_DIALOG ? "◇" :
+			(w->kind == UI_DH_PANEL ? "▤" : "▣");
 		if (g_d.selKind == DSEL_WINDOW && g_d.selWin == i)
 			Gfx_FillRoundRect(g, rc, 5.0f, t->primary.soft);
 		else if (st.hovered) Gfx_FillRoundRect(g, rc, 5.0f, t->rowOn);
-		snprintf(b, sizeof(b), "%s %s", w->kind == UI_DW_DIALOG ? "◇" : "▣", w->name);
-		Gfx_Text(g, t->fBody, b, Ui_Rect(rc.x + 10, rc.y, rc.w - 16, rc.h),
+		snprintf(b, sizeof(b), "%s %s", badge, w->name);
+		Gfx_Text(g, t->fBody, b, Ui_Rect(rc.x + 8, rc.y, rc.w - 14, rc.h),
 			t->text2, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 		if (ui->clicked == Ui_IdIndex("dsn.winrow", i, 0, 0)) {
 			d_select_window(i);
@@ -2337,15 +2548,52 @@ static void d_draw_left(void)
 		}
 		y += ROW_H + 2;
 	}
-	y += 6;
-	for (i = 0; i < g_d.doc.groupCount && i < 8; i++) {
+	if (g_d.doc.hostCount > 4) {
+		Gfx_Text(g, t->fMini, "…", Ui_Rect(panel.x + 20, y, 40, 14),
+			t->text4, GFX_TEXT_VCENTER);
+		y += 16;
+	}
+
+	y += 4;
+	Gfx_Text(g, t->fLabel, "视图 (可复用内容)",
+		Ui_Rect(panel.x + 12, y, panel.w - 50, 18),
+		t->text2, GFX_TEXT_VCENTER);
+	if (Ui_Button(ui, Ui_Id("dsn.add.view", 0, 0),
+	    Ui_Rect(panel.x + panel.w - 34, y - 2, 24, 20), "+",
+	    UI_BTYPE_DEFAULT, 1)) {
+		d_add_view();
+		UiApp_Invalidate(g_d.app);
+	}
+	y += 24;
+	for (i = 0; i < g_d.doc.viewCount && i < 4; i++) {
+		UiDesignView *v = &g_d.doc.views[i];
+		UiRect rc = Ui_Rect(panel.x + 8, y, panel.w - 16, ROW_H);
+		UiWidgetState st = Ui_StateInstant(ui, Ui_IdIndex("dsn.viewrow", i, 0, 0), rc, 1);
+		if (g_d.selView == i)
+			Gfx_FillRoundRect(g, rc, 5.0f, t->primary.soft);
+		else if (st.hovered) Gfx_FillRoundRect(g, rc, 5.0f, t->rowOn);
+		Gfx_Text(g, t->fSmall, v->name,
+			Ui_Rect(rc.x + 20, rc.y, rc.w - 28, rc.h),
+			t->text2, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+		if (ui->clicked == Ui_IdIndex("dsn.viewrow", i, 0, 0)) {
+			d_select_view(i);
+			UiApp_Invalidate(g_d.app);
+		}
+		y += ROW_H + 2;
+	}
+
+	y += 4;
+	Gfx_Text(g, t->fSmall, "生成组", Ui_Rect(panel.x + 12, y, panel.w - 24, 18),
+		t->text3, GFX_TEXT_VCENTER);
+	y += 20;
+	for (i = 0; i < g_d.doc.groupCount && i < 4; i++) {
 		UiDesignGroup *gr = &g_d.doc.groups[i];
 		UiRect rc = Ui_Rect(panel.x + 8, y, panel.w - 16, ROW_H);
 		UiWidgetState st = Ui_StateInstant(ui, Ui_IdIndex("dsn.grprow", i, 0, 0), rc, 1);
 		if (g_d.selKind == DSEL_GROUP && g_d.selGroup == i)
 			Gfx_FillRoundRect(g, rc, 5.0f, t->success.soft);
 		else if (st.hovered) Gfx_FillRoundRect(g, rc, 5.0f, t->rowOn);
-		Gfx_Text(g, t->fSmall, gr->name, Ui_Rect(rc.x + 24, rc.y, rc.w - 30, rc.h),
+		Gfx_Text(g, t->fSmall, gr->name, Ui_Rect(rc.x + 20, rc.y, rc.w - 26, rc.h),
 			t->text3, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 		if (ui->clicked == Ui_IdIndex("dsn.grprow", i, 0, 0)) {
 			g_d.selKind = DSEL_GROUP;
@@ -2358,11 +2606,11 @@ static void d_draw_left(void)
 	y += 10;
 	Gfx_Line(g, panel.x + 10, y, panel.x + panel.w - 10, y, t->border, 1.0f);
 	y += 8;
-	Gfx_Text(g, t->fLabel, "当前窗口组件树",
+	Gfx_Text(g, t->fLabel, "当前视图组件树",
 		Ui_Rect(panel.x + 12, y, panel.w - 24, 18), t->text2, GFX_TEXT_VCENTER);
 	y += 24;
-	if (g_d.selWin >= 0 && g_d.selWin < g_d.doc.windowCount) {
-		int root = g_d.doc.windows[g_d.selWin].root;
+	if (g_d.selView >= 0 && g_d.selView < g_d.doc.viewCount) {
+		int root = d_view_root();
 		g_d.treeRowN = 0;
 		if (root >= 0) d_draw_tree_rec(root, 0, &y, panel);
 	}
@@ -2420,20 +2668,32 @@ static int d_validate(char *msg, int cap)
 			}
 		}
 	}
-	for (i = 0; i < g_d.doc.windowCount; i++) {
-		for (j = i + 1; j < g_d.doc.windowCount; j++)
-			if (strcmp(g_d.doc.windows[i].id, g_d.doc.windows[j].id) == 0) {
-				snprintf(msg, (size_t)cap, "窗口 ID 重复: %s", g_d.doc.windows[i].id);
+	for (i = 0; i < g_d.doc.hostCount; i++) {
+		for (j = i + 1; j < g_d.doc.hostCount; j++)
+			if (strcmp(g_d.doc.hosts[i].id, g_d.doc.hosts[j].id) == 0) {
+				snprintf(msg, (size_t)cap, "窗口 ID 重复: %s", g_d.doc.hosts[i].id);
 				return 0;
 			}
-		if (g_d.doc.windows[i].root < 0) {
-			snprintf(msg, (size_t)cap, "窗口根节点缺失: %s", g_d.doc.windows[i].id);
+		if (g_d.doc.hosts[i].view < 0 ||
+		    g_d.doc.hosts[i].view >= g_d.doc.viewCount) {
+			snprintf(msg, (size_t)cap, "宿主未挂载有效视图: %s", g_d.doc.hosts[i].id);
 			return 0;
 		}
-		if (g_d.doc.windows[i].group < 0) {
+		if (g_d.doc.views[g_d.doc.hosts[i].view].root < 0) {
+			snprintf(msg, (size_t)cap, "视图根节点缺失: %s",
+				g_d.doc.views[g_d.doc.hosts[i].view].id);
+			return 0;
+		}
+		if (g_d.doc.hosts[i].group >= 0 &&
+		    g_d.doc.views[g_d.doc.hosts[i].view].group != g_d.doc.hosts[i].group) {
+			snprintf(msg, (size_t)cap,
+				"宿主与视图必须属于同一生成组: %s", g_d.doc.hosts[i].id);
+			return 0;
+		}
+		if (g_d.doc.hosts[i].group < 0) {
 			/* 未分组窗口单独输出, 检查与生成组/其他窗口的路径冲突. */
 			char sym[UI_DN_SYM_MAX], wc[UI_DN_PATH_MAX], wh[UI_DN_PATH_MAX];
-			UiDesign_Symbol(g_d.doc.windows[i].id, sym, sizeof(sym));
+			UiDesign_Symbol(g_d.doc.hosts[i].id, sym, sizeof(sym));
 			snprintf(wc, sizeof(wc), "%s.ui.c", sym);
 			snprintf(wh, sizeof(wh), "%s.ui.h", sym);
 			for (j = 0; j < g_d.doc.groupCount; j++) {
@@ -2448,8 +2708,8 @@ static int d_validate(char *msg, int cap)
 			}
 			for (j = 0; j < i; j++) {
 				char sym2[UI_DN_SYM_MAX], cj[UI_DN_PATH_MAX], hj[UI_DN_PATH_MAX];
-				if (g_d.doc.windows[j].group >= 0) continue;
-				UiDesign_Symbol(g_d.doc.windows[j].id, sym2, sizeof(sym2));
+				if (g_d.doc.hosts[j].group >= 0) continue;
+				UiDesign_Symbol(g_d.doc.hosts[j].id, sym2, sizeof(sym2));
 				snprintf(cj, sizeof(cj), "%s.ui.c", sym2);
 				snprintf(hj, sizeof(hj), "%s.ui.h", sym2);
 				if (strcmp(wc, cj) == 0 || strcmp(wc, hj) == 0 ||
@@ -2461,11 +2721,32 @@ static int d_validate(char *msg, int cap)
 			}
 		}
 		n = 0;
-		d_collect_nodes(&g_d.doc, g_d.doc.windows[i].root, list, 256, &n);
+		d_collect_nodes(&g_d.doc,
+			g_d.doc.views[g_d.doc.hosts[i].view].root, list, 256, &n);
 		for (j = 0; j < n; j++)
 			for (k = j + 1; k < n; k++)
 				if (strcmp(g_d.doc.nodes[list[j]].id, g_d.doc.nodes[list[k]].id) == 0) {
 					snprintf(msg, (size_t)cap, "组件 ID 重复: %s", g_d.doc.nodes[list[j]].id);
+					return 0;
+				}
+	}
+	for (i = 0; i < g_d.doc.viewCount; i++) {
+		for (j = i + 1; j < g_d.doc.viewCount; j++)
+			if (strcmp(g_d.doc.views[i].id, g_d.doc.views[j].id) == 0) {
+				snprintf(msg, (size_t)cap, "视图 ID 重复: %s", g_d.doc.views[i].id);
+				return 0;
+			}
+		if (g_d.doc.views[i].root < 0) {
+			snprintf(msg, (size_t)cap, "视图根节点缺失: %s", g_d.doc.views[i].id);
+			return 0;
+		}
+		n = 0;
+		d_collect_nodes(&g_d.doc, g_d.doc.views[i].root, list, 256, &n);
+		for (j = 0; j < n; j++)
+			for (k = j + 1; k < n; k++)
+				if (strcmp(g_d.doc.nodes[list[j]].id, g_d.doc.nodes[list[k]].id) == 0) {
+					snprintf(msg, (size_t)cap, "组件 ID 重复: %s",
+						g_d.doc.nodes[list[j]].id);
 					return 0;
 				}
 	}
@@ -2543,7 +2824,7 @@ static int d_collect_free_sel(int *out, int cap)
 		if (idx < 0 || idx >= g_d.doc.nodeCount) continue;
 		nd = &g_d.doc.nodes[idx];
 		if (nd->parent < 0 || !d_parent_free(nd->parent)) continue;
-		if (g_d.selWin >= 0 && idx == g_d.doc.windows[g_d.selWin].root) continue;
+		if (idx == d_view_root()) continue;
 		out[n++] = idx;
 	}
 	return n;
@@ -2652,12 +2933,11 @@ static void d_draw_props(void)
 		if (ui->clicked == Ui_Id("dsn.tabcomp", 0, 0)) { d_after_edit(); g_d.propsTab = 1; }
 	}
 	if (g_d.propsTab == 1) {
-		int root = (g_d.selWin >= 0 && g_d.selWin < g_d.doc.windowCount)
-			? g_d.doc.windows[g_d.selWin].root : -1;
+		int root = d_view_root();
 		int list[256], count = 0;
 		y = props.y - (float)g_d.propScroll;
 		if (root < 0) {
-			Gfx_Text(g, t->fSmall, "当前窗口没有组件", props, t->text4,
+			Gfx_Text(g, t->fSmall, "当前视图没有组件", props, t->text4,
 				GFX_TEXT_CENTER | GFX_TEXT_VCENTER);
 			return;
 		}
@@ -2921,7 +3201,6 @@ static void d_draw_all(void)
 
 static void d_preview_update(void)
 {
-	UiDesignWindow *w;
 	if (!g_d.preview) {
 		if (g_d.instReady) {
 			UiDesignInstance_Shutdown(&g_d.inst);
@@ -2929,10 +3208,10 @@ static void d_preview_update(void)
 		}
 		return;
 	}
-	if (g_d.selWin < 0 || g_d.selWin >= g_d.doc.windowCount) return;
-	w = &g_d.doc.windows[g_d.selWin];
-	(void)w;
-	if (!g_d.instReady || g_d.inst.win != g_d.selWin) {
+	if (g_d.selWin < 0 || g_d.selWin >= g_d.doc.hostCount) return;
+	if (g_d.doc.hosts[g_d.selWin].view < 0 ||
+	    g_d.doc.hosts[g_d.selWin].view >= g_d.doc.viewCount) return;
+	if (!g_d.instReady || g_d.inst.host != g_d.selWin) {
 		if (g_d.instReady) UiDesignInstance_Shutdown(&g_d.inst);
 		if (UiDesignInstance_Init(&g_d.inst, &g_d.doc, g_d.selWin,
 			&g_d.app->ui, &g_d.pm, &g_d.app->ime))
@@ -2972,9 +3251,9 @@ static int d_container_at(float x, float y)
 {
 	int hit;
 	if (!g_d.layoutReady) d_layout_current();
-	hit = UiDesign_FindNodeAt(&g_d.doc, g_d.selWin, g_d.rects, x, y);
-	if (hit < 0 && g_d.selWin >= 0)
-		hit = g_d.doc.windows[g_d.selWin].root;
+	hit = UiDesign_FindNodeAt(&g_d.doc, g_d.selView, g_d.rects, x, y);
+	if (hit < 0 && g_d.selView >= 0)
+		hit = d_view_root();
 	while (hit >= 0) {
 		UiDesignNode *n = &g_d.doc.nodes[hit];
 		if (UiDesign_IsContainer(n->type)) {
@@ -2989,7 +3268,7 @@ static int d_container_at(float x, float y)
 		}
 		hit = n->parent;
 	}
-	return g_d.selWin >= 0 ? g_d.doc.windows[g_d.selWin].root : -1;
+	return d_view_root();
 }
 
 static void d_insert_at(float x, float y)
@@ -2997,15 +3276,15 @@ static void d_insert_at(float x, float y)
 	int parent, idx;
 	UiDesignNode *p, *n;
 	char id[UI_DN_ID_MAX], name[UI_DN_NAME_MAX];
-	if (g_d.insertType < 0 || g_d.selWin < 0) return;
+	if (g_d.insertType < 0 || g_d.selView < 0) return;
 	parent = d_container_at(x, y);
 	if (parent < 0) return;
 	p = &g_d.doc.nodes[parent];
 	if (!UiDesign_IsContainer(p->type)) return;
 	d_after_edit();
-	d_unique_node_id(g_d.selWin, UiDesign_TypeName(g_d.insertType), id, sizeof(id));
+	d_unique_node_id(g_d.selView, UiDesign_TypeName(g_d.insertType), id, sizeof(id));
 	UiDesign_SetText(name, sizeof(name), UiDesign_TypeName(g_d.insertType));
-	idx = UiDesign_AddNode(&g_d.doc, g_d.selWin, g_d.insertType, parent, id, name);
+	idx = UiDesign_AddNode(&g_d.doc, g_d.selView, g_d.insertType, parent, id, name);
 	n = UiDesign_Node(&g_d.doc, idx);
 	if (!n) return;
 	if (UiDesign_IsContainer(g_d.insertType)) {
@@ -3047,7 +3326,7 @@ static void d_insert_at(float x, float y)
 		n->padding[0] = n->padding[1] = n->padding[2] = n->padding[3] = 10.0f;
 		n->gap = 0.0f;
 		n->selected = 0;
-		d_tabs_add_pages(g_d.selWin, idx);
+		d_tabs_add_pages(g_d.selView, idx);
 		p = &g_d.doc.nodes[parent];
 		n = &g_d.doc.nodes[idx];
 	}
@@ -3130,7 +3409,7 @@ static void d_mouse_down(float x, float y)
 			int idx = g_d.treeRowIdx[tr];
 			if (GetKeyState(VK_CONTROL) & 0x8000) d_sel_toggle(idx);
 			else d_sel_single(idx);
-			g_d.treeDragIdx = idx == g_d.doc.windows[g_d.selWin].root ? -1 : idx;
+			g_d.treeDragIdx = idx == d_view_root() ? -1 : idx;
 			g_d.treeDropIdx = -1;
 			g_d.treeDropMode = 1;
 			return;
@@ -3187,7 +3466,7 @@ static void d_mouse_down(float x, float y)
 		}
 		return;
 	}
-	hitNode = UiDesign_FindNodeAt(&g_d.doc, g_d.selWin, g_d.rects, x, y);
+	hitNode = UiDesign_FindNodeAt(&g_d.doc, g_d.selView, g_d.rects, x, y);
 	if (hitNode >= 0) {
 		UiDesignNode *p;
 		UiDesignNode *hn = &g_d.doc.nodes[hitNode];
@@ -3214,7 +3493,7 @@ static void d_mouse_down(float x, float y)
 		n = &g_d.doc.nodes[hitNode];
 		p = n->parent >= 0 ? &g_d.doc.nodes[n->parent] : NULL;
 		if (d_sel_has(hitNode) && p && d_parent_free(n->parent) &&
-		    hitNode != g_d.doc.windows[g_d.selWin].root) {
+		    hitNode != d_view_root()) {
 			g_d.dragging = 1;
 			g_d.dragStartX = x;
 			g_d.dragStartY = y;
@@ -3431,8 +3710,8 @@ static void d_mouse_up(void)
 			for (i = 0; i < g_d.doc.nodeCount; i++) {
 				UiDesignNode *nd = &g_d.doc.nodes[i];
 				UiRect nr;
-				if (nd->owner != g_d.selWin || !nd->visible) continue;
-				if (i == g_d.doc.windows[g_d.selWin].root) continue;
+				if (nd->owner != g_d.selView || !nd->visible) continue;
+				if (i == d_view_root()) continue;
 				nr = g_d.rects[i];
 				if (nr.x < r.x + r.w && nr.x + nr.w > r.x &&
 				    nr.y < r.y + r.h && nr.y + nr.h > r.y) {
@@ -3608,7 +3887,7 @@ static void d_on_init(UiApp *app, void *user)
 	g_d.insertType = -1;
 	g_d.zoom = 1.0f;
 	d_nav_init();
-	g_d.selWin = g_d.selGroup = -1;
+	g_d.selWin = g_d.selView = g_d.selGroup = -1;
 	g_d.selNode = -1;
 	g_d.selKind = DSEL_NODE;
 	UiDesign_DefaultDoc(&g_d.doc);
@@ -3638,8 +3917,8 @@ static void d_on_frame(UiApp *app, void *user)
 	}
 	d_preview_update();
 	if (g_d.preview && g_d.instReady && !g_d.previewDialogTried &&
-	    g_d.selWin >= 0 && g_d.selWin < g_d.doc.windowCount &&
-	    g_d.doc.windows[g_d.selWin].kind == UI_DW_DIALOG) {
+	    g_d.selWin >= 0 && g_d.selWin < g_d.doc.hostCount &&
+	    g_d.doc.hosts[g_d.selWin].kind == UI_DH_DIALOG) {
 		g_d.previewDialogTried = 1;
 		UiDesign_DialogOpen(&g_d.inst, Ui_Id("dsn.preview.owner", 0, 0));
 	}
@@ -3755,9 +4034,8 @@ static void d_on_wheel(UiApp *app, float x, float y, float delta, void *user)
 		UiRect body = d_canvas_area();
 		float old = g_d.zoom, nz;
 		float dx, dy;
-		UiDesignWindow *w = g_d.selWin >= 0 && g_d.selWin < g_d.doc.windowCount
-			? &g_d.doc.windows[g_d.selWin] : NULL;
-		if (!w) return;
+		UiDesignView *vw = d_selview();
+		if (!vw) return;
 		body.y += 34.0f;
 		body.h -= 34.0f;
 		nz = old * (delta > 0 ? 1.12f : 0.89f);
@@ -3766,7 +4044,7 @@ static void d_on_wheel(UiApp *app, float x, float y, float delta, void *user)
 		dx = (x - g_d.viewTx) / old;
 		dy = (y - g_d.viewTy) / old;
 		g_d.zoom = nz;
-		g_d.panX = (x - dx * nz) - (body.x + (body.w - w->w * nz) * 0.5f);
+		g_d.panX = (x - dx * nz) - (body.x + (body.w - vw->w * nz) * 0.5f);
 		g_d.panY = (y - dy * nz) - (body.y + 10.0f);
 		UiApp_Invalidate(app);
 		return;

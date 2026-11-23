@@ -1,8 +1,9 @@
 /*
  * ui_design.h - CUI 可视化设计器运行时
  *
- * .cui 是唯一设计工程文件 (UTF-8 JSON). 生成器按"生成组"输出 C/H.
- * 组件树支持 Absolute / Column / Row / Grid 布局和常用控件.
+ * .cui 是唯一设计工程文件 (UTF-8 JSON). 模型分两层:
+ *   View = 可复用根容器树; Host = Window/Dialog/Panel 外壳.
+ * 生成器按"生成组"输出 C/H, 宿主引用同组视图.
  */
 #ifndef CUI_UI_DESIGN_H
 #define CUI_UI_DESIGN_H
@@ -128,20 +129,31 @@ typedef struct UiDesignNode {
 } UiDesignNode;
 
 typedef enum {
-	UI_DW_NATIVE = 0,
-	UI_DW_DIALOG
-} UiDesignWindowKind;
+	UI_DH_WINDOW = 0,   /* 独立窗口 */
+	UI_DH_DIALOG,       /* 虚拟 Dialog 覆盖层 */
+	UI_DH_PANEL         /* 供应用嵌入的内容块 */
+} UiDesignHostKind;
 
-typedef struct UiDesignWindow {
+/* 视图: 可复用的根容器树, 不含宿主外壳. */
+typedef struct UiDesignView {
+	char id[UI_DN_ID_MAX];
+	char name[UI_DN_NAME_MAX];
+	float w, h;         /* 设计尺寸 (宿主可覆盖) */
+	int group;          /* group index, -1 = 不生成 */
+	int root;           /* node index, -1 = 无 */
+} UiDesignView;
+
+/* 宿主: 窗口/Dialog/Panel 外壳, 挂载一个视图. */
+typedef struct UiDesignHost {
 	char id[UI_DN_ID_MAX];
 	char name[UI_DN_NAME_MAX];
 	char title[128];
-	int kind;
+	int kind;           /* UiDesignHostKind */
 	int group;          /* group index, -1 = 不生成 */
 	float w, h, minW, minH;
 	int theme;          /* UiThemeId */
-	int root;           /* node index, -1 = 无 */
-} UiDesignWindow;
+	int view;           /* view index, -1 = 无内容 */
+} UiDesignHost;
 
 typedef struct UiDesignGroup {
 	char id[UI_DN_ID_MAX];
@@ -154,8 +166,10 @@ typedef struct UiDesignGroup {
 typedef struct UiDesignDoc {
 	UiDesignGroup *groups;
 	int groupCount, groupCap;
-	UiDesignWindow *windows;
-	int windowCount, windowCap;
+	UiDesignView *views;
+	int viewCount, viewCap;
+	UiDesignHost *hosts;
+	int hostCount, hostCap;
 	UiDesignNode *nodes;
 	int nodeCount, nodeCap;
 	char name[UI_DN_NAME_MAX];
@@ -169,12 +183,16 @@ void UiDesign_Init(UiDesignDoc *doc);
 void UiDesign_Free(UiDesignDoc *doc);
 
 int UiDesign_AddGroup(UiDesignDoc *doc, const char *id, const char *name);
-int UiDesign_AddWindow(UiDesignDoc *doc, const char *id, const char *name,
+int UiDesign_AddView(UiDesignDoc *doc, const char *id, const char *name);
+int UiDesign_AddHost(UiDesignDoc *doc, const char *id, const char *name,
 	int kind, int group);
-int UiDesign_AddNode(UiDesignDoc *doc, int win, int type, int parent,
+/* 删除视图及其全部节点; 引用它的宿主 view 置 -1. */
+int UiDesign_ViewRemove(UiDesignDoc *doc, int view);
+int UiDesign_AddNode(UiDesignDoc *doc, int view, int type, int parent,
 	const char *id, const char *name);
 UiDesignNode *UiDesign_Node(UiDesignDoc *doc, int index);
-UiDesignWindow *UiDesign_Window(UiDesignDoc *doc, int index);
+UiDesignView *UiDesign_View(UiDesignDoc *doc, int index);
+UiDesignHost *UiDesign_Host(UiDesignDoc *doc, int index);
 UiDesignGroup *UiDesign_Group(UiDesignDoc *doc, int index);
 
 void UiDesign_NodeAddChild(UiDesignDoc *doc, int parent, int child);
@@ -185,8 +203,9 @@ int  UiDesign_NodeDuplicate(UiDesignDoc *doc, int index);
 int  UiDesign_NodeMoveUp(UiDesignDoc *doc, int index);
 int  UiDesign_NodeMoveDown(UiDesignDoc *doc, int index);
 
-int  UiDesign_FindNode(const UiDesignDoc *doc, int win, const char *id);
-int  UiDesign_FindWindow(const UiDesignDoc *doc, const char *id);
+int  UiDesign_FindNode(const UiDesignDoc *doc, int view, const char *id);
+int  UiDesign_FindView(const UiDesignDoc *doc, const char *id);
+int  UiDesign_FindHost(const UiDesignDoc *doc, const char *id);
 int  UiDesign_FindGroup(const UiDesignDoc *doc, const char *id);
 
 void UiDesign_SetText(char *dst, int cap, const char *src);
@@ -212,9 +231,9 @@ int  UiDesign_SaveFile(UiDesignDoc *doc, const wchar_t *path);
 /* ── 布局 ───────────────────────────────────────────────────────────── */
 
 /* rects 长度 >= doc->nodeCount; 返回 1. */
-int UiDesign_Layout(const UiDesignDoc *doc, int win, UiRect client,
+int UiDesign_Layout(const UiDesignDoc *doc, int view, UiRect client,
 	UiRect *rects, int rectCap);
-int UiDesign_FindNodeAt(const UiDesignDoc *doc, int win,
+int UiDesign_FindNodeAt(const UiDesignDoc *doc, int view,
 	const UiRect *rects, float x, float y);
 
 /* 解析/求解 Grid 列轨道并输出每列绝对位置.
@@ -247,7 +266,8 @@ typedef struct UiDesignNodeState {
 
 typedef struct UiDesignInstance {
 	UiDesignDoc *doc;
-	int win;
+	int host;           /* host index */
+	int view;           /* 挂载视图, -1 = 空 */
 	UiContext *ui;
 	UiPopupManager *pm;
 	UiIme *ime;
@@ -264,7 +284,7 @@ typedef struct UiDesignInstance {
 } UiDesignInstance;
 
 int  UiDesignInstance_Init(UiDesignInstance *inst, UiDesignDoc *doc,
-	int win, UiContext *ui, UiPopupManager *pm, UiIme *ime);
+	int host, UiContext *ui, UiPopupManager *pm, UiIme *ime);
 void UiDesignInstance_Shutdown(UiDesignInstance *inst);
 void UiDesignInstance_SetEventFn(UiDesignInstance *inst,
 	void (*fn)(void *, UiDesignInstance *, const char *, const char *, int),
@@ -295,8 +315,8 @@ int  UiDesign_Busy(const UiDesignInstance *inst);
  * report 返回错误/摘要文本. */
 int UiDesign_GenerateGroup(const UiDesignDoc *doc, int group,
 	const wchar_t *dir, char *report, int cap);
-/* 单窗口导出: 输出 <窗口ID>.ui.c/.h, 与生成组互不影响. */
-int UiDesign_GenerateWindow(const UiDesignDoc *doc, int win,
+/* 单个宿主导出: 输出 <宿主ID>.ui.c/.h, 与生成组互不影响. */
+int UiDesign_GenerateHost(const UiDesignDoc *doc, int host,
 	const wchar_t *dir, char *report, int cap);
 int UiDesign_GenerateAll(const UiDesignDoc *doc, const wchar_t *dir,
 	char *report, int cap);
@@ -315,7 +335,7 @@ typedef struct UiDesignGenFile {
 int UiDesign_PreviewAll(const UiDesignDoc *doc, const wchar_t *dir,
 	UiDesignGenFile *files, int maxFiles, char *report, int cap);
 
-/* 由组/窗口 id 生成合法 C 标识/枚举名. */
+/* 由组/宿主 id 生成合法 C 标识/枚举名. */
 const char *UiDesign_Symbol(const char *id, char *out, int cap);
 
 #ifdef __cplusplus

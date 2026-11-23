@@ -27,6 +27,16 @@ static void out_(const char *s)
 	} \
 } while (0)
 
+/* 建一个宿主 + 同名视图, 返回视图下标. */
+static int mk_view_host(UiDesignDoc *d, int group, int kind, const char *id)
+{
+	int v = UiDesign_AddView(d, id, id);
+	int h = UiDesign_AddHost(d, id, id, kind, group);
+	UiDesign_View(d, v)->group = group;
+	UiDesign_Host(d, h)->view = v;
+	return v;
+}
+
 static void test_json_roundtrip(void)
 {
 	UiDesignDoc a, b;
@@ -34,14 +44,15 @@ static void test_json_roundtrip(void)
 	int label;
 	UiDesign_Init(&a);
 	CHECK(UiDesign_DefaultDoc(&a) == 1);
-	CHECK(a.groupCount == 1 && a.windowCount == 1 && a.nodeCount >= 3);
-	CHECK(UiDesign_Node(&a, a.windows[0].root) != NULL);
+	CHECK(a.groupCount == 1 && a.hostCount == 1 && a.nodeCount >= 3);
+	CHECK(UiDesign_Node(&a, a.views[0].root) != NULL);
 	label = UiDesign_FindNode(&a, 0, "title");
 	CHECK(label >= 0);
 	UiDesign_Node(&a, label)->textAlign = UI_DN_ALIGN_END;
 	UiDesign_Node(&a, label)->textVAlign = UI_DN_VALIGN_TOP;
 	json = UiDesign_ToJson(&a);
 	CHECK(json != NULL && strlen(json) > 100);
+	UiDesign_Init(&b);
 	if (!UiDesign_FromJson(&b, json)) {
 		out_("parse failed\n");
 		HeapFree(GetProcessHeap(), 0, json);
@@ -49,9 +60,9 @@ static void test_json_roundtrip(void)
 		UiDesign_Free(&b);
 		return;
 	}
-	CHECK(b.groupCount == 1 && b.windowCount == 1);
+	CHECK(b.groupCount == 1 && b.hostCount == 1);
 	CHECK(strcmp(b.groups[0].id, "main") == 0);
-	CHECK(b.windows[0].root >= 0);
+	CHECK(b.views[0].root >= 0);
 	CHECK(UiDesign_FindNode(&b, 0, "title") >= 0);
 	CHECK(strcmp(UiDesign_Node(&b, UiDesign_FindNode(&b, 0, "title"))->text,
 		"新建窗口") == 0);
@@ -71,9 +82,9 @@ static void test_layout(void)
 	int g, w, root, a, b, h;
 	UiDesign_Init(&d);
 	g = UiDesign_AddGroup(&d, "g", "G");
-	w = UiDesign_AddWindow(&d, "win", "W", UI_DW_NATIVE, g);
+	w = mk_view_host(&d, g, UI_DH_WINDOW, "win");
 	root = UiDesign_AddNode(&d, w, UI_DN_COLUMN, -1, "root", "Root");
-	d.windows[w].root = root;
+	UiDesign_View(&d, w)->root = root;
 	UiDesign_Node(&d, root)->wMode = UI_DN_SIZE_FILL;
 	UiDesign_Node(&d, root)->hMode = UI_DN_SIZE_FILL;
 	UiDesign_Node(&d, root)->padding[0] = 10;
@@ -100,9 +111,9 @@ static void test_layout(void)
 	/* Absolute + 右侧锚点 */
 	UiDesign_Init(&d);
 	g = UiDesign_AddGroup(&d, "g", "G");
-	w = UiDesign_AddWindow(&d, "win", "W", UI_DW_NATIVE, g);
+	w = mk_view_host(&d, g, UI_DH_WINDOW, "win");
 	root = UiDesign_AddNode(&d, w, UI_DN_ABSOLUTE, -1, "root", "Root");
-	d.windows[w].root = root;
+	UiDesign_View(&d, w)->root = root;
 	h = UiDesign_AddNode(&d, w, UI_DN_LABEL, root, "a", "A");
 	UiDesign_Node(&d, h)->wMode = UI_DN_SIZE_FIXED;
 	UiDesign_Node(&d, h)->hMode = UI_DN_SIZE_FIXED;
@@ -120,9 +131,9 @@ static void test_layout(void)
 	/* Row + grid */
 	UiDesign_Init(&d);
 	g = UiDesign_AddGroup(&d, "g", "G");
-	w = UiDesign_AddWindow(&d, "win", "W", UI_DW_NATIVE, g);
+	w = mk_view_host(&d, g, UI_DH_WINDOW, "win");
 	root = UiDesign_AddNode(&d, w, UI_DN_ROW, -1, "root", "Root");
-	d.windows[w].root = root;
+	UiDesign_View(&d, w)->root = root;
 	UiDesign_Node(&d, root)->gap = 10;
 	a = UiDesign_AddNode(&d, w, UI_DN_LABEL, root, "a", "A");
 	UiDesign_Node(&d, a)->wMode = UI_DN_SIZE_FIXED;
@@ -138,9 +149,9 @@ static void test_layout(void)
 	/* Grid: 2 列, 0 行=按子节点自动, 间距 10 */
 	UiDesign_Init(&d);
 	g = UiDesign_AddGroup(&d, "g", "G");
-	w = UiDesign_AddWindow(&d, "win", "W", UI_DW_NATIVE, g);
+	w = mk_view_host(&d, g, UI_DH_WINDOW, "win");
 	root = UiDesign_AddNode(&d, w, UI_DN_GRID, -1, "root", "Root");
-	d.windows[w].root = root;
+	UiDesign_View(&d, w)->root = root;
 	UiDesign_Node(&d, root)->gridCols = 2;
 	UiDesign_Node(&d, root)->gridRows = 0;
 	UiDesign_Node(&d, root)->gridColGap = 10;
@@ -171,9 +182,9 @@ static void test_layout(void)
 	/* Column/Row 交叉轴 FILL: 子控件应铺满容器 */
 	UiDesign_Init(&d);
 	g = UiDesign_AddGroup(&d, "g", "G");
-	w = UiDesign_AddWindow(&d, "win", "W", UI_DW_NATIVE, g);
+	w = mk_view_host(&d, g, UI_DH_WINDOW, "win");
 	root = UiDesign_AddNode(&d, w, UI_DN_COLUMN, -1, "root", "Root");
-	d.windows[w].root = root;
+	UiDesign_View(&d, w)->root = root;
 	UiDesign_Node(&d, root)->wMode = UI_DN_SIZE_FILL;
 	UiDesign_Node(&d, root)->hMode = UI_DN_SIZE_FILL;
 	UiDesign_Node(&d, root)->padding[0] = 10;
@@ -200,9 +211,9 @@ static void test_layout(void)
 
 	UiDesign_Init(&d);
 	g = UiDesign_AddGroup(&d, "g", "G");
-	w = UiDesign_AddWindow(&d, "win", "W", UI_DW_NATIVE, g);
+	w = mk_view_host(&d, g, UI_DH_WINDOW, "win");
 	root = UiDesign_AddNode(&d, w, UI_DN_ROW, -1, "root", "Root");
-	d.windows[w].root = root;
+	UiDesign_View(&d, w)->root = root;
 	UiDesign_Node(&d, root)->wMode = UI_DN_SIZE_FILL;
 	UiDesign_Node(&d, root)->hMode = UI_DN_SIZE_FILL;
 	UiDesign_Node(&d, root)->padding[0] = 10;
@@ -257,7 +268,7 @@ static void test_codegen(void)
 	UiDesign_Init(&d);
 	UiDesign_DefaultDoc(&d);
 	g = &d.groups[0];
-	w2 = UiDesign_AddWindow(&d, "dialog1", "Dialog", UI_DW_DIALOG, 0);
+	w2 = mk_view_host(&d, 0, UI_DH_DIALOG, "dialog1");
 	root2 = UiDesign_AddNode(&d, w2, UI_DN_COLUMN, -1, "droot", "Dialog Root");
 	UiDesign_Node(&d, root2)->wMode = UI_DN_SIZE_FILL;
 	UiDesign_Node(&d, root2)->hMode = UI_DN_SIZE_FILL;
@@ -266,7 +277,7 @@ static void test_codegen(void)
 	UiDesign_Node(&d, wroot)->hMode = UI_DN_SIZE_FIXED;
 	UiDesign_Node(&d, wroot)->w = 100;
 	UiDesign_Node(&d, wroot)->h = 32;
-	d.windows[w2].root = root2;
+	UiDesign_View(&d, w2)->root = root2;
 	UiDesign_SetText(g->outputC, UI_DN_PATH_MAX, "designer_test.ui.c");
 	UiDesign_SetText(g->outputH, UI_DN_PATH_MAX, "designer_test.ui.h");
 	CreateDirectoryW(L"build\\gen", NULL);
@@ -282,8 +293,8 @@ static void test_codegen(void)
 	CHECK(has_sub(buf, "Main_dialog1_DialogOpen"));
 	CHECK(has_sub(buf, "\"dialog1\""));
 	CHECK(read_all(ph, buf, sizeof(buf)) == 1);
-	CHECK(has_sub(buf, "Main_WIN_MAIN"));
-	CHECK(has_sub(buf, "Main_WIN_DIALOG1"));
+	CHECK(has_sub(buf, "Main_HOST_MAIN"));
+	CHECK(has_sub(buf, "Main_HOST_DIALOG1"));
 	DeleteFileW(pc);
 	DeleteFileW(ph);
 	UiDesign_Free(&d);
@@ -313,10 +324,10 @@ static void test_preview(void)
 	CHECK(UiDesign_GenerateGroup(&d, 0, L"build\\gen", report, sizeof(report)) == 2);
 	n = UiDesign_PreviewAll(&d, L"build\\gen", f, 4, report, sizeof(report));
 	CHECK(n == 2 && f[0].status == 2 && f[1].status == 2);
-	UiDesign_SetText(d.windows[0].title, 128, "Changed Title");
+	UiDesign_SetText(d.hosts[0].title, 128, "Changed Title");
 	n = UiDesign_PreviewAll(&d, L"build\\gen", f, 4, report, sizeof(report));
 	CHECK(n == 2 && f[0].status == 1);
-	CHECK(f[0].added == 1 && f[0].removed == 1);
+	CHECK(f[0].added == 1 && f[0].removed == 0);
 	DeleteFileW(pc);
 	DeleteFileW(ph);
 	UiDesign_Free(&d);
@@ -330,14 +341,14 @@ static void test_window_generate(void)
 	int r;
 	UiDesign_Init(&d);
 	UiDesign_DefaultDoc(&d);
-	UiDesign_SetText(d.windows[0].id, UI_DN_ID_MAX, "solo_win");
-	d.windows[0].group = -1;      /* 未分组: 全部生成时单独输出 */
+	UiDesign_SetText(d.hosts[0].id, UI_DN_ID_MAX, "solo_win");
+	d.hosts[0].group = -1;      /* 未分组: 全部生成时单独输出 */
 	CreateDirectoryW(L"build\\gen", NULL);
 	lstrcpyW(pc, L"build\\gen\\solo_win.ui.c");
 	lstrcpyW(ph, L"build\\gen\\solo_win.ui.h");
 	DeleteFileW(pc);
 	DeleteFileW(ph);
-	r = UiDesign_GenerateWindow(&d, 0, L"build\\gen", report, sizeof(report));
+	r = UiDesign_GenerateHost(&d, 0, L"build\\gen", report, sizeof(report));
 	CHECK(r == 2);
 	CHECK(GetFileAttributesW(pc) != INVALID_FILE_ATTRIBUTES);
 	CHECK(GetFileAttributesW(ph) != INVALID_FILE_ATTRIBUTES);
@@ -357,11 +368,12 @@ static void test_save_load(void)
 {
 	UiDesignDoc a, b;
 	CHECK(UiDesign_DefaultDoc(&a) == 1);
-	UiDesign_SetText(a.windows[0].id, UI_DN_ID_MAX, "saved_win");
+	UiDesign_SetText(a.hosts[0].id, UI_DN_ID_MAX, "saved_win");
 	CHECK(UiDesign_SaveFile(&a, L"build\\gen\\designer_test.cui") == 1);
+	UiDesign_Init(&b);
 	CHECK(UiDesign_LoadFile(&b, L"build\\gen\\designer_test.cui") == 1);
-	CHECK(strcmp(b.windows[0].id, "saved_win") == 0);
-	CHECK(b.windows[0].root >= 0);
+	CHECK(strcmp(b.hosts[0].id, "saved_win") == 0);
+	CHECK(b.views[0].root >= 0);
 	CHECK(strcmp(b.groups[0].id, "main") == 0);
 	UiDesign_Free(&a);
 	UiDesign_Free(&b);
@@ -390,9 +402,9 @@ static void test_components(void)
 
 	UiDesign_Init(&a);
 	g = UiDesign_AddGroup(&a, "g", "G");
-	w = UiDesign_AddWindow(&a, "win", "W", UI_DW_NATIVE, g);
+	w = mk_view_host(&a, g, UI_DH_WINDOW, "win");
 	root = UiDesign_AddNode(&a, w, UI_DN_COLUMN, -1, "root", "Root");
-	a.windows[w].root = root;
+	UiDesign_View(&a, w)->root = root;
 	UiDesign_Node(&a, root)->wMode = UI_DN_SIZE_FILL;
 	UiDesign_Node(&a, root)->hMode = UI_DN_SIZE_FILL;
 	tabs = UiDesign_AddNode(&a, w, UI_DN_TABS, root, "tabs", "标签页");
@@ -500,9 +512,9 @@ static void test_grid_columns(void)
 
 	UiDesign_Init(&d);
 	g = UiDesign_AddGroup(&d, "g", "G");
-	w = UiDesign_AddWindow(&d, "win", "W", UI_DW_NATIVE, g);
+	w = mk_view_host(&d, g, UI_DH_WINDOW, "win");
 	root = UiDesign_AddNode(&d, w, UI_DN_GRID, -1, "root", "Root");
-	d.windows[w].root = root;
+	UiDesign_View(&d, w)->root = root;
 	n = UiDesign_Node(&d, root);
 	n->wMode = UI_DN_SIZE_FILL;
 	n->hMode = UI_DN_SIZE_FILL;
@@ -603,6 +615,89 @@ static void test_grid_columns(void)
 	UiDesign_Free(&b);
 }
 
+static void test_view_host_model(void)
+{
+	static const char *v1 =
+		"{\"format\":\"cui-design\",\"version\":1,\"name\":\"old\","
+		"\"groups\":[{\"id\":\"main\",\"name\":\"G\","
+		"\"outputC\":\"old.ui.c\",\"outputH\":\"old.ui.h\","
+		"\"symbolPrefix\":\"Old\"}],"
+		"\"windows\":[{\"id\":\"main\",\"name\":\"W\",\"title\":\"T\","
+		"\"kind\":1,\"group\":\"main\",\"width\":400,\"height\":300,"
+		"\"minWidth\":0,\"minHeight\":0,\"theme\":0,"
+		"\"root\":{\"id\":\"root\",\"name\":\"R\",\"type\":\"column\","
+		"\"layout\":{},\"props\":{},\"children\":[]}}]}";
+	UiDesignDoc d;
+	char report[128];
+	static char buf[32768];
+	int g, v1i, v2i, h1, h2, r;
+	WCHAR pc[MAX_PATH], ph[MAX_PATH];
+
+	/* v1 自动迁移: 窗口 -> 视图 + 宿主 */
+	UiDesign_Init(&d);
+	CHECK(UiDesign_FromJson(&d, v1) == 1);
+	CHECK(d.viewCount == 1 && d.hostCount == 1);
+	CHECK(strcmp(d.views[0].id, "main") == 0);
+	CHECK(d.views[0].root >= 0);
+	CHECK(d.hosts[0].view == 0);
+	CHECK(d.hosts[0].kind == UI_DH_DIALOG);
+	CHECK(d.nodes[d.views[0].root].type == UI_DN_COLUMN);
+	{
+		char *j = UiDesign_ToJson(&d);
+		CHECK(j && has_sub(j, "\"version\":2"));
+		CHECK(j && has_sub(j, "\"views\""));
+		CHECK(j && has_sub(j, "\"hosts\""));
+		if (j) HeapFree(GetProcessHeap(), 0, j);
+	}
+	UiDesign_Free(&d);
+
+	/* 同一视图被 Window + Panel 复用 */
+	UiDesign_Init(&d);
+	g = UiDesign_AddGroup(&d, "g", "G");
+	UiDesign_SetText(d.groups[g].symbolPrefix, UI_DN_SYM_MAX, "Main");
+	v1i = UiDesign_AddView(&d, "content", "Content");
+	UiDesign_View(&d, v1i)->group = g;
+	r = UiDesign_AddNode(&d, v1i, UI_DN_COLUMN, -1, "root", "Root");
+	UiDesign_View(&d, v1i)->root = r;
+	h1 = UiDesign_AddHost(&d, "win1", "Win", UI_DH_WINDOW, g);
+	h2 = UiDesign_AddHost(&d, "panel1", "Panel", UI_DH_PANEL, g);
+	UiDesign_Host(&d, h1)->view = v1i;
+	UiDesign_Host(&d, h2)->view = v1i;
+	v2i = UiDesign_AddView(&d, "other", "Other");
+	UiDesign_View(&d, v2i)->group = g;
+	r = UiDesign_AddNode(&d, v2i, UI_DN_COLUMN, -1, "root", "Root");
+	UiDesign_View(&d, v2i)->root = r;
+	UiDesign_SetText(d.groups[g].outputC, UI_DN_PATH_MAX, "designer_vh.ui.c");
+	UiDesign_SetText(d.groups[g].outputH, UI_DN_PATH_MAX, "designer_vh.ui.h");
+	CreateDirectoryW(L"build\\gen", NULL);
+	lstrcpyW(pc, L"build\\gen\\designer_vh.ui.c");
+	lstrcpyW(ph, L"build\\gen\\designer_vh.ui.h");
+	DeleteFileW(pc);
+	DeleteFileW(ph);
+	CHECK(UiDesign_GenerateGroup(&d, g, L"build\\gen", report, sizeof(report)) == 2);
+	CHECK(read_all(pc, buf, sizeof(buf)) == 1);
+	CHECK(has_sub(buf, "Main_win1_Draw"));
+	CHECK(has_sub(buf, "Main_panel1_Draw"));
+	CHECK(has_sub(buf, "Main_panel1_Init"));
+	/* 视图只构建一次, 两个宿主引用同一视图变量 */
+	CHECK(has_sub(buf, "UiDesign_AddView(&gDoc, \"content\", \"Content\")"));
+	CHECK(has_sub(buf, "pw0->view=v0;"));
+	CHECK(has_sub(buf, "pw1->view=v0;"));
+	CHECK(read_all(ph, buf, sizeof(buf)) == 1);
+	CHECK(has_sub(buf, "Main_HOST_WIN1"));
+	DeleteFileW(pc);
+	DeleteFileW(ph);
+
+	/* 删除视图会清除宿主引用并重映射节点 */
+	CHECK(UiDesign_ViewRemove(&d, v1i) == 1);
+	CHECK(d.viewCount == 1);
+	CHECK(UiDesign_Host(&d, h1)->view == -1);
+	CHECK(UiDesign_Host(&d, h2)->view == -1);
+	CHECK(d.views[0].id[0] && strcmp(d.views[0].id, "other") == 0);
+	CHECK(d.views[0].root >= 0 && d.nodes[d.views[0].root].owner == 0);
+	UiDesign_Free(&d);
+}
+
 void __stdcall startup(void)
 {
 	char line[160];
@@ -615,6 +710,7 @@ void __stdcall startup(void)
 	test_symbol();
 	test_components();
 	test_grid_columns();
+	test_view_host_model();
 	sprintf(line, "designer_test: %d passed, %d failed\n", g_pass, g_fail);
 	out_(line);
 	ExitProcess(g_fail ? 1u : 0u);

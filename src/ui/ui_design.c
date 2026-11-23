@@ -81,7 +81,8 @@ void UiDesign_Free(UiDesignDoc *doc)
 	for (i = 0; i < doc->nodeCount; i++)
 		dn_free(doc->nodes[i].children);
 	dn_free(doc->groups);
-	dn_free(doc->windows);
+	dn_free(doc->views);
+	dn_free(doc->hosts);
 	dn_free(doc->nodes);
 	memset(doc, 0, sizeof(*doc));
 }
@@ -177,27 +178,46 @@ int UiDesign_AddGroup(UiDesignDoc *doc, const char *id, const char *name)
 	return idx;
 }
 
-int UiDesign_AddWindow(UiDesignDoc *doc, const char *id, const char *name,
+int UiDesign_AddView(UiDesignDoc *doc, const char *id, const char *name)
+{
+	UiDesignView *v;
+	int idx;
+	if (!doc || !dn_reserve((void **)&doc->views, &doc->viewCap,
+		doc->viewCount + 1, sizeof(UiDesignView))) return -1;
+	idx = doc->viewCount++;
+	v = &doc->views[idx];
+	memset(v, 0, sizeof(*v));
+	UiDesign_SetText(v->id, UI_DN_ID_MAX, id ? id : "view");
+	UiDesign_SetText(v->name, UI_DN_NAME_MAX, name ? name : id ? id : "视图");
+	v->group = -1;
+	v->w = 800.0f;
+	v->h = 540.0f;
+	v->root = -1;
+	return idx;
+}
+
+int UiDesign_AddHost(UiDesignDoc *doc, const char *id, const char *name,
 	int kind, int group)
 {
-	UiDesignWindow *w;
+	UiDesignHost *h;
 	int idx;
-	if (!doc || !dn_reserve((void **)&doc->windows, &doc->windowCap,
-		doc->windowCount + 1, sizeof(UiDesignWindow))) return -1;
-	idx = doc->windowCount++;
-	w = &doc->windows[idx];
-	memset(w, 0, sizeof(*w));
-	UiDesign_SetText(w->id, UI_DN_ID_MAX, id ? id : "window");
-	UiDesign_SetText(w->name, UI_DN_NAME_MAX, name ? name : id ? id : "窗口");
-	UiDesign_SetText(w->title, 128, name ? name : id ? id : "窗口");
-	w->kind = kind == UI_DW_DIALOG ? UI_DW_DIALOG : UI_DW_NATIVE;
-	w->group = group;
-	w->w = 800.0f;
-	w->h = 540.0f;
-	w->minW = 320.0f;
-	w->minH = 240.0f;
-	w->theme = UI_THEME_LIGHT;
-	w->root = -1;
+	if (!doc || !dn_reserve((void **)&doc->hosts, &doc->hostCap,
+		doc->hostCount + 1, sizeof(UiDesignHost))) return -1;
+	idx = doc->hostCount++;
+	h = &doc->hosts[idx];
+	memset(h, 0, sizeof(*h));
+	UiDesign_SetText(h->id, UI_DN_ID_MAX, id ? id : "host");
+	UiDesign_SetText(h->name, UI_DN_NAME_MAX, name ? name : id ? id : "宿主");
+	UiDesign_SetText(h->title, 128, name ? name : id ? id : "窗口");
+	h->kind = kind == UI_DH_DIALOG ? UI_DH_DIALOG
+		: (kind == UI_DH_PANEL ? UI_DH_PANEL : UI_DH_WINDOW);
+	h->group = group;
+	h->w = 800.0f;
+	h->h = 540.0f;
+	h->minW = 320.0f;
+	h->minH = 240.0f;
+	h->theme = UI_THEME_LIGHT;
+	h->view = -1;
 	return idx;
 }
 
@@ -207,16 +227,75 @@ UiDesignNode *UiDesign_Node(UiDesignDoc *doc, int index)
 	return &doc->nodes[index];
 }
 
-UiDesignWindow *UiDesign_Window(UiDesignDoc *doc, int index)
+UiDesignView *UiDesign_View(UiDesignDoc *doc, int index)
 {
-	if (!doc || index < 0 || index >= doc->windowCount) return NULL;
-	return &doc->windows[index];
+	if (!doc || index < 0 || index >= doc->viewCount) return NULL;
+	return &doc->views[index];
+}
+
+UiDesignHost *UiDesign_Host(UiDesignDoc *doc, int index)
+{
+	if (!doc || index < 0 || index >= doc->hostCount) return NULL;
+	return &doc->hosts[index];
 }
 
 UiDesignGroup *UiDesign_Group(UiDesignDoc *doc, int index)
 {
 	if (!doc || index < 0 || index >= doc->groupCount) return NULL;
 	return &doc->groups[index];
+}
+
+int UiDesign_ViewRemove(UiDesignDoc *doc, int view)
+{
+	int *map;
+	int i, j, keep = 0;
+	if (!doc || view < 0 || view >= doc->viewCount) return 0;
+	map = (int *)dn_alloc((size_t)doc->nodeCount * sizeof(int));
+	if (!map) return 0;
+	for (i = 0; i < doc->nodeCount; i++)
+		map[i] = doc->nodes[i].owner == view ? -1 : keep++;
+	/* 前移保留节点: newIndex 永远 <= oldIndex, 原地搬移安全. */
+	j = 0;
+	for (i = 0; i < doc->nodeCount; i++) {
+		UiDesignNode *n = &doc->nodes[i];
+		int k, w;
+		if (map[i] < 0) {
+			dn_free(n->children);
+			n->children = NULL;
+			continue;
+		}
+		if (j != i) doc->nodes[j] = *n;
+		n = &doc->nodes[j];
+		if (n->parent >= 0) {
+			if (n->parent >= doc->nodeCount || map[n->parent] < 0)
+				n->parent = -1;
+			else n->parent = map[n->parent];
+		}
+		w = 0;
+		for (k = 0; k < n->childCount; k++) {
+			int c = n->children[k];
+			if (c >= 0 && c < doc->nodeCount && map[c] >= 0)
+				n->children[w++] = map[c];
+		}
+		n->childCount = w;
+		if (n->owner > view) n->owner--;
+		j++;
+	}
+	for (i = 0; i < doc->viewCount; i++) {
+		if (doc->views[i].root >= 0 && doc->views[i].root < doc->nodeCount)
+			doc->views[i].root = map[doc->views[i].root];
+	}
+	doc->nodeCount = j;
+	for (i = view + 1; i < doc->viewCount; i++)
+		doc->views[i - 1] = doc->views[i];
+	doc->viewCount--;
+	for (i = 0; i < doc->hostCount; i++) {
+		if (doc->hosts[i].view == view) doc->hosts[i].view = -1;
+		else if (doc->hosts[i].view > view) doc->hosts[i].view--;
+	}
+	dn_free(map);
+	doc->dirty = 1;
+	return 1;
 }
 
 void UiDesign_NodeDetach(UiDesignDoc *doc, int index)
@@ -253,7 +332,7 @@ void UiDesign_NodeAddChild(UiDesignDoc *doc, int parent, int child)
 	doc->nodes[child].parent = parent;
 }
 
-int UiDesign_AddNode(UiDesignDoc *doc, int win, int type, int parent,
+int UiDesign_AddNode(UiDesignDoc *doc, int view, int type, int parent,
 	const char *id, const char *name)
 {
 	UiDesignNode *n;
@@ -265,7 +344,7 @@ int UiDesign_AddNode(UiDesignDoc *doc, int win, int type, int parent,
 	n = &doc->nodes[idx];
 	memset(n, 0, sizeof(*n));
 	n->type = type;
-	n->owner = win;
+	n->owner = view;
 	n->parent = -1;
 	n->visible = 1;
 	n->enabled = 1;
@@ -405,22 +484,31 @@ int UiDesign_NodeDuplicate(UiDesignDoc *doc, int index)
 	return dup;
 }
 
-int UiDesign_FindNode(const UiDesignDoc *doc, int win, const char *id)
+int UiDesign_FindNode(const UiDesignDoc *doc, int view, const char *id)
 {
 	int i;
 	if (!doc || !id) return -1;
 	for (i = 0; i < doc->nodeCount; i++)
-		if (doc->nodes[i].owner == win && strcmp(doc->nodes[i].id, id) == 0)
+		if (doc->nodes[i].owner == view && strcmp(doc->nodes[i].id, id) == 0)
 			return i;
 	return -1;
 }
 
-int UiDesign_FindWindow(const UiDesignDoc *doc, const char *id)
+int UiDesign_FindView(const UiDesignDoc *doc, const char *id)
 {
 	int i;
 	if (!doc || !id) return -1;
-	for (i = 0; i < doc->windowCount; i++)
-		if (strcmp(doc->windows[i].id, id) == 0) return i;
+	for (i = 0; i < doc->viewCount; i++)
+		if (strcmp(doc->views[i].id, id) == 0) return i;
+	return -1;
+}
+
+int UiDesign_FindHost(const UiDesignDoc *doc, const char *id)
+{
+	int i;
+	if (!doc || !id) return -1;
+	for (i = 0; i < doc->hostCount; i++)
+		if (strcmp(doc->hosts[i].id, id) == 0) return i;
 	return -1;
 }
 
@@ -435,35 +523,39 @@ int UiDesign_FindGroup(const UiDesignDoc *doc, const char *id)
 
 int UiDesign_DefaultDoc(UiDesignDoc *doc)
 {
-	int g, w, root, label, col;
+	int g, v, hd, root, label, col;
 	UiDesignNode *n;
-	UiDesignWindow *win;
+	UiDesignView *view;
+	UiDesignHost *host;
 	UiDesignGroup *grp;
 	if (!doc) return 0;
 	UiDesign_Init(doc);
 	UiDesign_SetText(doc->name, UI_DN_NAME_MAX, "未命名工程");
 	g = UiDesign_AddGroup(doc, "main", "主分组");
-	w = UiDesign_AddWindow(doc, "main", "主窗口", UI_DW_NATIVE, g);
-	if (g < 0 || w < 0) return 0;
+	v = UiDesign_AddView(doc, "main", "主视图");
+	hd = UiDesign_AddHost(doc, "main", "主窗口", UI_DH_WINDOW, g);
+	if (g < 0 || v < 0 || hd < 0) return 0;
 	grp = UiDesign_Group(doc, g);
 	UiDesign_SetText(grp->outputC, UI_DN_PATH_MAX, "main.ui.c");
 	UiDesign_SetText(grp->outputH, UI_DN_PATH_MAX, "main.ui.h");
 	UiDesign_SetText(grp->symbolPrefix, UI_DN_SYM_MAX, "Main");
-	win = UiDesign_Window(doc, w);
-	win->root = UiDesign_AddNode(doc, w, UI_DN_COLUMN, -1, "root", "根容器");
-	root = win->root;
+	view = UiDesign_View(doc, v);
+	view->group = g;
+	view->root = UiDesign_AddNode(doc, v, UI_DN_COLUMN, -1, "root", "根容器");
+	root = view->root;
+	UiDesign_Host(doc, hd)->view = v;
 	n = UiDesign_Node(doc, root);
 	n->wMode = UI_DN_SIZE_FILL;
 	n->hMode = UI_DN_SIZE_FILL;
 	n->padding[0] = n->padding[1] = n->padding[2] = n->padding[3] = 16.0f;
 	n->gap = 8.0f;
-	label = UiDesign_AddNode(doc, w, UI_DN_LABEL, root, "title", "标题");
+	label = UiDesign_AddNode(doc, v, UI_DN_LABEL, root, "title", "标题");
 	n = UiDesign_Node(doc, label);
 	n->wMode = UI_DN_SIZE_FILL;
 	n->hMode = UI_DN_SIZE_FIXED;
 	n->h = 28.0f;
 	UiDesign_SetText(n->text, UI_DN_TEXT_MAX, "新建窗口");
-	col = UiDesign_AddNode(doc, w, UI_DN_BUTTON, root, "ok", "确定按钮");
+	col = UiDesign_AddNode(doc, v, UI_DN_BUTTON, root, "ok", "确定按钮");
 	n = UiDesign_Node(doc, col);
 	n->wMode = UI_DN_SIZE_FIXED;
 	n->hMode = UI_DN_SIZE_FIXED;
@@ -642,7 +734,7 @@ char *UiDesign_ToJson(const UiDesignDoc *doc)
 	int i;
 	if (!doc) return NULL;
 	ds_init(&s);
-	ds_add(&s, "{\n  \"format\":\"cui-design\",\n  \"version\":1,\n  \"name\":");
+	ds_add(&s, "{\n  \"format\":\"cui-design\",\n  \"version\":2,\n  \"name\":");
 	ds_json_str(&s, doc->name);
 	ds_add(&s, ",\n  \"groups\":[");
 	for (i = 0; i < doc->groupCount; i++) {
@@ -660,9 +752,28 @@ char *UiDesign_ToJson(const UiDesignDoc *doc)
 		ds_json_str(&s, g->symbolPrefix);
 		ds_add(&s, "}");
 	}
-	ds_add(&s, "\n  ],\n  \"windows\":[");
-	for (i = 0; i < doc->windowCount; i++) {
-		const UiDesignWindow *w = &doc->windows[i];
+	ds_add(&s, "\n  ],\n  \"views\":[");
+	for (i = 0; i < doc->viewCount; i++) {
+		const UiDesignView *v = &doc->views[i];
+		if (i) ds_add(&s, ",");
+		ds_add(&s, "\n    {\"id\":");
+		ds_json_str(&s, v->id);
+		ds_add(&s, ",\"name\":");
+		ds_json_str(&s, v->name);
+		ds_add(&s, ",\"width\":"); ds_num(&s, v->w);
+		ds_add(&s, ",\"height\":"); ds_num(&s, v->h);
+		ds_add(&s, ",\"group\":");
+		if (v->group >= 0 && v->group < doc->groupCount)
+			ds_json_str(&s, doc->groups[v->group].id);
+		else ds_add(&s, "null");
+		ds_add(&s, ",\"root\":");
+		if (v->root >= 0) ds_node(&s, doc, v->root);
+		else ds_add(&s, "null");
+		ds_add(&s, "}");
+	}
+	ds_add(&s, "\n  ],\n  \"hosts\":[");
+	for (i = 0; i < doc->hostCount; i++) {
+		const UiDesignHost *w = &doc->hosts[i];
 		if (i) ds_add(&s, ",");
 		ds_add(&s, "\n    {\"id\":");
 		ds_json_str(&s, w->id);
@@ -678,8 +789,10 @@ char *UiDesign_ToJson(const UiDesignDoc *doc)
 		ds_add(&s, ",\"height\":"); ds_num(&s, w->h);
 		ds_add(&s, ",\"minWidth\":"); ds_num(&s, w->minW);
 		ds_add(&s, ",\"minHeight\":"); ds_num(&s, w->minH);
-		ds_addf(&s, ",\"theme\":%d,\"root\":", w->theme);
-		ds_node(&s, doc, w->root);
+		ds_addf(&s, ",\"theme\":%d,\"view\":", w->theme);
+		if (w->view >= 0 && w->view < doc->viewCount)
+			ds_json_str(&s, doc->views[w->view].id);
+		else ds_add(&s, "null");
 		ds_add(&s, "}");
 	}
 	ds_add(&s, "\n  ]\n}\n");
@@ -989,6 +1102,7 @@ int UiDesign_FromJson(UiDesignDoc *doc, const char *text)
 {
 	JP j;
 	char key[64], val[UI_DN_PATH_MAX];
+	int version = 1;
 	if (!doc || !text) return 0;
 	UiDesign_Free(doc);
 	UiDesign_Init(doc);
@@ -1001,6 +1115,8 @@ int UiDesign_FromJson(UiDesignDoc *doc, const char *text)
 		if (!jp_key(&j, key, sizeof(key))) return 0;
 		if (strcmp(key, "name") == 0) {
 			jp_string(&j, doc->name, UI_DN_NAME_MAX);
+		} else if (strcmp(key, "version") == 0) {
+			jp_int(&j, &version);
 		} else if (strcmp(key, "groups") == 0) {
 			if (!jp_ch(&j, '[')) return 0;
 			jp_ws(&j);
@@ -1031,52 +1147,165 @@ int UiDesign_FromJson(UiDesignDoc *doc, const char *text)
 				if (jp_ch(&j, ']')) break;
 				if (!jp_ch(&j, ',')) return 0;
 			}
-		} else if (strcmp(key, "windows") == 0) {
+		} else if (strcmp(key, "views") == 0) {
 			if (!jp_ch(&j, '[')) return 0;
 			jp_ws(&j);
 			if (jp_ch(&j, ']')) continue;
 			for (;;) {
-				int wi, gi = -1;
+				int vi, gi = -1;
 				char group[UI_DN_ID_MAX] = "";
+				UiDesignView *v;
 				jp_ws(&j);
 				if (!jp_ch(&j, '{')) return 0;
-				wi = UiDesign_AddWindow(doc, "window", "窗口", UI_DW_NATIVE, -1);
+				vi = UiDesign_AddView(doc, "view", "视图");
+				v = UiDesign_View(doc, vi);
+				for (;;) {
+					char vk[48];
+					jp_ws(&j);
+					if (jp_ch(&j, '}')) break;
+					if (!jp_key(&j, vk, sizeof(vk))) return 0;
+					if (strcmp(vk, "id") == 0) jp_string(&j, v->id, UI_DN_ID_MAX);
+					else if (strcmp(vk, "name") == 0) jp_string(&j, v->name, UI_DN_NAME_MAX);
+					else if (strcmp(vk, "width") == 0) jp_number(&j, &v->w);
+					else if (strcmp(vk, "height") == 0) jp_number(&j, &v->h);
+					else if (strcmp(vk, "group") == 0) {
+						jp_ws(&j);
+						if (j.p < j.end && *j.p == '"') {
+							if (jp_string(&j, group, sizeof(group)))
+								gi = UiDesign_FindGroup(doc, group);
+						} else if (!jp_skip(&j)) return 0;
+					} else if (strcmp(vk, "root") == 0) {
+						int root = -1;
+						jp_ws(&j);
+						if (j.p < j.end && *j.p == 'n') {
+							jp_skip(&j);
+							root = -1;
+						} else if (jp_node(&j, doc, vi, -1, &root)) {
+							v->root = root;
+						}
+					} else if (!jp_skip(&j)) return 0;
+					jp_ws(&j);
+					if (jp_ch(&j, ',')) continue;
+				}
+				v->group = gi;
+				jp_ws(&j);
+				if (jp_ch(&j, ']')) break;
+				if (!jp_ch(&j, ',')) return 0;
+			}
+		} else if (strcmp(key, "hosts") == 0) {
+			if (!jp_ch(&j, '[')) return 0;
+			jp_ws(&j);
+			if (jp_ch(&j, ']')) continue;
+			for (;;) {
+				int hi, gi = -1, vi = -1;
+				char group[UI_DN_ID_MAX] = "";
+				char viewId[UI_DN_ID_MAX] = "";
+				UiDesignHost *w;
+				jp_ws(&j);
+				if (!jp_ch(&j, '{')) return 0;
+				hi = UiDesign_AddHost(doc, "host", "宿主", UI_DH_WINDOW, -1);
+				w = UiDesign_Host(doc, hi);
+				for (;;) {
+					char hk[48];
+					jp_ws(&j);
+					if (jp_ch(&j, '}')) break;
+					if (!jp_key(&j, hk, sizeof(hk))) return 0;
+					if (strcmp(hk, "id") == 0) jp_string(&j, w->id, UI_DN_ID_MAX);
+					else if (strcmp(hk, "name") == 0) jp_string(&j, w->name, UI_DN_NAME_MAX);
+					else if (strcmp(hk, "title") == 0) jp_string(&j, w->title, 128);
+					else if (strcmp(hk, "kind") == 0) jp_int(&j, &w->kind);
+					else if (strcmp(hk, "group") == 0) {
+						jp_ws(&j);
+						if (j.p < j.end && *j.p == '"') {
+							if (jp_string(&j, group, sizeof(group)))
+								gi = UiDesign_FindGroup(doc, group);
+						} else if (!jp_skip(&j)) return 0;
+					} else if (strcmp(hk, "view") == 0) {
+						jp_ws(&j);
+						if (j.p < j.end && *j.p == '"') {
+							jp_string(&j, viewId, sizeof(viewId));
+							vi = UiDesign_FindView(doc, viewId);
+						} else if (!jp_skip(&j)) return 0;
+					} else if (strcmp(hk, "width") == 0) jp_number(&j, &w->w);
+					else if (strcmp(hk, "height") == 0) jp_number(&j, &w->h);
+					else if (strcmp(hk, "minWidth") == 0) jp_number(&j, &w->minW);
+					else if (strcmp(hk, "minHeight") == 0) jp_number(&j, &w->minH);
+					else if (strcmp(hk, "theme") == 0) jp_int(&j, &w->theme);
+					else if (!jp_skip(&j)) return 0;
+					jp_ws(&j);
+					if (jp_ch(&j, ',')) continue;
+				}
+				w->group = gi;
+				w->view = vi;
+				if (w->kind < UI_DH_WINDOW || w->kind > UI_DH_PANEL)
+					w->kind = UI_DH_WINDOW;
+				jp_ws(&j);
+				if (jp_ch(&j, ']')) break;
+				if (!jp_ch(&j, ',')) return 0;
+			}
+		} else if (strcmp(key, "windows") == 0) {
+			/* v1 迁移: 每个窗口生成一个同名视图 + 宿主. */
+			if (!jp_ch(&j, '[')) return 0;
+			jp_ws(&j);
+			if (jp_ch(&j, ']')) continue;
+			for (;;) {
+				int vi, wi, gi = -1;
+				char group[UI_DN_ID_MAX] = "";
+				UiDesignView *v;
+				UiDesignHost *w;
+				jp_ws(&j);
+				if (!jp_ch(&j, '{')) return 0;
+				vi = UiDesign_AddView(doc, "view", "视图");
+				wi = UiDesign_AddHost(doc, "window", "窗口", UI_DH_WINDOW, -1);
+				v = UiDesign_View(doc, vi);
+				w = UiDesign_Host(doc, wi);
+				w->view = vi;
 				for (;;) {
 					char wk[48];
 					jp_ws(&j);
 					if (jp_ch(&j, '}')) break;
 					if (!jp_key(&j, wk, sizeof(wk))) return 0;
-					if (strcmp(wk, "id") == 0) jp_string(&j, doc->windows[wi].id, UI_DN_ID_MAX);
-					else if (strcmp(wk, "name") == 0) jp_string(&j, doc->windows[wi].name, UI_DN_NAME_MAX);
-					else if (strcmp(wk, "title") == 0) jp_string(&j, doc->windows[wi].title, 128);
-					else if (strcmp(wk, "kind") == 0) jp_int(&j, &doc->windows[wi].kind);
+					if (strcmp(wk, "id") == 0) {
+						jp_string(&j, v->id, UI_DN_ID_MAX);
+						UiDesign_SetText(w->id, UI_DN_ID_MAX, v->id);
+					} else if (strcmp(wk, "name") == 0) {
+						jp_string(&j, v->name, UI_DN_NAME_MAX);
+						UiDesign_SetText(w->name, UI_DN_NAME_MAX, v->name);
+					} else if (strcmp(wk, "title") == 0) jp_string(&j, w->title, 128);
+					else if (strcmp(wk, "kind") == 0) jp_int(&j, &w->kind);
 					else if (strcmp(wk, "group") == 0) {
 						jp_ws(&j);
 						if (j.p < j.end && *j.p == '"') {
 							if (jp_string(&j, group, sizeof(group)))
 								gi = UiDesign_FindGroup(doc, group);
 						} else if (!jp_skip(&j)) return 0;
-					} else if (strcmp(wk, "width") == 0) jp_number(&j, &doc->windows[wi].w);
-					else if (strcmp(wk, "height") == 0) jp_number(&j, &doc->windows[wi].h);
-					else if (strcmp(wk, "minWidth") == 0) jp_number(&j, &doc->windows[wi].minW);
-					else if (strcmp(wk, "minHeight") == 0) jp_number(&j, &doc->windows[wi].minH);
-					else if (strcmp(wk, "theme") == 0) jp_int(&j, &doc->windows[wi].theme);
+					} else if (strcmp(wk, "width") == 0) {
+						jp_number(&j, &w->w);
+						v->w = w->w;
+					} else if (strcmp(wk, "height") == 0) {
+						jp_number(&j, &w->h);
+						v->h = w->h;
+					} else if (strcmp(wk, "minWidth") == 0) jp_number(&j, &w->minW);
+					else if (strcmp(wk, "minHeight") == 0) jp_number(&j, &w->minH);
+					else if (strcmp(wk, "theme") == 0) jp_int(&j, &w->theme);
 					else if (strcmp(wk, "root") == 0) {
 						int root = -1;
 						jp_ws(&j);
 						if (j.p < j.end && *j.p == 'n') {
 							jp_skip(&j);
 							root = -1;
-						} else if (jp_node(&j, doc, wi, -1, &root)) {
-							doc->windows[wi].root = root;
+						} else if (jp_node(&j, doc, vi, -1, &root)) {
+							v->root = root;
 						}
 					} else if (!jp_skip(&j)) return 0;
 					jp_ws(&j);
 					if (jp_ch(&j, ',')) continue;
 				}
-				doc->windows[wi].group = gi;
-				doc->windows[wi].kind = doc->windows[wi].kind == UI_DW_DIALOG
-					? UI_DW_DIALOG : UI_DW_NATIVE;
+				v->group = gi;
+				w->group = gi;
+				w->kind = w->kind == 1 ? UI_DH_DIALOG : UI_DH_WINDOW;
+				if (v->id[0] == 0)
+					UiDesign_SetText(v->id, UI_DN_ID_MAX, w->id);
 				jp_ws(&j);
 				if (jp_ch(&j, ']')) break;
 				if (!jp_ch(&j, ',')) return 0;
@@ -1086,6 +1315,7 @@ int UiDesign_FromJson(UiDesignDoc *doc, const char *text)
 		if (jp_ch(&j, ',')) continue;
 	}
 	doc->dirty = 0;
+	(void)version;
 	return 1;
 }
 
@@ -1597,16 +1827,16 @@ static void dn_layout_node(const UiDesignDoc *doc, int index, UiRect rect,
 	}
 }
 
-int UiDesign_Layout(const UiDesignDoc *doc, int win, UiRect client,
+int UiDesign_Layout(const UiDesignDoc *doc, int view, UiRect client,
 	UiRect *rects, int rectCap)
 {
-	UiDesignWindow *w;
+	UiDesignView *v;
 	int i;
-	if (!doc || !rects || win < 0 || win >= doc->windowCount) return 0;
+	if (!doc || !rects || view < 0 || view >= doc->viewCount) return 0;
 	if (rectCap < doc->nodeCount) return 0;
 	for (i = 0; i < doc->nodeCount; i++) rects[i] = Ui_Rect(0, 0, 0, 0);
-	w = &doc->windows[win];
-	if (w->root >= 0) dn_layout_node(doc, w->root, client, rects);
+	v = &doc->views[view];
+	if (v->root >= 0) dn_layout_node(doc, v->root, client, rects);
 	return 1;
 }
 
@@ -1636,18 +1866,18 @@ static int dn_hit_node(const UiDesignDoc *doc, int index, const UiRect *rects,
 	return -1;
 }
 
-int UiDesign_FindNodeAt(const UiDesignDoc *doc, int win,
+int UiDesign_FindNodeAt(const UiDesignDoc *doc, int view,
 	const UiRect *rects, float x, float y)
 {
-	if (!doc || !rects || win < 0 || win >= doc->windowCount) return -1;
-	return dn_hit_node(doc, doc->windows[win].root, rects, x, y);
+	if (!doc || !rects || view < 0 || view >= doc->viewCount) return -1;
+	return dn_hit_node(doc, doc->views[view].root, rects, x, y);
 }
 
 /* ── 运行时 ─────────────────────────────────────────────────────────── */
 
 static UiId dn_widget_id(const UiDesignInstance *inst, int idx, int kind)
 {
-	return Ui_IdIndex("cui.design", inst->win, idx, kind);
+	return Ui_IdIndex("cui.design", inst->view, idx, kind);
 }
 
 static UiDesignNodeState *dn_state(UiDesignInstance *inst, int idx)
@@ -1766,13 +1996,14 @@ static void dn_state_init(UiDesignInstance *inst, int idx)
 }
 
 int UiDesignInstance_Init(UiDesignInstance *inst, UiDesignDoc *doc,
-	int win, UiContext *ui, UiPopupManager *pm, UiIme *ime)
+	int host, UiContext *ui, UiPopupManager *pm, UiIme *ime)
 {
 	if (!inst) return 0;
 	memset(inst, 0, sizeof(*inst));
-	if (!doc || !ui || win < 0 || win >= doc->windowCount) return 0;
+	if (!doc || !ui || host < 0 || host >= doc->hostCount) return 0;
 	inst->doc = doc;
-	inst->win = win;
+	inst->host = host;
+	inst->view = doc->hosts[host].view;
 	inst->ui = ui;
 	inst->pm = pm;
 	inst->ime = ime;
@@ -1784,8 +2015,8 @@ int UiDesignInstance_Init(UiDesignInstance *inst, UiDesignDoc *doc,
 		UiDesignInstance_Shutdown(inst);
 		return 0;
 	}
-	if (doc->windows[win].kind == UI_DW_DIALOG) {
-		UiDialog_Init(&inst->dialog, Ui_Id("cui.design.dialog", win, 0));
+	if (doc->hosts[host].kind == UI_DH_DIALOG) {
+		UiDialog_Init(&inst->dialog, Ui_Id("cui.design.dialog", host, 0));
 		UiDialog_AttachIme(&inst->dialog, ime);
 		inst->dialogReady = 1;
 	}
@@ -1840,7 +2071,7 @@ const char *UiDesign_GetText(UiDesignInstance *inst, const char *nodeId)
 	int idx;
 	UiDesignNodeState *st;
 	if (!inst || !nodeId) return "";
-	idx = UiDesign_FindNode(inst->doc, inst->win, nodeId);
+	idx = UiDesign_FindNode(inst->doc, inst->view, nodeId);
 	if (idx < 0) return "";
 	if (inst->states[idx].inited &&
 	    (inst->doc->nodes[idx].type == UI_DN_INPUT ||
@@ -1857,7 +2088,7 @@ void UiDesign_SetTextValue(UiDesignInstance *inst, const char *nodeId,
 	int idx;
 	UiDesignNodeState *st;
 	if (!inst || !nodeId) return;
-	idx = UiDesign_FindNode(inst->doc, inst->win, nodeId);
+	idx = UiDesign_FindNode(inst->doc, inst->view, nodeId);
 	if (idx < 0) return;
 	UiDesign_NodeSetText(&inst->doc->nodes[idx], text);
 	if (!inst->states[idx].inited)
@@ -2063,7 +2294,8 @@ void UiDesign_Draw(UiDesignInstance *inst, UiRect rc)
 	if (!inst || !inst->doc || !inst->ui) return;
 	inst->lastEventNode = -1;
 	inst->lastEventKind = 0;
-	UiDesign_Layout(inst->doc, inst->win, rc, inst->rects, inst->stateCount);
+	if (inst->view < 0 || inst->view >= inst->doc->viewCount) return;
+	UiDesign_Layout(inst->doc, inst->view, rc, inst->rects, inst->stateCount);
 	for (i = 0; i < inst->stateCount; i++) {
 		UiDesignNodeState *st = &inst->states[i];
 		if (st->inited && st->input.focus >= 0) {
@@ -2071,8 +2303,8 @@ void UiDesign_Draw(UiDesignInstance *inst, UiRect rc)
 			break;
 		}
 	}
-	if (inst->doc->windows[inst->win].root >= 0)
-		dn_draw_node(inst, inst->doc->windows[inst->win].root);
+	if (inst->doc->views[inst->view].root >= 0)
+		dn_draw_node(inst, inst->doc->views[inst->view].root);
 }
 
 void UiDesign_DrawOverlay(UiDesignInstance *inst)
@@ -2115,10 +2347,10 @@ int UiDesign_DialogOpen(UiDesignInstance *inst, UiId owner)
 
 void UiDesign_DialogDraw(UiDesignInstance *inst)
 {
-	UiDesignWindow *w;
+	UiDesignHost *w;
 	UiRect body;
 	if (!inst || !inst->dialogReady || !UiDialog_IsOpen(&inst->dialog)) return;
-	w = &inst->doc->windows[inst->win];
+	w = &inst->doc->hosts[inst->host];
 	if (UiDialog_Begin(&inst->dialog, inst->ui, w->title, w->w, w->h, &body)) {
 		UiDesign_Draw(inst, body);
 		UiDialog_End(&inst->dialog, inst->ui);
@@ -2440,7 +2672,7 @@ static int cg_parent_type(const UiDesignDoc *doc, const UiDesignNode *n,
 	return pt == UI_DN_GRID;
 }
 
-static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int winNew,
+static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int viewNew,
 	int parentOld, int *rootOut)
 {
 	const UiDesignNode *n = &doc->nodes[old];
@@ -2453,7 +2685,7 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int winNew,
 		doc->nodes[n->parent].type != UI_DN_TABS;
 	int i;
 	ds_addf(s, "    int n%d = UiDesign_AddNode(&gDoc, %d, ",
-		old, winNew);
+		old, viewNew);
 	ds_addf(s, "%d, ", n->type);
 	if (parentOld >= 0) ds_addf(s, "n%d, ", parentOld);
 	else ds_add(s, "-1, ");
@@ -2605,7 +2837,7 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int winNew,
 	}
 	if (rootOut) *rootOut = old;
 	for (i = 0; i < n->childCount; i++)
-		cg_node(s, doc, n->children[i], winNew, old, NULL);
+		cg_node(s, doc, n->children[i], viewNew, old, NULL);
 }
 
 static int cg_join_path(const wchar_t *dir, const char *name, wchar_t *out, int cap)
@@ -2637,11 +2869,12 @@ static const char *cg_base_name(const char *path, char *out, int cap)
 	return out;
 }
 
-static int cg_build_group(const UiDesignDoc *doc, int group, int onlyWin,
+static int cg_build_group(const UiDesignDoc *doc, int group, int onlyHost,
 	UiDStr *c, UiDStr *h, char *outC, int outCCap, char *outH, int outHCap,
-	char *prefix, int prefixCap, int *winCount)
+	char *prefix, int prefixCap, int *hostCount)
 {
-	int i, count = 0;
+	int i, count = 0, vcount = 0;
+	int *vmap = NULL;
 	const UiDesignGroup *g = NULL;
 	const char *gid, *gname;
 	char baseH[UI_DN_PATH_MAX];
@@ -2662,10 +2895,10 @@ static int cg_build_group(const UiDesignDoc *doc, int group, int onlyWin,
 		UiDesign_Symbol(g->symbolPrefix[0] ? g->symbolPrefix : g->id, prefix,
 			prefixCap);
 	} else {
-		const UiDesignWindow *w;
+		const UiDesignHost *w;
 		char sym[UI_DN_SYM_MAX];
-		if (onlyWin < 0 || onlyWin >= doc->windowCount) return -1;
-		w = &doc->windows[onlyWin];
+		if (onlyHost < 0 || onlyHost >= doc->hostCount) return -1;
+		w = &doc->hosts[onlyHost];
 		gid = w->id;
 		gname = w->name;
 		UiDesign_Symbol(w->id, sym, sizeof(sym));
@@ -2674,6 +2907,11 @@ static int cg_build_group(const UiDesignDoc *doc, int group, int onlyWin,
 		snprintf(outH, (size_t)outHCap, "%s.ui.h", sym);
 	}
 	cg_base_name(outH, baseH, sizeof(baseH));
+	if (doc->viewCount > 0) {
+		vmap = (int *)dn_alloc((size_t)doc->viewCount * sizeof(int));
+		if (!vmap) return -1;
+		for (i = 0; i < doc->viewCount; i++) vmap[i] = -1;
+	}
 
 	ds_addf(c, "/* Generated by CUI Designer. Source: %s */\n", doc->name);
 	ds_add(c, "#include \"ui/ui_design.h\"\n");
@@ -2683,29 +2921,71 @@ static int cg_build_group(const UiDesignDoc *doc, int group, int onlyWin,
 	ds_add(c, "    UiDesign_Init(&gDoc);\n");
 	ds_add(c, "    UiDesign_AddGroup(&gDoc, "); cg_quote(c, gid);
 	ds_add(c, ", "); cg_quote(c, gname); ds_add(c, ");\n");
-	for (i = 0; i < doc->windowCount; i++) {
-		const UiDesignWindow *w = &doc->windows[i];
-		int n0, root = -1;
-		if (onlyWin >= 0) {
-			if (i != onlyWin) continue;
+	/* 视图: 同一视图只构建一次, 可被多个宿主复用. */
+	for (i = 0; i < doc->viewCount; i++) {
+		const UiDesignView *v = &doc->views[i];
+		int vn, root = -1;
+		if (onlyHost >= 0) {
+			int hv = doc->hosts[onlyHost].view;
+			if (i != hv) continue;
+		} else if (v->group != group) continue;
+		vn = vcount++;
+		vmap[i] = vn;
+		ds_addf(c, "    { int v%d = UiDesign_AddView(&gDoc, ", vn);
+		cg_quote(c, v->id); ds_add(c, ", "); cg_quote(c, v->name);
+		ds_add(c, ");\n");
+		ds_addf(c, "      UiDesignView *pv%d = UiDesign_View(&gDoc, v%d);\n",
+			vn, vn);
+		if (v->w != 800.0f) {
+			ds_addf(c, "      pv%d->w=", vn); cg_num(c, v->w); ds_add(c, ";\n");
+		}
+		if (v->h != 540.0f) {
+			ds_addf(c, "      pv%d->h=", vn); cg_num(c, v->h); ds_add(c, ";\n");
+		}
+		if (v->root >= 0) {
+			int oldRoot = v->root;
+			cg_node(c, doc, oldRoot, vn, -1, &root);
+			ds_addf(c, "      pv%d->root=n%d;\n", vn, oldRoot);
+		}
+		ds_add(c, "    }\n");
+	}
+	/* 宿主: 只记录外壳与挂载的视图. */
+	for (i = 0; i < doc->hostCount; i++) {
+		const UiDesignHost *w = &doc->hosts[i];
+		int n0, vn = -1;
+		if (onlyHost >= 0) {
+			if (i != onlyHost) continue;
 		} else if (w->group != group) continue;
 		n0 = count++;
-		ds_addf(c, "    { int w%d = UiDesign_AddWindow(&gDoc, ", n0);
+		if (w->view >= 0 && w->view < doc->viewCount)
+			vn = vmap[w->view];
+		ds_addf(c, "    { int w%d = UiDesign_AddHost(&gDoc, ", n0);
 		cg_quote(c, w->id); ds_add(c, ", "); cg_quote(c, w->name);
 		ds_addf(c, ", %d, 0);\n", w->kind);
-		ds_addf(c, "      UiDesignWindow *pw%d = UiDesign_Window(&gDoc, w%d);\n", n0, n0);
-		ds_addf(c, "      pw%d->w=", n0); cg_num(c, w->w);
-		ds_addf(c, "; pw%d->h=", n0); cg_num(c, w->h);
-		ds_addf(c, "; pw%d->minW=", n0); cg_num(c, w->minW);
-		ds_addf(c, "; pw%d->minH=", n0); cg_num(c, w->minH);
-		ds_addf(c, "; pw%d->theme=%d; pw%d->kind=%d;\n", n0, w->theme, n0, w->kind);
-		ds_addf(c, "      UiDesign_SetText(pw%d->title, 128, ", n0);
-		cg_quote(c, w->title); ds_add(c, ");\n");
-		if (w->root >= 0) {
-			int oldRoot = w->root;
-			cg_node(c, doc, oldRoot, n0, -1, &root);
-			ds_addf(c, "      pw%d->root=n%d;\n", n0, oldRoot);
+		ds_addf(c, "      UiDesignHost *pw%d = UiDesign_Host(&gDoc, w%d);\n",
+			n0, n0);
+		if (w->title[0] && strcmp(w->title, w->name) != 0) {
+			ds_addf(c, "      UiDesign_SetText(pw%d->title, 128, ", n0);
+			cg_quote(c, w->title); ds_add(c, ");\n");
 		}
+		if (w->kind != UI_DH_PANEL) {
+			if (w->w != 800.0f) {
+				ds_addf(c, "      pw%d->w=", n0); cg_num(c, w->w); ds_add(c, ";\n");
+			}
+			if (w->h != 540.0f) {
+				ds_addf(c, "      pw%d->h=", n0); cg_num(c, w->h); ds_add(c, ";\n");
+			}
+			if (w->minW != 320.0f) {
+				ds_addf(c, "      pw%d->minW=", n0); cg_num(c, w->minW); ds_add(c, ";\n");
+			}
+			if (w->minH != 240.0f) {
+				ds_addf(c, "      pw%d->minH=", n0); cg_num(c, w->minH); ds_add(c, ";\n");
+			}
+		}
+		if (w->theme != UI_THEME_LIGHT)
+			ds_addf(c, "      pw%d->theme=%d;\n", n0, w->theme);
+		if (vn >= 0)
+			ds_addf(c, "      pw%d->view=v%d;\n", n0, vn);
 		ds_add(c, "    }\n");
 	}
 	ds_add(c, "    gBuilt=1;\n}\n\n");
@@ -2722,28 +3002,28 @@ static int cg_build_group(const UiDesignDoc *doc, int group, int onlyWin,
 	ds_add(h, "UiDesignDoc *"); ds_add(h, prefix); ds_add(h, "_Doc(void);\n\n");
 	{
 		int wi = 0;
-		for (i = 0; i < doc->windowCount; i++) {
-			if (onlyWin >= 0) {
-				if (i != onlyWin) continue;
-			} else if (doc->windows[i].group != group) continue;
+		for (i = 0; i < doc->hostCount; i++) {
+			if (onlyHost >= 0) {
+				if (i != onlyHost) continue;
+			} else if (doc->hosts[i].group != group) continue;
 			{
 				char wu[UI_DN_SYM_MAX];
-				cg_upper(doc->windows[i].id, wu, sizeof(wu));
-				ds_addf(h, "#define %s_WIN_%s %d\n", prefix, wu, wi++);
+				cg_upper(doc->hosts[i].id, wu, sizeof(wu));
+				ds_addf(h, "#define %s_HOST_%s %d\n", prefix, wu, wi++);
 			}
 		}
 	}
 	ds_add(h, "\n");
 	count = 0;
-	for (i = 0; i < doc->windowCount; i++) {
-		const UiDesignWindow *w = &doc->windows[i];
+	for (i = 0; i < doc->hostCount; i++) {
+		const UiDesignHost *w = &doc->hosts[i];
 		char ws[UI_DN_SYM_MAX];
-		if (onlyWin >= 0) {
-			if (i != onlyWin) continue;
+		if (onlyHost >= 0) {
+			if (i != onlyHost) continue;
 		} else if (w->group != group) continue;
 		UiDesign_Symbol(w->id, ws, sizeof(ws));
 		ds_addf(h, "void %s_%s_Init(UiDesignInstance *inst, UiContext *ui, UiPopupManager *pm, UiIme *ime);\n", prefix, ws);
-		if (w->kind == UI_DW_DIALOG) {
+		if (w->kind == UI_DH_DIALOG) {
 			ds_addf(h, "int  %s_%s_DialogOpen(UiDesignInstance *inst, UiId owner);\n", prefix, ws);
 			ds_addf(h, "void %s_%s_DialogDraw(UiDesignInstance *inst);\n", prefix, ws);
 		} else {
@@ -2752,7 +3032,7 @@ static int cg_build_group(const UiDesignDoc *doc, int group, int onlyWin,
 		ds_add(h, "\n");
 		ds_addf(c, "void %s_%s_Init(UiDesignInstance *inst, UiContext *ui, UiPopupManager *pm, UiIme *ime)\n{\n", prefix, ws);
 		ds_addf(c, "    UiDesignInstance_Init(inst, %s_Doc(), %d, ui, pm, ime);\n}\n\n", prefix, count);
-		if (w->kind == UI_DW_DIALOG) {
+		if (w->kind == UI_DH_DIALOG) {
 			ds_addf(c, "int %s_%s_DialogOpen(UiDesignInstance *inst, UiId owner)\n{\n    return UiDesign_DialogOpen(inst, owner);\n}\n\n", prefix, ws);
 			ds_addf(c, "void %s_%s_DialogDraw(UiDesignInstance *inst)\n{\n    UiDesign_DialogDraw(inst);\n}\n\n", prefix, ws);
 		} else {
@@ -2765,7 +3045,8 @@ static int cg_build_group(const UiDesignDoc *doc, int group, int onlyWin,
 		cg_upper(prefix, guard, sizeof(guard));
 		ds_addf(h, "#endif /* %s_UI_H */\n", guard);
 	}
-	if (winCount) *winCount = count;
+	if (vmap) dn_free(vmap);
+	if (hostCount) *hostCount = count;
 	return 0;
 }
 
@@ -2792,22 +3073,22 @@ int UiDesign_GenerateGroup(const UiDesignDoc *doc, int group,
 	if (dn_write_utf8(wc, c.p ? c.p : "", c.n)) wrote++;
 	if (dn_write_utf8(wh, h.p ? h.p : "", h.n)) wrote++;
 	ds_free(&c); ds_free(&h);
-	if (report) snprintf(report, cap, "group %s: %d file(s), %d window(s)",
+	if (report) snprintf(report, cap, "group %s: %d file(s), %d host(s)",
 		doc->groups[group].name, wrote, count);
 	return wrote == 2 ? 2 : -1;
 }
 
-int UiDesign_GenerateWindow(const UiDesignDoc *doc, int win,
+int UiDesign_GenerateHost(const UiDesignDoc *doc, int host,
 	const wchar_t *dir, char *report, int cap)
 {
 	UiDStr c, h;
 	int wrote = 0, count = 0;
 	char prefix[UI_DN_SYM_MAX], outC[UI_DN_PATH_MAX], outH[UI_DN_PATH_MAX];
 	wchar_t wc[UI_DN_PATH_MAX * 2], wh[UI_DN_PATH_MAX * 2];
-	if (!doc || win < 0 || win >= doc->windowCount) return -1;
+	if (!doc || host < 0 || host >= doc->hostCount) return -1;
 	ds_init(&c);
 	ds_init(&h);
-	if (cg_build_group(doc, -1, win, &c, &h, outC, sizeof(outC), outH,
+	if (cg_build_group(doc, -1, host, &c, &h, outC, sizeof(outC), outH,
 	    sizeof(outH), prefix, sizeof(prefix), &count) < 0) {
 		ds_free(&c); ds_free(&h);
 		return -1;
@@ -2820,8 +3101,8 @@ int UiDesign_GenerateWindow(const UiDesignDoc *doc, int win,
 	if (dn_write_utf8(wc, c.p ? c.p : "", c.n)) wrote++;
 	if (dn_write_utf8(wh, h.p ? h.p : "", h.n)) wrote++;
 	ds_free(&c); ds_free(&h);
-	if (report) snprintf(report, cap, "window %s: %d file(s)",
-		doc->windows[win].name, wrote);
+	if (report) snprintf(report, cap, "host %s: %d file(s)",
+		doc->hosts[host].name, wrote);
 	return wrote == 2 ? 2 : -1;
 }
 
@@ -2835,10 +3116,10 @@ int UiDesign_GenerateAll(const UiDesignDoc *doc, const wchar_t *dir,
 		if (r < 0) return -1;
 		total += r;
 	}
-	for (i = 0; i < doc->windowCount; i++) {
+	for (i = 0; i < doc->hostCount; i++) {
 		int r;
-		if (doc->windows[i].group >= 0) continue;
-		r = UiDesign_GenerateWindow(doc, i, dir, report, cap);
+		if (doc->hosts[i].group >= 0) continue;
+		r = UiDesign_GenerateHost(doc, i, dir, report, cap);
 		if (r < 0) return -1;
 		total += r;
 	}
@@ -2904,7 +3185,7 @@ static void cg_line_diff(const char *a, int an, const char *b, int bn,
 	if (*removed < 0) *removed = 0;
 }
 
-static int cg_preview_one(const UiDesignDoc *doc, int group, int onlyWin,
+static int cg_preview_one(const UiDesignDoc *doc, int group, int onlyHost,
 	const wchar_t *dir, UiDesignGenFile *files, int maxFiles,
 	int *stored, int *fresh, int *changed, int *same)
 {
@@ -2916,7 +3197,7 @@ static int cg_preview_one(const UiDesignDoc *doc, int group, int onlyWin,
 	int k;
 	ds_init(&c);
 	ds_init(&h);
-	if (cg_build_group(doc, group, onlyWin, &c, &h, outC, sizeof(outC), outH,
+	if (cg_build_group(doc, group, onlyHost, &c, &h, outC, sizeof(outC), outH,
 	    sizeof(outH), prefix, sizeof(prefix), NULL) < 0) {
 		ds_free(&c); ds_free(&h);
 		return -1;
@@ -2980,9 +3261,9 @@ int UiDesign_PreviewAll(const UiDesignDoc *doc, const wchar_t *dir,
 		if (r < 0) return -1;
 		total += r;
 	}
-	for (i = 0; i < doc->windowCount; i++) {
+	for (i = 0; i < doc->hostCount; i++) {
 		int r;
-		if (doc->windows[i].group >= 0) continue;
+		if (doc->hosts[i].group >= 0) continue;
 		r = cg_preview_one(doc, -1, i, dir, files, maxFiles,
 			&stored, &fresh, &changed, &same);
 		if (r < 0) return -1;
