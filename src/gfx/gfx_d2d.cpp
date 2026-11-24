@@ -164,6 +164,7 @@ struct Gfx {
 	int forceFull;
 	GfxRect dirty;
 	ID2D1StrokeStyle *roundStroke;
+	ID2D1StrokeStyle *buttStroke;
 	ID2D1StrokeStyle *dashStroke;
 	ID2D1Layer *alphaLayer;
 	int alphaDepth;
@@ -195,6 +196,7 @@ struct Gfx {
 	uint32_t svgGradClock;
 
 	GfxOverlay *overlays;
+	GfxRing *rings;
 	GfxLayer *layers;
 	GfxEffect *effects;
 	GfxFx *fxList;
@@ -242,6 +244,37 @@ struct GfxOverlay {
 	GfxOverlay *next;
 };
 
+/* 圆环动画: 一张完整圆环纹理 + 两组半平面相交。
+ * 固定半边裁剪与随 group 旋转的半边裁剪相交, 得到从 12/6 点开始扫过的扇区;
+ * 圆环纹理旋转对称, 内容无需反向旋转. 端点圆帽随 group 旋转。 */
+enum { GFX_RING_HALVES = 2 };
+struct GfxRing {
+	Gfx *g;
+	IDCompositionSurface *surface;
+	IDCompositionSurface *capSurface;
+	IDCompositionVisual *fixedVis[GFX_RING_HALVES];
+	IDCompositionVisual *group[GFX_RING_HALVES];
+	IDCompositionVisual *content[GFX_RING_HALVES];
+	IDCompositionVisual *capGroup;
+	IDCompositionVisual *capVis;
+	IDCompositionVisual *startCap;
+	IDCompositionRotateTransform *groupRot[GFX_RING_HALVES];
+	IDCompositionRotateTransform *capRot;
+	IDCompositionRectangleClip *fixedClip[GFX_RING_HALVES];
+	IDCompositionRectangleClip *contentClip[GFX_RING_HALVES];
+	IDCompositionEffectGroup *capFx;
+	IDCompositionEffectGroup *startCapFx;
+	int texSize, capSize, radiusPx;
+	float capClearP;
+	float x, y, w, h, width;
+	GfxColor color;
+	int roundCaps;
+	float fromValue, targetValue, value;
+	double startMs;
+	int durMs, ease, animating, needRedraw, valid, visible;
+	GfxRing *next;
+};
+
 /* 通用合成器 layer: 整块内容画在独立 swapchain 上, 由 DComp 子 visual
  * 显示; 内容只重画一次, 透明度交给 DWM 补间。reference=NULL 时
  * AddVisual(FALSE) 才是"置于所有兄弟之上", 因此进度 overlay 在它下面更新。 */
@@ -275,6 +308,8 @@ struct GfxEffect {
 };
 
 static void LayerRelease(GfxLayer *l);
+static ID2D1StrokeStyle *GetPathStroke(Gfx *g, const GfxStrokeStyle *st);
+static void RingRelease(GfxRing *r);
 static void FxDropAll(Gfx *g);
 static void PartsFree(Gfx *g);
 
@@ -572,6 +607,8 @@ static void ReleaseDcomp(Gfx *g)
 		SAFE_RELEASE(o->target);
 		SAFE_RELEASE(o->swap);
 	}
+	for (GfxRing *r = g->rings; r; r = r->next)
+		RingRelease(r);
 	for (GfxLayer *l = g->layers; l; l = l->next)
 		LayerRelease(l);
 	for (GfxEffect *e = g->effects; e; e = e->next) {
@@ -815,6 +852,12 @@ int Gfx_Init(Gfx **out, HWND hwnd)
 	sp.startCap = D2D1_CAP_STYLE_FLAT;
 	sp.endCap = D2D1_CAP_STYLE_FLAT;
 	sp.dashCap = D2D1_CAP_STYLE_FLAT;
+	sp.lineJoin = D2D1_LINE_JOIN_ROUND;
+	g->d2d->CreateStrokeStyle(&sp, NULL, 0, &g->buttStroke);
+	ZeroMemory(&sp, sizeof(sp));
+	sp.startCap = D2D1_CAP_STYLE_FLAT;
+	sp.endCap = D2D1_CAP_STYLE_FLAT;
+	sp.dashCap = D2D1_CAP_STYLE_FLAT;
 	sp.lineJoin = D2D1_LINE_JOIN_MITER;
 	sp.miterLimit = 4.0f;
 	sp.dashStyle = D2D1_DASH_STYLE_DASH;
@@ -854,6 +897,7 @@ void Gfx_Shutdown(Gfx *g)
 	SAFE_RELEASE(g->ellipsis);
 	SAFE_RELEASE(g->ellipsisFmt);
 	SAFE_RELEASE(g->roundStroke);
+	SAFE_RELEASE(g->buttStroke);
 	SAFE_RELEASE(g->dashStroke);
 	SAFE_RELEASE(g->alphaLayer);
 	for (int i = 0; i < GFX_CORNER_CACHE_MAX; i++)
@@ -873,6 +917,11 @@ void Gfx_Shutdown(Gfx *g)
 		GfxOverlay *o = g->overlays;
 		g->overlays = o->next;
 		HeapFree(GetProcessHeap(), 0, o);
+	}
+	while (g->rings) {
+		GfxRing *r = g->rings;
+		g->rings = r->next;
+		HeapFree(GetProcessHeap(), 0, r);
 	}
 	while (g->layers) {
 		GfxLayer *l = g->layers;
@@ -1677,6 +1726,740 @@ static double FxNow(void)
 	return (double)c.QuadPart * 1000.0 / (double)f.QuadPart;
 }
 
+/* ── 圆环半平面合成器 ───────────────────────────────────────────── */
+
+#define GFX_RING_PAD 4
+#define GFX_RING_ANGLE_EPS 0.05f
+
+
+static float ring_clamp01(float v)
+{
+	if (v < 0.0f) return 0.0f;
+	if (v > 1.0f) return 1.0f;
+	return v;
+}
+
+static double ring_cbrt(double x)
+{
+	double r;
+	if (x <= 0.0) return 0.0;
+	r = x;
+	for (int i = 0; i < 6; i++)
+		r = (2.0 * r + x / (r * r)) / 3.0;
+	return r;
+}
+
+static float ring_ease(float u, int ease)
+{
+	if (u <= 0.0f) return 0.0f;
+	if (u >= 1.0f) return 1.0f;
+	if (ease == GFX_EASE_OUT) {
+		float v = 1.0f - u;
+		return 1.0f - v * v * v;
+	}
+	if (ease == GFX_EASE_IN) return u * u * u;
+	return u;
+}
+
+static double ring_inv_ease(double q, int ease)
+{
+	if (q <= 0.0) return 0.0;
+	if (q >= 1.0) return 1.0;
+	if (ease == GFX_EASE_OUT) return 1.0 - ring_cbrt(1.0 - q);
+	if (ease == GFX_EASE_IN) return ring_cbrt(q);
+	return q;
+}
+
+/* 第一扇区覆盖 12→6 点, 第二扇区覆盖 6→12 点. 用极小的负角避免在
+ * 0%/50% 边界露出一个孤立像素点. */
+static float ring_half_angle(int half, float p)
+{
+	float a = ring_clamp01(p) * 360.0f - 180.0f;
+	if (half == 0) {
+		if (a <= -179.999f) return -180.0f - GFX_RING_ANGLE_EPS;
+		if (a > 0.0f) a = 0.0f;
+		return a;
+	}
+	if (p <= 0.5f) return -GFX_RING_ANGLE_EPS;
+	if (a < 0.0f) a = 0.0f;
+	if (a > 180.0f) a = 180.0f;
+	return a;
+}
+
+/* 移动端帽靠近 12 点起止帽时隐藏, 避免半透明颜色叠合成两次 alpha. */
+static float ring_cap_opacity(float p, float clear)
+{
+	return p > clear && p < 1.0f - clear ? 1.0f : 0.0f;
+}
+
+static void RingRelease(GfxRing *r)
+{
+	int i;
+	if (!r) return;
+	if (r->visible && r->g && r->g->compVisual) {
+		for (i = 0; i < GFX_RING_HALVES; i++) {
+			if (r->fixedVis[i]) r->g->compVisual->RemoveVisual(r->fixedVis[i]);
+		}
+		if (r->capGroup) r->g->compVisual->RemoveVisual(r->capGroup);
+		if (r->startCap) r->g->compVisual->RemoveVisual(r->startCap);
+	}
+	r->valid = 0;
+	r->visible = 0;
+	if (r->capVis) r->capVis->SetContent(NULL);
+	if (r->startCap) r->startCap->SetContent(NULL);
+	SAFE_RELEASE(r->capFx);
+	SAFE_RELEASE(r->startCapFx);
+	SAFE_RELEASE(r->capVis);
+	SAFE_RELEASE(r->startCap);
+	SAFE_RELEASE(r->capRot);
+	SAFE_RELEASE(r->capGroup);
+	for (i = 0; i < GFX_RING_HALVES; i++) {
+		if (r->content[i]) r->content[i]->SetContent(NULL);
+		SAFE_RELEASE(r->contentClip[i]);
+		SAFE_RELEASE(r->fixedClip[i]);
+		SAFE_RELEASE(r->groupRot[i]);
+		SAFE_RELEASE(r->content[i]);
+		SAFE_RELEASE(r->group[i]);
+		SAFE_RELEASE(r->fixedVis[i]);
+	}
+	SAFE_RELEASE(r->surface);
+	SAFE_RELEASE(r->capSurface);
+}
+
+typedef struct RingTexture {
+	IDCompositionSurface *surface;
+	ID2D1Bitmap1 *target;
+	int drawing, begun;
+	int offsetX, offsetY;
+} RingTexture;
+
+static void RingTextureRelease(RingTexture *t)
+{
+	if (!t) return;
+	SAFE_RELEASE(t->target);
+	SAFE_RELEASE(t->surface);
+	ZeroMemory(t, sizeof(*t));
+}
+
+static int RingTextureBegin(Gfx *g, int size, RingTexture *t)
+{
+	IDXGISurface *surf = NULL;
+	POINT offset = { 0, 0 };
+	D2D1_BITMAP_PROPERTIES1 bp;
+	D2D1_COLOR_F clear = { 0.0f, 0.0f, 0.0f, 0.0f };
+	HRESULT hr;
+
+	ZeroMemory(t, sizeof(*t));
+	if (!g || !g->dc || !g->compDevice || size <= 0) return 0;
+	/* 直接创建 composition surface, 用 BeginDraw 取本次更新的 DXGI 面.
+	 * 不经过 shared handle/OpenSharedResource, 避免 E_INVALIDARG. */
+	hr = g->compDevice->CreateSurface((UINT)size, (UINT)size,
+		DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_ALPHA_MODE_PREMULTIPLIED,
+		&t->surface);
+	if (FAILED(hr) || !t->surface) goto fail;
+	hr = t->surface->BeginDraw(NULL, __uuidof(IDXGISurface),
+		(void **)&surf, &offset);
+	if (FAILED(hr) || !surf) goto fail;
+	t->begun = 1;
+	t->offsetX = offset.x;
+	t->offsetY = offset.y;
+	bp = D2D1::BitmapProperties1(
+		D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+		D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+		96.0f, 96.0f);
+	hr = g->dc->CreateBitmapFromDxgiSurface(surf, &bp, &t->target);
+	SAFE_RELEASE(surf);
+	if (FAILED(hr) || !t->target) goto fail;
+	g->dc->SetTarget(t->target);
+	g->dc->SetTransform(D2D1::Matrix3x2F::Translation(
+		(float)offset.x, (float)offset.y));
+	g->dc->BeginDraw();
+	t->drawing = 1;
+	g->dc->Clear(&clear);
+	return 1;
+
+fail:
+	SAFE_RELEASE(surf);
+	if (t->surface && t->begun) t->surface->EndDraw();
+	RingTextureRelease(t);
+	return 0;
+}
+
+static int RingTextureEnd(Gfx *g, RingTexture *t, int ok)
+{
+	HRESULT hr = E_FAIL, hr2 = E_FAIL;
+	if (!t || !t->target || !t->surface) return 0;
+	if (t->drawing) {
+		hr = g->dc->EndDraw();
+		t->drawing = 0;
+	}
+	g->dc->SetTarget(NULL);
+	SAFE_RELEASE(t->target);
+	hr2 = t->surface->EndDraw();
+	t->begun = 0;
+	if (FAILED(hr) || FAILED(hr2)) {
+		ok = 0;
+	}
+	if (!ok) SAFE_RELEASE(t->surface);
+	return ok;
+}
+
+static int RingDrawFull(Gfx *g, int size, float radius, float widthPx,
+	GfxColor color, RingTexture *t)
+{
+	ID2D1SolidColorBrush *brush = NULL;
+	D2D1_ELLIPSE el;
+	float c = (float)size * 0.5f;
+
+	if (!RingTextureBegin(g, size, t)) return 0;
+	if (FAILED(g->dc->CreateSolidColorBrush(ToColor(color), &brush)) || !brush)
+		goto fail;
+	el.point = D2D1_POINT_2F{c, c};
+	el.radiusX = radius;
+	el.radiusY = radius;
+	g->dc->DrawEllipse(&el, brush, widthPx, NULL);
+	SAFE_RELEASE(brush);
+	return RingTextureEnd(g, t, 1);
+
+fail:
+	SAFE_RELEASE(brush);
+	if (t->drawing) {
+		g->dc->EndDraw();
+		t->drawing = 0;
+	}
+	g->dc->SetTarget(NULL);
+	RingTextureRelease(t);
+	return 0;
+}
+
+static int RingDrawCap(Gfx *g, int size, float widthPx, GfxColor color, RingTexture *t)
+{
+	ID2D1SolidColorBrush *brush = NULL;
+	D2D1_ELLIPSE el;
+	float c = (float)size * 0.5f;
+
+	if (!RingTextureBegin(g, size, t)) return 0;
+	if (FAILED(g->dc->CreateSolidColorBrush(ToColor(color), &brush)) || !brush) {
+		if (t->drawing) { g->dc->EndDraw(); t->drawing = 0; }
+		g->dc->SetTarget(NULL);
+		RingTextureRelease(t);
+		return 0;
+	}
+	el.point = D2D1_POINT_2F{c, c};
+	el.radiusX = widthPx * 0.5f;
+	el.radiusY = widthPx * 0.5f;
+	g->dc->FillEllipse(&el, brush);
+	SAFE_RELEASE(brush);
+	return RingTextureEnd(g, t, 1);
+}
+
+static int RingCreateVisuals(GfxRing *r)
+{
+	Gfx *g = r->g;
+	float scale = g->scale > 0.0f ? g->scale : 1.0f;
+	float extent = (float)r->texSize * 0.5f + 2.0f;
+	float centerX = (r->x + r->w * 0.5f) * scale;
+	float centerY = (r->y + r->h * 0.5f) * scale;
+	float texHalf = (float)r->texSize * 0.5f;
+	float angle;
+	int i;
+
+	for (i = 0; i < GFX_RING_HALVES; i++) {
+		angle = ring_half_angle(i, r->value);
+
+		/* 固定半平面: 0 = 右半, 1 = 左半. */
+		if (FAILED(g->compDevice->CreateVisual(&r->fixedVis[i])) ||
+			!r->fixedVis[i])
+			return 0;
+		r->fixedVis[i]->SetOffsetX(centerX);
+		r->fixedVis[i]->SetOffsetY(centerY);
+		if (FAILED(g->compDevice->CreateRectangleClip(&r->fixedClip[i])) ||
+			!r->fixedClip[i])
+			return 0;
+		if (i == 0) {
+			r->fixedClip[i]->SetLeft(0.0f);
+			r->fixedClip[i]->SetRight(extent);
+		} else {
+			r->fixedClip[i]->SetLeft(-extent);
+			r->fixedClip[i]->SetRight(0.0f);
+		}
+		r->fixedClip[i]->SetTop(-extent);
+		r->fixedClip[i]->SetBottom(extent);
+		r->fixedVis[i]->SetClip(r->fixedClip[i]);
+
+		if (FAILED(g->compDevice->CreateVisual(&r->group[i])) || !r->group[i])
+			return 0;
+		if (FAILED(g->compDevice->CreateRotateTransform(&r->groupRot[i])) ||
+			!r->groupRot[i])
+			return 0;
+		r->groupRot[i]->SetCenterX(0.0f);
+		r->groupRot[i]->SetCenterY(0.0f);
+		r->groupRot[i]->SetAngle(angle);
+		r->group[i]->SetTransform(r->groupRot[i]);
+		if (FAILED(r->fixedVis[i]->AddVisual(r->group[i], FALSE, NULL)))
+			return 0;
+
+		if (FAILED(g->compDevice->CreateVisual(&r->content[i])) || !r->content[i])
+			return 0;
+		if (FAILED(r->content[i]->SetContent(r->surface))) return 0;
+		r->content[i]->SetOffsetX(-texHalf);
+		r->content[i]->SetOffsetY(-texHalf);
+		if (FAILED(g->compDevice->CreateRectangleClip(&r->contentClip[i])) ||
+			!r->contentClip[i])
+			return 0;
+		/* 纹理坐标中的右半平面, 随 group 旋转. */
+		r->contentClip[i]->SetLeft(texHalf);
+		r->contentClip[i]->SetTop(0.0f);
+		r->contentClip[i]->SetRight((float)r->texSize);
+		r->contentClip[i]->SetBottom((float)r->texSize);
+		r->content[i]->SetClip(r->contentClip[i]);
+		if (FAILED(r->group[i]->AddVisual(r->content[i], FALSE, NULL)))
+			return 0;
+	}
+	if (r->roundCaps) {
+		/* 一个持续旋转的移动端帽 + 一个固定 12 点起始帽. */
+		if (FAILED(g->compDevice->CreateVisual(&r->capGroup)) || !r->capGroup)
+			return 0;
+		r->capGroup->SetOffsetX(centerX);
+		r->capGroup->SetOffsetY(centerY);
+		if (FAILED(g->compDevice->CreateRotateTransform(&r->capRot)) || !r->capRot)
+			return 0;
+		r->capRot->SetCenterX(0.0f);
+		r->capRot->SetCenterY(0.0f);
+		r->capRot->SetAngle(r->value * 360.0f - 180.0f);
+		r->capGroup->SetTransform(r->capRot);
+		if (FAILED(g->compDevice->CreateVisual(&r->capVis)) || !r->capVis)
+			return 0;
+		if (FAILED(r->capVis->SetContent(r->capSurface))) return 0;
+		r->capVis->SetOffsetX((float)r->capSize * -0.5f);
+		r->capVis->SetOffsetY((float)r->radiusPx - (float)r->capSize * 0.5f);
+		if (FAILED(g->compDevice->CreateEffectGroup(&r->capFx)) || !r->capFx)
+			return 0;
+		r->capFx->SetOpacity(ring_cap_opacity(r->value, r->capClearP));
+		r->capVis->SetEffect(r->capFx);
+		if (FAILED(r->capGroup->AddVisual(r->capVis, FALSE, NULL)))
+			return 0;
+
+		if (FAILED(g->compDevice->CreateVisual(&r->startCap)) || !r->startCap)
+			return 0;
+		if (FAILED(r->startCap->SetContent(r->capSurface))) return 0;
+		r->startCap->SetOffsetX(centerX - (float)r->capSize * 0.5f);
+		r->startCap->SetOffsetY(centerY - (float)r->radiusPx -
+			(float)r->capSize * 0.5f);
+		if (FAILED(g->compDevice->CreateEffectGroup(&r->startCapFx)) ||
+			!r->startCapFx)
+			return 0;
+		r->startCapFx->SetOpacity(r->value > 0.0f ? 1.0f : 0.0f);
+		r->startCap->SetEffect(r->startCapFx);
+	}
+	return 1;
+}
+
+static int RingBuild(GfxRing *r)
+{
+	Gfx *g;
+	RingTexture t;
+	float scale, sideDip, widthPx, radius;
+	int sidePx;
+
+	if (!r || !r->g) return 0;
+	g = r->g;
+	if (!g->useDcomp || !g->d3d || !g->dc || !g->compDevice || !g->compVisual)
+		return 0;
+	sideDip = r->w < r->h ? r->w : r->h;
+	if (sideDip <= 0.0f) return 0;
+	scale = g->scale > 0.0f ? g->scale : 1.0f;
+	sidePx = (int)(sideDip * scale + 0.5f);
+	if (sidePx < 4) return 0;
+	widthPx = r->width * scale;
+	if (widthPx < 1.0f) widthPx = 1.0f;
+	if (widthPx > (float)sidePx * 0.5f) widthPx = (float)sidePx * 0.5f;
+	r->texSize = sidePx + GFX_RING_PAD * 2;
+	r->radiusPx = (int)((sidePx - widthPx) * 0.5f + 0.5f);
+	radius = (float)sidePx * 0.5f - widthPx * 0.5f;
+
+	/* 一张完整圆环纹理; 可见扇区完全由裁剪决定, 不存在半环接缝.
+	 * 圆头由独立合成器帽补齐, 半透明颜色不会重叠两次. */
+	if (!RingDrawFull(g, r->texSize, radius, widthPx, r->color, &t))
+		return 0;
+	r->surface = t.surface;
+
+	/* 两个帽圆在圆周上刚好分离所需的最小进度差 (含 10% 余量). */
+	{
+		float x = radius > 0.5f ? widthPx * 0.5f / radius : 1.0f;
+		float ang;
+		if (x > 1.0f) x = 1.0f;
+		ang = x + x * x * x / 6.0f + 3.0f * x * x * x * x * x / 40.0f;
+		r->capClearP = ang * 0.35f;
+		if (r->capClearP < 0.001f) r->capClearP = 0.001f;
+		if (r->capClearP > 0.05f) r->capClearP = 0.05f;
+	}
+
+	if (r->roundCaps) {
+		r->capSize = (int)(widthPx + 4.0f + 0.5f);
+		if (r->capSize < 4) r->capSize = 4;
+		if (!RingDrawCap(g, r->capSize, widthPx, r->color, &t)) return 0;
+		r->capSurface = t.surface;
+	}
+	if (!RingCreateVisuals(r)) return 0;
+	g->compDevice->Commit();
+	r->valid = 1;
+	return 1;
+}
+
+GfxRing *Gfx_CreateRing(Gfx *g, GfxRect rect, float width, GfxColor color,
+	int roundCaps, float initialValue)
+{
+	GfxRing *r;
+	if (!g || !g->useDcomp || !g->dc || !g->compDevice || !g->compVisual)
+		return NULL;
+	if (rect.w <= 0.0f || rect.h <= 0.0f) return NULL;
+	r = (GfxRing *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(GfxRing));
+	if (!r) return NULL;
+	r->g = g;
+	r->x = rect.x;
+	r->y = rect.y;
+	r->w = rect.w;
+	r->h = rect.h;
+	r->width = width > 0.0f ? width : 1.0f;
+	r->color = color;
+	r->roundCaps = roundCaps ? 1 : 0;
+	r->value = r->fromValue = r->targetValue = ring_clamp01(initialValue);
+	if (!RingBuild(r)) {
+		RingRelease(r);
+		HeapFree(GetProcessHeap(), 0, r);
+		return NULL;
+	}
+	r->next = g->rings;
+	g->rings = r;
+	return r;
+}
+
+static float RingCurrent(GfxRing *r)
+{
+	double u, q;
+	if (!r || !r->animating) return r ? r->value : 0.0f;
+	u = (FxNow() - r->startMs) / (double)r->durMs;
+	if (u >= 1.0) {
+		r->value = r->targetValue;
+		r->animating = 0;
+		return r->value;
+	}
+	if (u < 0.0) u = 0.0;
+	q = ring_ease((float)u, r->ease);
+	r->value = r->fromValue + (r->targetValue - r->fromValue) * (float)q;
+	return r->value;
+}
+
+static void RingApplyStatic(GfxRing *r)
+{
+	int i;
+	for (i = 0; i < GFX_RING_HALVES; i++) {
+		float a = ring_half_angle(i, r->value);
+		if (r->groupRot[i]) r->groupRot[i]->SetAngle(a);
+	}
+	if (r->capRot) r->capRot->SetAngle(r->value * 360.0f - 180.0f);
+	if (r->capFx) r->capFx->SetOpacity(
+		ring_cap_opacity(r->value, r->capClearP));
+	if (r->startCapFx) r->startCapFx->SetOpacity(r->value > 0.0f ? 1.0f : 0.0f);
+}
+
+/* 角度是进度的分段线性函数, 进度是 cubic-out, 因此每段可精确写成
+ * 三次多项式; 在 50% 的饱和折点处切成两段即可, 无需采样. */
+static void RingAddAngleSpan(IDCompositionAnimation *anim, double sec,
+	float from, float to, double u0, double u1, float constant, int active,
+	int ease)
+{
+	float delta = to - from;
+	double len;
+	float p, u, f1, f2, f3, d;
+	if (u1 <= u0 + 1e-9) return;
+	if (!active) {
+		anim->AddCubic(sec * u0, constant, 0.0f, 0.0f, 0.0f);
+		return;
+	}
+	u = (float)u0;
+	p = from + delta * ring_ease(u, ease);
+	if (ease == GFX_EASE_OUT) {
+		f1 = 3.0f * (1.0f - u) * (1.0f - u);
+		f2 = -6.0f * (1.0f - u);
+		f3 = 6.0f;
+	} else if (ease == GFX_EASE_IN) {
+		f1 = 3.0f * u * u;
+		f2 = 6.0f * u;
+		f3 = 6.0f;
+	} else {
+		f1 = 1.0f;
+		f2 = f3 = 0.0f;
+	}
+	len = (double)sec;
+	d = 360.0f * delta;
+	anim->AddCubic(sec * u0, p * 360.0f - 180.0f,
+		d * f1 / (float)len,
+		d * f2 * 0.5f / (float)(len * len),
+		d * f3 / (6.0f * (float)(len * len * len)));
+}
+
+static void RingAnimateAngle(Gfx *g, IDCompositionRotateTransform *rot,
+	double sec, float from, float to, int half, int ease)
+{
+	IDCompositionAnimation *anim = NULL;
+	float finalA = ring_half_angle(half, to);
+	float startA = ring_half_angle(half, from);
+	float constant = half == 0 ? 0.0f : -GFX_RING_ANGLE_EPS;
+	int startActive = half == 0 ? from < 0.5f : from > 0.5f;
+	int endActive = half == 0 ? to <= 0.5f : to > 0.5f;
+	double uc = 0.0;
+
+	if (finalA == startA) {
+		rot->SetAngle(finalA);
+		return;
+	}
+	if (sec <= 0.0 || FAILED(g->compDevice->CreateAnimation(&anim)) || !anim) {
+		rot->SetAngle(finalA);
+		return;
+	}
+	if (startActive && endActive) {
+		RingAddAngleSpan(anim, sec, from, to, 0.0, 1.0, constant, 1, ease);
+	} else if (!startActive && !endActive) {
+		RingAddAngleSpan(anim, sec, from, to, 0.0, 1.0, constant, 0, ease);
+	} else {
+		uc = ring_inv_ease(((double)0.5 - (double)from) /
+			((double)to - (double)from), ease);
+		if (uc <= 0.0) {
+			RingAddAngleSpan(anim, sec, from, to, 0.0, 1.0, constant, 1, ease);
+		} else if (uc >= 1.0) {
+			RingAddAngleSpan(anim, sec, from, to, 0.0, 1.0, constant,
+				startActive, ease);
+		} else if (startActive) {
+			RingAddAngleSpan(anim, sec, from, to, 0.0, uc, constant, 1, ease);
+			RingAddAngleSpan(anim, sec, from, to, uc, 1.0, constant, 0, ease);
+		} else {
+			RingAddAngleSpan(anim, sec, from, to, 0.0, uc, constant, 0, ease);
+			RingAddAngleSpan(anim, sec, from, to, uc, 1.0, constant, 1, ease);
+		}
+	}
+	anim->End(sec, finalA);
+	rot->SetAngle(anim);
+	SAFE_RELEASE(anim);
+}
+
+static void RingBindCap(Gfx *g, GfxRing *r, double sec,
+	float from, float to, int ease)
+{
+	IDCompositionEffectGroup *fx = r->capFx;
+	float v0, v1;
+	double tc[2];
+	int nt = 0, i, j;
+
+	if (!fx) return;
+	v0 = ring_cap_opacity(from, r->capClearP);
+	v1 = ring_cap_opacity(to, r->capClearP);
+	if (v0 == v1 || sec <= 0.0) {
+		fx->SetOpacity(v1);
+		return;
+	}
+	for (i = 0; i < 2; i++) {
+		float t = i == 0 ? r->capClearP : 1.0f - r->capClearP;
+		double q = ((double)t - (double)from) /
+			((double)to - (double)from);
+		if (q <= 0.0 || q >= 1.0) continue;
+		tc[nt++] = sec * ring_inv_ease(q, ease);
+	}
+	if (!nt) {
+		fx->SetOpacity(v1);
+		return;
+	}
+	for (i = 1; i < nt; i++) {
+		double t = tc[i];
+		for (j = i; j > 0 && tc[j - 1] > t; j--) tc[j] = tc[j - 1];
+		tc[j] = t;
+	}
+	{
+		IDCompositionAnimation *anim = NULL;
+		if (FAILED(g->compDevice->CreateAnimation(&anim)) || !anim) {
+			fx->SetOpacity(v1);
+			return;
+		}
+		anim->AddCubic(0.0, v0, 0.0f, 0.0f, 0.0f);
+		for (i = 0; i < nt; i++) {
+			double u, p;
+			float v;
+			if (tc[i] <= 0.005 || tc[i] >= sec - 0.005) continue;
+			u = tc[i] / sec;
+			p = (double)from + ((double)to - (double)from) *
+				(double)ring_ease((float)u + 0.00001f, ease);
+			v = ring_cap_opacity((float)p, r->capClearP);
+			anim->AddCubic(tc[i], v, 0.0f, 0.0f, 0.0f);
+		}
+		anim->End(sec, v1);
+		fx->SetOpacity(anim);
+		SAFE_RELEASE(anim);
+	}
+}
+
+static void RingAnimateCap(Gfx *g, GfxRing *r, double sec,
+	float from, float to, int ease)
+{
+	IDCompositionAnimation *anim = NULL;
+	if (!r->capRot) return;
+	if (FAILED(g->compDevice->CreateAnimation(&anim)) || !anim) {
+		r->capRot->SetAngle(to * 360.0f - 180.0f);
+		return;
+	}
+	anim_cubic(anim, sec, from * 360.0f - 180.0f,
+		to * 360.0f - 180.0f, ease);
+	r->capRot->SetAngle(anim);
+	SAFE_RELEASE(anim);
+}
+
+int Gfx_RingSetValue(GfxRing *r, float value, int animateMs, int ease)
+{
+	Gfx *g;
+	float from, target;
+	int i;
+	double sec;
+
+	if (!r || !r->valid || !r->g || !r->g->compDevice) return 0;
+	g = r->g;
+	from = RingCurrent(r);
+	target = ring_clamp01(value);
+	if (animateMs <= 0 || from == target) {
+		r->value = r->fromValue = r->targetValue = target;
+		r->animating = 0;
+		r->needRedraw = 0;
+		RingApplyStatic(r);
+		g->compDevice->Commit();
+		return 1;
+	}
+	r->fromValue = from;
+	r->targetValue = target;
+	r->startMs = FxNow();
+	r->durMs = animateMs;
+	r->ease = ease;
+	r->animating = 1;
+	r->needRedraw = 1;
+	sec = (double)animateMs / 1000.0;
+	for (i = 0; i < GFX_RING_HALVES; i++) {
+		float a0 = ring_half_angle(i, from);
+		float a1 = ring_half_angle(i, target);
+		if (a0 == a1) {
+			r->groupRot[i]->SetAngle(a1);
+		} else {
+			RingAnimateAngle(g, r->groupRot[i], sec, from, target,
+				i, ease);
+		}
+	}
+	if (r->capRot) RingAnimateCap(g, r, sec, from, target, ease);
+	RingBindCap(g, r, sec, from, target, ease);
+	if (r->startCapFx)
+		r->startCapFx->SetOpacity(from > 0.0f || target > 0.0f ? 1.0f : 0.0f);
+	g->compDevice->Commit();
+	return 1;
+}
+
+int Gfx_RingSetVisible(GfxRing *r, int visible)
+{
+	Gfx *g;
+	int i;
+	visible = visible ? 1 : 0;
+	if (!r || !r->valid || !r->g) return 0;
+	g = r->g;
+	if (!g->compVisual || !g->compDevice) return 0;
+	if (r->visible == visible) return 1;
+	if (visible) {
+		for (i = 0; i < GFX_RING_HALVES; i++) {
+			if (FAILED(CompAddBottom(g->compVisual, r->fixedVis[i]))) {
+				visible = 0;
+				break;
+			}
+		}
+		if (visible && r->capGroup &&
+			FAILED(CompAddBottom(g->compVisual, r->capGroup)))
+			visible = 0;
+		if (visible && r->startCap &&
+			FAILED(CompAddBottom(g->compVisual, r->startCap)))
+			visible = 0;
+		if (!visible) {
+			for (i = 0; i < GFX_RING_HALVES; i++) {
+				if (r->fixedVis[i]) g->compVisual->RemoveVisual(r->fixedVis[i]);
+			}
+			if (r->capGroup) g->compVisual->RemoveVisual(r->capGroup);
+			if (r->startCap) g->compVisual->RemoveVisual(r->startCap);
+		}
+	} else {
+		for (i = 0; i < GFX_RING_HALVES; i++) {
+			if (r->fixedVis[i]) g->compVisual->RemoveVisual(r->fixedVis[i]);
+		}
+		if (r->capGroup) g->compVisual->RemoveVisual(r->capGroup);
+		if (r->startCap) g->compVisual->RemoveVisual(r->startCap);
+	}
+	r->visible = visible;
+	g->compDevice->Commit();
+	return visible;
+}
+
+int Gfx_RingVisible(GfxRing *r)
+{
+	return r && r->valid && r->visible ? 1 : 0;
+}
+
+int Gfx_RingAlive(GfxRing *r)
+{
+	return r && r->valid ? 1 : 0;
+}
+
+int Gfx_RingAnimating(GfxRing *r)
+{
+	if (!r || !r->valid) return 0;
+	RingCurrent(r);
+	return r->animating;
+}
+
+float Gfx_RingValue(GfxRing *r)
+{
+	return RingCurrent(r);
+}
+
+void Gfx_RingDestroy(GfxRing *r)
+{
+	Gfx *g;
+	GfxRing **pp;
+	if (!r) return;
+	g = r->g;
+	if (g) {
+		for (pp = &g->rings; *pp; pp = &(*pp)->next) {
+			if (*pp == r) { *pp = r->next; break; }
+		}
+	}
+	RingRelease(r);
+	if (g && g->compDevice) g->compDevice->Commit();
+	HeapFree(GetProcessHeap(), 0, r);
+}
+
+static void RingMarkDone(Gfx *g)
+{
+	GfxRing *r;
+	RECT rc;
+	double now;
+	if (!g) return;
+	now = FxNow();
+	for (r = g->rings; r; r = r->next) {
+		if (!r->valid || !r->needRedraw) continue;
+		RingCurrent(r);
+		if (r->animating || now < r->startMs + (double)r->durMs + 16.0)
+			continue;
+		r->needRedraw = 0;
+		if (g->hwnd) {
+			rc.left = (LONG)(r->x * g->scale) - 2;
+			rc.top = (LONG)(r->y * g->scale) - 2;
+			rc.right = (LONG)((r->x + r->w) * g->scale) + 2;
+			rc.bottom = (LONG)((r->y + r->h) * g->scale) + 2;
+			InvalidateRect(g->hwnd, &rc, FALSE);
+		}
+	}
+}
+
 static ID3D11Texture2D *FxTex(Gfx *g, int w, int h)
 {
 	D3D11_TEXTURE2D_DESC d;
@@ -2140,7 +2923,10 @@ void Gfx_FxCancelRect(Gfx *g, GfxRect rc)
 }
 int Gfx_FxBusy(Gfx *g)
 {
+	GfxRing *r;
 	if (!g) return 0;
+	for (r = g->rings; r; r = r->next)
+		if (r->valid && (r->animating || r->needRedraw)) return 1;
 	return (g->fxQueueCount > 0 || g->fxCount > 0) ? 1 : 0;
 }
 
@@ -2149,6 +2935,7 @@ int Gfx_FxIdleMs(Gfx *g)
 	double now, best = 0.0;
 	int found = 0;
 	GfxFx *f;
+	GfxRing *r;
 	if (!g) return -1;
 	if (g->fxQueueCount > 0) return 0;
 	now = FxNow();
@@ -2156,6 +2943,16 @@ int Gfx_FxIdleMs(Gfx *g)
 		double end, d;
 		if (f->done) return 0;   /* 立刻安排一次绘制来完成拆除 */
 		end = f->startMs + (double)f->durMs + 16.0;
+		d = end - now;
+		if (d < 0.0) d = 0.0;
+		if (!found || d < best) { best = d; found = 1; }
+	}
+	for (r = g->rings; r; r = r->next) {
+		double end, d;
+		if (!r->valid) continue;
+		if (r->needRedraw && !r->animating) return 0;
+		if (!r->animating) continue;
+		end = r->startMs + (double)r->durMs + 16.0;
 		d = end - now;
 		if (d < 0.0) d = 0.0;
 		if (!found || d < best) { best = d; found = 1; }
@@ -2168,6 +2965,7 @@ int Gfx_FxIdleMs(Gfx *g)
 void Gfx_FxTick(Gfx *g)
 {
 	FxMarkDone(g);
+	RingMarkDone(g);
 }
 
 /* ── PartFx: 独立 visual 的位移部件 ───────────────────────────────── */
@@ -4157,6 +4955,12 @@ void Gfx_Line(Gfx *g, float x1, float y1, float x2, float y2, GfxColor c, float 
 void Gfx_StrokeArc(Gfx *g, float cx, float cy, float r, float startDeg, float sweepDeg,
 	GfxColor c, float width)
 {
+	Gfx_StrokeArcStyle(g, cx, cy, r, startDeg, sweepDeg, c, width, NULL);
+}
+
+void Gfx_StrokeArcStyle(Gfx *g, float cx, float cy, float r, float startDeg,
+	float sweepDeg, GfxColor c, float width, const GfxStrokeStyle *st)
+{
 	if (!g || !g->rt || r <= 0.0f || sweepDeg == 0.0f) return;
 	GfxRect bb = { cx - r - width, cy - r - width,
 		(r + width) * 2.0f, (r + width) * 2.0f };
@@ -4181,7 +4985,7 @@ void Gfx_StrokeArc(Gfx *g, float cx, float cy, float r, float startDeg, float sw
 	}
 	sink->EndFigure(D2D1_FIGURE_END_OPEN);
 	sink->Close();
-	g->rt->DrawGeometry(geo, br, width, g->roundStroke);
+	g->rt->DrawGeometry(geo, br, width, GetPathStroke(g, st));
 	SAFE_RELEASE(sink);
 	SAFE_RELEASE(geo);
 }

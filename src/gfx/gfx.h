@@ -15,6 +15,7 @@ typedef struct Gfx Gfx;
 typedef struct GfxFont GfxFont;
 typedef struct GfxBitmap GfxBitmap;
 typedef struct GfxOverlay GfxOverlay;
+typedef struct GfxRing GfxRing;
 typedef struct GfxLayer GfxLayer;
 typedef struct GfxEffect GfxEffect;
 typedef struct GfxPath GfxPath;
@@ -134,6 +135,9 @@ void Gfx_Line(Gfx *g, float x1, float y1, float x2, float y2, GfxColor c, float 
 /* 圆弧: start/sweep 为角度，屏幕坐标系顺时针；圆头线帽 */
 void Gfx_StrokeArc(Gfx *g, float cx, float cy, float r, float startDeg, float sweepDeg,
 	GfxColor c, float width);
+/* st=NULL 为圆头; 否则按给定 cap/join 绘制。 */
+void Gfx_StrokeArcStyle(Gfx *g, float cx, float cy, float r, float startDeg,
+	float sweepDeg, GfxColor c, float width, const GfxStrokeStyle *st);
 void Gfx_FillTriangle(Gfx *g, float x1, float y1, float x2, float y2, float x3, float y3,
 	GfxColor c);
 
@@ -257,6 +261,20 @@ int  Gfx_OverlaySetOpacity(GfxOverlay *o, float opacity);
 int  Gfx_OverlayAlive(GfxOverlay *o);
 
 void Gfx_OverlayDestroy(GfxOverlay *o);
+
+/* 圆环合成器: rect 是含描边的外接正方形, value 为 0..1。
+ * 一张完整圆环纹理 + 固定/旋转半平面相交, DWM 补间两个角度; ULW 返回 NULL。
+ * 创建必须在 Gfx_End 之后调用。动画结束由 Gfx_FxTick 通知主窗重绘。
+ * 资源可跨多次动画复用: SetVisible(0) 只摘除 visual, 不销毁纹理。 */
+GfxRing *Gfx_CreateRing(Gfx *g, GfxRect rect, float width, GfxColor color,
+	int roundCaps, float initialValue);
+int  Gfx_RingSetValue(GfxRing *r, float value, int animateMs, int ease);
+int  Gfx_RingSetVisible(GfxRing *r, int visible);
+int  Gfx_RingVisible(GfxRing *r);
+int  Gfx_RingAlive(GfxRing *r);
+int  Gfx_RingAnimating(GfxRing *r);
+float Gfx_RingValue(GfxRing *r);
+void Gfx_RingDestroy(GfxRing *r);
 
 /* 通用合成器 layer: 独立 swapchain 的 DComp 子 visual, 默认加在所有
  * 已有 overlay/layer 之上; 内容用回调画一次, opacity 可交给 DWM 补间

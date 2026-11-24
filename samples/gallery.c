@@ -34,6 +34,7 @@
 #include "ui/ui_color_select.h"
 #include "ui/ui_svg_edit.h"
 #include "ui/ui_progress.h"
+#include "ui/ui_ring_progress.h"
 #include "ui/ui_popup.h"
 #include "ui/ui_image.h"
 #include "ui/ui_qrcode.h"
@@ -333,6 +334,15 @@ typedef struct Gallery {
 		UiSlider sl;
 		UiCheckbox paused;
 	} prog;
+
+	/* RingProgress */
+	struct {
+		UiRingProgress hero, metric, plain;
+		UiSlider value, width, duration;
+		UiButtonGroup range, colors;
+		UiCheckbox caps, title, customText;
+		int replaySeq;
+	} ring;
 
 	/* Image */
 	struct {
@@ -682,6 +692,7 @@ static const SideRow kSide[] = {
 	{ NULL, PG_TOOLTIP },
 	{ "数据展示", -1 },
 	{ NULL, PG_PROGRESS },
+	{ NULL, PG_RINGPROGRESS },
 	{ NULL, PG_IMAGE },
 	{ NULL, PG_QRCODE },
 	{ NULL, PG_MARKDOWN },
@@ -5920,6 +5931,278 @@ static int prog_anim(Gallery *g)
 	return !UiProgress_Paused(&g->prog.prog);
 }
 
+/* ── RingProgress ──────────────────────────────────────────────────── */
+
+static const char *const kRingRangeLabels[3] = { "0–100", "0–1", "0–1000" };
+static const double kRingRangeMax[3] = { 100.0, 1.0, 1000.0 };
+static const char *const kRingColorLabels[4] = { "主题", "蓝", "绿", "橙" };
+static const uint32_t kRingColors[4] = {
+	UI_RING_THEME_COLOR, 0xFF2563EBu, 0xFF059669u, 0xFFEA580Cu
+};
+
+static double ring_value_ratio(const UiRingProgress *p)
+{
+	double d = p->maxValue - p->minValue;
+	if (d <= 0.0) return 0.0;
+	return (p->value - p->minValue) / d;
+}
+
+static void ring_apply(Gallery *g)
+{
+	UiRingProgress *p = &g->ring.hero;
+	double maxValue = kRingRangeMax[g->ring.range.selected];
+	if (p->minValue != 0.0 || p->maxValue != maxValue) {
+		double ratio = ring_value_ratio(p);
+		UiRingProgress_SetRange(p, 0.0, maxValue);
+		UiRingProgress_SetValue(p, ratio * maxValue);
+	}
+	UiRingProgress_SetStyle(p, g->ring.width.value * 64.0f,
+		kRingColors[g->ring.colors.selected], g->ring.caps.checked);
+	UiRingProgress_SetDurationMs(p, (int)(g->ring.duration.value * 1200.0f + 0.5f));
+	UiRingProgress_SetTitle(p, g->ring.title.checked ? "任务完成度" : "");
+	UiRingProgress_SetUnit(p, "%");
+	UiRingProgress_SetValueText(p, g->ring.customText.checked ? "在线" : "");
+}
+
+static void ring_set_ratio(Gallery *g, double ratio, int logEvent)
+{
+	char buf[96];
+	if (ratio < 0.0) ratio = 0.0;
+	if (ratio > 1.0) ratio = 1.0;
+	UiRingProgress_SetValue(&g->ring.hero,
+		g->ring.hero.minValue + ratio *
+		(g->ring.hero.maxValue - g->ring.hero.minValue));
+	g->ring.value.value = (float)ratio;
+	if (logEvent) {
+		snprintf(buf, sizeof(buf), "圆形进度 → %.0f%%", ratio * 100.0);
+		set_status(g, buf);
+	}
+}
+
+static void ring_set_all(Gallery *g, double a, double b, double c, int logEvent)
+{
+	UiRingProgress_SetValue(&g->ring.hero, a * g->ring.hero.maxValue);
+	UiRingProgress_SetValue(&g->ring.metric, b * g->ring.metric.maxValue);
+	UiRingProgress_SetValue(&g->ring.plain, c * g->ring.plain.maxValue);
+	g->ring.value.value = (float)a;
+	if (logEvent) {
+		char buf[96];
+		snprintf(buf, sizeof(buf), "三环联动 → %.0f%% / %.0f%% / %.0f%%",
+			a * 100.0, b * 100.0, c * 100.0);
+		set_status(g, buf);
+	}
+}
+
+static void ring_init(Gallery *g)
+{
+	UiRingProgress_Init(&g->ring.hero, &g->app->ui);
+	UiRingProgress_Init(&g->ring.metric, &g->app->ui);
+	UiRingProgress_Init(&g->ring.plain, &g->app->ui);
+	UiRingProgress_SetDurationMs(&g->ring.hero, 0);
+	UiRingProgress_SetDurationMs(&g->ring.metric, 0);
+	UiRingProgress_SetDurationMs(&g->ring.plain, 0);
+	UiRingProgress_SetValue(&g->ring.hero, 72.0);
+	UiRingProgress_SetRange(&g->ring.metric, 0.0, 10.0);
+	UiRingProgress_SetValue(&g->ring.metric, 7.4);
+	UiRingProgress_SetValue(&g->ring.plain, 36.0);
+	UiRingProgress_SetDurationMs(&g->ring.hero, 650);
+	UiRingProgress_SetDurationMs(&g->ring.metric, 650);
+	UiRingProgress_SetDurationMs(&g->ring.plain, 650);
+	UiRingProgress_SetStyle(&g->ring.hero, 14.0f, UI_RING_THEME_COLOR, 1);
+	UiRingProgress_SetStyle(&g->ring.metric, 18.0f, 0xFF2563EBu, 1);
+	UiRingProgress_SetStyle(&g->ring.plain, 10.0f, 0xFF059669u, 1);
+	UiRingProgress_SetTitle(&g->ring.hero, "任务完成度");
+	UiRingProgress_SetUnit(&g->ring.hero, "%");
+	UiRingProgress_SetTitle(&g->ring.metric, "存储空间");
+	UiRingProgress_SetUnit(&g->ring.metric, "GB");
+	UiSlider_Init(&g->ring.value, Ui_Id("gl.ring.value", 0, 0), 0.72f);
+	UiSlider_Init(&g->ring.width, Ui_Id("gl.ring.width", 0, 0), 14.0f / 64.0f);
+	UiSlider_Init(&g->ring.duration, Ui_Id("gl.ring.duration", 0, 0), 650.0f / 1200.0f);
+	UiButtonGroup_Init(&g->ring.range, Ui_Id("gl.ring.range", 0, 0),
+		UI_BG_SINGLE, 3);
+	UiButtonGroup_SetSelected(&g->ring.range, 0);
+	UiButtonGroup_Init(&g->ring.colors, Ui_Id("gl.ring.colors", 0, 0),
+		UI_BG_SINGLE, 4);
+	UiButtonGroup_SetSelected(&g->ring.colors, 0);
+	UiCheckbox_Init(&g->ring.caps, Ui_Id("gl.ring.caps", 0, 0), 1);
+	UiCheckbox_Init(&g->ring.title, Ui_Id("gl.ring.title", 0, 0), 1);
+	UiCheckbox_Init(&g->ring.customText, Ui_Id("gl.ring.text", 0, 0), 0);
+	g->ring.replaySeq = 0;
+}
+
+static void ring_card(Gallery *g, UiRingProgress *p, UiRect rc, const char *label)
+{
+	UiApp *app = g->app;
+	UiTheme *t = &app->theme;
+	UiRect area;
+	Ui_Panel(&app->ui, rc);
+	Gfx_Text(app->gfx, t->fSmall, label,
+		Ui_Rect(rc.x + 12.0f, rc.y + 6.0f, rc.w - 24.0f, 22.0f),
+		t->text2, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+	area = Ui_RectInset(Ui_Rect(rc.x + 6.0f, rc.y + 30.0f,
+		rc.w - 12.0f, rc.h - 36.0f), 8.0f);
+	UiRingProgress_Draw(p, area);
+}
+
+static void ring_demo(Gallery *g, UiRect rc)
+{
+	UiApp *app = g->app;
+	UiTheme *t = &app->theme;
+	UiContext *ui = &app->ui;
+	Gfx *gfx = app->gfx;
+	UiRect cards, row, card;
+	float x, y, gap = 12.0f, cardW, cardH, bx, sliderW;
+	int cols, rows, i;
+	static const double replay[4][3] = {
+		{ 0.18, 0.42, 0.63 }, { 0.88, 0.76, 0.24 },
+		{ 0.43, 0.91, 0.57 }, { 0.67, 0.35, 0.82 }
+	};
+
+	ring_apply(g);
+	Gfx_Text(gfx, t->fSmall,
+		"从 12 点顺时针 · 圆环与中央数字同步补间 · DComp 动画 / ULW 回退",
+		Ui_Rect(rc.x + 4.0f, rc.y + 2.0f, rc.w - 8.0f, 22.0f),
+		t->hint, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+	cards = Ui_Rect(rc.x, rc.y + 30.0f, rc.w, rc.h - 72.0f);
+	if (cards.h < 80.0f) cards.h = 80.0f;
+	cols = rc.w >= 620.0f ? 3 : rc.w >= 400.0f ? 2 : 1;
+	rows = (3 + cols - 1) / cols;
+	cardW = (cards.w - gap * (float)(cols - 1)) / (float)cols;
+	cardH = (cards.h - gap * (float)(rows - 1)) / (float)rows;
+	for (i = 0; i < 3; i++) {
+		x = cards.x + (float)(i % cols) * (cardW + gap);
+		y = cards.y + (float)(i / cols) * (cardH + gap);
+		card = Ui_Rect(x, y, cardW, cardH);
+		if (i == 0) ring_card(g, &g->ring.hero, card, "百分比 · 标题 + 单位");
+		else if (i == 1) ring_card(g, &g->ring.metric, card, "自定义范围 0–10");
+		else ring_card(g, &g->ring.plain, card, "无标题 / 无单位");
+	}
+
+	row = Ui_Rect(rc.x, rc.y + rc.h - 34.0f, rc.w, 32.0f);
+	bx = row.x;
+	if (Ui_Button(ui, Ui_Id("gl.ring.zero", 0, 0),
+			Ui_Rect(bx, row.y, 62.0f, row.h), "0%",
+			UI_BTN_SECONDARY, 1))
+		ring_set_all(g, 0.0, 0.0, 0.0, 1);
+	bx += 68.0f;
+	if (Ui_Button(ui, Ui_Id("gl.ring.half", 0, 0),
+			Ui_Rect(bx, row.y, 62.0f, row.h), "50%",
+			UI_BTN_SECONDARY, 1))
+		ring_set_all(g, 0.5, 0.5, 0.5, 1);
+	bx += 68.0f;
+	if (Ui_Button(ui, Ui_Id("gl.ring.full", 0, 0),
+			Ui_Rect(bx, row.y, 62.0f, row.h), "100%",
+			UI_BTN_SECONDARY, 1))
+		ring_set_all(g, 1.0, 1.0, 1.0, 1);
+	bx += 68.0f;
+	if (Ui_Button(ui, Ui_Id("gl.ring.replay", 0, 0),
+			Ui_Rect(bx, row.y, 72.0f, row.h), "联动",
+			UI_BTN_PRIMARY, 1)) {
+		const double *v = replay[g->ring.replaySeq++ & 3];
+		ring_set_all(g, v[0], v[1], v[2], 1);
+	}
+	bx += 80.0f;
+	sliderW = row.x + row.w - bx;
+	if (sliderW > 40.0f) {
+		Ui_Slider(&g->ring.value, ui, Ui_Rect(bx, row.y + 1.0f,
+			sliderW, row.h - 2.0f), NULL, 1);
+		if (g->ring.value.changed)
+			ring_set_ratio(g, g->ring.value.value, 0);
+	}
+}
+
+static void ring_props(Gallery *g, UiRect rc)
+{
+	UiApp *app = g->app;
+	UiTheme *t = &app->theme;
+	UiContext *ui = &app->ui;
+	Gfx *gfx = app->gfx;
+	UiRect ed, pv, area;
+	UiStack col;
+	char buf[96];
+
+	ring_apply(g);
+	snprintf(g->codeText, sizeof(g->codeText),
+		"UiRingProgress p;\n"
+		"UiRingProgress_Init(&p, &app->ui);\n"
+		"UiRingProgress_SetRange(&p, 0.0, %.0f);\n"
+		"UiRingProgress_SetValue(&p, %.2f);\n"
+		"%s"
+		"UiRingProgress_SetStyle(&p, %.1ff, 0x%08X, %d);\n"
+		"UiRingProgress_SetDurationMs(&p, %d);\n"
+		"UiRingProgress_SetTitle(&p, %s);\n"
+		"UiRingProgress_SetUnit(&p, \"%%\");\n"
+		"\n"
+		"UiRingProgress_Draw(&p, rc);\n"
+		"/* Gfx_End 后: UiRingProgress_EndFrame(&p); */\n",
+		g->ring.hero.maxValue, g->ring.hero.value,
+		g->ring.customText.checked ?
+			"UiRingProgress_SetValueText(&p, \"在线\");\n" : "",
+		g->ring.hero.ringWidth, g->ring.hero.color, g->ring.hero.roundCaps,
+		g->ring.hero.durationMs,
+		g->ring.title.checked ? "\"任务完成度\"" : "NULL");
+
+	props_split(g, ui, rc, &ed, &pv);
+	Ui_StackBeginPad(&col, pane_in(ed, 12.0f), UI_COLUMN, 0.0f,
+		10.0f, 8.0f, 10.0f, 8.0f);
+	lbl(gfx, t, Ui_StackTake(&col, 16.0f), "数值范围");
+	Ui_StackSkip(&col, 2.0f);
+	UiButtonGroup_Draw(ui, &g->ring.range, Ui_StackTake(&col, 30.0f),
+		kRingRangeLabels, NULL, NULL, 1);
+	Ui_StackSkip(&col, 6.0f);
+
+	snprintf(buf, sizeof(buf), "取值  %.2f", g->ring.hero.value);
+	lbl(gfx, t, Ui_StackTake(&col, 16.0f), buf);
+	Ui_StackSkip(&col, 2.0f);
+	Ui_Slider(&g->ring.value, ui, Ui_StackTake(&col, 28.0f), NULL, 1);
+	if (g->ring.value.changed)
+		ring_set_ratio(g, g->ring.value.value, 0);
+	Ui_StackSkip(&col, 6.0f);
+
+	snprintf(buf, sizeof(buf), "动画时长  %d ms", g->ring.hero.durationMs);
+	lbl(gfx, t, Ui_StackTake(&col, 16.0f), buf);
+	Ui_StackSkip(&col, 2.0f);
+	Ui_Slider(&g->ring.duration, ui, Ui_StackTake(&col, 28.0f), NULL, 1);
+	Ui_StackSkip(&col, 6.0f);
+
+	snprintf(buf, sizeof(buf), "环宽  %.1f DIP", g->ring.hero.ringWidth);
+	lbl(gfx, t, Ui_StackTake(&col, 16.0f), buf);
+	Ui_StackSkip(&col, 2.0f);
+	Ui_Slider(&g->ring.width, ui, Ui_StackTake(&col, 28.0f), NULL, 1);
+	Ui_StackSkip(&col, 6.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 16.0f), "强调色");
+	Ui_StackSkip(&col, 2.0f);
+	UiButtonGroup_Draw(ui, &g->ring.colors, Ui_StackTake(&col, 30.0f),
+		kRingColorLabels, NULL, NULL, 1);
+	Ui_StackSkip(&col, 8.0f);
+	Ui_Checkbox(&g->ring.caps, ui, Ui_StackTake(&col, 24.0f), "圆角端点", 1);
+	Ui_Checkbox(&g->ring.title, ui, Ui_StackTake(&col, 24.0f), "显示底部标题", 1);
+	Ui_Checkbox(&g->ring.customText, ui, Ui_StackTake(&col, 24.0f),
+		"中央文案覆盖为「在线」", 1);
+
+	area = pane_in(pv, 20.0f);
+	small_txt(gfx, t, Ui_Rect(area.x, area.y, area.w, 20.0f),
+		"实时预览 · 拖动取值观察补间");
+	UiRingProgress_Draw(&g->ring.hero, Ui_Rect(area.x, area.y + 28.0f,
+		area.w, area.h - 28.0f));
+}
+
+static int ring_key(Gallery *g, UINT vk)
+{
+	if (UiSlider_Key(&g->ring.value, &g->app->ui, vk)) {
+		ring_set_ratio(g, g->ring.value.value, 0);
+		return 1;
+	}
+	if (UiSlider_Key(&g->ring.width, &g->app->ui, vk)) return 1;
+	if (UiSlider_Key(&g->ring.duration, &g->app->ui, vk)) return 1;
+	if (g->ring.range.focus >= 0 &&
+		UiButtonGroup_Key(&g->app->ui, &g->ring.range, vk)) return 1;
+	if (g->ring.colors.focus >= 0 &&
+		UiButtonGroup_Key(&g->app->ui, &g->ring.colors, vk)) return 1;
+	return 0;
+}
+
 /* ── Image ─────────────────────────────────────────────────────────── */
 
 static const char *const kImgFitLabels[4] = {
@@ -8329,6 +8612,10 @@ static const GalleryPage kPages[PG_COUNT] = {
 	{ "Progress 进度", "Progress 进度", "静态条 + 自循环 overlay",
 		prog_init, prog_demo, prog_props, NULL, NULL, NULL, NULL, NULL,
 		NULL, NULL, prog_anim },
+	/* PG_RINGPROGRESS */
+	{ "RingProgress 圆环", "RingProgress 圆形进度", "范围 / 格式 / 标题 · DComp 裁剪补间",
+		ring_init, ring_demo, ring_props, ring_key, NULL, NULL, NULL, NULL,
+		NULL, NULL, NULL },
 	/* PG_IMAGE */
 	{ "Image 图片", "Image 图片", "URL / 文件 / 内存 · fit / 锚点",
 		img_init, img_demo, img_props, NULL, NULL, NULL, NULL, NULL,
@@ -8441,6 +8728,15 @@ static void on_frame(UiApp *app, void *user)
 	 * 其它页面隐藏 (合成器 overlay 是独立层, 不随页面绘制消失)。 */
 	UiProgress_SetHidden(&g->prog.prog,
 		!(g->page == PG_PROGRESS && g->subTab[PG_PROGRESS] == 0));
+	{
+		int ringDemo = g->page == PG_RINGPROGRESS &&
+			g->subTab[PG_RINGPROGRESS] == 0;
+		int ringProps = g->page == PG_RINGPROGRESS &&
+			g->subTab[PG_RINGPROGRESS] == 1;
+		UiRingProgress_SetHidden(&g->ring.hero, !(ringDemo || ringProps));
+		UiRingProgress_SetHidden(&g->ring.metric, !ringDemo);
+		UiRingProgress_SetHidden(&g->ring.plain, !ringDemo);
+	}
 	/* WebView2 是独立视觉层: 离开演示页立刻隐藏, 避免盖住其它页面. */
 	if (g->web.wv && g->web.shown &&
 		(g->page != PG_WEBVIEW || g->subTab[PG_WEBVIEW] != 0)) {
@@ -8489,6 +8785,9 @@ static void on_after_frame(UiApp *app, void *user)
 	UiColorSelect_EndFrame(&g->color.line, UiFrame_Now());
 	UiToast_EndFrame(&g->toast, UiFrame_Now(), app->w, app->h);
 	UiProgress_EndFrame(&g->prog.prog);
+	UiRingProgress_EndFrame(&g->ring.hero);
+	UiRingProgress_EndFrame(&g->ring.metric);
+	UiRingProgress_EndFrame(&g->ring.plain);
 }
 
 static int on_animating(UiApp *app, void *user)
@@ -8633,6 +8932,9 @@ static void on_shutdown(UiApp *app, void *user)
 	UiLoading_Shutdown(&g->load.ld);
 	UiColorSelect_Shutdown(&g->color.main);
 	UiColorSelect_Shutdown(&g->color.line);
+	UiRingProgress_Shutdown(&g->ring.hero);
+	UiRingProgress_Shutdown(&g->ring.metric);
+	UiRingProgress_Shutdown(&g->ring.plain);
 	UiToast_Shutdown(&g->toast);
 }
 
@@ -8665,6 +8967,7 @@ static int page_from_cmd(const char *name)
 		{ "menu", PG_MENU }, { "toast", PG_TOAST },
 		{ "loading", PG_LOADING },
 		{ "tooltip", PG_TOOLTIP }, { "progress", PG_PROGRESS },
+		{ "ring", PG_RINGPROGRESS }, { "ringprogress", PG_RINGPROGRESS },
 		{ "image", PG_IMAGE }, { "markdown", PG_MARKDOWN },
 		{ "qr", PG_QRCODE }, { "qrcode", PG_QRCODE },
 		{ "theme", PG_THEME }, { "net", PG_NET },

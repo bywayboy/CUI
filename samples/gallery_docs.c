@@ -1986,6 +1986,81 @@ static const char BEST_PROGRESS[] =
 	"- [ ] 不要给静态条每帧刷 value 却不失效(看不到变化);\n"
 	"- [ ] 不要自己创建 GfxOverlay —— 组件内部管理生命周期。\n";
 
+/* ── RingProgress ──────────────────────────────────────────────────── */
+
+static const char DOC_RINGPROGRESS[] =
+	"# RingProgress 圆形进度\n"
+	"\n"
+	"`UiRingProgress` 从 12 点顺时针画圆环, 中央显示当前数值, 下方小字\n"
+	"显示单位; 标题可选, 绘制时由 `rc` 自动分区。默认范围 `0–100`,\n"
+	"数值、范围和文案都可以运行时修改。\n"
+	"\n"
+	"## 动画\n"
+	"\n"
+	"值变化使用 cubic-out 补间, 圆环与中央数字同步。DComp 可用时,\n"
+	"每环只用一张完整圆环纹理: 固定半边裁剪与旋转半边裁剪相交,\n"
+	"DWM 同时补间两个角度, 圆弧连续扫过且无逐帧 CPU 绘制。\n"
+	"主窗口只重绘轨道/数字脏区; 稳定后拆除 overlay, 回主表面画清晰圆弧。\n"
+	"ULW/设备回退复用 UiAnim 在主窗补间。\n"
+	"\n"
+	"## 基本用法\n"
+	"\n"
+	"```c\n"
+	"static UiRingProgress p;\n"
+	"\n"
+	"UiRingProgress_Init(&p, &app->ui);\n"
+	"UiRingProgress_SetValue(&p, 72.0);\n"
+	"UiRingProgress_SetTitle(&p, \"任务完成度\");\n"
+	"UiRingProgress_SetUnit(&p, \"%\");\n"
+	"\n"
+	"/* 帧内 */\n"
+	"UiRingProgress_Draw(&p, rc);\n"
+	"/* Gfx_End 后 */\n"
+	"UiRingProgress_EndFrame(&p);\n"
+	"\n"
+	"/* 离开页面/隐藏时 */\n"
+	"UiRingProgress_SetHidden(&p, 1);\n"
+	"```\n"
+	"\n"
+	"## 格式优先级\n"
+	"\n"
+	"`SetValueText` 固定文案 > `SetFormatter` 自定义回调 > 自动数值格式。\n"
+	"自动格式保留最多两位小数并去掉尾零; 格式化输入是动画中的当前值。\n";
+
+static const char API_RINGPROGRESS[] =
+	"# RingProgress API\n"
+	"\n"
+	"```c\n"
+	"#include \"ui/ui_ring_progress.h\"\n"
+	"```\n"
+	"\n"
+	"| 函数 | 说明 |\n"
+	"|:--|:--|\n"
+	"| `UiRingProgress_Init / Shutdown` | 生命周期 |\n"
+	"| `SetValue` | 设目标值, 自动钳制到范围并补间 |\n"
+	"| `SetRange(min, max)` | 设置范围, 当前值按新范围钳制 |\n"
+	"| `SetDurationMs` | 0 立即; 默认取 `Ui_AnimFxMs(UI_AN_PROGRESS)` |\n"
+	"| `SetUnit / SetTitle / SetValueText` | 单位、底部标题、中央固定文案 |\n"
+	"| `SetFormatter(fn, user)` | 自定义当前值格式 |\n"
+	"| `SetStyle(width, color, roundCaps)` | DIP 环宽、ARGB 颜色、圆角端点 |\n"
+	"| `SetHidden` | 隐藏并暂停合成器展示 |\n"
+	"| `Draw / EndFrame` | 帧内绘制、Gfx_End 后收尾 |\n"
+	"| `Animating / OverlayAlive / Value` | 动画态、合成器态、目标值 |\n"
+	"\n"
+	"`color == UI_RING_THEME_COLOR` 使用主题 `primary.base`。\n"
+	"`Value` 返回 setter 设定的目标值, 不是补间中的瞬时值。\n";
+
+static const char BEST_RINGPROGRESS[] =
+	"# RingProgress 最佳实践\n"
+	"\n"
+	"- [x] 一个实例只画一处; 多处复用同一实例会互相覆盖 overlay;\n"
+	"- [x] `Draw` 的 `rc` 包含标题, 高度不足时先缩小圆环而不是压住标题;\n"
+	"- [x] 页面切换调用 `SetHidden(1)`, 返回后再显示;\n"
+	"- [x] `EndFrame` 每帧在 `Gfx_End` 后调用, 让 CPU 回退和 overlay 拆除收尾;\n"
+	"- [x] 频繁进度更新直接 `SetValue`, 组件会从当前视觉值续接;\n"
+	"- [ ] 不要在 `Gfx_End` 前调用 `EndFrame`;\n"
+	"- [ ] 不要在动画中每帧重建组件或修改范围。\n";
+
 /* ── 22 Image ─────────────────────────────────────────────────────── */
 
 static const char DOC_IMAGE[] =
@@ -2920,6 +2995,27 @@ static const char EVENTS_PROGRESS[] =
 	"\n"
 	"自循环画在合成器 overlay 上, 前台播放时应用进程 CPU ≈ 0%。\n";
 
+static const char EVENTS_RINGPROGRESS[] =
+	"## 事件怎么产生\n"
+	"\n"
+	"圆环是**只读展示组件**, 没有用户交互事件。应用在数据变化时调用\n"
+	"`SetValue`; 数值时间线由 UiAnim 推进, DComp 弧线由 DWM 补间。\n"
+	"没有完成回调, `Animating` 仅用于可选的完成检测。\n"
+	"\n"
+	"## 接线示例\n"
+	"\n"
+	"```c\n"
+	"/* 数据层 */\n"
+	"UiRingProgress_SetValue(&g->ring, downloadPercent);\n"
+	"\n"
+	"/* 无需额外 animating 回调: Ui_AnimBusy 已覆盖数值时间线,\n"
+	" * Gfx_FxBusy 覆盖合成器收尾. 需要完成通知时再检查: */\n"
+	"if (wasAnimating && !UiRingProgress_Animating(&g->ring))\n"
+	"    on_progress_settled(UiRingProgress_Value(&g->ring));\n"
+	"```\n"
+	"\n"
+	"DComp 路径的弧线补间由 DWM 执行; `EndFrame` 在稳定后拆除 overlay。\n";
+
 static const char EVENTS_IMAGE[] =
 	"## 事件怎么产生\n"
 	"\n"
@@ -3611,6 +3707,7 @@ static const GalleryDocText kDocs[PG_COUNT] = {
 	/* PG_LOADING   */ { 0, DOC_LOADING, API_LOADING, BEST_LOADING, EVENTS_LOADING },
 	/* PG_TOOLTIP   */ { 0, DOC_TOOLTIP, API_TOOLTIP, BEST_TOOLTIP, EVENTS_TOOLTIP },
 	/* PG_PROGRESS  */ { 0, DOC_PROGRESS, API_PROGRESS, BEST_PROGRESS, EVENTS_PROGRESS },
+	/* PG_RINGPROGRESS */ { 0, DOC_RINGPROGRESS, API_RINGPROGRESS, BEST_RINGPROGRESS, EVENTS_RINGPROGRESS },
 	/* PG_IMAGE     */ { 0, DOC_IMAGE, API_IMAGE, BEST_IMAGE, EVENTS_IMAGE },
 	/* PG_QRCODE    */ { 0, DOC_QRCODE, API_QRCODE, BEST_QRCODE, EVENTS_QRCODE },
 	/* PG_MARKDOWN  */ { 0, DOC_MARKDOWN, API_MARKDOWN, BEST_MARKDOWN, EVENTS_MARKDOWN },
