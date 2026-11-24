@@ -34,6 +34,8 @@ extern "C" {
 #define UI_DN_GRID_MAX_COLS    16
 #define UI_DN_GRID_TRACKS_MAX  128
 #define UI_DN_TABS_MAX_PAGES   32
+#define UI_DN_OPTIONS_MAX      8
+#define UI_DN_OPTION_TEXT_MAX  48
 
 typedef enum {
 	UI_DN_ABSOLUTE = 0,
@@ -57,6 +59,7 @@ typedef enum {
 	UI_DN_COLORSEL,
 	UI_DN_QRCODE,
 	UI_DN_RINGPROGRESS,
+	UI_DN_RADIOGROUP,
 	UI_DN_COUNT
 } UiDesignType;
 
@@ -278,6 +281,7 @@ typedef struct UiDesignNodeState {
 	UiSwitch sw;
 	UiSlider slider;
 	UiSelect select;
+	UiRadioGroup radio;
 	UiTextArea ta;
 	UiDatePicker dp;
 	UiColorSelect cs;
@@ -287,10 +291,10 @@ typedef struct UiDesignNodeState {
 	int barCount;
 	wchar_t taHint[128];   /* TextArea placeholder 由控件保存指针, 需自持 */
 	char text[UI_DN_TEXT_MAX];
-	char selItems[8][48];
-	const char *selPtrs[8];
-	int selCount;
-	char selCache[UI_DN_TEXT_MAX];
+	char optItems[UI_DN_OPTIONS_MAX][UI_DN_OPTION_TEXT_MAX];
+	const char *optPtrs[UI_DN_OPTIONS_MAX];
+	int optCount;
+	char optCache[UI_DN_TEXT_MAX];
 } UiDesignNodeState;
 
 typedef struct UiDesignInstance {

@@ -79,7 +79,8 @@ UiDesign_DrawOverlay(&inst);
 ```
 
 支持的控件：`Panel / Absolute / Column / Row / Grid / Label / Button /
-Input / Checkbox / Switch / Slider / Progress / Select / Image / Separator`。
+Input / Checkbox / Switch / Slider / Progress / Select / RadioGroup / Image /
+Separator / Tabs / TextArea / DatePicker / ColorSelect / QrCode / RingProgress`。
 复杂组件后续按同一注册表扩展。
 
 ## 4. 生成代码
@@ -137,9 +138,10 @@ if (Main_dialog1_DialogOpen(&gInst, ownerId))
 
 - 顶部：`UiNavBar` 菜单栏（文件 / 编辑 / 工程 / 视图），不直接堆按钮；
 - 第二行：
-  - 布局 `UiButtonGroup`：选择、自由、列、行、Grid、面板；
-  - 组件 `UiButtonGroup`：标签、按钮、输入、复选、开关、滑块、进度、下拉、图片、分隔；
-  - 右侧图标按钮：删除/复制/上移/下移/预览；
+  - 左侧为图标工具组：布局（选择、自由、列、行、Grid、面板）与组件
+    （标签、按钮、输入、复选、开关、滑块、进度、下拉、单选组、图片、分隔、
+    Tabs、多行输入、日期、颜色、二维码、圆环进度）；空间不足时显示 `>>` 溢出菜单；
+  - 右侧固定图标按钮：删除/复制/上移/下移/预览，窄窗口也不被左侧工具挤出；
 - 插入流程：选布局或组件工具 → 在设计画布点击目标容器 → 插入；
   `Esc` 或“选择”工具退出插入模式；
 - 左侧：窗口/生成分组 + 当前窗口组件树；

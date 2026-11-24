@@ -19,6 +19,8 @@
 #include "ui/ui_frame.h"
 #include "ui/ui_nav.h"
 #include "ui/ui_button_group.h"
+#include "ui/ui_menu.h"
+#include "ui/ui_tooltip.h"
 
 int snprintf(char *buf, size_t cap, const char *fmt, ...);
 int sprintf(char *buf, const char *fmt, ...);
@@ -26,7 +28,7 @@ size_t strlen(const char *s);
 int strcmp(const char *a, const char *b);
 
 #define TOP_H       40.0f
-#define PALETTE_H   78.0f
+#define PALETTE_H   42.0f
 #define STATUS_H    24.0f
 #define LEFT_W      250.0f
 #define RIGHT_W     330.0f
@@ -159,7 +161,12 @@ typedef struct Designer {
 	UiId navAct[24];
 	int navActKind[24];
 	int navActN;
-	UiButtonGroup layoutGroup, compGroup;
+	UiMenu toolbarMenu;
+	UiTooltip toolbarTip;
+	UiMenuItem toolbarMenuItems[32];
+	char toolbarMenuLabels[32][96];
+	int toolbarMenuIdx[32];
+	int toolbarMenuN;
 	UiButtonGroup constraintW, constraintH, constraintAlign, constraintKind;
 	UiButtonGroup multiAlign, multiDist;
 	int insertType;
@@ -290,13 +297,19 @@ static unsigned d_parse_color(const char *s, unsigned fallback)
 
 static int d_option_count(const char *s)
 {
-	int c = 1;
-	if (!s || !s[0]) return 0;
-	while (*s) {
-		if (*s == ',') c++;
+	int count = 0;
+	if (!s) return 0;
+	for (;;) {
+		const char *start = s, *end;
+		while (*s && *s != ',') s++;
+		end = s;
+		while (start < end && (*start == ' ' || *start == '\t')) start++;
+		while (end > start && (end[-1] == ' ' || end[-1] == '\t')) end--;
+		if (start < end) count++;
+		if (!*s) break;
 		s++;
 	}
-	return c;
+	return count;
 }
 
 static int d_track_count(const char *s)
@@ -1041,6 +1054,12 @@ static void d_build_props(void)
 			d_prop_add(DK_N_HINT, DPK_TEXT, "Hint", n->hint);
 			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
 			break;
+		case UI_DN_RADIOGROUP:
+			d_prop_add(DK_N_OPTIONS, DPK_TEXT, "Options", n->options);
+			snprintf(b, sizeof(b), "%d", n->selected);
+			d_prop_add(DK_N_SELECTED, DPK_ENUM, "Selected", b);
+			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
+			break;
 		case UI_DN_IMAGE:
 			d_prop_add(DK_N_TEXT, DPK_TEXT, "Text", n->text);
 			break;
@@ -1129,6 +1148,7 @@ static void d_build_props(void)
 		case UI_DN_INPUT: case UI_DN_CHECKBOX: case UI_DN_SWITCH:
 		case UI_DN_SLIDER: case UI_DN_SELECT: case UI_DN_TEXTAREA:
 		case UI_DN_DATEPICKER: case UI_DN_COLORSEL: case UI_DN_TABS:
+		case UI_DN_RADIOGROUP:
 			d_prop_add(DK_N_CHANGE, DPK_TEXT, "OnChange", n->onChange);
 			break;
 		default:
@@ -1257,7 +1277,15 @@ static void d_prop_apply_text(int key, const char *text)
 		else if (key == DK_N_Y) n->y = (float)d_atof(text);
 		else if (key == DK_N_TEXT) UiDesign_NodeSetText(n, text);
 		else if (key == DK_N_HINT) UiDesign_NodeSetHint(n, text);
-		else if (key == DK_N_OPTIONS) UiDesign_NodeSetOptions(n, text);
+		else if (key == DK_N_OPTIONS) {
+			UiDesign_NodeSetOptions(n, text);
+			if (n->type == UI_DN_RADIOGROUP) {
+				int count = d_option_count(n->options);
+				if (count == 0) n->selected = -1;
+				else if (n->selected < 0) n->selected = 0;
+				else if (n->selected >= count) n->selected = count - 1;
+			}
+		}
 		else if (key == DK_N_VALUE) {
 			n->value = (float)d_atof(text);
 			if (n->type == UI_DN_RINGPROGRESS)
@@ -1489,9 +1517,9 @@ static void d_add_node(int type)
 		if (type == UI_DN_LABEL) UiDesign_NodeSetText(n, "Label");
 		else if (type == UI_DN_BUTTON) UiDesign_NodeSetText(n, "Button");
 		else if (type == UI_DN_INPUT) UiDesign_NodeSetHint(n, "请输入");
-		else if (type == UI_DN_SELECT) {
+		else if (type == UI_DN_SELECT || type == UI_DN_RADIOGROUP) {
 			UiDesign_NodeSetOptions(n, "选项1,选项2,选项3");
-			UiDesign_NodeSetHint(n, "请选择");
+			if (type == UI_DN_SELECT) UiDesign_NodeSetHint(n, "请选择");
 		} else if (type == UI_DN_IMAGE) UiDesign_NodeSetText(n, "Image");
 		else if (type == UI_DN_TEXTAREA) UiDesign_NodeSetHint(n, "多行文本");
 		else if (type == UI_DN_DATEPICKER) UiDesign_NodeSetHint(n, "选择日期");
@@ -2095,6 +2123,45 @@ static void d_draw_ring_node(UiDesignNode *n, UiRect rc)
 			GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 }
 
+static void d_draw_radio_group(Gfx *g, UiRect r, const UiDesignNode *n,
+	const UiTheme *t)
+{
+	char items[UI_DN_OPTIONS_MAX][UI_DN_OPTION_TEXT_MAX];
+	const char *labels[UI_DN_OPTIONS_MAX];
+	int count = 0, i = 0, row;
+	while (n->options[i] && count < UI_DN_OPTIONS_MAX) {
+		int start = i, j = 0;
+		while (n->options[i] && n->options[i] != ',') i++;
+		while (start < i && (n->options[start] == ' ' || n->options[start] == '\t')) start++;
+		while (start < i && j < UI_DN_OPTION_TEXT_MAX - 1)
+			items[count][j++] = n->options[start++];
+		while (j > 0 && (items[count][j - 1] == ' ' || items[count][j - 1] == '\t')) j--;
+		items[count][j] = 0;
+		if (j > 0) {
+			labels[count] = items[count];
+			count++;
+		}
+		if (n->options[i] == ',') i++;
+	}
+	Gfx_PushClip(g, r);
+	for (row = 0; row < count; row++) {
+		UiRect rr = Ui_Rect(r.x, r.y + (float)row * 28.0f, r.w, 28.0f);
+		float cx = rr.x + 9.0f, cy = rr.y + rr.h * 0.5f;
+		UiColor fg = n->enabled ? t->text2 : t->btnDisabledText;
+		UiColor bd = n->enabled ? (row == n->selected ? t->primary.base : t->border)
+			: t->btnDisabledText;
+		if (rr.y >= r.y + r.h) break;
+		Gfx_StrokeEllipse(g, cx, cy, 8.0f, bd, 1.2f);
+		if (row == n->selected)
+			Gfx_FillEllipse(g, cx, cy, 4.0f, 4.0f,
+				n->enabled ? t->primary.base : t->btnDisabledText);
+		Gfx_Text(g, t->fBody, labels[row],
+			Ui_Rect(rr.x + 26.0f, rr.y, rr.w - 26.0f, rr.h), fg,
+			GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+	}
+	Gfx_PopClip(g);
+}
+
 static void d_draw_static_node(int idx)
 {
 	UiTheme *t = &g_d.app->theme;
@@ -2201,6 +2268,9 @@ static void d_draw_static_node(int idx)
 			n->enabled ? t->text : t->text4, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 		break;
 	}
+	case UI_DN_RADIOGROUP:
+		d_draw_radio_group(g, r, n, t);
+		break;
 	case UI_DN_SWITCH: {
 		UiRect tr = Ui_Rect(r.x, r.y + (r.h - 20) * 0.5f, 38, 20);
 		Gfx_FillRoundRect(g, tr, 10.0f, n->checked ? t->switchOn : t->switchOff);
@@ -2597,6 +2667,148 @@ static UiIcon d_icon(UiApp *app, uint32_t cp)
 	return ic;
 }
 
+enum {
+	DTB_LAYOUT = 0,
+	DTB_COMPONENT,
+	DTB_DELETE,
+	DTB_DUPLICATE,
+	DTB_MOVE_UP,
+	DTB_MOVE_DOWN,
+	DTB_PREVIEW
+};
+
+typedef struct DToolItem {
+	const char *label;
+	int kind;
+	int value;
+	uint32_t cp;
+} DToolItem;
+
+#define D_TOOL_LAYOUT_N 6
+#define D_TOOL_COMP_N   17
+#define D_TOOL_ACTION_N 5
+#define D_TOOL_LEFT_N   (D_TOOL_LAYOUT_N + D_TOOL_COMP_N)
+
+static const DToolItem kToolbarItems[] = {
+	{ "选择", DTB_LAYOUT, -1, 0xE8B0u },
+	{ "自由布局", DTB_LAYOUT, UI_DN_ABSOLUTE, 0xE8B4u },
+	{ "列布局", DTB_LAYOUT, UI_DN_COLUMN, 0xE784u },
+	{ "行布局", DTB_LAYOUT, UI_DN_ROW, 0xE76Fu },
+	{ "Grid 布局", DTB_LAYOUT, UI_DN_GRID, 0xF0E2u },
+	{ "面板布局", DTB_LAYOUT, UI_DN_PANEL, 0xE8A5u },
+	{ "标签", DTB_COMPONENT, UI_DN_LABEL, 0xE8D2u },
+	{ "按钮", DTB_COMPONENT, UI_DN_BUTTON, 0xEECAu },
+	{ "输入框", DTB_COMPONENT, UI_DN_INPUT, 0xE961u },
+	{ "复选框", DTB_COMPONENT, UI_DN_CHECKBOX, 0xE73Au },
+	{ "开关", DTB_COMPONENT, UI_DN_SWITCH, 0xE8ABu },
+	{ "滑块", DTB_COMPONENT, UI_DN_SLIDER, 0xEC13u },
+	{ "进度条", DTB_COMPONENT, UI_DN_PROGRESS, 0xF16Au },
+	{ "下拉框", DTB_COMPONENT, UI_DN_SELECT, 0xE70Du },
+	{ "单选组", DTB_COMPONENT, UI_DN_RADIOGROUP, 0x0000u },
+	{ "图片", DTB_COMPONENT, UI_DN_IMAGE, 0xE8B9u },
+	{ "分隔线", DTB_COMPONENT, UI_DN_SEPARATOR, 0xEF3Du },
+	{ "Tabs", DTB_COMPONENT, UI_DN_TABS, 0x0000u },
+	{ "多行输入", DTB_COMPONENT, UI_DN_TEXTAREA, 0xF465u },
+	{ "日期", DTB_COMPONENT, UI_DN_DATEPICKER, 0xE787u },
+	{ "颜色选择", DTB_COMPONENT, UI_DN_COLORSEL, 0xE790u },
+	{ "二维码", DTB_COMPONENT, UI_DN_QRCODE, 0xED14u },
+	{ "圆环进度", DTB_COMPONENT, UI_DN_RINGPROGRESS, 0xEA3Au },
+	{ "删除", DTB_DELETE, 0, 0xE74Du },
+	{ "复制", DTB_DUPLICATE, 0, 0xE8C8u },
+	{ "上移", DTB_MOVE_UP, 0, 0xE74Au },
+	{ "下移", DTB_MOVE_DOWN, 0, 0xE74Bu },
+	{ "预览", DTB_PREVIEW, 0, 0xE768u }
+};
+
+#define D_TOOL_ITEM_N ((int)(sizeof(kToolbarItems) / sizeof(kToolbarItems[0])))
+
+static int d_toolbar_item_enabled(const DToolItem *it)
+{
+	if (!it) return 0;
+	switch (it->kind) {
+	case DTB_DUPLICATE:
+	case DTB_MOVE_UP:
+	case DTB_MOVE_DOWN:
+		return g_d.selKind == DSEL_NODE;
+	default:
+		return 1;
+	}
+}
+
+static int d_toolbar_item_selected(const DToolItem *it)
+{
+	return it && (it->kind == DTB_LAYOUT || it->kind == DTB_COMPONENT) &&
+		g_d.insertType == it->value;
+}
+
+static void d_toolbar_activate(const DToolItem *it)
+{
+	if (!it || !d_toolbar_item_enabled(it)) return;
+	switch (it->kind) {
+	case DTB_LAYOUT:
+		g_d.insertType = it->value;
+		d_status(it->value < 0 ? "选择工具" : "布局工具: 在画布中点击插入");
+		break;
+	case DTB_COMPONENT:
+		g_d.insertType = it->value;
+		d_status("组件工具: 在画布中点击插入 (Esc 退出)");
+		break;
+	case DTB_DELETE:
+		d_del_selected();
+		break;
+	case DTB_DUPLICATE:
+		d_dup_node();
+		break;
+	case DTB_MOVE_UP:
+		d_move_node(0);
+		break;
+	case DTB_MOVE_DOWN:
+		d_move_node(1);
+		break;
+	case DTB_PREVIEW:
+		if (!g_d.preview && (g_d.selWin < 0 ||
+		    g_d.selWin >= g_d.doc.hostCount ||
+		    g_d.doc.hosts[g_d.selWin].view < 0)) {
+			d_error("预览需要一个挂载了视图的宿主");
+		} else {
+			if (g_d.preview) {
+				g_d.preview = 0;
+				d_preview_shutdown();
+			} else {
+				g_d.preview = 1;
+				g_d.instReady = 0;
+				d_preview_capture_tabs();
+			}
+			d_status(g_d.preview ? "预览模式" : "设计模式");
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+static void d_toolbar_open_overflow(UiContext *ui, int start, UiRect anchor)
+{
+	int i, n = 0;
+	for (i = start; i < D_TOOL_LEFT_N && n < (int)(sizeof(g_d.toolbarMenuItems) /
+	    sizeof(g_d.toolbarMenuItems[0])); i++) {
+		const DToolItem *it = &kToolbarItems[i];
+		UiMenuItem *mi = &g_d.toolbarMenuItems[n];
+		snprintf(g_d.toolbarMenuLabels[n], sizeof(g_d.toolbarMenuLabels[n]),
+			"%s%s", d_toolbar_item_selected(it) ? "✓ " : "", it->label);
+		mi->label = g_d.toolbarMenuLabels[n];
+		mi->shortcut = NULL;
+		mi->flags = d_toolbar_item_enabled(it) ? 0 : UI_MENU_DISABLED;
+		g_d.toolbarMenuIdx[n] = i;
+		n++;
+	}
+	g_d.toolbarMenuN = n;
+	if (n <= 0) return;
+	UiMenu_SetItems(&g_d.toolbarMenu, g_d.toolbarMenuItems, n);
+	UiMenu_OpenAt(&g_d.toolbarMenu, &g_d.pm, ui,
+		Ui_Id("dsn.tool.more", 0, 0), anchor, 1);
+}
+
 static UiNavItem d_nav_leaf(const char *id, int kind, const char *label)
 {
 	UiNavItem it;
@@ -2762,84 +2974,137 @@ static void d_draw_topbar(void)
 	}
 }
 
+static void d_draw_tabs_icon(Gfx *g, UiRect rc, UiColor color)
+{
+	float x = rc.x + (rc.w - 16.0f) * 0.5f;
+	float y = rc.y + (rc.h - 16.0f) * 0.5f;
+	Gfx_Line(g, x + 1.0f, y + 4.0f, x + 1.0f, y + 15.0f, color, 1.25f);
+	Gfx_Line(g, x + 1.0f, y + 15.0f, x + 15.0f, y + 15.0f, color, 1.25f);
+	Gfx_Line(g, x + 15.0f, y + 4.0f, x + 15.0f, y + 15.0f, color, 1.25f);
+	Gfx_Line(g, x + 1.0f, y + 4.0f, x + 6.0f, y + 4.0f, color, 1.25f);
+	Gfx_Line(g, x + 6.0f, y + 4.0f, x + 6.0f, y + 7.0f, color, 1.25f);
+	Gfx_Line(g, x + 6.0f, y + 4.0f, x + 11.0f, y + 4.0f, color, 1.25f);
+	Gfx_Line(g, x + 11.0f, y + 4.0f, x + 11.0f, y + 7.0f, color, 1.25f);
+	Gfx_Line(g, x + 11.0f, y + 4.0f, x + 15.0f, y + 4.0f, color, 1.25f);
+	Gfx_Line(g, x + 1.0f, y + 7.0f, x + 15.0f, y + 7.0f, color, 1.25f);
+}
+
+static void d_draw_radio_icon(Gfx *g, UiRect rc, UiColor color)
+{
+	float x = rc.x + (rc.w - 16.0f) * 0.5f;
+	float y = rc.y + (rc.h - 16.0f) * 0.5f;
+	Gfx_StrokeEllipse(g, x + 4.0f, y + 4.5f, 2.8f, color, 1.2f);
+	Gfx_FillEllipse(g, x + 4.0f, y + 4.5f, 1.5f, 1.5f, color);
+	Gfx_StrokeEllipse(g, x + 4.0f, y + 11.5f, 2.8f, color, 1.2f);
+	Gfx_Line(g, x + 9.0f, y + 4.5f, x + 15.0f, y + 4.5f, color, 1.2f);
+	Gfx_Line(g, x + 9.0f, y + 11.5f, x + 15.0f, y + 11.5f, color, 1.2f);
+}
+
+static void d_draw_tool_item(UiContext *ui, const DToolItem *it, int index,
+	UiRect rc, UiId *tipId, UiRect *tipRc, const char **tipText)
+{
+	UiTheme *t = &g_d.app->theme;
+	UiButtonStyle normal = UiButtonStyle_Make(UI_BTYPE_DEFAULT,
+		UI_BAPPEAR_TEXT, UI_BSHAPE_RECT, 0);
+	UiButtonStyle selected = UiButtonStyle_Make(UI_BTYPE_PRIMARY,
+		UI_BAPPEAR_PLAIN, UI_BSHAPE_RECT, 0);
+	UiButtonStyle danger = UiButtonStyle_Make(UI_BTYPE_ERROR,
+		UI_BAPPEAR_TEXT, UI_BSHAPE_RECT, 0);
+	const UiButtonStyle *st = d_toolbar_item_selected(it) ? &selected : &normal;
+	UiIcon ic;
+	UiId id = Ui_Id("dsn.tool", index, 0);
+	int customIcon = it->value == UI_DN_TABS || it->value == UI_DN_RADIOGROUP;
+	int enabled = d_toolbar_item_enabled(it);
+	int clicked;
+	if (it->kind == DTB_DELETE) st = &danger;
+	if (customIcon)
+		ZeroMemory(&ic, sizeof(ic));
+	else
+		ic = d_icon(g_d.app, it->cp);
+	clicked = Ui_IconButton(ui, id, rc, &ic, st, enabled);
+	if (customIcon) {
+		UiColor color = enabled ? (d_toolbar_item_selected(it) ? t->primary.base
+			: t->text2) : t->btnDisabledText;
+		if (d_toolbar_item_selected(it) && ui->hover == id) color = 0xFFFFFFFFu;
+		if (it->value == UI_DN_TABS) d_draw_tabs_icon(ui->gfx, rc, color);
+		else d_draw_radio_icon(ui->gfx, rc, color);
+	}
+	if (clicked) d_toolbar_activate(it);
+	if (ui->hover == id) {
+		*tipId = id;
+		*tipRc = rc;
+		*tipText = it->label;
+	}
+}
+
 static void d_draw_toolbar(void)
 {
 	UiTheme *t = &g_d.app->theme;
 	UiContext *ui = &g_d.app->ui;
 	Gfx *g = g_d.app->gfx;
+	UiButtonStyle more = UiButtonStyle_Make(UI_BTYPE_DEFAULT,
+		UI_BAPPEAR_SOLID, UI_BSHAPE_RECT, 0);
 	UiRect bar = Ui_Rect(0, TOP_H, g_d.app->w, PALETTE_H);
-	static const char *const layoutLabels[6] = {
-		"选择", "自由", "列", "行", "Grid", "面板"
-	};
-	static const char *const compLabels[16] = {
-		"标签", "按钮", "输入", "复选", "开关", "滑块", "进度",
-		"下拉", "图片", "分隔", "Tabs", "多行", "日期", "颜色", "二维码", "圆环"
-	};
-	static const int layoutTypes[6] = {
-		-1, UI_DN_ABSOLUTE, UI_DN_COLUMN, UI_DN_ROW, UI_DN_GRID, UI_DN_PANEL
-	};
-	static const int compTypes[16] = {
-		UI_DN_LABEL, UI_DN_BUTTON, UI_DN_INPUT, UI_DN_CHECKBOX, UI_DN_SWITCH,
-		UI_DN_SLIDER, UI_DN_PROGRESS, UI_DN_SELECT, UI_DN_IMAGE, UI_DN_SEPARATOR,
-		UI_DN_TABS, UI_DN_TEXTAREA, UI_DN_DATEPICKER, UI_DN_COLORSEL, UI_DN_QRCODE,
-		UI_DN_RINGPROGRESS
-	};
-	float x = 12.0f;
-	int clicked;
+	UiId tipId = UI_ID_NONE;
+	UiRect tipRc = Ui_Rect(0, 0, 0, 0);
+	const char *tipText = NULL;
+	float size = 30.0f, gap = 4.0f, groupExtra = 8.0f;
+	float x = 12.0f, y = TOP_H + 6.0f;
+	float actionW = D_TOOL_ACTION_N * size + (D_TOOL_ACTION_N - 1) * gap;
+	float actionX = g_d.app->w - 12.0f - actionW;
+	float leftAvail = actionX - 12.0f - x;
+	float leftFullW = D_TOOL_LEFT_N * (size + gap) - gap + groupExtra;
+	int fit, visible = D_TOOL_LEFT_N, overflow = 0, i;
 
 	Gfx_FillRect(g, bar, Ui_ColorMix(t->page, t->frame, 0.45f));
-	Gfx_Line(g, 0, TOP_H + PALETTE_H - 1, g_d.app->w, TOP_H + PALETTE_H - 1, t->border, 1.0f);
-	clicked = UiButtonGroup_Draw(ui, &g_d.layoutGroup,
-		Ui_Rect(x, TOP_H + 6, 330, 30), layoutLabels, NULL, NULL, UI_BTN_PRIMARY);
-	if (clicked >= 0) {
-		UiButtonGroup_SetSelected(&g_d.compGroup, -1);
-		g_d.insertType = layoutTypes[clicked];
-		d_status(g_d.insertType < 0 ? "选择工具" : "布局工具: 在画布中点击插入");
+	Gfx_Line(g, 0, TOP_H + PALETTE_H - 1, g_d.app->w,
+		TOP_H + PALETTE_H - 1, t->border, 1.0f);
+	if (leftAvail < size) leftAvail = size;
+
+	if (leftFullW > leftAvail) {
+		overflow = 1;
+		fit = (int)((leftAvail - groupExtra + gap) / (size + gap));
+		visible = fit - 1;
+		if (visible < 0) visible = 0;
+		if (visible >= D_TOOL_LEFT_N) visible = D_TOOL_LEFT_N - 1;
 	}
-	clicked = UiButtonGroup_Draw(ui, &g_d.compGroup,
-		Ui_Rect(x, TOP_H + 42, g_d.app->w - 24, 30),
-		compLabels, NULL, NULL, UI_BTN_PRIMARY);
-	if (clicked >= 0) {
-		UiButtonGroup_SetSelected(&g_d.layoutGroup, -1);
-		g_d.insertType = compTypes[clicked];
-		d_status("组件工具: 在画布中点击插入 (Esc 退出)");
+
+	for (i = 0; i < visible; i++) {
+		if (i == D_TOOL_LAYOUT_N) {
+			x += groupExtra;
+			Gfx_Line(g, x - (gap + groupExtra) * 0.5f, y + 7.0f,
+				x - (gap + groupExtra) * 0.5f, y + size - 7.0f,
+				t->border, 1.0f);
+		}
+		d_draw_tool_item(ui, &kToolbarItems[i], i, Ui_Rect(x, y, size, size),
+			&tipId, &tipRc, &tipText);
+		x += size + gap;
 	}
-	{
-		float bx = g_d.app->w - 360.0f;
-		UiButtonStyle bs = UiButtonStyle_Make(UI_BTYPE_DEFAULT, UI_BAPPEAR_SOLID, UI_BSHAPE_RECT, 0);
-		UiButtonStyle bd = UiButtonStyle_Make(UI_BTYPE_ERROR, UI_BAPPEAR_SOLID, UI_BSHAPE_RECT, 0);
-		UiIcon icDel = d_icon(g_d.app, 0xE74D);
-		UiIcon icDup = d_icon(g_d.app, 0xE8C8);
-		UiIcon icUp = d_icon(g_d.app, 0xE74A);
-		UiIcon icDown = d_icon(g_d.app, 0xE74B);
-		UiIcon icView = d_icon(g_d.app, 0xE768);
-		if (Ui_ButtonExIcon(ui, Ui_Id("dsn.act.del", 0, 0), Ui_Rect(bx, TOP_H + 6, 64, 30),
-			&icDel, "删除", &bd, 1)) d_del_selected();
-		if (Ui_ButtonExIcon(ui, Ui_Id("dsn.act.dup", 0, 0), Ui_Rect(bx + 68, TOP_H + 6, 64, 30),
-			&icDup, "复制", &bs, g_d.selKind == DSEL_NODE)) d_dup_node();
-		if (Ui_ButtonExIcon(ui, Ui_Id("dsn.act.up", 0, 0), Ui_Rect(bx + 136, TOP_H + 6, 56, 30),
-			&icUp, "上移", &bs, g_d.selKind == DSEL_NODE)) d_move_node(0);
-		if (Ui_ButtonExIcon(ui, Ui_Id("dsn.act.down", 0, 0), Ui_Rect(bx + 196, TOP_H + 6, 56, 30),
-			&icDown, "下移", &bs, g_d.selKind == DSEL_NODE)) d_move_node(1);
-		if (Ui_ButtonExIcon(ui, Ui_Id("dsn.act.preview", 0, 0), Ui_Rect(bx + 260, TOP_H + 6, 72, 30),
-			&icView, "预览", &bs, 1)) {
-			if (!g_d.preview && (g_d.selWin < 0 ||
-			    g_d.selWin >= g_d.doc.hostCount ||
-			    g_d.doc.hosts[g_d.selWin].view < 0)) {
-				d_error("预览需要一个挂载了视图的宿主");
-			} else {
-				if (g_d.preview) {
-					g_d.preview = 0;
-					d_preview_shutdown();
-				} else {
-					g_d.preview = 1;
-					g_d.instReady = 0;
-					d_preview_capture_tabs();
-				}
-				d_status(g_d.preview ? "预览模式" : "设计模式");
-			}
+	if (overflow) {
+		UiId id = Ui_Id("dsn.tool.more", 0, 0);
+		UiRect rc = Ui_Rect(x, y, size, size);
+		if (Ui_ButtonEx(ui, id, rc, ">>", &more, 1))
+			d_toolbar_open_overflow(ui, visible, rc);
+		if (ui->hover == id) {
+			tipId = id;
+			tipRc = rc;
+			tipText = "更多工具栏项";
 		}
 	}
+
+	Gfx_Line(g, actionX - 6.0f, y + 7.0f, actionX - 6.0f,
+		y + size - 7.0f, t->border, 1.0f);
+	for (i = D_TOOL_LEFT_N; i < D_TOOL_ITEM_N; i++) {
+		d_draw_tool_item(ui, &kToolbarItems[i], i,
+			Ui_Rect(actionX, y, size, size), &tipId, &tipRc, &tipText);
+		actionX += size + gap;
+	}
+	if (tipId)
+		UiTooltip_Update(&g_d.toolbarTip, ui, tipId, tipRc, tipText,
+			UiFrame_Now());
+	else
+		UiTooltip_Update(&g_d.toolbarTip, ui, UI_ID_NONE, tipRc, NULL,
+			UiFrame_Now());
 }
 
 static void d_draw_tree_rec(int idx, int depth, float *y, UiRect panel)
@@ -3138,6 +3403,22 @@ static int d_validate(char *msg, int cap)
 	for (i = 0; i < g_d.doc.nodeCount; i++) {
 		UiDesignNode *tn = &g_d.doc.nodes[i];
 		int j2;
+		if (tn->type == UI_DN_RADIOGROUP) {
+			int count = d_option_count(tn->options);
+			if (count == 0) {
+				snprintf(msg, (size_t)cap, "单选组无选项: %s", tn->id);
+				return 0;
+			}
+			if (count > UI_DN_OPTIONS_MAX) {
+				snprintf(msg, (size_t)cap, "单选组选项超过 %d: %s",
+					UI_DN_OPTIONS_MAX, tn->id);
+				return 0;
+			}
+			if (tn->selected < 0 || tn->selected >= count) {
+				tn->selected = 0;
+				g_d.doc.dirty = 1;
+			}
+		}
 		if (tn->type != UI_DN_TABS || tn->parent < 0) continue;
 		if (tn->childCount > UI_DN_TABS_MAX_PAGES) {
 			snprintf(msg, (size_t)cap, "标签页页数超过 %d: %s",
@@ -3753,9 +4034,9 @@ static void d_insert_at(float x, float y)
 		if (g_d.insertType == UI_DN_LABEL) UiDesign_NodeSetText(n, "Label");
 		else if (g_d.insertType == UI_DN_BUTTON) UiDesign_NodeSetText(n, "Button");
 		else if (g_d.insertType == UI_DN_INPUT) UiDesign_NodeSetHint(n, "请输入");
-		else if (g_d.insertType == UI_DN_SELECT) {
+		else if (g_d.insertType == UI_DN_SELECT || g_d.insertType == UI_DN_RADIOGROUP) {
 			UiDesign_NodeSetOptions(n, "选项1,选项2,选项3");
-			UiDesign_NodeSetHint(n, "请选择");
+			if (g_d.insertType == UI_DN_SELECT) UiDesign_NodeSetHint(n, "请选择");
 		} else if (g_d.insertType == UI_DN_IMAGE) UiDesign_NodeSetText(n, "Image");
 		else if (g_d.insertType == UI_DN_TEXTAREA) UiDesign_NodeSetHint(n, "多行文本");
 		else if (g_d.insertType == UI_DN_DATEPICKER) UiDesign_NodeSetHint(n, "选择日期");
@@ -4239,8 +4520,6 @@ static int d_key(UINT vk)
 	}
 	if (vk == VK_ESCAPE && g_d.insertType >= 0) {
 		g_d.insertType = -1;
-		UiButtonGroup_SetSelected(&g_d.layoutGroup, 0);
-		UiButtonGroup_SetSelected(&g_d.compGroup, -1);
 		d_status("选择工具");
 		return 1;
 	}
@@ -4320,6 +4599,8 @@ static int d_animating(UiApp *app, void *user)
 {
 	(void)app; (void)user;
 	if (g_d.preview && g_d.instReady) return UiDesign_Busy(&g_d.inst);
+	if (UiTooltip_Pending(&g_d.toolbarTip)) return 1;
+	if (UiPopupManager_IsOpen(&g_d.pm, g_d.toolbarMenu.id)) return 1;
 	if (!g_d.preview && g_d.propColorReady &&
 	    UiColorSelect_IsOpen(&g_d.pm, &g_d.propColor))
 		return 1;
@@ -4351,12 +4632,10 @@ static void d_on_init(UiApp *app, void *user)
 	UiColorSelect_AttachIme(&g_d.propColorBg, &app->ime);
 	g_d.propColorBgReady = 1;
 	g_d.propColorBgNode = -1;
-	UiButtonGroup_Init(&g_d.layoutGroup, Ui_Id("dsn.layoutgrp", 0, 0),
-		UI_BG_SINGLE, 6);
-	UiButtonGroup_SetSelected(&g_d.layoutGroup, 0);
-	UiButtonGroup_Init(&g_d.compGroup, Ui_Id("dsn.compgrp", 0, 0),
-		UI_BG_SINGLE, 16);
-	UiButtonGroup_SetSelected(&g_d.compGroup, -1);
+	UiMenu_Init(&g_d.toolbarMenu, Ui_Id("dsn.tool.menu", 0, 0));
+	UiTooltip_Init(&g_d.toolbarTip, Ui_Id("dsn.tool.tip", 0, 0));
+	UiTooltip_SetDelay(&g_d.toolbarTip, 400);
+	g_d.toolbarMenuN = 0;
 	UiButtonGroup_Init(&g_d.constraintW, Ui_Id("dsn.cw", 0, 0), UI_BG_SINGLE, 2);
 	UiButtonGroup_Init(&g_d.constraintH, Ui_Id("dsn.ch", 0, 0), UI_BG_SINGLE, 2);
 	UiButtonGroup_Init(&g_d.constraintAlign, Ui_Id("dsn.ca", 0, 0), UI_BG_SINGLE, 3);
@@ -4414,6 +4693,14 @@ static void d_on_frame(UiApp *app, void *user)
 		UiColorSelect_DrawPopup(&g_d.propColorBg, &g_d.pm, &app->ui);
 	}
 	UiNavBar_DrawPopups(&g_d.nav, &g_d.pm, &app->ui);
+	UiMenu_Draw(&g_d.toolbarMenu, &g_d.pm, &app->ui);
+	if (g_d.toolbarMenu.changed && g_d.toolbarMenu.item >= 0 &&
+	    g_d.toolbarMenu.item < g_d.toolbarMenuN) {
+		int idx = g_d.toolbarMenuIdx[g_d.toolbarMenu.item];
+		if (idx >= 0 && idx < D_TOOL_ITEM_N)
+			d_toolbar_activate(&kToolbarItems[idx]);
+	}
+	UiTooltip_Draw(&g_d.toolbarTip, &app->ui);
 }
 
 static void d_on_after(UiApp *app, void *user)
@@ -4495,6 +4782,9 @@ static int d_on_key(UiApp *app, UINT vk, void *user)
 	 * 否则编辑中的方向键、空格、回车会被导航栏截走. */
 	if (UiPopupManager_IsOpen(&g_d.pm, g_d.nav.id) &&
 	    UiNavBar_Key(&g_d.nav, &g_d.pm, &app->ui, vk))
+		return 1;
+	if (UiPopupManager_IsOpen(&g_d.pm, g_d.toolbarMenu.id) &&
+	    UiMenu_Key(&g_d.toolbarMenu, &g_d.pm, &app->ui, vk))
 		return 1;
 	if (d_key(vk)) return 1;
 	if (UiPopupManager_Key(&g_d.pm, &app->ui, vk)) return 1;

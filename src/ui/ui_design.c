@@ -135,7 +135,8 @@ static const struct {
 	{ "datepicker", 200, 34, 0 },
 	{ "colorsel", 180, 34, 0 },
 	{ "qrcode", 120, 120, 0 },
-	{ "ringprogress", 160, 160, 0 }
+	{ "ringprogress", 160, 160, 0 },
+	{ "radiogroup", 160, 84, 0 }
 };
 
 const char *UiDesign_TypeName(int type)
@@ -171,6 +172,23 @@ int UiDesign_TypeFromName(const char *name)
 }
 
 /* ── 模型增删 ───────────────────────────────────────────────────────── */
+
+static int dn_option_count(const char *s)
+{
+	int count = 0;
+	if (!s) return 0;
+	for (;;) {
+		const char *start = s, *end;
+		while (*s && *s != ',') s++;
+		end = s;
+		while (start < end && (*start == ' ' || *start == '\t')) start++;
+		while (end > start && (end[-1] == ' ' || end[-1] == '\t')) end--;
+		if (start < end) count++;
+		if (!*s) break;
+		s++;
+	}
+	return count;
+}
 
 static int dn_reserve(void **arr, int *cap, int need, size_t elem)
 {
@@ -1608,9 +1626,21 @@ int UiDesign_FromJson(UiDesignDoc *doc, const char *text)
 		if (jp_ch(&j, ',')) continue;
 	}
 	(void)version;
-	for (int ni = 0; ni < doc->nodeCount; ni++)
+	for (int ni = 0; ni < doc->nodeCount; ni++) {
 		if (doc->nodes[ni].type == UI_DN_TABS)
 			UiDesign_TabsNormalize(doc, ni);
+		else if (doc->nodes[ni].type == UI_DN_RADIOGROUP) {
+			int count = dn_option_count(doc->nodes[ni].options);
+			if (count > UI_DN_OPTIONS_MAX) count = UI_DN_OPTIONS_MAX;
+			if (count > 0) {
+				if (doc->nodes[ni].selected < 0) doc->nodes[ni].selected = 0;
+				if (doc->nodes[ni].selected >= count)
+					doc->nodes[ni].selected = count - 1;
+			} else {
+				doc->nodes[ni].selected = -1;
+			}
+		}
+	}
 	doc->dirty = 0;
 	return 1;
 }
@@ -2182,36 +2212,46 @@ static UiDesignNodeState *dn_state(UiDesignInstance *inst, int idx)
 	return &inst->states[idx];
 }
 
-static void dn_select_parse(UiDesignInstance *inst, int idx, UiDesignNode *n,
-	UiDesignNodeState *st)
+static void dn_options_select(UiDesignNode *n, UiDesignNodeState *st)
 {
-	char buf[UI_DN_TEXT_MAX];
-	int count = 0, i = 0, j = 0;
-	if (strcmp(n->options, st->selCache) == 0) return;
-	UiDesign_SetText(st->selCache, sizeof(st->selCache), n->options);
-	while (n->options[i] && count < 8) {
-		int start = i;
+	int count = st->optCount;
+	if (n->type == UI_DN_SELECT) {
+		UiSelect_SetSelected(&st->select,
+			n->selected >= 0 && n->selected < count ? n->selected : 0);
+	} else if (n->type == UI_DN_RADIOGROUP) {
+		UiRadioGroup_SetSelected(&st->radio,
+			n->selected >= 0 && n->selected < count ? n->selected : 0);
+	}
+}
+
+static int dn_options_parse(UiDesignNode *n, UiDesignNodeState *st)
+{
+	int count = 0, i = 0;
+	if (strcmp(n->options, st->optCache) == 0) {
+		dn_options_select(n, st);
+		return st->optCount;
+	}
+	UiDesign_SetText(st->optCache, sizeof(st->optCache), n->options);
+	while (n->options[i] && count < UI_DN_OPTIONS_MAX) {
+		int start = i, j = 0;
 		while (n->options[i] && n->options[i] != ',') i++;
-		j = 0;
 		while (start < i && (n->options[start] == ' ' || n->options[start] == '\t')) start++;
-		while (start < i && j < (int)sizeof(st->selItems[count]) - 1)
-			st->selItems[count][j++] = n->options[start++];
-		while (j > 0 && (st->selItems[count][j - 1] == ' ' ||
-			st->selItems[count][j - 1] == '\t')) j--;
-		st->selItems[count][j] = 0;
+		while (start < i && j < UI_DN_OPTION_TEXT_MAX - 1)
+			st->optItems[count][j++] = n->options[start++];
+		while (j > 0 && (st->optItems[count][j - 1] == ' ' ||
+			st->optItems[count][j - 1] == '\t')) j--;
+		st->optItems[count][j] = 0;
 		if (j > 0) {
-			st->selPtrs[count] = st->selItems[count];
+			st->optPtrs[count] = st->optItems[count];
 			count++;
 		}
 		if (n->options[i] == ',') i++;
 	}
-	st->selCount = count;
-	UiSelect_SetItems(&st->select, st->selPtrs, count);
-	if (n->selected < 0 || n->selected >= count)
-		UiSelect_SetSelected(&st->select, 0);
-	else
-		UiSelect_SetSelected(&st->select, n->selected);
-	(void)inst; (void)idx; (void)buf;
+	st->optCount = count;
+	if (n->type == UI_DN_SELECT) UiSelect_SetItems(&st->select, st->optPtrs, count);
+	else if (n->type == UI_DN_RADIOGROUP) st->radio.count = count;
+	dn_options_select(n, st);
+	return count;
 }
 
 static void dn_state_init(UiDesignInstance *inst, int idx)
@@ -2244,8 +2284,13 @@ static void dn_state_init(UiDesignInstance *inst, int idx)
 	case UI_DN_SELECT:
 		UiSelect_Init(&st->select, dn_widget_id(inst, idx, 5));
 		UiSelect_AttachIme(&st->select, inst->ime);
-		st->selCache[0] = 0;
-		dn_select_parse(inst, idx, n, st);
+		st->optCache[0] = 0;
+		dn_options_parse(n, st);
+		break;
+	case UI_DN_RADIOGROUP:
+		UiRadioGroup_Init(&st->radio, dn_widget_id(inst, idx, 11), 0);
+		st->optCache[0] = 0;
+		dn_options_parse(n, st);
 		break;
 	case UI_DN_TEXTAREA:
 		UiTextArea_Init(&st->ta, dn_widget_id(inst, idx, 7),
@@ -2541,12 +2586,25 @@ static void dn_draw_node(UiDesignInstance *inst, int idx)
 		break;
 	case UI_DN_SELECT: {
 		if (!st) break;
-		dn_select_parse(inst, idx, n, st);
+		dn_options_parse(n, st);
 		if (Ui_Select(&st->select, inst->pm, ui, r,
 			n->hint[0] ? n->hint : "请选择", n->enabled)) {
 			n->selected = st->select.selected;
 			dn_emit_event(inst, idx, 2);
 		}
+		break;
+	}
+	case UI_DN_RADIOGROUP: {
+		int before;
+		if (!st) break;
+		dn_options_parse(n, st);
+		before = st->radio.selected;
+		if (UiRadioGroup_Draw(&st->radio, ui, r, st->optPtrs, 28.0f, n->enabled) &&
+			st->radio.selected != before) {
+			n->selected = st->radio.selected;
+			dn_emit_event(inst, idx, 2);
+		}
+		if (n->selected != st->radio.selected) n->selected = st->radio.selected;
 		break;
 	}
 	case UI_DN_IMAGE: {
@@ -2831,6 +2889,15 @@ int UiDesign_Key(UiDesignInstance *inst, UINT vk)
 				}
 				return 1;
 			}
+		} else if (n->type == UI_DN_RADIOGROUP && n->enabled) {
+			int before = st->radio.selected;
+			if (UiRadioGroup_Key(&st->radio, inst->ui, vk)) {
+				if (st->radio.selected != before) {
+					n->selected = st->radio.selected;
+					dn_emit_event(inst, i, 2);
+				}
+				return 1;
+			}
 		}
 	}
 	i = dn_focus_index(inst);
@@ -2969,7 +3036,7 @@ static int cg_uses_enabled(int t)
 	case UI_DN_LABEL: case UI_DN_BUTTON: case UI_DN_INPUT:
 	case UI_DN_CHECKBOX: case UI_DN_SWITCH: case UI_DN_SLIDER:
 	case UI_DN_SELECT: case UI_DN_TEXTAREA: case UI_DN_DATEPICKER:
-	case UI_DN_COLORSEL: case UI_DN_TABS:
+	case UI_DN_COLORSEL: case UI_DN_TABS: case UI_DN_RADIOGROUP:
 		return 1;
 	default:
 		return 0;
@@ -3002,6 +3069,7 @@ static int cg_uses_change(int t)
 	case UI_DN_INPUT: case UI_DN_CHECKBOX: case UI_DN_SWITCH:
 	case UI_DN_SLIDER: case UI_DN_SELECT: case UI_DN_TEXTAREA:
 	case UI_DN_DATEPICKER: case UI_DN_COLORSEL: case UI_DN_TABS:
+	case UI_DN_RADIOGROUP:
 		return 1;
 	default:
 		return 0;
@@ -3150,7 +3218,7 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int viewNew,
 		cg_quote(s, n->hint);
 		ds_add(s, ");\n");
 	}
-	if ((n->type == UI_DN_SELECT ||
+	if ((n->type == UI_DN_SELECT || n->type == UI_DN_RADIOGROUP ||
 	    (n->type == UI_DN_DATEPICKER && n->mode >= UI_DP_RANGE_DATE)) &&
 	    n->options[0]) {
 		ds_addf(s, "    UiDesign_NodeSetOptions(p%d, ", old);
@@ -3167,8 +3235,8 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int viewNew,
 		ds_addf(s, "    p%d->checked=1;\n", old);
 	if (n->type == UI_DN_RINGPROGRESS && !n->checked)
 		ds_addf(s, "    p%d->checked=0;\n", old);
-	if ((n->type == UI_DN_SELECT || n->type == UI_DN_TABS) &&
-	    n->selected > 0)
+	if ((n->type == UI_DN_SELECT || n->type == UI_DN_TABS ||
+	    n->type == UI_DN_RADIOGROUP) && n->selected > 0)
 		ds_addf(s, "    p%d->selected=%d;\n", old, n->selected);
 	if ((n->type == UI_DN_BUTTON || n->type == UI_DN_TABS) && n->variant)
 		ds_addf(s, "    p%d->variant=%d;\n", old, n->variant);

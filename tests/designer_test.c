@@ -396,7 +396,7 @@ static void test_components(void)
 	char *json;
 	char report[128];
 	static char buf[32768];
-	int g, w, root, tabs, p1, p2, ta, dp, cs, img, hit;
+	int g, w, root, tabs, p1, p2, ta, dp, cs, img, radio, hit;
 	WCHAR pc[MAX_PATH], ph[MAX_PATH];
 	UiDesignNode *n;
 
@@ -434,12 +434,24 @@ static void test_components(void)
 	img = UiDesign_AddNode(&a, w, UI_DN_IMAGE, p2, "img", "图片");
 	UiDesign_Node(&a, img)->radius = 10.0f;
 	UiDesign_Node(&a, img)->x = 200.0f;
+	radio = UiDesign_AddNode(&a, w, UI_DN_RADIOGROUP, p2, "radio", "单选组");
+	n = UiDesign_Node(&a, radio);
+	UiDesign_NodeSetOptions(n, "选项1,选项2,选项3");
+	UiDesign_NodeSetText(n, "ignored");
+	n->selected = 2;
+	n->enabled = 0;
+	UiDesign_SetText(n->onChange, UI_DN_ID_MAX, "on_radio");
 
 	CHECK(UiDesign_TypeFromName("tabs") == UI_DN_TABS);
 	CHECK(UiDesign_TypeFromName("textarea") == UI_DN_TEXTAREA);
 	CHECK(UiDesign_TypeFromName("datepicker") == UI_DN_DATEPICKER);
 	CHECK(UiDesign_TypeFromName("colorsel") == UI_DN_COLORSEL);
+	CHECK(UiDesign_TypeFromName("radiogroup") == UI_DN_RADIOGROUP);
 	CHECK(UiDesign_TypeFromName(UiDesign_TypeName(UI_DN_COLORSEL)) == UI_DN_COLORSEL);
+	CHECK(UiDesign_TypeFromName(UiDesign_TypeName(UI_DN_RADIOGROUP)) == UI_DN_RADIOGROUP);
+	CHECK(!UiDesign_IsContainer(UI_DN_RADIOGROUP));
+	CHECK(UiDesign_DefaultW(UI_DN_RADIOGROUP) == 160.0f);
+	CHECK(UiDesign_DefaultH(UI_DN_RADIOGROUP) == 84.0f);
 
 	/* 布局: 所有页共用 header 下方的页区 */
 	rects = (UiRect *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
@@ -452,7 +464,7 @@ static void test_components(void)
 	hit = UiDesign_FindNodeAt(&a, w, rects, 20, 20);
 	CHECK(hit == tabs);
 	hit = UiDesign_FindNodeAt(&a, w, rects, 20, 60);
-	CHECK(hit == cs || hit == p2);
+	CHECK(hit == cs || hit == p2 || hit == radio);
 	HeapFree(GetProcessHeap(), 0, rects);
 	json = UiDesign_ToJson(&a);
 	CHECK(json != NULL);
@@ -460,6 +472,8 @@ static void test_components(void)
 	CHECK(json && has_sub(json, "\"color\":\"#80336699\""));
 	CHECK(json && has_sub(json, "\"readonly\":1"));
 	CHECK(json && has_sub(json, "\"type\":\"tabs\""));
+	CHECK(json && has_sub(json, "\"type\":\"radiogroup\""));
+	CHECK(json && has_sub(json, "\"onChange\":\"on_radio\""));
 	CHECK(json && has_sub(json, "\"radius\":4.000"));
 	CHECK(json && has_sub(json, "\"radius\":10.000"));
 	UiDesign_Init(&b);
@@ -468,12 +482,18 @@ static void test_components(void)
 		int bta = UiDesign_FindNode(&b, 0, "ta");
 		int bdp = UiDesign_FindNode(&b, 0, "dp");
 		int bcs = UiDesign_FindNode(&b, 0, "cs");
+		int br = UiDesign_FindNode(&b, 0, "radio");
 		CHECK(bt >= 0 && UiDesign_Node(&b, bt)->type == UI_DN_TABS);
 		CHECK(bt >= 0 && UiDesign_Node(&b, bt)->selected == 1);
 		CHECK(bta >= 0 && UiDesign_Node(&b, bta)->readonly == 1);
 		CHECK(bdp >= 0 && UiDesign_Node(&b, bdp)->mode == 3);
 		CHECK(bdp >= 0 && strcmp(UiDesign_Node(&b, bdp)->options, "2026-02-03 04:05") == 0);
 		CHECK(bcs >= 0 && UiDesign_Node(&b, bcs)->color == 0x80336699u);
+		CHECK(br >= 0 && UiDesign_Node(&b, br)->type == UI_DN_RADIOGROUP);
+		CHECK(br >= 0 && strcmp(UiDesign_Node(&b, br)->options, "选项1,选项2,选项3") == 0);
+		CHECK(br >= 0 && UiDesign_Node(&b, br)->selected == 2);
+		CHECK(br >= 0 && !UiDesign_Node(&b, br)->enabled);
+		CHECK(br >= 0 && strcmp(UiDesign_Node(&b, br)->onChange, "on_radio") == 0);
 	} else {
 		CHECK(0);
 	}
@@ -490,12 +510,18 @@ static void test_components(void)
 	CHECK(UiDesign_GenerateGroup(&a, g, L"build\\gen", report, sizeof(report)) == 2);
 	CHECK(read_all(pc, buf, sizeof(buf)) == 1);
 	CHECK(has_sub(buf, ", 15, "));
+	CHECK(has_sub(buf, ", 21, "));
 	CHECK(has_sub(buf, "->mode=3"));
 	CHECK(has_sub(buf, "->readonly=1"));
 	CHECK(has_sub(buf, "->color=0x80336699u"));
 	CHECK(has_sub(buf, "->selected=1;"));
 	CHECK(has_sub(buf, "p2->radius=4.000f;"));
 	CHECK(has_sub(buf, "p7->radius=10.000f;"));
+	CHECK(has_sub(buf, "UiDesign_NodeSetOptions(p8, \"选项1,选项2,选项3\");"));
+	CHECK(has_sub(buf, "p8->selected=2;"));
+	CHECK(has_sub(buf, "p8->enabled=0;"));
+	CHECK(has_sub(buf, "UiDesign_SetText(p8->onChange, UI_DN_ID_MAX, \"on_radio\");"));
+	CHECK(!has_sub(buf, "UiDesign_NodeSetText(p8,"));
 	/* 默认值/该类型用不到的字段不应生成 */
 	CHECK(!has_sub(buf, "p0->type="));
 	CHECK(!has_sub(buf, "p0->value="));
@@ -506,6 +532,63 @@ static void test_components(void)
 
 	UiDesign_Free(&a);
 	UiDesign_Free(&b);
+}
+
+static void test_radiogroup_node(void)
+{
+	UiDesignDoc d, b;
+	UiDesignNode *n;
+	char *json;
+	char options[UI_DN_OPTIONS_MAX * 3 + 1];
+	int g, w, root, radio, i;
+
+	CHECK(UI_DN_TABS == 15);
+	CHECK(UI_DN_RINGPROGRESS == 20);
+	CHECK(UI_DN_RADIOGROUP == 21);
+	CHECK(UI_DN_COUNT == 22);
+	UiDesign_Init(&d);
+	g = UiDesign_AddGroup(&d, "g", "G");
+	w = mk_view_host(&d, g, UI_DH_WINDOW, "win");
+	root = UiDesign_AddNode(&d, w, UI_DN_COLUMN, -1, "root", "Root");
+	UiDesign_View(&d, w)->root = root;
+	radio = UiDesign_AddNode(&d, w, UI_DN_RADIOGROUP, root, "radio", "单选组");
+	n = UiDesign_Node(&d, radio);
+	UiDesign_NodeSetOptions(n, " , 甲, , 乙, ");
+	n->selected = 99;
+	json = UiDesign_ToJson(&d);
+	CHECK(json != NULL);
+	UiDesign_Init(&b);
+	CHECK(json && UiDesign_FromJson(&b, json));
+	if (json) HeapFree(GetProcessHeap(), 0, json);
+	radio = UiDesign_FindNode(&b, 0, "radio");
+	CHECK(radio >= 0);
+	CHECK(radio >= 0 && UiDesign_Node(&b, radio)->selected == 1);
+	UiDesign_Free(&b);
+
+	for (i = 0; i < UI_DN_OPTIONS_MAX + 1; i++)
+		sprintf(options + i * 2, "%c,", 'a' + i);
+	n = UiDesign_Node(&d, UiDesign_FindNode(&d, 0, "radio"));
+	UiDesign_NodeSetOptions(n, options);
+	n->selected = 99;
+	json = UiDesign_ToJson(&d);
+	UiDesign_Init(&b);
+	CHECK(json && UiDesign_FromJson(&b, json));
+	if (json) HeapFree(GetProcessHeap(), 0, json);
+	radio = UiDesign_FindNode(&b, 0, "radio");
+	CHECK(radio >= 0 && UiDesign_Node(&b, radio)->selected == UI_DN_OPTIONS_MAX - 1);
+	UiDesign_Free(&b);
+
+	n = UiDesign_Node(&d, UiDesign_FindNode(&d, 0, "radio"));
+	UiDesign_NodeSetOptions(n, " , \t, ");
+	n->selected = 3;
+	json = UiDesign_ToJson(&d);
+	UiDesign_Init(&b);
+	CHECK(json && UiDesign_FromJson(&b, json));
+	if (json) HeapFree(GetProcessHeap(), 0, json);
+	radio = UiDesign_FindNode(&b, 0, "radio");
+	CHECK(radio >= 0 && UiDesign_Node(&b, radio)->selected == -1);
+	UiDesign_Free(&b);
+	UiDesign_Free(&d);
 }
 
 static void test_tabs_pages(void)
@@ -1065,6 +1148,7 @@ void __stdcall startup(void)
 	test_save_load();
 	test_symbol();
 	test_components();
+	test_radiogroup_node();
 	test_tabs_pages();
 	test_qrcode_node();
 	test_ringprogress_node();

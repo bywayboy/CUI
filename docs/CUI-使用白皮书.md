@@ -4440,8 +4440,9 @@ README 第 10 节给出了路线。核心步骤：
 30. **ButtonGroup 状态在应用侧**：selected/mask/focus 由应用持有的
     `UiButtonGroup` 保存；MULTI 最多 32 项。键盘事件返回 1 后要立即读取
     `group.clicked`，下一帧 Draw 会清空本帧事件。
-31. **没有 Radio/Checkbox 内置控件**：目前只提供 ButtonGroup；RadioGroup/
-    Checkbox 可按同一“应用持有状态 + 本帧事件”模式扩展。
+31. **Radio 不是独立叶子控件**：CUI 提供 `UiRadioGroup`，单选行由组持有
+    labels/selected/focus；设计器同样以 RadioGroup 节点接入，用逗号分隔选项，
+    最多 8 项，鼠标或键盘选择会同步回文档并触发 OnChange。
 32. **ScrollView 只做纵向**：v1 不提供水平/双轴自由滚动；圆角视口按矩形裁剪，
     嵌套滚动不向上传递。内容尺寸必须由应用的 measure/layout 提供，库不会
     遍历控件树自动发现高度。
