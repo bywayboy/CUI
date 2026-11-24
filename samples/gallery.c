@@ -36,6 +36,7 @@
 #include "ui/ui_progress.h"
 #include "ui/ui_popup.h"
 #include "ui/ui_image.h"
+#include "ui/ui_qrcode.h"
 #include "ui/ui_md.h"
 #include "ui/ui_feecard.h"
 #include "net/ui_net.h"
@@ -340,6 +341,16 @@ typedef struct Gallery {
 		int anchor;
 		UiCheckbox bg;
 	} img;
+
+	/* QR 二维码 */
+	struct {
+		UiQrCode qr;
+		UiButtonGroup content, ecc, colors;
+		UiSlider pad, ratio;
+		UiCheckbox logo;
+		wchar_t logoFile[MAX_PATH];
+		char logoUtf8[UI_QR_LOGO_MAX];
+	} qrc;
 
 	/* Markdown 页 */
 	struct {
@@ -672,6 +683,7 @@ static const SideRow kSide[] = {
 	{ "数据展示", -1 },
 	{ NULL, PG_PROGRESS },
 	{ NULL, PG_IMAGE },
+	{ NULL, PG_QRCODE },
 	{ NULL, PG_MARKDOWN },
 	{ NULL, PG_FEECARD },
 	{ "绘图", -1 },
@@ -6113,6 +6125,271 @@ static int img_anim(Gallery *g)
 	return g->img.img ? UiImage_Busy(g->img.img) : 0;
 }
 
+/* ── QRCode ────────────────────────────────────────────────────────── */
+
+static const char *const kQrTexts[3] = {
+	"https://cui.example.com/gallery/qrcode",
+	"CUI 组件画廊 · 二维码 (Byte 模式)",
+	"WIFI:T:WPA;S:CUI-Gallery;P:12345678;;"
+};
+static const char *const kQrContentLabels[3] = { "链接", "中文", "Wi-Fi" };
+static const char *const kQrEccLabels[4] = { "L 7%", "M 15%", "Q 25%", "H 30%" };
+static const char *const kQrEccNames[4] = {
+	"UI_QR_ECC_L", "UI_QR_ECC_M", "UI_QR_ECC_Q", "UI_QR_ECC_H"
+};
+static const int kQrEccs[4] = {
+	UI_QR_ECC_L, UI_QR_ECC_M, UI_QR_ECC_Q, UI_QR_ECC_H
+};
+static const char *const kQrColorLabels[5] = {
+	"经典", "蓝调", "紫调", "反色", "水印"
+};
+static const uint32_t kQrFgs[5] = {
+	0xFF111827u, 0xFF1D4ED8u, 0xFF6D28D9u, 0xFFFFFFFFu, 0xAA111827u
+};
+static const uint32_t kQrBgs[5] = {
+	0xFFFFFFFFu, 0xFFF8FAFCu, 0xFFF5F3FFu, 0xFF111827u, 0x00000000u
+};
+
+/* 32bpp BGRA BMP (V4 头带 alpha 掩码): 透明底 + 橙色圆环/圆心.
+ * 演示 Logo 的 alpha 叠加; 组件本身不会再画底板或白边. */
+static int make_qr_logo_bmp(unsigned char **out, int N)
+{
+	int stride = N * 4;
+	int size = 14 + 108 + stride * N;
+	unsigned char *buf = (unsigned char *)HeapAlloc(GetProcessHeap(),
+		HEAP_ZERO_MEMORY, (SIZE_T)size);
+	BITMAPFILEHEADER *fh;
+	BITMAPV4HEADER *vh;
+	int n2 = N * N;
+	int x, y;
+	if (!buf) return 0;
+	fh = (BITMAPFILEHEADER *)buf;
+	vh = (BITMAPV4HEADER *)(buf + sizeof(BITMAPFILEHEADER));
+	fh->bfType = 0x4D42;
+	fh->bfSize = (DWORD)size;
+	fh->bfOffBits = 14 + 108;
+	vh->bV4Size = 108;
+	vh->bV4Width = N;
+	vh->bV4Height = N;
+	vh->bV4Planes = 1;
+	vh->bV4BitCount = 32;
+	vh->bV4V4Compression = BI_BITFIELDS;
+	vh->bV4SizeImage = (DWORD)(stride * N);
+	vh->bV4RedMask = 0x00FF0000u;
+	vh->bV4GreenMask = 0x0000FF00u;
+	vh->bV4BlueMask = 0x000000FFu;
+	vh->bV4AlphaMask = 0xFF000000u;
+	vh->bV4CSType = 0x73524742u;   /* 'sRGB' */
+	for (y = 0; y < N; y++) {
+		unsigned char *row = buf + 14 + 108 + (N - 1 - y) * stride;
+		int dy = y * 2 - N + 1;
+		for (x = 0; x < N; x++) {
+			int dx = x * 2 - N + 1;
+			int d2 = dx * dx + dy * dy;
+			int dot = d2 * 10000 <= n2 * 1024;          /* r < 0.16N */
+			int ring = d2 * 10000 >= n2 * 4356 &&       /* 0.33N..0.44N */
+				d2 * 10000 <= n2 * 7744;
+			unsigned char *p;
+			if (!dot && !ring) continue;
+			p = row + x * 4;
+			p[0] = 0x16;   /* B */
+			p[1] = 0x73;   /* G */
+			p[2] = 0xF9;   /* R */
+			p[3] = 0xFF;   /* A */
+		}
+	}
+	*out = buf;
+	return size;
+}
+
+static void qr_make_logo(Gallery *g)
+{
+	unsigned char *bmp = NULL;
+	int size = make_qr_logo_bmp(&bmp, 128);
+	wchar_t dir[MAX_PATH];
+	DWORD n = 0;
+	g->qrc.logoFile[0] = 0;
+	g->qrc.logoUtf8[0] = 0;
+	if (!bmp || size <= 0) return;
+	n = GetTempPathW(MAX_PATH, dir);
+	if (n == 0 || n >= MAX_PATH - 24) {
+		HeapFree(GetProcessHeap(), 0, bmp);
+		return;
+	}
+	lstrcpynW(g->qrc.logoFile, dir, MAX_PATH);
+	lstrcatW(g->qrc.logoFile, L"cui_gallery_qr_logo.bmp");
+	{
+		HANDLE h = CreateFileW(g->qrc.logoFile, GENERIC_WRITE, 0, NULL,
+			CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+		if (h != INVALID_HANDLE_VALUE) {
+			DWORD wrote = 0;
+			WriteFile(h, bmp, (DWORD)size, &wrote, NULL);
+			CloseHandle(h);
+		}
+	}
+	HeapFree(GetProcessHeap(), 0, bmp);
+	WideCharToMultiByte(CP_UTF8, 0, g->qrc.logoFile, -1,
+		g->qrc.logoUtf8, UI_QR_LOGO_MAX, NULL, NULL);
+}
+
+static void qr_apply(Gallery *g)
+{
+	int c = g->qrc.colors.selected;
+	UiQrCode_SetText(&g->qrc.qr, kQrTexts[g->qrc.content.selected]);
+	UiQrCode_SetEcc(&g->qrc.qr, kQrEccs[g->qrc.ecc.selected]);
+	UiQrCode_SetColors(&g->qrc.qr, kQrFgs[c], kQrBgs[c]);
+	UiQrCode_SetPadding(&g->qrc.qr, g->qrc.pad.value * UI_QR_PAD_MAX);
+	UiQrCode_SetLogoRatio(&g->qrc.qr,
+		g->qrc.ratio.value * UI_QR_LOGO_RATIO_MAX);
+	UiQrCode_SetLogoSrc(&g->qrc.qr,
+		g->qrc.logo.checked ? g->qrc.logoUtf8 : "");
+}
+
+static void qrc_init(Gallery *g)
+{
+	UiQrCode_Init(&g->qrc.qr, UI_QR_ECC_M);
+	UiQrCode_SetPadding(&g->qrc.qr, UI_QR_PAD_DEFAULT);
+	UiQrCode_SetLogoRatio(&g->qrc.qr, UI_QR_LOGO_RATIO_DEFAULT);
+	UiButtonGroup_Init(&g->qrc.content, Ui_Id("gl.qr.content", 0, 0),
+		UI_BG_SINGLE, 3);
+	UiButtonGroup_SetSelected(&g->qrc.content, 0);
+	UiButtonGroup_Init(&g->qrc.ecc, Ui_Id("gl.qr.ecc", 0, 0),
+		UI_BG_SINGLE, 4);
+	UiButtonGroup_SetSelected(&g->qrc.ecc, 1);
+	UiButtonGroup_Init(&g->qrc.colors, Ui_Id("gl.qr.colors", 0, 0),
+		UI_BG_SINGLE, 5);
+	UiButtonGroup_SetSelected(&g->qrc.colors, 0);
+	UiSlider_Init(&g->qrc.pad, Ui_Id("gl.qr.pad", 0, 0),
+		UI_QR_PAD_DEFAULT / UI_QR_PAD_MAX);
+	UiSlider_Init(&g->qrc.ratio, Ui_Id("gl.qr.ratio", 0, 0),
+		UI_QR_LOGO_RATIO_DEFAULT / UI_QR_LOGO_RATIO_MAX);
+	UiCheckbox_Init(&g->qrc.logo, Ui_Id("gl.qr.logo", 0, 0), 1);
+	qr_make_logo(g);
+	qr_apply(g);
+}
+
+static void qrc_shutdown(Gallery *g)
+{
+	UiQrCode_Shutdown(&g->qrc.qr);
+	if (g->qrc.logoFile[0]) DeleteFileW(g->qrc.logoFile);
+	g->qrc.logoFile[0] = 0;
+}
+
+static void qrc_preview(Gallery *g, UiRect area)
+{
+	float side = area.w < area.h ? area.w : area.h;
+	side -= 32.0f;
+	if (side > 460.0f) side = 460.0f;
+	if (side < 64.0f) side = 64.0f;
+	UiQrCode_Draw(&g->qrc.qr, &g->app->ui, Ui_Rect(
+		area.x + (area.w - side) * 0.5f,
+		area.y + (area.h - side) * 0.5f, side, side));
+}
+
+static void qrc_demo(Gallery *g, UiRect rc)
+{
+	UiApp *app = g->app;
+	UiTheme *t = &app->theme;
+	Gfx *gfx = app->gfx;
+	UiStack col;
+	UiRect meta;
+	char buf[160];
+
+	qr_apply(g);
+	Ui_StackBegin(&col, rc, UI_COLUMN, 0.0f, 0.0f);
+	meta = Ui_StackTake(&col, 20.0f);
+	Ui_StackSkip(&col, 6.0f);
+	if (UiQrCode_Error(&g->qrc.qr) != UI_QR_OK) {
+		snprintf(buf, sizeof(buf), "编码失败: error=%d",
+			UiQrCode_Error(&g->qrc.qr));
+		small_txt(gfx, t, meta, buf);
+		note_txt(gfx, t, Ui_StackTakeFill(&col),
+			"缩短内容或切换到更高的纠错等级后重试。");
+		return;
+	}
+	snprintf(buf, sizeof(buf),
+		"版本 %d · %d x %d 模块 · %d 字节 · ECC %c · 留白 %.1f 模块%s",
+		UiQrCode_Version(&g->qrc.qr), g->qrc.qr.size, g->qrc.qr.size,
+		g->qrc.qr.textLen, "LMQH"[g->qrc.ecc.selected],
+		g->qrc.pad.value * UI_QR_PAD_MAX,
+		g->qrc.logo.checked ? " · Logo (alpha 叠加)" : "");
+	small_txt(gfx, t, meta, buf);
+	qrc_preview(g, Ui_StackTakeFill(&col));
+}
+
+static void qrc_props(Gallery *g, UiRect rc)
+{
+	UiApp *app = g->app;
+	UiTheme *t = &app->theme;
+	UiContext *ui = &app->ui;
+	Gfx *gfx = app->gfx;
+	UiRect ed, pv;
+	UiStack col;
+	char buf[96];
+
+	qr_apply(g);
+	snprintf(g->codeText, sizeof(g->codeText),
+		"UiQrCode q;\n"
+		"UiQrCode_Init(&q, %s);\n"
+		"UiQrCode_SetText(&q, \"%s\");\n"
+		"UiQrCode_SetColors(&q, 0x%08X, 0x%08X);\n"
+		"UiQrCode_SetPadding(&q, %.2ff);\n"
+		"UiQrCode_SetLogoSrc(&q, %s);\n"
+		"UiQrCode_SetLogoRatio(&q, %.2ff);\n"
+		"\n"
+		"UiQrCode_Draw(&q, &app->ui, rc);\n"
+		"UiQrCode_Shutdown(&q);\n",
+		kQrEccNames[g->qrc.ecc.selected],
+		kQrTexts[g->qrc.content.selected],
+		kQrFgs[g->qrc.colors.selected], kQrBgs[g->qrc.colors.selected],
+		g->qrc.pad.value * UI_QR_PAD_MAX,
+		g->qrc.logo.checked ? "\"logo.png\"" : "NULL",
+		g->qrc.ratio.value * UI_QR_LOGO_RATIO_MAX);
+
+	props_split(g, ui, rc, &ed, &pv);
+	Ui_StackBeginPad(&col, pane_in(ed, 16.0f), UI_COLUMN, 0.0f,
+		16.0f, 14.0f, 16.0f, 14.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "内容预设");
+	Ui_StackSkip(&col, 4.0f);
+	UiButtonGroup_Draw(ui, &g->qrc.content, Ui_StackTake(&col, 34.0f),
+		kQrContentLabels, NULL, NULL, 1);
+	Ui_StackSkip(&col, 10.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "纠错等级 (ECC)");
+	Ui_StackSkip(&col, 4.0f);
+	UiButtonGroup_Draw(ui, &g->qrc.ecc, Ui_StackTake(&col, 34.0f),
+		kQrEccLabels, NULL, NULL, 1);
+	Ui_StackSkip(&col, 10.0f);
+
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "配色 (前景 / 背景)");
+	Ui_StackSkip(&col, 4.0f);
+	UiButtonGroup_Draw(ui, &g->qrc.colors, Ui_StackTake(&col, 34.0f),
+		kQrColorLabels, NULL, NULL, 1);
+	Ui_StackSkip(&col, 10.0f);
+
+	snprintf(buf, sizeof(buf), "留白 = %.2f 模块",
+		g->qrc.pad.value * UI_QR_PAD_MAX);
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), buf);
+	Ui_StackSkip(&col, 4.0f);
+	Ui_Slider(&g->qrc.pad, ui, Ui_StackTake(&col, 30.0f), NULL, 1);
+	Ui_StackSkip(&col, 10.0f);
+
+	Ui_Checkbox(&g->qrc.logo, ui, Ui_StackTake(&col, 26.0f),
+		"中央 Logo (透明 PNG)", 1);
+	Ui_StackSkip(&col, 8.0f);
+	snprintf(buf, sizeof(buf), "Logo 占比 = %.0f%% 边长",
+		g->qrc.ratio.value * UI_QR_LOGO_RATIO_MAX * 100.0f);
+	lbl(gfx, t, Ui_StackTake(&col, 18.0f), buf);
+	Ui_StackSkip(&col, 4.0f);
+	Ui_Slider(&g->qrc.ratio, ui, Ui_StackTake(&col, 30.0f), NULL, 1);
+
+	{
+		UiRect area = pane_in(pv, 16.0f);
+		qrc_preview(g, area);
+	}
+}
+
 /* ── Markdown 页 ───────────────────────────────────────────────────── */
 
 static const char *const kMdDocA =
@@ -8056,6 +8333,10 @@ static const GalleryPage kPages[PG_COUNT] = {
 	{ "Image 图片", "Image 图片", "URL / 文件 / 内存 · fit / 锚点",
 		img_init, img_demo, img_props, NULL, NULL, NULL, NULL, NULL,
 		NULL, NULL, img_anim },
+	/* PG_QRCODE */
+	{ "QRCode 二维码", "QRCode 二维码", "Byte 模式 · 版本自适应 · 可配留白 / Logo",
+		qrc_init, qrc_demo, qrc_props, NULL, NULL, NULL, NULL, NULL,
+		NULL, NULL, NULL },
 	/* PG_MARKDOWN */
 	{ "Markdown", "Markdown 渲染", "GFM / 容器 / 公式 · 懒测量",
 		mdp_init, mdp_demo, mdp_props, NULL, NULL, NULL, NULL, NULL,
@@ -8337,6 +8618,7 @@ static void on_shutdown(UiApp *app, void *user)
 		else if (i == PG_NAV) nav_shutdown(g);
 		else if (i == PG_DIALOG) dlg_shutdown(g);
 		else if (i == PG_IMAGE) img_shutdown(g);
+		else if (i == PG_QRCODE) qrc_shutdown(g);
 		else if (i == PG_MARKDOWN) mdp_shutdown(g);
 		else if (i == PG_SVGEDIT) svg_page_shutdown(g);
 		else if (i == PG_FEECARD) fee_shutdown(g);
@@ -8384,6 +8666,7 @@ static int page_from_cmd(const char *name)
 		{ "loading", PG_LOADING },
 		{ "tooltip", PG_TOOLTIP }, { "progress", PG_PROGRESS },
 		{ "image", PG_IMAGE }, { "markdown", PG_MARKDOWN },
+		{ "qr", PG_QRCODE }, { "qrcode", PG_QRCODE },
 		{ "theme", PG_THEME }, { "net", PG_NET },
 		{ "ws", PG_WS }, { "wssrv", PG_WSSRV },
 		{ "webview", PG_WEBVIEW },

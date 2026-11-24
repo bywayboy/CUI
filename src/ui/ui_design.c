@@ -133,7 +133,8 @@ static const struct {
 	{ "tabs", 320, 220, 1 },
 	{ "textarea", 240, 120, 0 },
 	{ "datepicker", 200, 34, 0 },
-	{ "colorsel", 180, 34, 0 }
+	{ "colorsel", 180, 34, 0 },
+	{ "qrcode", 120, 120, 0 }
 };
 
 const char *UiDesign_TypeName(int type)
@@ -385,7 +386,11 @@ int UiDesign_AddNode(UiDesignDoc *doc, int view, int type, int parent,
 	n->rowSpan = 1;
 	n->colSpan = 1;
 	n->value = 0.5f;
-	n->color = 0xFF3B82F6u;
+	n->color = type == UI_DN_QRCODE ? 0xFF000000u : 0xFF3B82F6u;
+	n->bgColor = 0xFFFFFFFFu;
+	n->ecc = UI_QR_ECC_M;
+	n->logoRatio = UI_QR_LOGO_RATIO_DEFAULT;
+	n->qrPad = UI_QR_PAD_DEFAULT;
 	UiDesign_SetText(n->id, UI_DN_ID_MAX, id ? id : "node");
 	UiDesign_SetText(n->name, UI_DN_NAME_MAX, name ? name : id ? id : "组件");
 	if (parent >= 0) UiDesign_NodeAddChild(doc, parent, idx);
@@ -741,6 +746,16 @@ static void ds_node(UiDStr *s, const UiDesignDoc *doc, int index)
 		n->checked, n->enabled, n->selected, n->variant);
 	ds_addf(s, ",\"mode\":%d,\"readonly\":%d,\"color\":", n->mode, n->readonly);
 	ds_color(s, n->color);
+	if (n->type == UI_DN_QRCODE) {
+		ds_addf(s, ",\"ecc\":%d,\"bgColor\":", n->ecc);
+		ds_color(s, n->bgColor);
+		ds_add(s, ",\"src\":");
+		ds_json_str(s, n->logoSrc);
+		ds_add(s, ",\"logoRatio\":");
+		ds_num(s, n->logoRatio);
+		ds_add(s, ",\"qrPad\":");
+		ds_num(s, n->qrPad);
+	}
 	ds_add(s, "},\"onClick\":");
 	ds_json_str(s, n->onClick);
 	ds_add(s, ",\"onChange\":");
@@ -1017,7 +1032,8 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 {
 	char key[64], val[UI_DN_TEXT_MAX];
 	int idx, type = UI_DN_LABEL;
-	int gotType = 0, gotRadius = 0;
+	int gotType = 0, gotRadius = 0, gotColor = 0, gotBg = 0, gotEcc = 0;
+	int gotLogo = 0, gotLogoRatio = 0, gotQrPad = 0;
 	if (!jp_ch(j, '{')) return 0;
 	idx = UiDesign_AddNode(doc, win, type, parent, "node", "组件");
 	if (idx < 0) return 0;
@@ -1101,7 +1117,25 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 				else if (strcmp(pk, "variant") == 0) jp_int(j, &doc->nodes[idx].variant);
 				else if (strcmp(pk, "mode") == 0) jp_int(j, &doc->nodes[idx].mode);
 				else if (strcmp(pk, "readonly") == 0) jp_bool(j, &doc->nodes[idx].readonly);
-				else if (strcmp(pk, "color") == 0) jp_color(j, &doc->nodes[idx].color);
+				else if (strcmp(pk, "color") == 0) {
+					jp_color(j, &doc->nodes[idx].color);
+					gotColor = 1;
+				} else if (strcmp(pk, "bgColor") == 0) {
+					jp_color(j, &doc->nodes[idx].bgColor);
+					gotBg = 1;
+				} else if (strcmp(pk, "ecc") == 0) {
+					jp_int(j, &doc->nodes[idx].ecc);
+					gotEcc = 1;
+				} else if (strcmp(pk, "src") == 0) {
+					jp_string(j, doc->nodes[idx].logoSrc, UI_DN_PATH_MAX);
+					gotLogo = 1;
+				} else if (strcmp(pk, "logoRatio") == 0) {
+					jp_number(j, &doc->nodes[idx].logoRatio);
+					gotLogoRatio = 1;
+				} else if (strcmp(pk, "qrPad") == 0) {
+					jp_number(j, &doc->nodes[idx].qrPad);
+					gotQrPad = 1;
+				}
 				else if (!jp_skip(j)) return 0;
 				jp_ws(j);
 				if (jp_ch(j, ',')) continue;
@@ -1126,6 +1160,24 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 	(void)gotType;
 	if (!gotRadius)
 		doc->nodes[idx].radius = doc->nodes[idx].type == UI_DN_IMAGE ? 6.0f : 8.0f;
+	if (doc->nodes[idx].type == UI_DN_QRCODE) {
+		if (!gotEcc) doc->nodes[idx].ecc = UI_QR_ECC_M;
+		if (doc->nodes[idx].ecc < 0 || doc->nodes[idx].ecc > 3)
+			doc->nodes[idx].ecc = UI_QR_ECC_M;
+		if (!gotColor) doc->nodes[idx].color = 0xFF000000u;
+		if (!gotBg) doc->nodes[idx].bgColor = 0xFFFFFFFFu;
+		if (!gotLogo) doc->nodes[idx].logoSrc[0] = 0;
+		if (!gotLogoRatio)
+			doc->nodes[idx].logoRatio = UI_QR_LOGO_RATIO_DEFAULT;
+		if (doc->nodes[idx].logoRatio < 0.0f)
+			doc->nodes[idx].logoRatio = 0.0f;
+		if (doc->nodes[idx].logoRatio > UI_QR_LOGO_RATIO_MAX)
+			doc->nodes[idx].logoRatio = UI_QR_LOGO_RATIO_MAX;
+		if (!gotQrPad) doc->nodes[idx].qrPad = UI_QR_PAD_DEFAULT;
+		if (doc->nodes[idx].qrPad < 0.0f) doc->nodes[idx].qrPad = 0.0f;
+		if (doc->nodes[idx].qrPad > UI_QR_PAD_MAX)
+			doc->nodes[idx].qrPad = UI_QR_PAD_MAX;
+	}
 	return 1;
 }
 
@@ -2015,6 +2067,9 @@ static void dn_state_init(UiDesignInstance *inst, int idx)
 		UiColorSelect_Init(&st->cs, dn_widget_id(inst, idx, 9), n->color);
 		UiColorSelect_AttachIme(&st->cs, inst->ime);
 		break;
+	case UI_DN_QRCODE:
+		UiQrCode_Init(&st->qr, n->ecc);
+		break;
 	case UI_DN_TABS:
 		st->barCount = n->childCount > 32 ? 32 : n->childCount;
 		UiTabBar_Init(&st->bar, dn_widget_id(inst, idx, 6), st->barCount);
@@ -2069,6 +2124,8 @@ void UiDesignInstance_Shutdown(UiDesignInstance *inst)
 			UiDatePicker_Shutdown(&st->dp);
 		else if (inst->doc->nodes[i].type == UI_DN_COLORSEL)
 			UiColorSelect_Shutdown(&st->cs);
+		else if (inst->doc->nodes[i].type == UI_DN_QRCODE)
+			UiQrCode_Shutdown(&st->qr);
 	}
 	dn_free(inst->rects);
 	dn_free(inst->states);
@@ -2316,6 +2373,16 @@ static void dn_draw_node(UiDesignInstance *inst, int idx)
 	case UI_DN_SEPARATOR:
 		Gfx_Line(g, r.x, r.y + r.h * 0.5f, r.x + r.w, r.y + r.h * 0.5f,
 			t->border, 1.0f);
+		break;
+	case UI_DN_QRCODE:
+		if (!st) break;
+		UiQrCode_SetEcc(&st->qr, n->ecc);
+		UiQrCode_SetColors(&st->qr, n->color, n->bgColor);
+		UiQrCode_SetText(&st->qr, n->text);
+		UiQrCode_SetLogoSrc(&st->qr, n->logoSrc);
+		UiQrCode_SetLogoRatio(&st->qr, n->logoRatio);
+		UiQrCode_SetPadding(&st->qr, n->qrPad);
+		UiQrCode_Draw(&st->qr, ui, r);
 		break;
 	default:
 		break;
@@ -2671,7 +2738,7 @@ static int cg_uses_text(int t)
 	switch (t) {
 	case UI_DN_LABEL: case UI_DN_BUTTON: case UI_DN_INPUT:
 	case UI_DN_CHECKBOX: case UI_DN_SWITCH: case UI_DN_IMAGE:
-	case UI_DN_TEXTAREA: case UI_DN_DATEPICKER:
+	case UI_DN_TEXTAREA: case UI_DN_DATEPICKER: case UI_DN_QRCODE:
 		return 1;
 	default:
 		return 0;
@@ -2863,6 +2930,30 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int viewNew,
 		ds_addf(s, "    p%d->readonly=1;\n", old);
 	if (n->type == UI_DN_COLORSEL && n->color != 0xFF3B82F6u)
 		ds_addf(s, "    p%d->color=0x%08Xu;\n", old, n->color);
+	if (n->type == UI_DN_QRCODE) {
+		if (n->ecc != UI_QR_ECC_M)
+			ds_addf(s, "    p%d->ecc=%d;\n", old, n->ecc);
+		if (n->color != 0xFF000000u)
+			ds_addf(s, "    p%d->color=0x%08Xu;\n", old, n->color);
+		if (n->bgColor != 0xFFFFFFFFu)
+			ds_addf(s, "    p%d->bgColor=0x%08Xu;\n", old, n->bgColor);
+		if (n->logoRatio != UI_QR_LOGO_RATIO_DEFAULT) {
+			ds_addf(s, "    p%d->logoRatio=", old);
+			cg_num(s, n->logoRatio);
+			ds_add(s, ";\n");
+		}
+		if (n->qrPad != UI_QR_PAD_DEFAULT) {
+			ds_addf(s, "    p%d->qrPad=", old);
+			cg_num(s, n->qrPad);
+			ds_add(s, ";\n");
+		}
+		if (n->logoSrc[0]) {
+			ds_addf(s, "    UiDesign_SetText(p%d->logoSrc, UI_DN_PATH_MAX, ",
+				old);
+			cg_quote(s, n->logoSrc);
+			ds_add(s, ");\n");
+		}
+	}
 	if (n->type == UI_DN_BUTTON && n->onClick[0]) {
 		ds_addf(s, "    UiDesign_SetText(p%d->onClick, UI_DN_ID_MAX, ", old);
 		cg_quote(s, n->onClick);

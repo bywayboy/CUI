@@ -44,7 +44,7 @@ static const char DOC_WELCOME[] =
 	"| 选择器 | Select · DatePicker · Pagination · ColorSelect |\n"
 	"| 导航与容器 | Tabs · Nav · ScrollView · Layout |\n"
 	"| 弹层与反馈 | Dialog · Menu · Toast · Loading · Tooltip |\n"
-	"| 数据展示 | Progress · Image · Markdown |\n"
+	"| 数据展示 | Progress · Image · QRCode · Markdown |\n"
 	"| 系统 | Theme · Net(网络与定时器) |\n"
 	"\n"
 	"::: note 即时模式提醒\n"
@@ -2950,6 +2950,118 @@ static const char EVENTS_IMAGE[] =
 	"内存字节: `UiImage_SetBytes(img, data, len)`; 解码失败返回错误码\n"
 	"(`UI_IMG_E_*`)。\n";
 
+/* ── 22b QRCode ───────────────────────────────────────────────────── */
+
+static const char DOC_QRCODE[] =
+	"# QRCode 二维码\n"
+	"\n"
+	"`UiQrCode` 是零依赖的纯 C 二维码组件: **Byte 模式**, 版本 1–40\n"
+	"按内容自动选择, 8 种掩码按标准惩罚规则择优, 纠错 L/M/Q/H 可切换。\n"
+	"纹理按**设备像素**生成并与目标 1:1 映射, 高 DPI 不糊边;\n"
+	"设备丢失或 DPI 变化时用缓存的矩阵重建, 不重新编码。\n"
+	"\n"
+	"## 何时使用\n"
+	"\n"
+	"- 扫码登录、分享链接、设备配网等\"屏幕 → 手机\"场景;\n"
+	"- 内容建议 ≤ 300 字节; 内容越长模块越密, 需要更大的显示尺寸;\n"
+	"- 中文按 UTF-8 原始字节入码, 主流扫码器可识别。\n"
+	"\n"
+	"## 基本用法\n"
+	"\n"
+	"```c\n"
+	"static UiQrCode q;\n"
+	"\n"
+	"UiQrCode_Init(&q, UI_QR_ECC_M);\n"
+	"UiQrCode_SetText(&q, \"https://example.com\");\n"
+	"UiQrCode_SetColors(&q, 0xFF111827, 0xFFFFFFFF);  /* fg, bg */\n"
+	"UiQrCode_SetPadding(&q, 1.0f);                   /* 留白, 单位=模块 */\n"
+	"\n"
+	"/* 帧内 */\n"
+	"UiQrCode_Draw(&q, &app->ui, rc);\n"
+	"\n"
+	"/* 销毁 */\n"
+	"UiQrCode_Shutdown(&q);\n"
+	"```\n"
+	"\n"
+	"## 留白与背景\n"
+	"\n"
+	"- 组件只有**一层留白**: 码区到四边的距离, 单位是模块, 默认 1, 范围 0–8;\n"
+	"- **背景色铺满整个组件矩形**, 不受留白影响 —— 留白区域就是背景色;\n"
+	"- 前景/背景都支持 alpha: 背景先铺一次, 模块再按 fg alpha 叠加其上;\n"
+	"- 屏幕展示建议 1–2 个模块留白; 前景/背景对比要足够;\n"
+	"- 反色(浅码深底)部分扫码器不支持, 选用请先实测。\n"
+	"\n"
+	"## 中央 Logo\n"
+	"\n"
+	"```c\n"
+	"UiQrCode_SetLogoSrc(&q, \"logo.png\");  /* NULL / \"\" 关闭 */\n"
+	"UiQrCode_SetLogoRatio(&q, 0.2f);      /* 边长占比, 上限 0.35 */\n"
+	"```\n"
+	"\n"
+	"Logo 首次绘制时用 WIC 解码, 支持透明 PNG, **按 alpha 叠在码上**;\n"
+	"组件不额外绘制白边/底板。遮挡面积越大, 纠错等级应越高(建议 Q/H)。\n";
+
+static const char API_QRCODE[] =
+	"# QRCode API\n"
+	"\n"
+	"```c\n"
+	"#include \"ui/ui_qrcode.h\"\n"
+	"```\n"
+	"\n"
+	"| 函数 | 说明 |\n"
+	"|:--|:--|\n"
+	"| `UiQrCode_Init(q, ecc) / Shutdown` | ECC: L / M / Q / H |\n"
+	"| `UiQrCode_SetText(q, utf8)` | 内容未变不重编码; 返回 1=可绘制 |\n"
+	"| `UiQrCode_SetEcc(q, ecc)` | 切换纠错等级并重编码 |\n"
+	"| `UiQrCode_SetColors(q, fg, bg)` | 0xAARRGGBB, 支持 alpha (预乘合成) |\n"
+	"| `UiQrCode_SetPadding(q, modules)` | 留白, 钳到 [0, `UI_QR_PAD_MAX`] |\n"
+	"| `UiQrCode_SetLogoSrc(q, path)` | 本地图片 (UTF-8 路径), 首次绘制解码 |\n"
+	"| `UiQrCode_SetLogoRatio(q, ratio)` | Logo 边长/码区边长, 上限 0.35 |\n"
+	"| `UiQrCode_Draw(q, ui, rect)` | 每帧绘制 |\n"
+	"| `UiQrCode_Error(q)` | `UI_QR_E_*`; `UI_QR_OK` = 0 |\n"
+	"| `UiQrCode_Version(q)` | 当前版本 1–40 |\n"
+	"| `UiQrCode_Encode(...)` | 单独编码到调用方缓冲区(位打包矩阵) |\n"
+	"\n"
+	"常量: `UI_QR_PAD_DEFAULT` = 1.0 模块, `UI_QR_LOGO_RATIO_DEFAULT` = 0.2,\n"
+	"`UI_QR_BITMAP_MAX` = 1024 设备像素(纹理缓存上限)。\n";
+
+static const char BEST_QRCODE[] =
+	"# QRCode 最佳实践\n"
+	"\n"
+	"- [x] 显示边长按\"每模块 ≥ 2 物理像素\"估算, 逻辑尺寸至少 128×128;\n"
+	"- [x] 内容变化才换字符串; 颜色/留白/Logo 变化只重建纹理(内部缓存);\n"
+	"- [x] 扫码场景优先深色前景 + 白色背景, 对比度 ≥ 4:1;\n"
+	"- [x] 加 Logo 时把 ECC 提到 Q/H, 占比控制在 25% 以内;\n"
+	"- [x] Logo 用透明 PNG 让码点从四周透出, 不要贴白底板;\n"
+	"- [ ] 不要每帧拼接新字符串传给 `SetText`(等长不同内容会重复编码);\n"
+	"- [ ] 不要把纹理指针缓存到组件外 —— 设备丢失时会重建。\n";
+
+static const char EVENTS_QRCODE[] =
+	"## 事件怎么产生\n"
+	"\n"
+	"二维码是**纯绘制组件**, 没有交互事件; 内容/样式变化都是幂等 setter:\n"
+	"内容未变不重编码, 颜色/留白/Logo 占比变化只标脏, 下一帧重建纹理。\n"
+	"\n"
+	"错误通过 `UiQrCode_Error` 同步获取: 空内容、超出容量、内存不足。\n"
+	"\n"
+	"## 接线示例\n"
+	"\n"
+	"```c\n"
+	"static void on_frame(UiApp *app, void *user) {\n"
+	"    Gallery *g = user;\n"
+	"\n"
+	"    /* 例如输入框内容变化后: */\n"
+	"    UiQrCode_SetEcc(&g->qr, UI_QR_ECC_Q);\n"
+	"    UiQrCode_SetPadding(&g->qr, 1.0f);\n"
+	"    if (!UiQrCode_SetText(&g->qr, url))\n"
+	"        show_error(UiQrCode_Error(&g->qr));   /* UI_QR_E_* */\n"
+	"\n"
+	"    UiQrCode_Draw(&g->qr, &app->ui, rc);\n"
+	"}\n"
+	"```\n"
+	"\n"
+	"无需 key/chr/ime/mouse 回调, animating 恒为 0 (纹理建立是同步的)。\n";
+
 static const char EVENTS_MARKDOWN[] =
 	"## 事件怎么产生\n"
 	"\n"
@@ -3500,6 +3612,7 @@ static const GalleryDocText kDocs[PG_COUNT] = {
 	/* PG_TOOLTIP   */ { 0, DOC_TOOLTIP, API_TOOLTIP, BEST_TOOLTIP, EVENTS_TOOLTIP },
 	/* PG_PROGRESS  */ { 0, DOC_PROGRESS, API_PROGRESS, BEST_PROGRESS, EVENTS_PROGRESS },
 	/* PG_IMAGE     */ { 0, DOC_IMAGE, API_IMAGE, BEST_IMAGE, EVENTS_IMAGE },
+	/* PG_QRCODE    */ { 0, DOC_QRCODE, API_QRCODE, BEST_QRCODE, EVENTS_QRCODE },
 	/* PG_MARKDOWN  */ { 0, DOC_MARKDOWN, API_MARKDOWN, BEST_MARKDOWN, EVENTS_MARKDOWN },
 	/* PG_THEME     */ { 0, DOC_THEME, API_THEME, BEST_THEME, EVENTS_THEME },
 	/* PG_NET       */ { 0, DOC_NET, API_NET, BEST_NET, EVENTS_NET },

@@ -16,6 +16,7 @@
 #include "ui/ui_ime.h"
 #include "ui/ui_input.h"
 #include "ui/ui_popup.h"
+#include "ui/ui_qrcode.h"
 #include "ui/ui_select.h"
 #include "ui/ui_tab.h"
 #include "ui/ui_textarea.h"
@@ -52,6 +53,7 @@ typedef enum {
 	UI_DN_TEXTAREA,
 	UI_DN_DATEPICKER,
 	UI_DN_COLORSEL,
+	UI_DN_QRCODE,
 	UI_DN_COUNT
 } UiDesignType;
 
@@ -124,7 +126,12 @@ typedef struct UiDesignNode {
 	int checked, enabled, selected, variant;
 	int mode;           /* DatePicker: UiDatePickerMode */
 	int readonly;       /* TextArea */
-	unsigned color;     /* ColorSelect: 0xAARRGGBB */
+	unsigned color;     /* ColorSelect / QR 前景色: 0xAARRGGBB */
+	unsigned bgColor;   /* QR 背景色: 0xAARRGGBB */
+	int ecc;            /* QR 纠错等级: UiQrEcc */
+	char logoSrc[UI_DN_PATH_MAX]; /* QR 中央 Logo 图片路径 (UTF-8) */
+	float logoRatio;    /* QR Logo 边长 / 码区边长 */
+	float qrPad;        /* QR 绘制区域到组件四边留白 (模块) */
 	char onClick[UI_DN_ID_MAX];
 	char onChange[UI_DN_ID_MAX];
 } UiDesignNode;
@@ -258,6 +265,7 @@ typedef struct UiDesignNodeState {
 	UiTextArea ta;
 	UiDatePicker dp;
 	UiColorSelect cs;
+	UiQrCode qr;
 	UiTabBar bar;
 	int barCount;
 	wchar_t taHint[128];   /* TextArea placeholder 由控件保存指针, 需自持 */

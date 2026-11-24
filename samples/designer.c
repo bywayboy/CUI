@@ -67,7 +67,8 @@ enum {
 	DK_N_GRIDCOLS, DK_N_GRIDROWS, DK_N_GRIDROW, DK_N_GRIDCOL,
 	DK_N_ROWSPAN, DK_N_COLSPAN, DK_N_GRIDROWGAP, DK_N_GRIDCOLGAP,
 	DK_N_GRIDCOLTRACKS, DK_N_RADIUS,
-	DK_N_MODE, DK_N_READONLY, DK_N_COLOR, DK_N_SELECTED
+	DK_N_MODE, DK_N_READONLY, DK_N_COLOR, DK_N_SELECTED,
+	DK_N_ECC, DK_N_BGCOLOR, DK_N_LOGOSRC, DK_N_LOGORATIO, DK_N_QRPAD
 };
 
 enum {
@@ -137,6 +138,9 @@ typedef struct Designer {
 	UiColorSelect propColor;   /* 属性面板颜色行 */
 	int propColorReady;
 	int propColorNode;
+	UiColorSelect propColorBg; /* 二维码背景色行 */
+	int propColorBgReady;
+	int propColorBgNode;
 	int propsTab;          /* 0=属性 1=组件表 */
 	int palettePage;
 	int propScroll;
@@ -1017,6 +1021,22 @@ static void d_build_props(void)
 			d_prop_add(DK_N_COLOR, DPK_COLOR, "颜色", b);
 			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
 			break;
+		case UI_DN_QRCODE:
+			d_prop_add(DK_N_TEXT, DPK_TEXT, "内容", n->text);
+			d_prop_add(DK_N_ECC, DPK_ENUM, "纠错",
+				n->ecc == UI_QR_ECC_L ? "L" : (n->ecc == UI_QR_ECC_Q ? "Q" :
+				(n->ecc == UI_QR_ECC_H ? "H" : "M")));
+			d_fmt_color(b, sizeof(b), n->color);
+			d_prop_add(DK_N_COLOR, DPK_COLOR, "前景色", b);
+			d_fmt_color(b, sizeof(b), n->bgColor);
+			d_prop_add(DK_N_BGCOLOR, DPK_COLOR, "背景色", b);
+			d_prop_add(DK_N_LOGOSRC, DPK_TEXT, "Logo 图片", n->logoSrc);
+			d_fmt(b, sizeof(b), n->logoRatio);
+			d_prop_add(DK_N_LOGORATIO, DPK_FLOAT, "Logo 比例", b);
+			d_fmt(b, sizeof(b), n->qrPad);
+			d_prop_add(DK_N_QRPAD, DPK_FLOAT, "留白 (模块)", b);
+			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
+			break;
 		default:
 			break;
 		}
@@ -1090,6 +1110,10 @@ static void d_prop_cycle(int key)
 			if (cnt > 0) n->selected = (n->selected + 1) % cnt;
 		} else if (key == DK_N_MODE) n->mode = (n->mode + 1) % 4;
 		else if (key == DK_N_READONLY) n->readonly = !n->readonly;
+		else if (key == DK_N_ECC) {
+			n->ecc = (n->ecc + 1) % 4;
+			d_status("二维码纠错: L 7% / M 15% / Q 25% / H 30%");
+		}
 	}
 	g_d.doc.dirty = 1;
 	d_undo_push();
@@ -1157,6 +1181,24 @@ static void d_prop_apply_text(int key, const char *text)
 		else if (key == DK_N_COLSPAN) n->colSpan = d_atoi(text) > 0 ? d_atoi(text) : 1;
 		else if (key == DK_N_ROWSPAN) n->rowSpan = d_atoi(text) > 0 ? d_atoi(text) : 1;
 		else if (key == DK_N_COLOR) n->color = d_parse_color(text, n->color);
+		else if (key == DK_N_BGCOLOR) n->bgColor = d_parse_color(text, n->bgColor);
+		else if (key == DK_N_LOGOSRC) {
+			UiDesign_SetText(n->logoSrc, UI_DN_PATH_MAX, text);
+			if (n->logoSrc[0] && n->ecc < UI_QR_ECC_H)
+				d_status("Logo 会遮挡码区, 建议纠错等级 H");
+		}
+		else if (key == DK_N_LOGORATIO) {
+			float r = (float)d_atof(text);
+			if (r < 0.0f) r = 0.0f;
+			if (r > UI_QR_LOGO_RATIO_MAX) r = UI_QR_LOGO_RATIO_MAX;
+			n->logoRatio = r;
+		}
+		else if (key == DK_N_QRPAD) {
+			float p = (float)d_atof(text);
+			if (p < 0.0f) p = 0.0f;
+			if (p > UI_QR_PAD_MAX) p = UI_QR_PAD_MAX;
+			n->qrPad = p;
+		}
 	}
 	g_d.doc.dirty = 1;
 	g_d.layoutReady = 0;
@@ -1768,6 +1810,38 @@ static void d_tabs_draw_header(int idx)
 	}
 }
 
+/* 设计画布上的二维码预览: 每个节点复用一份编码/纹理, 避免逐帧重编码. */
+#define D_QR_CACHE 8
+static UiQrCode g_qrSlot[D_QR_CACHE];
+static int g_qrSlotNode[D_QR_CACHE];
+static int g_qrNext;
+
+static UiQrCode *d_qr_slot(int idx)
+{
+	int i, slot = -1;
+	for (i = 0; i < D_QR_CACHE; i++) {
+		if (g_qrSlotNode[i] == idx) return &g_qrSlot[i];
+		if (slot < 0 && g_qrSlotNode[i] < 0) slot = i;
+	}
+	if (slot < 0) {
+		slot = g_qrNext++ % D_QR_CACHE;
+		UiQrCode_Shutdown(&g_qrSlot[slot]);
+	}
+	UiQrCode_Init(&g_qrSlot[slot], UI_QR_ECC_M);
+	g_qrSlotNode[slot] = idx;
+	return &g_qrSlot[slot];
+}
+
+static void d_qr_slots_free(void)
+{
+	int i;
+	for (i = 0; i < D_QR_CACHE; i++) {
+		UiQrCode_Shutdown(&g_qrSlot[i]);
+		g_qrSlotNode[i] = -1;
+	}
+	g_qrNext = 0;
+}
+
 static void d_draw_static_node(int idx)
 {
 	UiTheme *t = &g_d.app->theme;
@@ -1939,6 +2013,22 @@ static void d_draw_static_node(int idx)
 		Gfx_Line(g, r.x, r.y + r.h * 0.5f, r.x + r.w, r.y + r.h * 0.5f,
 			t->border, 1.0f);
 		break;
+	case UI_DN_QRCODE: {
+		UiQrCode *q = d_qr_slot(idx);
+		UiContext *uic = &g_d.app->ui;
+		float zs = uic->scale;
+		UiQrCode_SetEcc(q, n->ecc);
+		UiQrCode_SetColors(q, n->color, n->bgColor);
+		UiQrCode_SetText(q, n->text);
+		UiQrCode_SetLogoSrc(q, n->logoSrc);
+		UiQrCode_SetLogoRatio(q, n->logoRatio);
+		UiQrCode_SetPadding(q, n->qrPad);
+		/* 画布有缩放变换: 纹理按实际屏幕像素生成, 放大时不糊 */
+		uic->scale = zs * (g_d.zoom > 0.0f ? g_d.zoom : 1.0f);
+		UiQrCode_Draw(q, uic, r);
+		uic->scale = zs;
+		break;
+	}
 	default:
 		break;
 	}
@@ -2414,17 +2504,17 @@ static void d_draw_toolbar(void)
 	static const char *const layoutLabels[6] = {
 		"选择", "自由", "列", "行", "Grid", "面板"
 	};
-	static const char *const compLabels[14] = {
+	static const char *const compLabels[15] = {
 		"标签", "按钮", "输入", "复选", "开关", "滑块", "进度",
-		"下拉", "图片", "分隔", "标签页", "多行", "日期", "颜色"
+		"下拉", "图片", "分隔", "标签页", "多行", "日期", "颜色", "二维码"
 	};
 	static const int layoutTypes[6] = {
 		-1, UI_DN_ABSOLUTE, UI_DN_COLUMN, UI_DN_ROW, UI_DN_GRID, UI_DN_PANEL
 	};
-	static const int compTypes[14] = {
+	static const int compTypes[15] = {
 		UI_DN_LABEL, UI_DN_BUTTON, UI_DN_INPUT, UI_DN_CHECKBOX, UI_DN_SWITCH,
 		UI_DN_SLIDER, UI_DN_PROGRESS, UI_DN_SELECT, UI_DN_IMAGE, UI_DN_SEPARATOR,
-		UI_DN_TABS, UI_DN_TEXTAREA, UI_DN_DATEPICKER, UI_DN_COLORSEL
+		UI_DN_TABS, UI_DN_TEXTAREA, UI_DN_DATEPICKER, UI_DN_COLORSEL, UI_DN_QRCODE
 	};
 	float x = 12.0f;
 	int clicked;
@@ -2440,7 +2530,7 @@ static void d_draw_toolbar(void)
 	}
 	x += 342;
 	clicked = UiButtonGroup_Draw(ui, &g_d.compGroup,
-		Ui_Rect(x, TOP_H + 6, 700, 30), compLabels, NULL, NULL, UI_BTN_PRIMARY);
+		Ui_Rect(x, TOP_H + 6, 742, 30), compLabels, NULL, NULL, UI_BTN_PRIMARY);
 	if (clicked >= 0) {
 		UiButtonGroup_SetSelected(&g_d.layoutGroup, -1);
 		g_d.insertType = compTypes[clicked];
@@ -3082,16 +3172,29 @@ static void d_draw_props(void)
 				GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 			if (p->kind == DPK_COLOR) {
 				UiDesignNode *cn = d_selnode();
-				if (cn && g_d.propColorReady) {
-					if (g_d.propColorNode != g_d.selNode) {
-						UiColorSelect_SetColor(&g_d.propColor, cn->color);
-						g_d.propColorNode = g_d.selNode;
+				int isBg = p->key == DK_N_BGCOLOR;
+				UiColorSelect *cs = isBg ? &g_d.propColorBg : &g_d.propColor;
+				int *syncNode = isBg ? &g_d.propColorBgNode : &g_d.propColorNode;
+				unsigned cur = cn ? (isBg ? cn->bgColor : cn->color) : 0;
+				if (cn && g_d.propColorReady && g_d.propColorBgReady) {
+					/* Draw 会把 changed 清零; 先留存拖动/输入产生的变化.
+					 * committed 由应用读取后清 0, 覆盖松手/关闭提交. */
+					int wasChanged = cs->changed;
+					int drew = 0;
+					if (*syncNode != g_d.selNode) {
+						UiColorSelect_SetColor(cs, cur);
+						*syncNode = g_d.selNode;
 					}
-					if (UiColorSelect_Draw(&g_d.propColor, &g_d.pm, ui, vr,
-					    cn->enabled)) {
-						cn->color = UiColorSelect_GetColor(&g_d.propColor);
-						g_d.doc.dirty = 1;
-						UiApp_Invalidate(g_d.app);
+					drew = UiColorSelect_Draw(cs, &g_d.pm, ui, vr, cn->enabled);
+					if (drew || wasChanged || cs->committed) {
+						unsigned c = UiColorSelect_GetColor(cs);
+						unsigned old = isBg ? cn->bgColor : cn->color;
+						if (c != old) {
+							if (isBg) cn->bgColor = c;
+							else cn->color = c;
+							g_d.doc.dirty = 1;
+							UiApp_Invalidate(g_d.app);
+						}
 					}
 				}
 				y += PROP_ROW_H;
@@ -3799,6 +3902,9 @@ static int d_key(UINT vk)
 	if (!g_d.editActive && g_d.propColorReady &&
 	    UiColorSelect_Key(&g_d.propColor, &g_d.pm, &g_d.app->ui, vk))
 		return 1;
+	if (!g_d.editActive && g_d.propColorBgReady &&
+	    UiColorSelect_Key(&g_d.propColorBg, &g_d.pm, &g_d.app->ui, vk))
+		return 1;
 	if (g_d.editActive) {
 		if (vk == VK_ESCAPE || vk == VK_RETURN || vk == VK_TAB) {
 			d_after_edit();
@@ -3856,6 +3962,9 @@ static int d_chr(wchar_t ch)
 	if (!g_d.editActive && g_d.propColorReady &&
 	    UiColorSelect_Char(&g_d.propColor, &g_d.app->ui, ch))
 		return 1;
+	if (!g_d.editActive && g_d.propColorBgReady &&
+	    UiColorSelect_Char(&g_d.propColorBg, &g_d.app->ui, ch))
+		return 1;
 	if (g_d.editActive) return UiInput_Char(&g_d.propForm, ch);
 	return 0;
 }
@@ -3864,7 +3973,10 @@ static void d_ime(void)
 {
 	if (g_d.preview) { if (g_d.instReady) UiDesign_OnIme(&g_d.inst); }
 	else if (g_d.editActive) UiInput_OnIme(&g_d.propForm);
-	else if (g_d.propColorReady) UiColorSelect_OnIme(&g_d.propColor, &g_d.app->ui);
+	else {
+		if (g_d.propColorReady) UiColorSelect_OnIme(&g_d.propColor, &g_d.app->ui);
+		if (g_d.propColorBgReady) UiColorSelect_OnIme(&g_d.propColorBg, &g_d.app->ui);
+	}
 }
 
 static void d_blink(void)
@@ -3872,7 +3984,10 @@ static void d_blink(void)
 	if (g_d.preview) { if (g_d.instReady) UiDesign_Blink(&g_d.inst); }
 	else {
 		if (g_d.editActive) UiInput_Blink(&g_d.propForm);
-		else if (g_d.propColorReady) UiColorSelect_Blink(&g_d.propColor, &g_d.app->ui);
+		else {
+			if (g_d.propColorReady) UiColorSelect_Blink(&g_d.propColor, &g_d.app->ui);
+			if (g_d.propColorBgReady) UiColorSelect_Blink(&g_d.propColorBg, &g_d.app->ui);
+		}
 	}
 }
 
@@ -3882,6 +3997,9 @@ static int d_animating(UiApp *app, void *user)
 	if (g_d.preview && g_d.instReady) return UiDesign_Busy(&g_d.inst);
 	if (!g_d.preview && g_d.propColorReady &&
 	    UiColorSelect_IsOpen(&g_d.pm, &g_d.propColor))
+		return 1;
+	if (!g_d.preview && g_d.propColorBgReady &&
+	    UiColorSelect_IsOpen(&g_d.pm, &g_d.propColorBg))
 		return 1;
 	return 0;
 }
@@ -3893,6 +4011,7 @@ static void d_on_init(UiApp *app, void *user)
 	(void)user;
 	g_d.app = app;
 	UiPopupManager_Init(&g_d.pm);
+	d_qr_slots_free();
 	UiInput_Init(&g_d.propForm, &app->ui, &app->ime);
 	g_d.propForm.count = 0;
 	g_d.propField = UiInput_Add(&g_d.propForm, Ui_Id("dsn.prop", 0, 0),
@@ -3902,11 +4021,16 @@ static void d_on_init(UiApp *app, void *user)
 	UiColorSelect_AttachIme(&g_d.propColor, &app->ime);
 	g_d.propColorReady = 1;
 	g_d.propColorNode = -1;
+	UiColorSelect_Init(&g_d.propColorBg, Ui_Id("dsn.propcolorbg", 0, 0),
+		0xFFFFFFFFu);
+	UiColorSelect_AttachIme(&g_d.propColorBg, &app->ime);
+	g_d.propColorBgReady = 1;
+	g_d.propColorBgNode = -1;
 	UiButtonGroup_Init(&g_d.layoutGroup, Ui_Id("dsn.layoutgrp", 0, 0),
 		UI_BG_SINGLE, 6);
 	UiButtonGroup_SetSelected(&g_d.layoutGroup, 0);
 	UiButtonGroup_Init(&g_d.compGroup, Ui_Id("dsn.compgrp", 0, 0),
-		UI_BG_SINGLE, 14);
+		UI_BG_SINGLE, 15);
 	UiButtonGroup_SetSelected(&g_d.compGroup, -1);
 	UiButtonGroup_Init(&g_d.constraintW, Ui_Id("dsn.cw", 0, 0), UI_BG_SINGLE, 2);
 	UiButtonGroup_Init(&g_d.constraintH, Ui_Id("dsn.ch", 0, 0), UI_BG_SINGLE, 2);
@@ -3960,8 +4084,10 @@ static void d_on_frame(UiApp *app, void *user)
 		UiDesign_DrawOverlay(&g_d.inst);
 		if (UiDesign_DialogIsOpen(&g_d.inst)) UiDesign_DialogDraw(&g_d.inst);
 	}
-	if (!g_d.preview && !g_d.genPreview && g_d.propColorReady)
+	if (!g_d.preview && !g_d.genPreview && g_d.propColorReady) {
 		UiColorSelect_DrawPopup(&g_d.propColor, &g_d.pm, &app->ui);
+		UiColorSelect_DrawPopup(&g_d.propColorBg, &g_d.pm, &app->ui);
+	}
 	UiNavBar_DrawPopups(&g_d.nav, &g_d.pm, &app->ui);
 }
 
@@ -3976,6 +4102,13 @@ static void d_on_after(UiApp *app, void *user)
 		}
 		UiColorSelect_EndFrame(&g_d.propColor, UiFrame_Now());
 	}
+	if (g_d.propColorBgReady) {
+		if (g_d.propColorBg.committed) {
+			g_d.propColorBg.committed = 0;
+			d_undo_push();
+		}
+		UiColorSelect_EndFrame(&g_d.propColorBg, UiFrame_Now());
+	}
 }
 
 static void d_on_mouse(UiApp *app, int msg, float x, float y, void *user)
@@ -3983,6 +4116,12 @@ static void d_on_mouse(UiApp *app, int msg, float x, float y, void *user)
 	if (!g_d.preview && !g_d.genPreview && g_d.propColorReady &&
 	    UiColorSelect_Mouse(&g_d.propColor, &app->ui, msg, x, y)) {
 		UiColorSelect_EndFrame(&g_d.propColor, UiFrame_Now());
+		UiApp_Invalidate(app);
+		return;
+	}
+	if (!g_d.preview && !g_d.genPreview && g_d.propColorBgReady &&
+	    UiColorSelect_Mouse(&g_d.propColorBg, &app->ui, msg, x, y)) {
+		UiColorSelect_EndFrame(&g_d.propColorBg, UiFrame_Now());
 		UiApp_Invalidate(app);
 		return;
 	}
@@ -4109,11 +4248,16 @@ static void d_on_shutdown(UiApp *app, void *user)
 		UiColorSelect_Shutdown(&g_d.propColor);
 		g_d.propColorReady = 0;
 	}
+	if (g_d.propColorBgReady) {
+		UiColorSelect_Shutdown(&g_d.propColorBg);
+		g_d.propColorBgReady = 0;
+	}
 	if (g_d.instReady) {
 		UiDesignInstance_Shutdown(&g_d.inst);
 		g_d.instReady = 0;
 	}
 	UiInput_Shutdown(&g_d.propForm);
+	d_qr_slots_free();
 	UiDesign_Free(&g_d.doc);
 	d_undo_free();
 	if (g_d.rects) HeapFree(GetProcessHeap(), 0, g_d.rects);

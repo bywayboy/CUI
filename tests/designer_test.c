@@ -507,6 +507,102 @@ static void test_components(void)
 	UiDesign_Free(&b);
 }
 
+static void test_qrcode_node(void)
+{
+	UiDesignDoc a, b;
+	char *json;
+	char report[128];
+	static char buf[32768];
+	int g, w, root, q1, q2;
+	WCHAR pc[MAX_PATH], ph[MAX_PATH];
+	UiDesignNode *n;
+
+	UiDesign_Init(&a);
+	g = UiDesign_AddGroup(&a, "g", "G");
+	w = mk_view_host(&a, g, UI_DH_WINDOW, "win");
+	root = UiDesign_AddNode(&a, w, UI_DN_COLUMN, -1, "root", "Root");
+	UiDesign_View(&a, w)->root = root;
+	UiDesign_Node(&a, root)->wMode = UI_DN_SIZE_FILL;
+	UiDesign_Node(&a, root)->hMode = UI_DN_SIZE_FILL;
+	q1 = UiDesign_AddNode(&a, w, UI_DN_QRCODE, root, "qr", "二维码");
+	UiDesign_NodeSetText(UiDesign_Node(&a, q1), "https://example.com");
+	q2 = UiDesign_AddNode(&a, w, UI_DN_QRCODE, root, "qr2", "二维码2");
+
+	CHECK(UiDesign_TypeFromName("qrcode") == UI_DN_QRCODE);
+	CHECK(UiDesign_TypeFromName(UiDesign_TypeName(UI_DN_QRCODE)) == UI_DN_QRCODE);
+
+	/* 默认值: 黑前景/白背景/M; 尺寸 120x120 */
+	n = UiDesign_Node(&a, q1);
+	CHECK(n->ecc == UI_QR_ECC_M);
+	CHECK(n->color == 0xFF000000u && n->bgColor == 0xFFFFFFFFu);
+	CHECK(n->w == 120.0f && n->h == 120.0f);
+	CHECK(n->logoSrc[0] == 0 && n->logoRatio == UI_QR_LOGO_RATIO_DEFAULT);
+	CHECK(n->qrPad == UI_QR_PAD_DEFAULT);
+
+	n->ecc = UI_QR_ECC_H;
+	n->bgColor = 0xFFF5F5F5u;
+	UiDesign_SetText(n->logoSrc, UI_DN_PATH_MAX, "assets/logo.png");
+	n->logoRatio = 0.24f;
+	n->qrPad = 2.5f;
+	json = UiDesign_ToJson(&a);
+	CHECK(json != NULL);
+	CHECK(json && has_sub(json, "\"type\":\"qrcode\""));
+	CHECK(json && has_sub(json, "\"ecc\":3"));
+	CHECK(json && has_sub(json, "\"bgColor\":\"#fff5f5f5\""));
+	CHECK(json && has_sub(json, "\"src\":\"assets/logo.png\""));
+	CHECK(json && has_sub(json, "\"logoRatio\":0.24"));
+	CHECK(json && has_sub(json, "\"qrPad\":2.5"));
+	UiDesign_Init(&b);
+	if (json && UiDesign_FromJson(&b, json)) {
+		int bq = UiDesign_FindNode(&b, 0, "qr");
+		int bq2 = UiDesign_FindNode(&b, 0, "qr2");
+		CHECK(bq >= 0 && UiDesign_Node(&b, bq)->type == UI_DN_QRCODE);
+		CHECK(bq >= 0 && UiDesign_Node(&b, bq)->ecc == UI_QR_ECC_H);
+		CHECK(bq >= 0 && UiDesign_Node(&b, bq)->bgColor == 0xFFF5F5F5u);
+		CHECK(bq >= 0 && strcmp(UiDesign_Node(&b, bq)->text,
+			"https://example.com") == 0);
+		CHECK(bq >= 0 && strcmp(UiDesign_Node(&b, bq)->logoSrc,
+			"assets/logo.png") == 0);
+		CHECK(bq >= 0 && UiDesign_Node(&b, bq)->logoRatio == 0.24f);
+		CHECK(bq >= 0 && UiDesign_Node(&b, bq)->qrPad == 2.5f);
+		/* 缺省字段回落: M / 黑 / 白 */
+		CHECK(bq2 >= 0 && UiDesign_Node(&b, bq2)->ecc == UI_QR_ECC_M);
+		CHECK(bq2 >= 0 && UiDesign_Node(&b, bq2)->color == 0xFF000000u);
+		CHECK(bq2 >= 0 && UiDesign_Node(&b, bq2)->bgColor == 0xFFFFFFFFu);
+		CHECK(bq2 >= 0 && UiDesign_Node(&b, bq2)->logoSrc[0] == 0);
+		CHECK(bq2 >= 0 &&
+			UiDesign_Node(&b, bq2)->logoRatio == UI_QR_LOGO_RATIO_DEFAULT);
+		CHECK(bq2 >= 0 && UiDesign_Node(&b, bq2)->qrPad == UI_QR_PAD_DEFAULT);
+	} else {
+		CHECK(0);
+	}
+	if (json) HeapFree(GetProcessHeap(), 0, json);
+
+	/* 生成: 只写非默认字段 */
+	UiDesign_SetText(a.groups[g].outputC, UI_DN_PATH_MAX, "designer_qr.ui.c");
+	UiDesign_SetText(a.groups[g].outputH, UI_DN_PATH_MAX, "designer_qr.ui.h");
+	CreateDirectoryW(L"build\\gen", NULL);
+	lstrcpyW(pc, L"build\\gen\\designer_qr.ui.c");
+	lstrcpyW(ph, L"build\\gen\\designer_qr.ui.h");
+	DeleteFileW(pc);
+	DeleteFileW(ph);
+	CHECK(UiDesign_GenerateGroup(&a, g, L"build\\gen", report, sizeof(report)) == 2);
+	CHECK(read_all(pc, buf, sizeof(buf)) == 1);
+	CHECK(has_sub(buf, "UiDesign_AddNode(&gDoc, 0, 19,"));
+	CHECK(has_sub(buf, "\"https://example.com\""));
+	CHECK(has_sub(buf, "->ecc=3"));
+	CHECK(has_sub(buf, "->bgColor=0xfff5f5f5u"));
+	CHECK(has_sub(buf, "->logoRatio=0.24"));
+	CHECK(has_sub(buf, "->qrPad=2.5"));
+	CHECK(has_sub(buf, "->logoSrc, UI_DN_PATH_MAX, \"assets/logo.png\""));
+	CHECK(!has_sub(buf, "->color="));    /* 前景色为默认黑, 不生成 */
+	DeleteFileW(pc);
+	DeleteFileW(ph);
+
+	UiDesign_Free(&a);
+	UiDesign_Free(&b);
+}
+
 static void test_grid_columns(void)
 {
 	UiDesignDoc d, b;
@@ -742,6 +838,7 @@ void __stdcall startup(void)
 	test_save_load();
 	test_symbol();
 	test_components();
+	test_qrcode_node();
 	test_grid_columns();
 	test_view_host_model();
 	test_size_mode_normalize();
