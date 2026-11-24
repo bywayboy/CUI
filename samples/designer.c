@@ -26,7 +26,7 @@ size_t strlen(const char *s);
 int strcmp(const char *a, const char *b);
 
 #define TOP_H       40.0f
-#define PALETTE_H   42.0f
+#define PALETTE_H   78.0f
 #define STATUS_H    24.0f
 #define LEFT_W      250.0f
 #define RIGHT_W     330.0f
@@ -2773,7 +2773,7 @@ static void d_draw_toolbar(void)
 	};
 	static const char *const compLabels[16] = {
 		"标签", "按钮", "输入", "复选", "开关", "滑块", "进度",
-		"下拉", "图片", "分隔", "标签页", "多行", "日期", "颜色", "二维码", "圆环"
+		"下拉", "图片", "分隔", "Tabs", "多行", "日期", "颜色", "二维码", "圆环"
 	};
 	static const int layoutTypes[6] = {
 		-1, UI_DN_ABSOLUTE, UI_DN_COLUMN, UI_DN_ROW, UI_DN_GRID, UI_DN_PANEL
@@ -2796,9 +2796,9 @@ static void d_draw_toolbar(void)
 		g_d.insertType = layoutTypes[clicked];
 		d_status(g_d.insertType < 0 ? "选择工具" : "布局工具: 在画布中点击插入");
 	}
-	x += 342;
 	clicked = UiButtonGroup_Draw(ui, &g_d.compGroup,
-		Ui_Rect(x, TOP_H + 6, 742, 30), compLabels, NULL, NULL, UI_BTN_PRIMARY);
+		Ui_Rect(x, TOP_H + 42, g_d.app->w - 24, 30),
+		compLabels, NULL, NULL, UI_BTN_PRIMARY);
 	if (clicked >= 0) {
 		UiButtonGroup_SetSelected(&g_d.layoutGroup, -1);
 		g_d.insertType = compTypes[clicked];
