@@ -493,6 +493,7 @@ static void test_components(void)
 	CHECK(has_sub(buf, "->mode=3"));
 	CHECK(has_sub(buf, "->readonly=1"));
 	CHECK(has_sub(buf, "->color=0x80336699u"));
+	CHECK(has_sub(buf, "->selected=1;"));
 	CHECK(has_sub(buf, "p2->radius=4.000f;"));
 	CHECK(has_sub(buf, "p7->radius=10.000f;"));
 	/* 默认值/该类型用不到的字段不应生成 */
@@ -505,6 +506,136 @@ static void test_components(void)
 
 	UiDesign_Free(&a);
 	UiDesign_Free(&b);
+}
+
+static void test_tabs_pages(void)
+{
+	UiDesignDoc d, m, r;
+	UiDesignNode *n;
+	char *json;
+	char id[32], name[32];
+	int g, w, root, tabs, p1, p2, p3, i, count, pageNode;
+
+	UiDesign_Init(&d);
+	g = UiDesign_AddGroup(&d, "g", "G");
+	w = mk_view_host(&d, g, UI_DH_WINDOW, "win");
+	root = UiDesign_AddNode(&d, w, UI_DN_COLUMN, -1, "root", "Root");
+	UiDesign_View(&d, w)->root = root;
+	tabs = UiDesign_AddNode(&d, w, UI_DN_TABS, root, "tabs", "Tabs");
+	CHECK(UiDesign_TabsPageCount(&d, tabs) == 0);
+	CHECK(UiDesign_TabsSelectedPage(&d, tabs) == -1);
+	CHECK(UiDesign_Node(&d, tabs)->selected == -1);
+	CHECK(UiDesign_TabsPageCount(&d, root) == -1);
+
+	p1 = UiDesign_TabsInsertPage(&d, tabs, 0, "page1", "页 1");
+	CHECK(p1 >= 0);
+	CHECK(UiDesign_TabsPageCount(&d, tabs) == 1);
+	CHECK(UiDesign_TabsSelectedPage(&d, tabs) == 0);
+	n = UiDesign_Node(&d, p1);
+	CHECK(n->type == UI_DN_COLUMN && n->wMode == UI_DN_SIZE_FILL &&
+		n->hMode == UI_DN_SIZE_FILL);
+	CHECK(n->padding[0] == 12.0f && n->gap == 8.0f);
+
+	p2 = UiDesign_TabsInsertPage(&d, tabs, 1, "page2", "页 2");
+	CHECK(p2 >= 0 && UiDesign_TabsPageCount(&d, tabs) == 2);
+	CHECK(UiDesign_TabsSelectedPage(&d, tabs) == 1);
+	p3 = UiDesign_TabsInsertPage(&d, tabs, 1, "page3", "页 3");
+	CHECK(p3 >= 0 && UiDesign_TabsPageCount(&d, tabs) == 3);
+	CHECK(UiDesign_TabsPageAt(&d, tabs, 1) == p3);
+	CHECK(UiDesign_TabsSelectedPage(&d, tabs) == 1);
+
+	UiDesign_TabsSetSelectedPage(&d, tabs, 2);
+	CHECK(UiDesign_TabsSelectedPage(&d, tabs) == 2);
+	CHECK(UiDesign_TabsPageAt(&d, tabs, 2) == p2);
+	UiDesign_TabsRemovePage(&d, tabs, 0);
+	CHECK(UiDesign_TabsPageCount(&d, tabs) == 2);
+	CHECK(UiDesign_TabsPageAt(&d, tabs, 0) == p3);
+	CHECK(UiDesign_TabsPageAt(&d, tabs, 1) == p2);
+	CHECK(UiDesign_TabsSelectedPage(&d, tabs) == 1);
+	UiDesign_TabsRemovePage(&d, tabs, 1);
+	CHECK(UiDesign_TabsPageCount(&d, tabs) == 1);
+	CHECK(UiDesign_TabsSelectedPage(&d, tabs) == 0);
+	CHECK(UiDesign_TabsPageAt(&d, tabs, 0) == p3);
+	UiDesign_TabsRemovePage(&d, tabs, 0);
+	CHECK(UiDesign_TabsPageCount(&d, tabs) == 0);
+	CHECK(UiDesign_TabsSelectedPage(&d, tabs) == -1);
+
+	p1 = UiDesign_TabsInsertPage(&d, tabs, 99, "page1", "页 1");
+	CHECK(p1 >= 0 && UiDesign_TabsPageCount(&d, tabs) == 1);
+	CHECK(UiDesign_TabsSelectedPage(&d, tabs) == 0);
+
+	/* 越界 selected 在 JSON 读取时归一化 */
+	UiDesign_Node(&d, tabs)->selected = 77;
+	json = UiDesign_ToJson(&d);
+	CHECK(json != NULL);
+	UiDesign_Init(&r);
+	if (json && UiDesign_FromJson(&r, json)) {
+		int bt = UiDesign_FindNode(&r, 0, "tabs");
+		CHECK(bt >= 0);
+		CHECK(UiDesign_TabsPageCount(&r, bt) == 1);
+		CHECK(UiDesign_TabsSelectedPage(&r, bt) == 0);
+		CHECK(UiDesign_Node(&r, bt)->selected == 0);
+	} else {
+		CHECK(0);
+	}
+	if (json) HeapFree(GetProcessHeap(), 0, json);
+	UiDesign_Free(&r);
+
+	/* 32 页上限 */
+	UiDesign_TabsRemovePage(&d, tabs, 0);
+	for (i = 0; i < UI_DN_TABS_MAX_PAGES; i++) {
+		sprintf(id, "page%d", i + 1);
+		sprintf(name, "页 %d", i + 1);
+		CHECK(UiDesign_TabsInsertPage(&d, tabs, i, id, name) >= 0);
+	}
+	CHECK(UiDesign_TabsPageCount(&d, tabs) == UI_DN_TABS_MAX_PAGES);
+	CHECK(UiDesign_TabsInsertPage(&d, tabs, 0, "over", "超限") == -1);
+	CHECK(UiDesign_TabsPageCount(&d, tabs) == UI_DN_TABS_MAX_PAGES);
+
+	UiDesign_TabsSetSelectedPage(&d, tabs, 0);
+	pageNode = UiDesign_TabsPageAt(&d, tabs, 0);
+	CHECK(UiDesign_TabsMovePage(&d, tabs, 0, UI_DN_TABS_MAX_PAGES - 1) == 1);
+	CHECK(UiDesign_TabsSelectedPage(&d, tabs) == UI_DN_TABS_MAX_PAGES - 1);
+	CHECK(UiDesign_TabsPageAt(&d, tabs, UI_DN_TABS_MAX_PAGES - 1) == pageNode);
+	UiDesign_Free(&d);
+
+	/* 重排 / 通用删除后当前页跟随页面身份 */
+	UiDesign_Init(&m);
+	g = UiDesign_AddGroup(&m, "g", "G");
+	w = mk_view_host(&m, g, UI_DH_WINDOW, "win");
+	root = UiDesign_AddNode(&m, w, UI_DN_COLUMN, -1, "root", "Root");
+	UiDesign_View(&m, w)->root = root;
+	tabs = UiDesign_AddNode(&m, w, UI_DN_TABS, root, "tabs", "Tabs");
+	p1 = UiDesign_TabsInsertPage(&m, tabs, 0, "a", "A");
+	p2 = UiDesign_TabsInsertPage(&m, tabs, 1, "b", "B");
+	p3 = UiDesign_TabsInsertPage(&m, tabs, 2, "c", "C");
+	CHECK(p1 >= 0 && p2 >= 0 && p3 >= 0);
+	UiDesign_TabsSetSelectedPage(&m, tabs, 0);
+	CHECK(UiDesign_TabsMovePage(&m, tabs, 0, 2) == 1);
+	CHECK(UiDesign_TabsPageAt(&m, tabs, 0) == p2);
+	CHECK(UiDesign_TabsPageAt(&m, tabs, 1) == p3);
+	CHECK(UiDesign_TabsPageAt(&m, tabs, 2) == p1);
+	CHECK(UiDesign_TabsSelectedPage(&m, tabs) == 2);
+	CHECK(UiDesign_NodeMoveUp(&m, p3) == 1);
+	CHECK(UiDesign_TabsPageAt(&m, tabs, 0) == p3);
+	CHECK(UiDesign_TabsSelectedPage(&m, tabs) == 2);
+	CHECK(UiDesign_TabsPageAt(&m, tabs, 2) == p1);
+	CHECK(UiDesign_NodeRemove(&m, p2) == 1);
+	CHECK(UiDesign_TabsPageCount(&m, tabs) == 2);
+	CHECK(UiDesign_TabsSelectedPage(&m, tabs) == 1);
+	CHECK(UiDesign_TabsPageAt(&m, tabs, 1) == p1);
+	CHECK(UiDesign_NodeRemove(&m, p1) == 1);
+	CHECK(UiDesign_TabsPageCount(&m, tabs) == 1);
+	CHECK(UiDesign_TabsSelectedPage(&m, tabs) == 0);
+	CHECK(UiDesign_TabsPageAt(&m, tabs, 0) == p3);
+	UiDesign_Node(&m, tabs)->selected = 9;
+	UiDesign_TabsNormalize(&m, tabs);
+	CHECK(UiDesign_Node(&m, tabs)->selected == 0);
+	CHECK(UiDesign_TabsSetSelectedPage(&m, tabs, 99) == 0);
+
+	count = UiDesign_TabsPageCount(&m, tabs);
+	CHECK(count == 1);
+	UiDesign_Free(&m);
 }
 
 static void test_ringprogress_node(void)
@@ -934,6 +1065,7 @@ void __stdcall startup(void)
 	test_save_load();
 	test_symbol();
 	test_components();
+	test_tabs_pages();
 	test_qrcode_node();
 	test_ringprogress_node();
 	test_grid_columns();

@@ -387,6 +387,7 @@ int UiDesign_AddNode(UiDesignDoc *doc, int view, int type, int parent,
 	n->rowSpan = 1;
 	n->colSpan = 1;
 	n->value = 0.5f;
+	n->selected = type == UI_DN_TABS ? -1 : 0;
 	n->color = type == UI_DN_QRCODE ? 0xFF000000u :
 		(type == UI_DN_RINGPROGRESS ? 0xFF4F6FF3u : 0xFF3B82F6u);
 	n->bgColor = 0xFFFFFFFFu;
@@ -412,10 +413,169 @@ static void dn_remove_subtree(UiDesignDoc *doc, int index)
 	UiDesign_NodeDetach(doc, index);
 }
 
+static UiDesignNode *dn_tabs_node(UiDesignDoc *doc, int tabs)
+{
+	UiDesignNode *n;
+	if (!doc || tabs < 0 || tabs >= doc->nodeCount) return NULL;
+	n = &doc->nodes[tabs];
+	return n->type == UI_DN_TABS ? n : NULL;
+}
+
+static const UiDesignNode *dn_tabs_node_c(const UiDesignDoc *doc, int tabs)
+{
+	const UiDesignNode *n;
+	if (!doc || tabs < 0 || tabs >= doc->nodeCount) return NULL;
+	n = &doc->nodes[tabs];
+	return n->type == UI_DN_TABS ? n : NULL;
+}
+
+static int dn_tabs_index_of_node(const UiDesignDoc *doc, int tabs, int node)
+{
+	const UiDesignNode *n = dn_tabs_node_c(doc, tabs);
+	int i;
+	if (!n || node < 0) return -1;
+	for (i = 0; i < n->childCount; i++)
+		if (n->children[i] == node) return i;
+	return -1;
+}
+
+static int dn_tabs_selected_node(const UiDesignDoc *doc, int tabs)
+{
+	const UiDesignNode *n = dn_tabs_node_c(doc, tabs);
+	int sel;
+	if (!n || n->childCount <= 0) return -1;
+	sel = n->selected;
+	if (sel < 0 || sel >= n->childCount) sel = 0;
+	return n->children[sel];
+}
+
+static void dn_tabs_select_node(UiDesignDoc *doc, int tabs, int node)
+{
+	UiDesignNode *n = dn_tabs_node(doc, tabs);
+	int idx;
+	if (!n) return;
+	idx = dn_tabs_index_of_node(doc, tabs, node);
+	if (idx >= 0) n->selected = idx;
+	else UiDesign_TabsNormalize(doc, tabs);
+}
+
+int UiDesign_TabsPageCount(const UiDesignDoc *doc, int tabs)
+{
+	const UiDesignNode *n = dn_tabs_node_c(doc, tabs);
+	return n ? n->childCount : -1;
+}
+
+int UiDesign_TabsPageAt(const UiDesignDoc *doc, int tabs, int page)
+{
+	const UiDesignNode *n = dn_tabs_node_c(doc, tabs);
+	if (!n || page < 0 || page >= n->childCount) return -1;
+	return n->children[page];
+}
+
+int UiDesign_TabsSelectedPage(const UiDesignDoc *doc, int tabs)
+{
+	const UiDesignNode *n = dn_tabs_node_c(doc, tabs);
+	if (!n || n->childCount <= 0) return -1;
+	if (n->selected < 0 || n->selected >= n->childCount) return 0;
+	return n->selected;
+}
+
+int UiDesign_TabsSetSelectedPage(UiDesignDoc *doc, int tabs, int page)
+{
+	UiDesignNode *n = dn_tabs_node(doc, tabs);
+	if (!n) return -1;
+	if (n->childCount <= 0) {
+		n->selected = -1;
+		return -1;
+	}
+	if (page < 0) page = 0;
+	if (page >= n->childCount) page = n->childCount - 1;
+	n->selected = page;
+	return page;
+}
+
+void UiDesign_TabsNormalize(UiDesignDoc *doc, int tabs)
+{
+	UiDesignNode *n = dn_tabs_node(doc, tabs);
+	if (!n) return;
+	if (n->childCount <= 0) {
+		n->selected = -1;
+		return;
+	}
+	if (n->selected < 0) n->selected = 0;
+	else if (n->selected >= n->childCount)
+		n->selected = n->childCount - 1;
+}
+
+int UiDesign_TabsInsertPage(UiDesignDoc *doc, int tabs, int pos,
+	const char *id, const char *name)
+{
+	UiDesignNode *n = dn_tabs_node(doc, tabs);
+	UiDesignNode *pg;
+	int idx, count;
+	if (!n || n->childCount >= UI_DN_TABS_MAX_PAGES) return -1;
+	count = n->childCount;
+	if (pos < 0 || pos > count) pos = count;
+	idx = UiDesign_AddNode(doc, n->owner, UI_DN_COLUMN, tabs,
+		id ? id : "page", name ? name : "页");
+	if (idx < 0) return -1;
+	pg = &doc->nodes[idx];
+	pg->wMode = UI_DN_SIZE_FILL;
+	pg->hMode = UI_DN_SIZE_FILL;
+	pg->padding[0] = pg->padding[1] = 12.0f;
+	pg->padding[2] = pg->padding[3] = 12.0f;
+	pg->gap = 8.0f;
+	if (pos < count)
+		UiDesign_NodeMove(doc, idx, tabs, pos);
+	n = &doc->nodes[tabs];
+	n->selected = dn_tabs_index_of_node(doc, tabs, idx);
+	if (n->selected < 0) UiDesign_TabsNormalize(doc, tabs);
+	return idx;
+}
+
+int UiDesign_TabsRemovePage(UiDesignDoc *doc, int tabs, int page)
+{
+	UiDesignNode *n = dn_tabs_node(doc, tabs);
+	int selNode, pageNode;
+	if (!n || page < 0 || page >= n->childCount) return 0;
+	selNode = dn_tabs_selected_node(doc, tabs);
+	pageNode = n->children[page];
+	dn_remove_subtree(doc, pageNode);
+	n = &doc->nodes[tabs];
+	if (n->childCount <= 0) {
+		n->selected = -1;
+		return 1;
+	}
+	if (selNode == pageNode) {
+		n->selected = page < n->childCount ? page : n->childCount - 1;
+		return 1;
+	}
+	dn_tabs_select_node(doc, tabs, selNode);
+	return 1;
+}
+
+int UiDesign_TabsMovePage(UiDesignDoc *doc, int tabs, int from, int to)
+{
+	UiDesignNode *n = dn_tabs_node(doc, tabs);
+	int node;
+	if (!n || from < 0 || from >= n->childCount) return 0;
+	if (to < 0) to = 0;
+	if (to >= n->childCount) to = n->childCount - 1;
+	if (from == to) return 1;
+	node = n->children[from];
+	return UiDesign_NodeMove(doc, node, tabs, to);
+}
+
 int UiDesign_NodeRemove(UiDesignDoc *doc, int index)
 {
+	int p;
 	if (!doc || index < 0 || index >= doc->nodeCount) return 0;
-	if (doc->nodes[index].parent < 0) return 0;    /* 根节点不删 */
+	p = doc->nodes[index].parent;
+	if (p < 0) return 0;    /* 根节点不删 */
+	if (p < doc->nodeCount && doc->nodes[p].type == UI_DN_TABS) {
+		int page = dn_tabs_index_of_node(doc, p, index);
+		if (page >= 0) return UiDesign_TabsRemovePage(doc, p, page);
+	}
 	dn_remove_subtree(doc, index);
 	return 1;
 }
@@ -424,12 +584,18 @@ int UiDesign_NodeMove(UiDesignDoc *doc, int index, int parent, int pos)
 {
 	UiDesignNode *p;
 	int i, j;
+	int oldParent, oldSelNode = -1, newSelNode = -1;
 	if (!doc || index < 0 || index >= doc->nodeCount ||
 	    parent < 0 || parent >= doc->nodeCount) return 0;
 	if (index == parent) return 0;
 	/* 禁止移到自己的子树 */
 	for (i = parent; i >= 0; i = doc->nodes[i].parent)
 		if (i == index) return 0;
+	oldParent = doc->nodes[index].parent;
+	if (oldParent >= 0 && doc->nodes[oldParent].type == UI_DN_TABS)
+		oldSelNode = dn_tabs_selected_node(doc, oldParent);
+	if (doc->nodes[parent].type == UI_DN_TABS)
+		newSelNode = dn_tabs_selected_node(doc, parent);
 	UiDesign_NodeDetach(doc, index);
 	p = &doc->nodes[parent];
 	if (!dn_reserve((void **)&p->children, &p->childCap,
@@ -439,13 +605,19 @@ int UiDesign_NodeMove(UiDesignDoc *doc, int index, int parent, int pos)
 	p->children[pos] = index;
 	p->childCount++;
 	doc->nodes[index].parent = parent;
+	if (oldParent >= 0 && oldParent != parent &&
+	    doc->nodes[oldParent].type == UI_DN_TABS)
+		dn_tabs_select_node(doc, oldParent, oldSelNode);
+	if (doc->nodes[parent].type == UI_DN_TABS)
+		dn_tabs_select_node(doc, parent,
+			oldParent == parent ? oldSelNode : newSelNode);
 	return 1;
 }
 
 int UiDesign_NodeMoveUp(UiDesignDoc *doc, int index)
 {
 	UiDesignNode *n;
-	int i, p;
+	int i, p, selNode = -1;
 	if (!doc || index < 0 || index >= doc->nodeCount) return 0;
 	n = &doc->nodes[index];
 	p = n->parent;
@@ -453,18 +625,22 @@ int UiDesign_NodeMoveUp(UiDesignDoc *doc, int index)
 	for (i = 0; i < doc->nodes[p].childCount; i++)
 		if (doc->nodes[p].children[i] == index) break;
 	if (i <= 0 || i >= doc->nodes[p].childCount) return 0;
+	if (doc->nodes[p].type == UI_DN_TABS)
+		selNode = dn_tabs_selected_node(doc, p);
 	{
 		int t = doc->nodes[p].children[i - 1];
 		doc->nodes[p].children[i - 1] = index;
 		doc->nodes[p].children[i] = t;
 	}
+	if (doc->nodes[p].type == UI_DN_TABS)
+		dn_tabs_select_node(doc, p, selNode);
 	return 1;
 }
 
 int UiDesign_NodeMoveDown(UiDesignDoc *doc, int index)
 {
 	UiDesignNode *n;
-	int i, p;
+	int i, p, selNode = -1;
 	if (!doc || index < 0 || index >= doc->nodeCount) return 0;
 	n = &doc->nodes[index];
 	p = n->parent;
@@ -472,11 +648,15 @@ int UiDesign_NodeMoveDown(UiDesignDoc *doc, int index)
 	for (i = 0; i < doc->nodes[p].childCount; i++)
 		if (doc->nodes[p].children[i] == index) break;
 	if (i < 0 || i + 1 >= doc->nodes[p].childCount) return 0;
+	if (doc->nodes[p].type == UI_DN_TABS)
+		selNode = dn_tabs_selected_node(doc, p);
 	{
 		int t = doc->nodes[p].children[i + 1];
 		doc->nodes[p].children[i + 1] = index;
 		doc->nodes[p].children[i] = t;
 	}
+	if (doc->nodes[p].type == UI_DN_TABS)
+		dn_tabs_select_node(doc, p, selNode);
 	return 1;
 }
 
@@ -1427,8 +1607,11 @@ int UiDesign_FromJson(UiDesignDoc *doc, const char *text)
 		jp_ws(&j);
 		if (jp_ch(&j, ',')) continue;
 	}
-	doc->dirty = 0;
 	(void)version;
+	for (int ni = 0; ni < doc->nodeCount; ni++)
+		if (doc->nodes[ni].type == UI_DN_TABS)
+			UiDesign_TabsNormalize(doc, ni);
+	doc->dirty = 0;
 	return 1;
 }
 
@@ -2260,11 +2443,11 @@ static void dn_draw_node(UiDesignInstance *inst, int idx)
 		sel = n->selected;
 		if (sel < 0) sel = 0;
 		if (sel >= cnt) sel = cnt > 0 ? cnt - 1 : -1;
-		UiTabBar_SetSelected(&st->bar, sel);
 		if (n->variant == 1) stl = UiTabStyle_Pill();
 		else if (n->variant == 2) stl = UiTabStyle_Card();
 		else stl = UiTabStyle_Line();
 		dn_inset(r, n->padding, &inner);
+		UiTabBar_SetSelected(&st->bar, sel);
 		ci = UiTabBar_Draw(&st->bar, ui, inner, labels, &stl, n->enabled);
 		if (ci >= 0) {
 			n->selected = ci;
@@ -2274,11 +2457,18 @@ static void dn_draw_node(UiDesignInstance *inst, int idx)
 		if (hh > inner.h) hh = inner.h;
 		page = Ui_Rect(inner.x, inner.y + hh, inner.w, inner.h - hh);
 		if (page.h < 0.0f) page.h = 0.0f;
-		if (cnt > 0 && n->selected >= 0 && n->selected < cnt)
-			dn_draw_node(inst, n->children[n->selected]);
+		if (n->variant == 2 && page.w > 0.0f && page.h > 0.0f)
+			Gfx_FillRect(g, page, stl.contentBg ? stl.contentBg : t->card);
+		sel = n->selected;
+		if (sel < 0) sel = 0;
+		if (sel >= cnt) sel = cnt > 0 ? cnt - 1 : -1;
+		if (sel >= 0)
+			dn_draw_node(inst, n->children[sel]);
 		else
 			Gfx_Text(g, t->fSmall, "标签页: 无子页", page, t->text4,
 				GFX_TEXT_CENTER | GFX_TEXT_VCENTER);
+		/* Card 的活动页签延迟到页面内容之后, 才能盖住页面上沿接缝. */
+		UiTabBar_DrawActive(&st->bar, ui, labels, &stl);
 		return;
 	}
 	if (UiDesign_IsContainer(n->type)) {
@@ -2977,7 +3167,8 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int viewNew,
 		ds_addf(s, "    p%d->checked=1;\n", old);
 	if (n->type == UI_DN_RINGPROGRESS && !n->checked)
 		ds_addf(s, "    p%d->checked=0;\n", old);
-	if ((n->type == UI_DN_SELECT || n->type == UI_DN_TABS) && n->selected)
+	if ((n->type == UI_DN_SELECT || n->type == UI_DN_TABS) &&
+	    n->selected > 0)
 		ds_addf(s, "    p%d->selected=%d;\n", old, n->selected);
 	if ((n->type == UI_DN_BUTTON || n->type == UI_DN_TABS) && n->variant)
 		ds_addf(s, "    p%d->variant=%d;\n", old, n->variant);

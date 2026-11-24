@@ -69,7 +69,7 @@ enum {
 	DK_N_GRIDCOLTRACKS, DK_N_RADIUS,
 	DK_N_MODE, DK_N_READONLY, DK_N_COLOR, DK_N_SELECTED,
 	DK_N_ECC, DK_N_BGCOLOR, DK_N_LOGOSRC, DK_N_LOGORATIO, DK_N_QRPAD,
-	DK_N_RINGMAX, DK_N_RINGWIDTH
+	DK_N_RINGMAX, DK_N_RINGWIDTH, DK_N_PAGECOUNT, DK_N_ADDPAGE
 };
 
 enum {
@@ -129,6 +129,9 @@ typedef struct Designer {
 	UiDesignInstance inst;
 	int instReady;
 	int previewDialogTried;
+	int previewTabNodes[64];
+	int previewTabSel[64];
+	int previewTabN;
 
 	UiInput propForm;
 	int propField;
@@ -527,12 +530,43 @@ static int d_save_dialog(WCHAR *file, int cap)
 	return GetSaveFileNameW(&ofn) ? 1 : 0;
 }
 
+static void d_preview_capture_tabs(void)
+{
+	int i;
+	if (g_d.previewTabN > 0) return;
+	g_d.previewTabN = 0;
+	for (i = 0; i < g_d.doc.nodeCount &&
+	    g_d.previewTabN < (int)(sizeof(g_d.previewTabNodes) /
+	    sizeof(g_d.previewTabNodes[0])); i++) {
+		UiDesignNode *n = &g_d.doc.nodes[i];
+		if (n->type != UI_DN_TABS || n->parent < 0) continue;
+		g_d.previewTabNodes[g_d.previewTabN] = i;
+		g_d.previewTabSel[g_d.previewTabN] = n->selected;
+		g_d.previewTabN++;
+	}
+}
+
+static void d_preview_restore_tabs(void)
+{
+	int i;
+	for (i = 0; i < g_d.previewTabN; i++) {
+		int idx = g_d.previewTabNodes[i];
+		if (idx >= 0 && idx < g_d.doc.nodeCount &&
+		    g_d.doc.nodes[idx].type == UI_DN_TABS) {
+			g_d.doc.nodes[idx].selected = g_d.previewTabSel[i];
+			UiDesign_TabsNormalize(&g_d.doc, idx);
+		}
+	}
+	g_d.previewTabN = 0;
+}
+
 static void d_preview_shutdown(void)
 {
 	if (g_d.instReady) {
 		UiDesignInstance_Shutdown(&g_d.inst);
 		g_d.instReady = 0;
 	}
+	d_preview_restore_tabs();
 	g_d.previewDialogTried = 0;
 }
 
@@ -637,8 +671,13 @@ static void d_generate_window(void)
 	if (UiDesign_GenerateHost(&g_d.doc, g_d.selWin, dir, report,
 	    sizeof(report)) < 0)
 		d_error("单宿主生成失败 (检查输出目录)");
-	else
+	else if (err[0]) {
+		char out[512];
+		snprintf(out, sizeof(out), "%s · 警告: %s", report, err);
+		d_status(out);
+	} else {
 		d_status(report);
+	}
 }
 
 static void d_generate_commit(void)
@@ -674,7 +713,13 @@ static void d_generate(void)
 	}
 	lstrcpynW(g_d.genDir, dir, MAX_PATH);
 	g_d.genPreview = 1;
-	d_status(report);
+	if (err[0]) {
+		char out[512];
+		snprintf(out, sizeof(out), "%s · 警告: %s", report, err);
+		d_status(out);
+	} else {
+		d_status(report);
+	}
 	UiApp_Invalidate(g_d.app);
 }
 
@@ -731,6 +776,8 @@ static void d_sel_clear(void)
 	g_d.selSetN = 0;
 }
 
+static void d_tabs_add_page(void);
+
 static void d_tabs_reveal(int idx)
 {
 	while (idx >= 0 && idx < g_d.doc.nodeCount) {
@@ -745,6 +792,7 @@ static void d_tabs_reveal(int idx)
 			if (i < pn->childCount && pn->selected != i) {
 				pn->selected = i;
 				g_d.layoutReady = 0;
+				g_d.doc.dirty = 1;
 			}
 		}
 		idx = p;
@@ -997,8 +1045,18 @@ static void d_build_props(void)
 			d_prop_add(DK_N_TEXT, DPK_TEXT, "Text", n->text);
 			break;
 		case UI_DN_TABS:
-			snprintf(b, sizeof(b), "%d", n->selected);
+			if (n->childCount > 0) {
+				int sel = UiDesign_TabsSelectedPage(&g_d.doc, g_d.selNode);
+				snprintf(b, sizeof(b), "%d/%d · %s", sel + 1, n->childCount,
+					g_d.doc.nodes[n->children[sel]].name);
+			} else {
+				snprintf(b, sizeof(b), "无页");
+			}
 			d_prop_add(DK_N_SELECTED, DPK_ENUM, "当前页", b);
+			snprintf(b, sizeof(b), "%d / %d", n->childCount,
+				UI_DN_TABS_MAX_PAGES);
+			d_prop_add(DK_N_PAGECOUNT, DPK_READONLY, "页数", b);
+			d_prop_add(DK_N_ADDPAGE, DPK_ENUM, "页面操作", "＋ 新增页");
 			d_prop_add(DK_N_VARIANT, DPK_ENUM, "页签样式",
 				n->variant == 1 ? "Pill" : (n->variant == 2 ? "Card" : "Line"));
 			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
@@ -1053,6 +1111,16 @@ static void d_build_props(void)
 			break;
 		default:
 			break;
+		}
+		if (n->type != UI_DN_TABS && n->parent >= 0 &&
+		    g_d.doc.nodes[n->parent].type == UI_DN_TABS) {
+			UiDesignNode *tn = &g_d.doc.nodes[n->parent];
+			int page = 0, i;
+			for (i = 0; i < tn->childCount; i++)
+				if (tn->children[i] == g_d.selNode) { page = i; break; }
+			snprintf(b, sizeof(b), "%s · 第 %d 页", tn->name, page + 1);
+			d_prop_add(DK_N_PAGECOUNT, DPK_READONLY, "所属页签", b);
+			d_prop_add(DK_N_ADDPAGE, DPK_ENUM, "页面操作", "＋ 新增页");
 		}
 		g_d.propSection = 4;
 		if (n->type == UI_DN_BUTTON)
@@ -1110,6 +1178,10 @@ static void d_prop_cycle(int key)
 			v->group = g;
 		}
 	} else if (g_d.selKind == DSEL_NODE && n) {
+		if (key == DK_N_ADDPAGE) {
+			d_tabs_add_page();
+			return;
+		}
 		if (key == DK_N_WMODE) n->wMode = (n->wMode + 1) % 4;
 		else if (key == DK_N_HMODE) n->hMode = (n->hMode + 1) % 4;
 		else if (key == DK_N_ALIGN) n->align = (n->align + 1) % 3;
@@ -1119,9 +1191,18 @@ static void d_prop_cycle(int key)
 		else if (key == DK_N_CHECKED) n->checked = !n->checked;
 		else if (key == DK_N_ENABLED) n->enabled = !n->enabled;
 		else if (key == DK_N_SELECTED) {
-			int cnt = n->childCount;
-			if (n->type == UI_DN_SELECT) cnt = d_option_count(n->options);
-			if (cnt > 0) n->selected = (n->selected + 1) % cnt;
+			if (n->type == UI_DN_TABS) {
+				int cnt = UiDesign_TabsPageCount(&g_d.doc, g_d.selNode);
+				if (cnt > 0) {
+					int sel = UiDesign_TabsSelectedPage(&g_d.doc,
+						g_d.selNode);
+					UiDesign_TabsSetSelectedPage(&g_d.doc,
+						g_d.selNode, (sel + 1) % cnt);
+				}
+			} else {
+				int cnt = d_option_count(n->options);
+				if (cnt > 0) n->selected = (n->selected + 1) % cnt;
+			}
 		} else if (key == DK_N_MODE) n->mode = (n->mode + 1) % 4;
 		else if (key == DK_N_READONLY) n->readonly = !n->readonly;
 		else if (key == DK_N_ECC) {
@@ -1286,6 +1367,7 @@ static int d_container_parent(void)
 			if (sel >= n->childCount) sel = n->childCount - 1;
 			if (UiDesign_IsContainer(g_d.doc.nodes[n->children[sel]].type))
 				return n->children[sel];
+			return -1;   /* 叶子页不能作为插入容器 */
 		}
 		return g_d.selNode;
 	}
@@ -1307,19 +1389,57 @@ static void d_tabs_add_pages(int win, int tabsIdx)
 	int i;
 	for (i = 0; i < 2; i++) {
 		char id[UI_DN_ID_MAX], name[UI_DN_NAME_MAX], base[24];
-		UiDesignNode *pg;
-		int ci;
 		snprintf(base, sizeof(base), "page%d", i + 1);
 		d_unique_node_id(win, base, id, sizeof(id));
 		snprintf(name, sizeof(name), "页 %d", i + 1);
-		ci = UiDesign_AddNode(&g_d.doc, win, UI_DN_COLUMN, tabsIdx, id, name);
-		pg = UiDesign_Node(&g_d.doc, ci);
-		if (!pg) continue;
-		pg->wMode = UI_DN_SIZE_FILL;
-		pg->hMode = UI_DN_SIZE_FILL;
-		pg->padding[0] = pg->padding[1] = pg->padding[2] = pg->padding[3] = 12.0f;
-		pg->gap = 8.0f;
+		UiDesign_TabsInsertPage(&g_d.doc, tabsIdx,
+			UiDesign_TabsPageCount(&g_d.doc, tabsIdx), id, name);
 	}
+	UiDesign_TabsSetSelectedPage(&g_d.doc, tabsIdx, 0);
+}
+
+/* 当前选中节点所属的 Tabs (节点自身是 Tabs 时返回自身). */
+static int d_tabs_context_idx(void)
+{
+	int idx = g_d.selNode;
+	while (idx >= 0 && idx < g_d.doc.nodeCount) {
+		if (g_d.doc.nodes[idx].type == UI_DN_TABS) return idx;
+		idx = g_d.doc.nodes[idx].parent;
+	}
+	return -1;
+}
+
+static void d_tabs_add_page(void)
+{
+	int tabs = d_tabs_context_idx();
+	int count, pos, idx;
+	char id[UI_DN_ID_MAX], name[UI_DN_NAME_MAX], base[24];
+
+	if (tabs < 0) {
+		d_status("请先选中标签页或页内节点");
+		return;
+	}
+	count = UiDesign_TabsPageCount(&g_d.doc, tabs);
+	if (count >= UI_DN_TABS_MAX_PAGES) {
+		d_status("标签页最多 32 页, 无法继续新增");
+		return;
+	}
+	pos = UiDesign_TabsSelectedPage(&g_d.doc, tabs);
+	pos = pos < 0 ? count : pos + 1;
+	snprintf(base, sizeof(base), "page%d", count + 1);
+	d_unique_node_id(g_d.selView, base, id, sizeof(id));
+	snprintf(name, sizeof(name), "页 %d", count + 1);
+	d_after_edit();
+	idx = UiDesign_TabsInsertPage(&g_d.doc, tabs, pos, id, name);
+	if (idx < 0) {
+		d_status("新增页失败");
+		return;
+	}
+	d_sel_single(idx);
+	g_d.doc.dirty = 1;
+	g_d.layoutReady = 0;
+	d_undo_push();
+	d_status("已新增页并切换到该页");
 }
 
 static void d_add_node(int type)
@@ -1463,7 +1583,7 @@ static void d_add_group(void)
 
 static void d_del_node(void)
 {
-	int i, parent = -1;
+	int i, parent = -1, tabsAfter = -1, removedPage = 0;
 	if (g_d.preview) return;
 	d_after_edit();
 	if (g_d.selSetN == 0 && g_d.selNode >= 0) d_sel_single(g_d.selNode);
@@ -1472,15 +1592,28 @@ static void d_del_node(void)
 		UiDesignNode *n = UiDesign_Node(&g_d.doc, idx);
 		if (!n || n->parent < 0) continue;
 		if (idx == g_d.selNode) parent = n->parent;
+		if (g_d.doc.nodes[n->parent].type == UI_DN_TABS) {
+			tabsAfter = n->parent;
+			removedPage = 1;
+		}
 		UiDesign_NodeRemove(&g_d.doc, idx);
 	}
 	d_sel_clear();
-	if (parent >= 0 && parent < g_d.doc.nodeCount) d_sel_single(parent);
+	if (tabsAfter >= 0 && g_d.doc.nodes[tabsAfter].parent < 0)
+		tabsAfter = -1;
+	if (tabsAfter >= 0) {
+		int page = UiDesign_TabsSelectedPage(&g_d.doc, tabsAfter);
+		int node = page >= 0 ? UiDesign_TabsPageAt(&g_d.doc, tabsAfter, page)
+			: tabsAfter;
+		d_sel_single(node >= 0 ? node : tabsAfter);
+	} else if (parent >= 0 && parent < g_d.doc.nodeCount) {
+		d_sel_single(parent);
+	}
 	g_d.selKind = DSEL_NODE;
 	g_d.doc.dirty = 1;
 	g_d.layoutReady = 0;
 	d_undo_push();
-	d_status("已删除组件");
+	d_status(removedPage ? "已删除页面" : "已删除组件");
 }
 
 static void d_del_window(void)
@@ -1748,94 +1881,109 @@ static void d_select_node(int idx)
 
 /* ── 静态预览绘制 ───────────────────────────────────────────────────── */
 
-static int d_tabs_item_at(int idx, float x, float y)
+static int d_tabs_geom(int idx, UiTabBarGeometry *geo, UiTabStyle *stl,
+	const char **labels, int cap)
 {
 	UiDesignNode *n = &g_d.doc.nodes[idx];
-	UiTheme *t = &g_d.app->theme;
-	Gfx *g = g_d.app->gfx;
-	UiRect r = g_d.rects[idx], inner;
-	float hh, cursor, gap, padX;
-	int i, cnt = n->childCount;
+	UiRect inner;
+	int i, cnt;
+	if (idx < 0 || idx >= g_d.doc.nodeCount || n->type != UI_DN_TABS)
+		return 0;
+	cnt = n->childCount > UI_TAB_GEOM_MAX ? UI_TAB_GEOM_MAX : n->childCount;
+	if (cnt <= 0 || cnt > cap) return 0;
+	for (i = 0; i < cnt; i++)
+		labels[i] = g_d.doc.nodes[n->children[i]].name;
+	if (n->variant == 1) *stl = UiTabStyle_Pill();
+	else if (n->variant == 2) *stl = UiTabStyle_Card();
+	else *stl = UiTabStyle_Line();
+	d_inset(g_d.rects[idx], n->padding, &inner);
+	return UiTabBar_Measure(&g_d.app->ui, inner, labels, NULL, stl, cnt, geo);
+}
+
+static int d_tabs_item_at(int idx, float x, float y)
+{
+	UiTabBarGeometry geo;
+	UiTabStyle stl;
+	const char *labels[UI_TAB_GEOM_MAX];
+	int i, cnt = d_tabs_geom(idx, &geo, &stl, labels, UI_TAB_GEOM_MAX);
 	if (cnt <= 0) return -1;
-	d_inset(r, n->padding, &inner);
-	hh = d_tabs_header_h(n->variant);
-	if (hh > inner.h) hh = inner.h;
-	if (y < inner.y || y > inner.y + hh) return -1;
-	gap = n->variant == 1 ? 2.0f : 4.0f;
-	padX = n->variant == 1 ? 16.0f : 14.0f;
-	cursor = inner.x + (n->variant == 1 ? 3.0f : 0.0f);
-	if (n->variant == 1)
-		inner.w -= 6.0f;
-	for (i = 0; i < cnt; i++) {
-		float w;
-		if (n->variant == 1)
-			w = (inner.w - gap * (cnt - 1)) / cnt;
-		else {
-			w = Gfx_TextWidth(g, t->fLabel,
-				g_d.doc.nodes[n->children[i]].name) + padX * 2.0f;
-			if (w < 44.0f) w = 44.0f;
-		}
-		if (x >= cursor && x < cursor + w) return i;
-		cursor += w + gap;
-	}
+	if (!Ui_RectContains(geo.header, x, y)) return -1;
+	for (i = 0; i < cnt; i++)
+		if (Ui_RectContains(geo.items[i], x, y)) return i;
 	return -1;
 }
 
-static void d_tabs_draw_header(int idx)
+/* activePass=0 画非活动页签与 Line/Pill 活动态; Card 活动页签在页面内容
+ * 之后用 activePass=1 覆盖, 与运行时 DrawActive 的两阶段顺序一致. */
+static void d_tabs_draw_header(int idx, int activePass)
 {
 	UiDesignNode *n = &g_d.doc.nodes[idx];
 	UiTheme *t = &g_d.app->theme;
 	Gfx *g = g_d.app->gfx;
-	UiRect r = g_d.rects[idx], inner;
-	float hh, cursor, gap, padX;
-	int i, cnt = n->childCount;
+	UiTabBarGeometry geo;
+	UiTabStyle stl;
+	const char *labels[UI_TAB_GEOM_MAX];
+	UiColor cBorder = t->neutral.border;
+	UiColor cCardBg = t->neutral.soft;
+	UiColor cActiveBg = t->neutral.base;
+	int i, cnt, variant, sel;
+	float radius;
+
+	cnt = d_tabs_geom(idx, &geo, &stl, labels, UI_TAB_GEOM_MAX);
 	if (cnt <= 0) return;
-	d_inset(r, n->padding, &inner);
-	hh = d_tabs_header_h(n->variant);
-	if (hh > inner.h) hh = inner.h;
-	if (hh <= 0.0f) return;
-	gap = n->variant == 1 ? 2.0f : 4.0f;
-	padX = n->variant == 1 ? 16.0f : 14.0f;
-	if (n->variant == 1) {
-		Gfx_FillRoundRect(g, Ui_Rect(inner.x, inner.y, inner.w, hh), 8.0f,
-			t->neutral.soft);
-		cursor = inner.x + 3.0f;
-		inner.w -= 6.0f;
-	} else {
-		cursor = inner.x;
-		Gfx_Line(g, inner.x, inner.y + hh - 1, inner.x + inner.w,
-			inner.y + hh - 1, t->border, 1.0f);
-	}
+	variant = geo.variant;
+	sel = n->selected;
+	if (sel < 0 || sel >= n->childCount) sel = 0;
+	if (activePass && variant != UI_TAB_CARD) return;
+	radius = stl.radius > 0.0f ? stl.radius : 8.0f;
+	Gfx_PushClip(g, geo.header);
+	if (!activePass && variant == UI_TAB_PILL)
+		Gfx_FillRoundRect(g, geo.header, radius, t->neutral.soft);
 	for (i = 0; i < cnt; i++) {
-		const char *label = g_d.doc.nodes[n->children[i]].name;
-		float w;
-		UiRect item;
-		int sel = i == n->selected;
-		if (n->variant == 1)
-			w = (inner.w - gap * (cnt - 1)) / cnt;
-		else {
-			w = Gfx_TextWidth(g, t->fLabel, label) + padX * 2.0f;
-			if (w < 44.0f) w = 44.0f;
+		UiRect item = geo.items[i];
+		int isSel = i == sel;
+		if (variant == UI_TAB_CARD) {
+			if (isSel != (activePass != 0)) continue;
+			if (isSel) {
+				GfxCorners corners = Gfx_Corners(radius, radius, 0, 0);
+				Gfx_FillRoundRectCorners(g,
+					Ui_Rect(item.x, item.y, item.w, item.h + 1.0f),
+					corners, t->card);
+				Gfx_StrokeRoundRectOpen(g, item, corners, 1u | 2u | 8u,
+					cBorder, 1.0f);
+			} else {
+				GfxCorners corners = Gfx_Corners(radius, radius, 0, 0);
+				Gfx_FillRoundRectCorners(g, item, corners, cCardBg);
+				Gfx_StrokeRoundRectOpen(g, item, corners, 1u | 2u | 8u,
+					cBorder, 1.0f);
+			}
+			Gfx_Text(g, t->fLabel, labels[i], item,
+				isSel ? t->primary.base : t->text2,
+				GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+		} else if (variant == UI_TAB_PILL) {
+			UiRect ir = Ui_RectInset(item, 2.0f);
+			if (isSel) {
+				Gfx_FillRoundRect(g, ir, radius, cActiveBg);
+				Gfx_StrokeRoundRect(g, ir, radius, cBorder, 1.0f);
+			}
+			Gfx_Text(g, t->fLabel, labels[i], item,
+				isSel ? t->primary.base : t->text2,
+				GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+		} else {
+			Gfx_Text(g, t->fLabel, labels[i], item,
+				isSel ? t->primary.base : t->text2,
+				GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+			if (isSel)
+				Gfx_FillRect(g, Ui_Rect(item.x + 8.0f,
+					item.y + item.h - 2.0f, item.w - 16.0f, 2.0f),
+					t->primary.base);
 		}
-		item = Ui_Rect(cursor, inner.y, w, hh);
-		if (sel && n->variant == 2) {
-			Gfx_FillRoundRect(g, Ui_Rect(item.x, item.y, item.w, item.h), 6.0f,
-				t->card);
-			Gfx_StrokeRoundRect(g, Ui_Rect(item.x, item.y, item.w, item.h),
-				6.0f, t->border, 1.0f);
-		} else if (sel && n->variant == 1) {
-			Gfx_FillRoundRect(g, Ui_Rect(item.x, item.y, item.w, item.h),
-				6.0f, t->primary.soft);
-		}
-		Gfx_Text(g, t->fLabel, label, item,
-			sel ? t->primary.base : t->text2,
-			GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
-		if (sel && n->variant == 0) {
-			Gfx_FillRect(g, Ui_Rect(item.x + 8.0f, item.y + item.h - 2.0f,
-				item.w - 16.0f, 2.0f), t->primary.base);
-		}
-		cursor += w + gap;
 	}
+	if (!activePass && variant == UI_TAB_LINE)
+		Gfx_Line(g, geo.header.x, geo.header.y + geo.header.h - 1,
+			geo.header.x + geo.header.w, geo.header.y + geo.header.h - 1,
+			t->border, 1.0f);
+	Gfx_PopClip(g);
 }
 
 /* 设计画布上的二维码预览: 每个节点复用一份编码/纹理, 避免逐帧重编码. */
@@ -1956,23 +2104,33 @@ static void d_draw_static_node(int idx)
 	int i;
 	if (!n->visible || r.w <= 0 || r.h <= 0) return;
 	if (n->type == UI_DN_TABS) {
-		UiRect inner;
-		float hh;
-		d_inset(r, n->padding, &inner);
-		hh = d_tabs_header_h(n->variant);
-		if (hh > inner.h) hh = inner.h;
-		if (n->variant == 2 && n->childCount > 0) {
-			Gfx_StrokeRoundRectCornersDashed(g, Ui_Rect(inner.x,
-				inner.y + hh, inner.w, inner.h - hh), Gfx_Corners(0, 0, 8, 8),
-				Ui_ColorAlpha(t->text3, 75), 1.0f);
-		}
-		d_tabs_draw_header(idx);
-		if (n->childCount > 0) {
-			int sel = n->selected;
-			if (sel < 0 || sel >= n->childCount) sel = 0;
-			d_draw_static_node(n->children[sel]);
+		UiTabBarGeometry geo;
+		UiTabStyle stl;
+		const char *labels[UI_TAB_GEOM_MAX];
+		UiRect inner, page;
+		int cnt = d_tabs_geom(idx, &geo, &stl, labels, UI_TAB_GEOM_MAX);
+		if (cnt > 0) {
+			page = Ui_Rect(geo.header.x, geo.header.y + geo.header.h,
+				geo.header.w, geo.inner.h - geo.header.h);
+			if (page.h < 0.0f) page.h = 0.0f;
+			if (geo.variant == UI_TAB_CARD && page.w > 0.0f && page.h > 0.0f) {
+				Gfx_FillRect(g, page, t->card);
+				Gfx_StrokeRoundRectCornersDashed(g, page,
+					Gfx_Corners(0, 0, 8, 8), Ui_ColorAlpha(t->text3, 75), 1.0f);
+			}
+			d_tabs_draw_header(idx, 0);
+			{
+				int sel = n->selected;
+				if (sel < 0 || sel >= n->childCount) sel = 0;
+				d_draw_static_node(n->children[sel]);
+			}
+			d_tabs_draw_header(idx, 1);
 		} else {
-			Gfx_Text(g, t->fSmall, "标签页: 无子页",
+			float hh;
+			d_inset(r, n->padding, &inner);
+			hh = d_tabs_header_h(n->variant);
+			if (hh > inner.h) hh = inner.h;
+			Gfx_Text(g, t->fSmall, "标签页: 无子页 · 属性页新增",
 				Ui_Rect(inner.x, inner.y + hh, inner.w, inner.h - hh),
 				t->text4, GFX_TEXT_CENTER | GFX_TEXT_VCENTER);
 		}
@@ -2544,6 +2702,7 @@ static void d_nav_do(int kind)
 		}
 		g_d.preview = 1;
 		g_d.instReady = 0;
+		d_preview_capture_tabs();
 		d_status("预览模式");
 		break;
 	default: break;
@@ -2669,8 +2828,14 @@ static void d_draw_toolbar(void)
 			    g_d.doc.hosts[g_d.selWin].view < 0)) {
 				d_error("预览需要一个挂载了视图的宿主");
 			} else {
-				g_d.preview = !g_d.preview;
-				g_d.instReady = 0;
+				if (g_d.preview) {
+					g_d.preview = 0;
+					d_preview_shutdown();
+				} else {
+					g_d.preview = 1;
+					g_d.instReady = 0;
+					d_preview_capture_tabs();
+				}
 				d_status(g_d.preview ? "预览模式" : "设计模式");
 			}
 		}
@@ -2968,6 +3133,30 @@ static int d_validate(char *msg, int cap)
 						g_d.doc.nodes[list[j]].id);
 					return 0;
 				}
+	}
+	msg[0] = 0;
+	for (i = 0; i < g_d.doc.nodeCount; i++) {
+		UiDesignNode *tn = &g_d.doc.nodes[i];
+		int j2;
+		if (tn->type != UI_DN_TABS || tn->parent < 0) continue;
+		if (tn->childCount > UI_DN_TABS_MAX_PAGES) {
+			snprintf(msg, (size_t)cap, "标签页页数超过 %d: %s",
+				UI_DN_TABS_MAX_PAGES, tn->id);
+			return 0;
+		}
+		if (tn->selected < -1 || tn->selected >= tn->childCount) {
+			UiDesign_TabsNormalize(&g_d.doc, i);
+			g_d.doc.dirty = 1;
+		}
+		if (tn->childCount == 0 && !msg[0])
+			snprintf(msg, (size_t)cap, "标签页无页面: %s", tn->id);
+		for (j2 = 0; j2 < tn->childCount; j2++)
+			if (!UiDesign_IsContainer(g_d.doc.nodes[tn->children[j2]].type) &&
+			    !msg[0]) {
+				snprintf(msg, (size_t)cap, "标签页含非容器页: %s",
+					g_d.doc.nodes[tn->children[j2]].name);
+				break;
+			}
 	}
 	return 1;
 }
@@ -3507,6 +3696,7 @@ static int d_container_at(float x, float y)
 				if (sel >= n->childCount) sel = n->childCount - 1;
 				if (UiDesign_IsContainer(g_d.doc.nodes[n->children[sel]].type))
 					return n->children[sel];
+				return -1;   /* 叶子页内部不可插入 */
 			}
 			return hit;
 		}
@@ -3522,7 +3712,10 @@ static void d_insert_at(float x, float y)
 	char id[UI_DN_ID_MAX], name[UI_DN_NAME_MAX];
 	if (g_d.insertType < 0 || g_d.selView < 0) return;
 	parent = d_container_at(x, y);
-	if (parent < 0) return;
+	if (parent < 0) {
+		d_status("当前页不是容器, 无法放入组件");
+		return;
+	}
 	p = &g_d.doc.nodes[parent];
 	if (!UiDesign_IsContainer(p->type)) return;
 	d_after_edit();
@@ -3618,6 +3811,9 @@ static void d_tree_drag_finish(void)
 	g_d.treeDropIdx = -1;
 	if (src >= 0 && target >= 0 && src != target) {
 		UiDesignNode *dn = &g_d.doc.nodes[target];
+		int srcParent = g_d.doc.nodes[src].parent;
+		int srcIsPage = srcParent >= 0 &&
+			g_d.doc.nodes[srcParent].type == UI_DN_TABS;
 		if (mode == 1 && UiDesign_IsContainer(dn->type)) {
 			parent = target;
 			pos = dn->childCount;
@@ -3625,11 +3821,22 @@ static void d_tree_drag_finish(void)
 			parent = dn->parent;
 			pos = d_tree_child_pos(parent, target) + (mode == 2 ? 1 : 0);
 		}
+		if (srcIsPage && parent != srcParent) {
+			d_status("页面只能在所属标签页内重排, 不能拖出或移入其他容器");
+			UiApp_Invalidate(g_d.app);
+			return;
+		}
+		if (!srcIsPage && parent >= 0 &&
+		    g_d.doc.nodes[parent].type == UI_DN_TABS) {
+			d_status("普通节点不能直接拖入标签页; 请用属性页“新增页”");
+			UiApp_Invalidate(g_d.app);
+			return;
+		}
 		if (parent >= 0 && UiDesign_NodeMove(&g_d.doc, src, parent, pos)) {
 			g_d.doc.dirty = 1;
 			g_d.layoutReady = 0;
 			d_undo_push();
-			d_status("组件树层级已调整");
+			d_status(srcIsPage ? "页面顺序已调整" : "组件树层级已调整");
 		}
 	}
 	UiApp_Invalidate(g_d.app);

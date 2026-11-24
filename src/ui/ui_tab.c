@@ -238,6 +238,60 @@ int UiTabBar_Key(UiTabBar *tb, UiContext *ui, UINT vk)
 	return 0;
 }
 
+int UiTabBar_Measure(UiContext *ui, UiRect rc, const char *const *labels,
+	const UiIcon *icons, const UiTabStyle *style, int count,
+	UiTabBarGeometry *geo)
+{
+	UiTabStyle stl;
+	float height, padX, gap, x, equalW;
+	int variant, stretch, i, n = 0;
+
+	if (!ui || !ui->theme || !ui->gfx || !labels || !geo || count <= 0) return 0;
+	if (rc.w <= 0.0f || rc.h <= 0.0f) return 0;
+	if (count > UI_TAB_GEOM_MAX) count = UI_TAB_GEOM_MAX;
+	stl = style ? *style : UiTabStyle_Line();
+	variant = stl.variant == UI_TAB_PILL ? UI_TAB_PILL :
+		(stl.variant == UI_TAB_CARD ? UI_TAB_CARD : UI_TAB_LINE);
+	height = stl.height > 0.0f ? stl.height
+		: (variant == UI_TAB_PILL ? 34.0f : (variant == UI_TAB_CARD ? 36.0f : 38.0f));
+	if (height > rc.h) height = rc.h;
+	geo->header = Ui_Rect(rc.x, rc.y, rc.w, height);
+	geo->inner = Ui_Rect(geo->header.x + (variant == UI_TAB_PILL ? 3.0f : 0.0f),
+		geo->header.y + (variant == UI_TAB_PILL ? 3.0f : 0.0f),
+		geo->header.w - (variant == UI_TAB_PILL ? 6.0f : 0.0f),
+		geo->header.h - (variant == UI_TAB_PILL ? 6.0f : 0.0f));
+	geo->variant = variant;
+	geo->count = 0;
+	if (geo->inner.w <= 0.0f || geo->inner.h <= 0.0f) return 0;
+
+	padX = stl.padX > 0.0f ? stl.padX : 14.0f;
+	gap = stl.gap >= 0.0f ? stl.gap : (variant == UI_TAB_PILL ? 2.0f : 4.0f);
+	stretch = stl.stretch != 0;
+	x = geo->inner.x;
+	equalW = stretch
+		? (geo->inner.w - gap * (float)(count - 1)) / (float)count
+		: 0.0f;
+	if (equalW < 0.0f) equalW = 0.0f;
+	for (i = 0; i < count; i++) {
+		float w = equalW;
+		float tw = labels[i] ? Gfx_TextWidth(ui->gfx, ui->theme->fLabel,
+			labels[i]) : 0.0f;
+		if (!stretch) {
+			float iw = icons ? tab_icon_size(&icons[i]) : 0.0f;
+			w = iw + (iw > 0.0f && tw > 0.0f ? 6.0f : 0.0f)
+				+ tw + padX * 2.0f;
+			if (w < 44.0f) w = 44.0f;
+		}
+		if (x >= geo->header.x + geo->header.w) break;
+		geo->items[n] = Ui_Rect(x, geo->inner.y, w, geo->inner.h);
+		geo->textW[n] = tw;
+		n++;
+		x += w + gap;
+	}
+	geo->count = n;
+	return n;
+}
+
 int UiTabBar_DrawEx(UiTabBar *tb, UiContext *ui, UiRect rc,
 	const char *const *labels, const UiIcon *icons,
 	const UiTabStyle *style, int enabled)
@@ -245,9 +299,10 @@ int UiTabBar_DrawEx(UiTabBar *tb, UiContext *ui, UiRect rc,
 	UiTabStyle stl;
 	UiTheme *t;
 	Gfx *g;
-	UiRect header, inner;
-	float height, padX, gap, radius, itemRadius, indicatorW;
-	int variant, stretch, showDivider;
+	UiTabBarGeometry geo;
+	UiRect header;
+	float radius, itemRadius, indicatorW;
+	int variant, showDivider;
 	int i, clicked = -1, selectedIndex = -1;
 	UiRect selectedRc = { 0, 0, 0, 0 };
 	float selectedTw = 0.0f;
@@ -259,8 +314,6 @@ int UiTabBar_DrawEx(UiTabBar *tb, UiContext *ui, UiRect rc,
 	t = ui->theme;
 	g = ui->gfx;
 	stl = style ? *style : UiTabStyle_Line();
-	variant = stl.variant == UI_TAB_PILL ? UI_TAB_PILL :
-		(stl.variant == UI_TAB_CARD ? UI_TAB_CARD : UI_TAB_LINE);
 	tb->changed = 0;
 	tb->activeRc = Ui_Rect(0, 0, 0, 0);
 	if (tb->selected >= tb->count) tb->selected = tb->count - 1;
@@ -268,18 +321,15 @@ int UiTabBar_DrawEx(UiTabBar *tb, UiContext *ui, UiRect rc,
 	if (tb->focus >= tb->count) tb->focus = tb->count - 1;
 	if (tb->focus < 0) tb->focus = tb->selected;
 
-	height = stl.height > 0.0f ? stl.height
-		: (variant == UI_TAB_PILL ? 34.0f : (variant == UI_TAB_CARD ? 36.0f : 38.0f));
-	if (height > rc.h) height = rc.h;
-	header = Ui_Rect(rc.x, rc.y, rc.w, height);
+	if (!UiTabBar_Measure(ui, rc, labels, icons, &stl, tb->count, &geo))
+		return -1;
+	header = geo.header;
+	variant = geo.variant;
 	tb->rc = header;
-	padX = stl.padX > 0.0f ? stl.padX : 14.0f;
-	gap = stl.gap >= 0.0f ? stl.gap : (variant == UI_TAB_PILL ? 2.0f : 4.0f);
 	radius = stl.radius > 0.0f ? stl.radius : 8.0f;
 	itemRadius = variant == UI_TAB_CARD ? radius :
 		(radius > 4.0f ? radius - 3.0f : 4.0f);
 	indicatorW = stl.indicatorW > 0.0f ? stl.indicatorW : 2.0f;
-	stretch = stl.stretch != 0;
 	showDivider = stl.showDivider != 0;
 	cText = stl.text ? stl.text : t->text2;
 	cHover = stl.textHover ? stl.textHover : t->text;
@@ -296,40 +346,14 @@ int UiTabBar_DrawEx(UiTabBar *tb, UiContext *ui, UiRect rc,
 	if (variant == UI_TAB_PILL)
 		Gfx_FillRoundRect(g, header, radius, t->neutral.soft);
 
-	inner = Ui_Rect(header.x + (variant == UI_TAB_PILL ? 3.0f : 0.0f),
-		header.y + (variant == UI_TAB_PILL ? 3.0f : 0.0f),
-		header.w - (variant == UI_TAB_PILL ? 6.0f : 0.0f),
-		header.h - (variant == UI_TAB_PILL ? 6.0f : 0.0f));
-	if (inner.w <= 0.0f || inner.h <= 0.0f) {
-		Ui_PopClipRect(ui);
-		Gfx_PopClip(g);
-		return -1;
-	}
-
 	{
-		float x = inner.x;
-		float equalW = stretch
-			? (inner.w - gap * (float)(tb->count - 1)) / (float)tb->count
-			: 0.0f;
-		if (equalW < 0.0f) equalW = 0.0f;
-		for (i = 0; i < tb->count; i++) {
-			UiRect item;
+		for (i = 0; i < geo.count; i++) {
+			UiRect item = geo.items[i];
 			UiWidgetState st;
 			UiId id;
-			float w = equalW;
 			int en = tab_item_enabled(tb, i, enabled);
 			UiColor col;
-			float tw = labels[i] ? Gfx_TextWidth(g, t->fLabel, labels[i])
-				: 0.0f;
-			if (!stretch) {
-				float iw = icons ? tab_icon_size(&icons[i]) : 0.0f;
-				w = iw + (iw > 0.0f && tw > 0.0f ? 6.0f : 0.0f)
-					+ tw + padX * 2.0f;
-				if (w < 44.0f) w = 44.0f;
-			}
-			item = Ui_Rect(x, inner.y, w, inner.h);
-			x += w + gap;
-			if (item.x >= header.x + header.w) break;
+			float tw = geo.textW[i];
 			id = tab_child_id(tb->id, i);
 			st = Ui_State(ui, id, item, en);
 			if (ui->clicked == id) {

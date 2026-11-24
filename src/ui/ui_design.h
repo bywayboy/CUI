@@ -33,6 +33,7 @@ extern "C" {
 #define UI_DN_SYM_MAX   64
 #define UI_DN_GRID_MAX_COLS    16
 #define UI_DN_GRID_TRACKS_MAX  128
+#define UI_DN_TABS_MAX_PAGES   32
 
 typedef enum {
 	UI_DN_ABSOLUTE = 0,
@@ -217,6 +218,17 @@ int  UiDesign_NodeMove(UiDesignDoc *doc, int index, int newParent, int pos);
 int  UiDesign_NodeDuplicate(UiDesignDoc *doc, int index);
 int  UiDesign_NodeMoveUp(UiDesignDoc *doc, int index);
 int  UiDesign_NodeMoveDown(UiDesignDoc *doc, int index);
+
+/* Tabs 页面: 直接子节点即页面. selected 始终是有效页索引或 -1. */
+int  UiDesign_TabsPageCount(const UiDesignDoc *doc, int tabs);
+int  UiDesign_TabsPageAt(const UiDesignDoc *doc, int tabs, int page);
+int  UiDesign_TabsSelectedPage(const UiDesignDoc *doc, int tabs);
+int  UiDesign_TabsSetSelectedPage(UiDesignDoc *doc, int tabs, int page);
+int  UiDesign_TabsInsertPage(UiDesignDoc *doc, int tabs, int pos,
+	const char *id, const char *name);
+int  UiDesign_TabsRemovePage(UiDesignDoc *doc, int tabs, int page);
+int  UiDesign_TabsMovePage(UiDesignDoc *doc, int tabs, int from, int to);
+void UiDesign_TabsNormalize(UiDesignDoc *doc, int tabs);
 
 int  UiDesign_FindNode(const UiDesignDoc *doc, int view, const char *id);
 int  UiDesign_FindView(const UiDesignDoc *doc, const char *id);
