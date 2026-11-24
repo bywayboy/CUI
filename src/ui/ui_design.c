@@ -134,7 +134,8 @@ static const struct {
 	{ "textarea", 240, 120, 0 },
 	{ "datepicker", 200, 34, 0 },
 	{ "colorsel", 180, 34, 0 },
-	{ "qrcode", 120, 120, 0 }
+	{ "qrcode", 120, 120, 0 },
+	{ "ringprogress", 160, 160, 0 }
 };
 
 const char *UiDesign_TypeName(int type)
@@ -386,8 +387,12 @@ int UiDesign_AddNode(UiDesignDoc *doc, int view, int type, int parent,
 	n->rowSpan = 1;
 	n->colSpan = 1;
 	n->value = 0.5f;
-	n->color = type == UI_DN_QRCODE ? 0xFF000000u : 0xFF3B82F6u;
+	n->color = type == UI_DN_QRCODE ? 0xFF000000u :
+		(type == UI_DN_RINGPROGRESS ? 0xFF4F6FF3u : 0xFF3B82F6u);
 	n->bgColor = 0xFFFFFFFFu;
+	n->ringMax = 100.0f;
+	n->ringWidth = 14.0f;
+	if (type == UI_DN_RINGPROGRESS) n->checked = 1;
 	n->ecc = UI_QR_ECC_M;
 	n->logoRatio = UI_QR_LOGO_RATIO_DEFAULT;
 	n->qrPad = UI_QR_PAD_DEFAULT;
@@ -756,6 +761,12 @@ static void ds_node(UiDStr *s, const UiDesignDoc *doc, int index)
 		ds_add(s, ",\"qrPad\":");
 		ds_num(s, n->qrPad);
 	}
+	if (n->type == UI_DN_RINGPROGRESS) {
+		ds_add(s, ",\"ringMax\":");
+		ds_num(s, n->ringMax);
+		ds_add(s, ",\"ringWidth\":");
+		ds_num(s, n->ringWidth);
+	}
 	ds_add(s, "},\"onClick\":");
 	ds_json_str(s, n->onClick);
 	ds_add(s, ",\"onChange\":");
@@ -1034,6 +1045,7 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 	int idx, type = UI_DN_LABEL;
 	int gotType = 0, gotRadius = 0, gotColor = 0, gotBg = 0, gotEcc = 0;
 	int gotLogo = 0, gotLogoRatio = 0, gotQrPad = 0;
+	int gotChecked = 0, gotRingMax = 0, gotRingWidth = 0;
 	if (!jp_ch(j, '{')) return 0;
 	idx = UiDesign_AddNode(doc, win, type, parent, "node", "组件");
 	if (idx < 0) return 0;
@@ -1111,7 +1123,10 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 				else if (strcmp(pk, "hint") == 0) jp_string(j, doc->nodes[idx].hint, (int)sizeof(doc->nodes[idx].hint));
 				else if (strcmp(pk, "options") == 0) jp_string(j, doc->nodes[idx].options, UI_DN_TEXT_MAX);
 				else if (strcmp(pk, "value") == 0) jp_number(j, &doc->nodes[idx].value);
-				else if (strcmp(pk, "checked") == 0) jp_bool(j, &doc->nodes[idx].checked);
+				else if (strcmp(pk, "checked") == 0) {
+					jp_bool(j, &doc->nodes[idx].checked);
+					gotChecked = 1;
+				}
 				else if (strcmp(pk, "enabled") == 0) jp_bool(j, &doc->nodes[idx].enabled);
 				else if (strcmp(pk, "selected") == 0) jp_int(j, &doc->nodes[idx].selected);
 				else if (strcmp(pk, "variant") == 0) jp_int(j, &doc->nodes[idx].variant);
@@ -1135,6 +1150,12 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 				} else if (strcmp(pk, "qrPad") == 0) {
 					jp_number(j, &doc->nodes[idx].qrPad);
 					gotQrPad = 1;
+				} else if (strcmp(pk, "ringMax") == 0) {
+					jp_number(j, &doc->nodes[idx].ringMax);
+					gotRingMax = 1;
+				} else if (strcmp(pk, "ringWidth") == 0) {
+					jp_number(j, &doc->nodes[idx].ringWidth);
+					gotRingWidth = 1;
 				}
 				else if (!jp_skip(j)) return 0;
 				jp_ws(j);
@@ -1177,6 +1198,15 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 		if (doc->nodes[idx].qrPad < 0.0f) doc->nodes[idx].qrPad = 0.0f;
 		if (doc->nodes[idx].qrPad > UI_QR_PAD_MAX)
 			doc->nodes[idx].qrPad = UI_QR_PAD_MAX;
+	}
+	if (doc->nodes[idx].type == UI_DN_RINGPROGRESS) {
+		if (!gotColor) doc->nodes[idx].color = 0xFF4F6FF3u;
+		if (!gotChecked) doc->nodes[idx].checked = 1;
+		if (!gotRingMax || doc->nodes[idx].ringMax <= 0.0f)
+			doc->nodes[idx].ringMax = 100.0f;
+		if (!gotRingWidth) doc->nodes[idx].ringWidth = 14.0f;
+		if (doc->nodes[idx].ringWidth < 2.0f) doc->nodes[idx].ringWidth = 2.0f;
+		if (doc->nodes[idx].ringWidth > 64.0f) doc->nodes[idx].ringWidth = 64.0f;
 	}
 	return 1;
 }
@@ -2070,6 +2100,11 @@ static void dn_state_init(UiDesignInstance *inst, int idx)
 	case UI_DN_QRCODE:
 		UiQrCode_Init(&st->qr, n->ecc);
 		break;
+	case UI_DN_RINGPROGRESS:
+		UiRingProgress_Init(&st->ring, inst->ui);
+		/* 设计器/生成界面是静态表单: 固定值不启动补间, 也无需宿主补调 EndFrame. */
+		UiRingProgress_SetDurationMs(&st->ring, 0);
+		break;
 	case UI_DN_TABS:
 		st->barCount = n->childCount > 32 ? 32 : n->childCount;
 		UiTabBar_Init(&st->bar, dn_widget_id(inst, idx, 6), st->barCount);
@@ -2126,6 +2161,8 @@ void UiDesignInstance_Shutdown(UiDesignInstance *inst)
 			UiColorSelect_Shutdown(&st->cs);
 		else if (inst->doc->nodes[i].type == UI_DN_QRCODE)
 			UiQrCode_Shutdown(&st->qr);
+		else if (inst->doc->nodes[i].type == UI_DN_RINGPROGRESS)
+			UiRingProgress_Shutdown(&st->ring);
 	}
 	dn_free(inst->rects);
 	dn_free(inst->states);
@@ -2384,6 +2421,19 @@ static void dn_draw_node(UiDesignInstance *inst, int idx)
 		UiQrCode_SetPadding(&st->qr, n->qrPad);
 		UiQrCode_Draw(&st->qr, ui, r);
 		break;
+	case UI_DN_RINGPROGRESS: {
+		float max;
+		if (!st) break;
+		max = n->ringMax > 0.0f ? n->ringMax : 100.0f;
+		UiRingProgress_SetStyle(&st->ring, n->ringWidth, n->color, n->checked);
+		UiRingProgress_SetRange(&st->ring, 0.0, max);
+		UiRingProgress_SetValue(&st->ring,
+			(double)dn_clampf(n->value, 0.0f, 1.0f) * max);
+		UiRingProgress_SetTitle(&st->ring, n->text);
+		UiRingProgress_SetUnit(&st->ring, n->hint);
+		UiRingProgress_Draw(&st->ring, r);
+		break;
+	}
 	default:
 		break;
 	}
@@ -2430,8 +2480,11 @@ void UiDesign_EndFrame(UiDesignInstance *inst)
 	if (!inst) return;
 	for (i = 0; i < inst->stateCount; i++) {
 		UiDesignNodeState *st = &inst->states[i];
-		if (st->inited && inst->doc->nodes[i].type == UI_DN_COLORSEL)
+		if (!st->inited) continue;
+		if (inst->doc->nodes[i].type == UI_DN_COLORSEL)
 			UiColorSelect_EndFrame(&st->cs, UiFrame_Now());
+		else if (inst->doc->nodes[i].type == UI_DN_RINGPROGRESS)
+			UiRingProgress_EndFrame(&st->ring);
 	}
 }
 
@@ -2739,6 +2792,7 @@ static int cg_uses_text(int t)
 	case UI_DN_LABEL: case UI_DN_BUTTON: case UI_DN_INPUT:
 	case UI_DN_CHECKBOX: case UI_DN_SWITCH: case UI_DN_IMAGE:
 	case UI_DN_TEXTAREA: case UI_DN_DATEPICKER: case UI_DN_QRCODE:
+	case UI_DN_RINGPROGRESS:
 		return 1;
 	default:
 		return 0;
@@ -2748,7 +2802,8 @@ static int cg_uses_text(int t)
 static int cg_uses_hint(int t)
 {
 	return t == UI_DN_INPUT || t == UI_DN_SELECT ||
-		t == UI_DN_TEXTAREA || t == UI_DN_DATEPICKER;
+		t == UI_DN_TEXTAREA || t == UI_DN_DATEPICKER ||
+		t == UI_DN_RINGPROGRESS;
 }
 
 static int cg_uses_change(int t)
@@ -2912,14 +2967,16 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int viewNew,
 		cg_quote(s, n->options);
 		ds_add(s, ");\n");
 	}
-	if ((n->type == UI_DN_SLIDER || n->type == UI_DN_PROGRESS) &&
-	    n->value != 0.5f) {
+	if ((n->type == UI_DN_SLIDER || n->type == UI_DN_PROGRESS ||
+	    n->type == UI_DN_RINGPROGRESS) && n->value != 0.5f) {
 		ds_addf(s, "    p%d->value=", old);
 		cg_num(s, n->value);
 		ds_add(s, ";\n");
 	}
 	if ((n->type == UI_DN_CHECKBOX || n->type == UI_DN_SWITCH) && n->checked)
 		ds_addf(s, "    p%d->checked=1;\n", old);
+	if (n->type == UI_DN_RINGPROGRESS && !n->checked)
+		ds_addf(s, "    p%d->checked=0;\n", old);
 	if ((n->type == UI_DN_SELECT || n->type == UI_DN_TABS) && n->selected)
 		ds_addf(s, "    p%d->selected=%d;\n", old, n->selected);
 	if ((n->type == UI_DN_BUTTON || n->type == UI_DN_TABS) && n->variant)
@@ -2930,6 +2987,20 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int viewNew,
 		ds_addf(s, "    p%d->readonly=1;\n", old);
 	if (n->type == UI_DN_COLORSEL && n->color != 0xFF3B82F6u)
 		ds_addf(s, "    p%d->color=0x%08Xu;\n", old, n->color);
+	if (n->type == UI_DN_RINGPROGRESS) {
+		if (n->color != 0xFF4F6FF3u)
+			ds_addf(s, "    p%d->color=0x%08Xu;\n", old, n->color);
+		if (n->ringMax != 100.0f) {
+			ds_addf(s, "    p%d->ringMax=", old);
+			cg_num(s, n->ringMax);
+			ds_add(s, ";\n");
+		}
+		if (n->ringWidth != 14.0f) {
+			ds_addf(s, "    p%d->ringWidth=", old);
+			cg_num(s, n->ringWidth);
+			ds_add(s, ";\n");
+		}
+	}
 	if (n->type == UI_DN_QRCODE) {
 		if (n->ecc != UI_QR_ECC_M)
 			ds_addf(s, "    p%d->ecc=%d;\n", old, n->ecc);

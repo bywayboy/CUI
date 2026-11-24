@@ -17,6 +17,7 @@
 #include "ui/ui_input.h"
 #include "ui/ui_popup.h"
 #include "ui/ui_qrcode.h"
+#include "ui/ui_ring_progress.h"
 #include "ui/ui_select.h"
 #include "ui/ui_tab.h"
 #include "ui/ui_textarea.h"
@@ -54,6 +55,7 @@ typedef enum {
 	UI_DN_DATEPICKER,
 	UI_DN_COLORSEL,
 	UI_DN_QRCODE,
+	UI_DN_RINGPROGRESS,
 	UI_DN_COUNT
 } UiDesignType;
 
@@ -132,6 +134,8 @@ typedef struct UiDesignNode {
 	char logoSrc[UI_DN_PATH_MAX]; /* QR 中央 Logo 图片路径 (UTF-8) */
 	float logoRatio;    /* QR Logo 边长 / 码区边长 */
 	float qrPad;        /* QR 绘制区域到组件四边留白 (模块) */
+	float ringMax;      /* RingProgress 数值范围上限 */
+	float ringWidth;    /* RingProgress 环宽 (DIP) */
 	char onClick[UI_DN_ID_MAX];
 	char onChange[UI_DN_ID_MAX];
 } UiDesignNode;
@@ -266,6 +270,7 @@ typedef struct UiDesignNodeState {
 	UiDatePicker dp;
 	UiColorSelect cs;
 	UiQrCode qr;
+	UiRingProgress ring;
 	UiTabBar bar;
 	int barCount;
 	wchar_t taHint[128];   /* TextArea placeholder 由控件保存指针, 需自持 */

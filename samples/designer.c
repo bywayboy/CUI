@@ -68,7 +68,8 @@ enum {
 	DK_N_ROWSPAN, DK_N_COLSPAN, DK_N_GRIDROWGAP, DK_N_GRIDCOLGAP,
 	DK_N_GRIDCOLTRACKS, DK_N_RADIUS,
 	DK_N_MODE, DK_N_READONLY, DK_N_COLOR, DK_N_SELECTED,
-	DK_N_ECC, DK_N_BGCOLOR, DK_N_LOGOSRC, DK_N_LOGORATIO, DK_N_QRPAD
+	DK_N_ECC, DK_N_BGCOLOR, DK_N_LOGOSRC, DK_N_LOGORATIO, DK_N_QRPAD,
+	DK_N_RINGMAX, DK_N_RINGWIDTH
 };
 
 enum {
@@ -1021,6 +1022,19 @@ static void d_build_props(void)
 			d_prop_add(DK_N_COLOR, DPK_COLOR, "颜色", b);
 			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
 			break;
+		case UI_DN_RINGPROGRESS:
+			d_fmt(b, sizeof(b), n->value);
+			d_prop_add(DK_N_VALUE, DPK_FLOAT, "进度 (0-1)", b);
+			d_fmt(b, sizeof(b), n->ringMax);
+			d_prop_add(DK_N_RINGMAX, DPK_FLOAT, "最大值", b);
+			d_fmt(b, sizeof(b), n->ringWidth);
+			d_prop_add(DK_N_RINGWIDTH, DPK_FLOAT, "环宽", b);
+			d_prop_add(DK_N_TEXT, DPK_TEXT, "标题", n->text);
+			d_prop_add(DK_N_HINT, DPK_TEXT, "单位", n->hint);
+			d_prop_add(DK_N_CHECKED, DPK_BOOL, "圆角端点", n->checked ? "1" : "0");
+			d_fmt_color(b, sizeof(b), n->color);
+			d_prop_add(DK_N_COLOR, DPK_COLOR, "强调色", b);
+			break;
 		case UI_DN_QRCODE:
 			d_prop_add(DK_N_TEXT, DPK_TEXT, "内容", n->text);
 			d_prop_add(DK_N_ECC, DPK_ENUM, "纠错",
@@ -1163,7 +1177,11 @@ static void d_prop_apply_text(int key, const char *text)
 		else if (key == DK_N_TEXT) UiDesign_NodeSetText(n, text);
 		else if (key == DK_N_HINT) UiDesign_NodeSetHint(n, text);
 		else if (key == DK_N_OPTIONS) UiDesign_NodeSetOptions(n, text);
-		else if (key == DK_N_VALUE) n->value = (float)d_atof(text);
+		else if (key == DK_N_VALUE) {
+			n->value = (float)d_atof(text);
+			if (n->type == UI_DN_RINGPROGRESS)
+				n->value = d_clampf(n->value, 0.0f, 1.0f);
+		}
 		else if (key == DK_N_CLICK) UiDesign_SetText(n->onClick, UI_DN_ID_MAX, text);
 		else if (key == DK_N_CHANGE) UiDesign_SetText(n->onChange, UI_DN_ID_MAX, text);
 		else if (key == DK_N_GRIDCOLS) n->gridCols = d_atoi(text) > 0 ? d_atoi(text) : 1;
@@ -1198,6 +1216,16 @@ static void d_prop_apply_text(int key, const char *text)
 			if (p < 0.0f) p = 0.0f;
 			if (p > UI_QR_PAD_MAX) p = UI_QR_PAD_MAX;
 			n->qrPad = p;
+		}
+		else if (key == DK_N_RINGMAX) {
+			float m = (float)d_atof(text);
+			n->ringMax = m > 0.0f ? m : 100.0f;
+		}
+		else if (key == DK_N_RINGWIDTH) {
+			float w = (float)d_atof(text);
+			if (w < 2.0f) w = 2.0f;
+			if (w > 64.0f) w = 64.0f;
+			n->ringWidth = w;
 		}
 	}
 	g_d.doc.dirty = 1;
@@ -1842,6 +1870,83 @@ static void d_qr_slots_free(void)
 	g_qrNext = 0;
 }
 
+static void d_ring_trim_zeros(char *b)
+{
+	int n = (int)strlen(b);
+	while (n > 0 && b[n - 1] == '0') b[--n] = 0;
+	if (n > 0 && b[n - 1] == '.') b[--n] = 0;
+	if (n == 2 && b[0] == '-' && b[1] == '0') b[1] = 0;
+}
+
+static void d_draw_ring_node(UiDesignNode *n, UiRect rc)
+{
+	UiTheme *t = &g_d.app->theme;
+	Gfx *g = g_d.app->gfx;
+	UiRect ringRc, titleRc, valueRc, unitRc;
+	GfxFont *vf;
+	GfxStrokeStyle st;
+	char text[64];
+	float titleH, gap, side, stroke, radius, ratio, max, opening;
+	float inner, valueH, unitH, totalH, top, cx, cy;
+	unsigned col;
+
+	if (!n || rc.w <= 0.0f || rc.h <= 0.0f) return;
+	titleH = n->text[0] ? Gfx_TextHeight(g, t->fSmall) : 0.0f;
+	gap = n->text[0] ? 6.0f : 0.0f;
+	side = rc.w < rc.h - titleH - gap ? rc.w : rc.h - titleH - gap;
+	if (side < 0.0f) side = 0.0f;
+	ringRc = Ui_Rect(rc.x + (rc.w - side) * 0.5f, rc.y, side, side);
+	titleRc = Ui_Rect(rc.x, rc.y + side + gap, rc.w, titleH);
+	ratio = d_clampf(n->value, 0.0f, 1.0f);
+	max = n->ringMax > 0.0f ? n->ringMax : 100.0f;
+	stroke = n->ringWidth;
+	if (stroke < 2.0f) stroke = 2.0f;
+	if (stroke > 64.0f) stroke = 64.0f;
+	if (stroke > side * 0.5f) stroke = side * 0.5f;
+	radius = (side - stroke) * 0.5f;
+	col = n->color ? n->color : t->primary.base;
+	cx = ringRc.x + side * 0.5f;
+	cy = ringRc.y + side * 0.5f;
+	if (side > 0.0f && stroke > 0.0f) {
+		Gfx_StrokeEllipse(g, cx, cy, radius, t->progressTrack, stroke);
+		if (ratio > 0.0f) {
+			if (ratio >= 0.99999f)
+				Gfx_StrokeEllipse(g, cx, cy, radius, col, stroke);
+			else {
+				st.cap = n->checked ? GFX_CAP_ROUND : GFX_CAP_BUTT;
+				st.join = GFX_JOIN_ROUND;
+				st.miterLimit = 4.0f;
+				st.dashes = NULL;
+				st.dashCount = 0;
+				Gfx_StrokeArcStyle(g, cx, cy, radius, -90.0f,
+					ratio * 360.0f, col, stroke, &st);
+			}
+		}
+	}
+	snprintf(text, sizeof(text), "%.2f", ratio * max);
+	d_ring_trim_zeros(text);
+	opening = side - stroke * 2.0f;
+	inner = opening - 10.0f;
+	if (inner < opening * 0.5f) inner = opening * 0.5f;
+	if (inner < 1.0f) inner = 1.0f;
+	vf = side >= 150.0f ? t->fTempBig : (side >= 100.0f ? t->fTemp : t->fBody);
+	valueH = Gfx_TextHeight(g, vf);
+	unitH = n->hint[0] ? Gfx_TextHeight(g, t->fSmall) : 0.0f;
+	totalH = valueH + unitH + (unitH > 0.0f ? 2.0f : 0.0f);
+	top = cy - totalH * 0.5f;
+	valueRc = Ui_Rect(ringRc.x + (side - inner) * 0.5f, top, inner, valueH);
+	Gfx_Text(g, vf, text, valueRc, t->text,
+		GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+	if (unitH > 0.0f) {
+		unitRc = Ui_Rect(valueRc.x, top + valueH + 2.0f, inner, unitH);
+		Gfx_Text(g, t->fSmall, n->hint, unitRc, t->text3,
+			GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+	}
+	if (titleH > 0.0f)
+		Gfx_Text(g, t->fSmall, n->text, titleRc, t->text2,
+			GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+}
+
 static void d_draw_static_node(int idx)
 {
 	UiTheme *t = &g_d.app->theme;
@@ -2012,6 +2117,9 @@ static void d_draw_static_node(int idx)
 	case UI_DN_SEPARATOR:
 		Gfx_Line(g, r.x, r.y + r.h * 0.5f, r.x + r.w, r.y + r.h * 0.5f,
 			t->border, 1.0f);
+		break;
+	case UI_DN_RINGPROGRESS:
+		d_draw_ring_node(n, r);
 		break;
 	case UI_DN_QRCODE: {
 		UiQrCode *q = d_qr_slot(idx);
@@ -2504,17 +2612,18 @@ static void d_draw_toolbar(void)
 	static const char *const layoutLabels[6] = {
 		"选择", "自由", "列", "行", "Grid", "面板"
 	};
-	static const char *const compLabels[15] = {
+	static const char *const compLabels[16] = {
 		"标签", "按钮", "输入", "复选", "开关", "滑块", "进度",
-		"下拉", "图片", "分隔", "标签页", "多行", "日期", "颜色", "二维码"
+		"下拉", "图片", "分隔", "标签页", "多行", "日期", "颜色", "二维码", "圆环"
 	};
 	static const int layoutTypes[6] = {
 		-1, UI_DN_ABSOLUTE, UI_DN_COLUMN, UI_DN_ROW, UI_DN_GRID, UI_DN_PANEL
 	};
-	static const int compTypes[15] = {
+	static const int compTypes[16] = {
 		UI_DN_LABEL, UI_DN_BUTTON, UI_DN_INPUT, UI_DN_CHECKBOX, UI_DN_SWITCH,
 		UI_DN_SLIDER, UI_DN_PROGRESS, UI_DN_SELECT, UI_DN_IMAGE, UI_DN_SEPARATOR,
-		UI_DN_TABS, UI_DN_TEXTAREA, UI_DN_DATEPICKER, UI_DN_COLORSEL, UI_DN_QRCODE
+		UI_DN_TABS, UI_DN_TEXTAREA, UI_DN_DATEPICKER, UI_DN_COLORSEL, UI_DN_QRCODE,
+		UI_DN_RINGPROGRESS
 	};
 	float x = 12.0f;
 	int clicked;
@@ -3418,7 +3527,9 @@ static void d_insert_at(float x, float y)
 	if (!UiDesign_IsContainer(p->type)) return;
 	d_after_edit();
 	d_unique_node_id(g_d.selView, UiDesign_TypeName(g_d.insertType), id, sizeof(id));
-	UiDesign_SetText(name, sizeof(name), UiDesign_TypeName(g_d.insertType));
+	UiDesign_SetText(name, sizeof(name),
+		g_d.insertType == UI_DN_RINGPROGRESS ? "圆环" :
+		UiDesign_TypeName(g_d.insertType));
 	idx = UiDesign_AddNode(&g_d.doc, g_d.selView, g_d.insertType, parent, id, name);
 	n = UiDesign_Node(&g_d.doc, idx);
 	if (!n) return;
@@ -3455,6 +3566,10 @@ static void d_insert_at(float x, float y)
 		} else if (g_d.insertType == UI_DN_IMAGE) UiDesign_NodeSetText(n, "Image");
 		else if (g_d.insertType == UI_DN_TEXTAREA) UiDesign_NodeSetHint(n, "多行文本");
 		else if (g_d.insertType == UI_DN_DATEPICKER) UiDesign_NodeSetHint(n, "选择日期");
+		else if (g_d.insertType == UI_DN_RINGPROGRESS) {
+			UiDesign_NodeSetText(n, "任务完成度");
+			UiDesign_NodeSetHint(n, "%");
+		}
 	}
 	if (g_d.insertType == UI_DN_TABS) {
 		n->h = 220.0f;
@@ -3589,14 +3704,17 @@ static void d_mouse_down(float x, float y)
 	if (handle >= 0) {
 		n = d_selnode();
 		if (n && n->parent >= 0) {
+			UiRect vr = g_d.rects[g_d.selNode];
 			g_d.dragging = 2;
 			g_d.dragHandle = handle;
 			g_d.dragStartX = x;
 			g_d.dragStartY = y;
 			g_d.dragNodeX = n->x;
 			g_d.dragNodeY = n->y;
-			g_d.dragNodeW = n->w;
-			g_d.dragNodeH = n->h;
+			/* FILL 节点的 w/h 不是实际尺寸; 首次拖动手柄即转 FIXED,
+			 * 必须以画布矩形为基准, 否则会先跳到模型里的默认宽高. */
+			g_d.dragNodeW = vr.w;
+			g_d.dragNodeH = vr.h;
 			g_d.dragMoved = 0;
 		}
 		return;
@@ -4030,7 +4148,7 @@ static void d_on_init(UiApp *app, void *user)
 		UI_BG_SINGLE, 6);
 	UiButtonGroup_SetSelected(&g_d.layoutGroup, 0);
 	UiButtonGroup_Init(&g_d.compGroup, Ui_Id("dsn.compgrp", 0, 0),
-		UI_BG_SINGLE, 15);
+		UI_BG_SINGLE, 16);
 	UiButtonGroup_SetSelected(&g_d.compGroup, -1);
 	UiButtonGroup_Init(&g_d.constraintW, Ui_Id("dsn.cw", 0, 0), UI_BG_SINGLE, 2);
 	UiButtonGroup_Init(&g_d.constraintH, Ui_Id("dsn.ch", 0, 0), UI_BG_SINGLE, 2);

@@ -507,6 +507,102 @@ static void test_components(void)
 	UiDesign_Free(&b);
 }
 
+static void test_ringprogress_node(void)
+{
+	UiDesignDoc a, b;
+	char *json;
+	char report[128];
+	static char buf[32768];
+	int g, w, root, r1, r2;
+	WCHAR pc[MAX_PATH], ph[MAX_PATH];
+	UiDesignNode *n;
+
+	UiDesign_Init(&a);
+	g = UiDesign_AddGroup(&a, "g", "G");
+	w = mk_view_host(&a, g, UI_DH_WINDOW, "win");
+	root = UiDesign_AddNode(&a, w, UI_DN_COLUMN, -1, "root", "Root");
+	UiDesign_View(&a, w)->root = root;
+	UiDesign_Node(&a, root)->wMode = UI_DN_SIZE_FILL;
+	UiDesign_Node(&a, root)->hMode = UI_DN_SIZE_FILL;
+	r1 = UiDesign_AddNode(&a, w, UI_DN_RINGPROGRESS, root, "ring", "圆环");
+	r2 = UiDesign_AddNode(&a, w, UI_DN_RINGPROGRESS, root, "ring2", "圆环2");
+
+	CHECK(UiDesign_TypeFromName("ringprogress") == UI_DN_RINGPROGRESS);
+	CHECK(UiDesign_TypeFromName(UiDesign_TypeName(UI_DN_RINGPROGRESS)) ==
+		UI_DN_RINGPROGRESS);
+	n = UiDesign_Node(&a, r1);
+	CHECK(n->w == 160.0f && n->h == 160.0f);
+	CHECK(n->ringMax == 100.0f && n->ringWidth == 14.0f);
+	CHECK(n->checked == 1 && n->color == 0xFF4F6FF3u);
+	CHECK(n->value == 0.5f);
+
+	n->value = 0.72f;
+	n->ringMax = 10.0f;
+	n->ringWidth = 18.0f;
+	n->checked = 0;
+	n->color = 0x802563EBu;
+	UiDesign_NodeSetText(n, "存储空间");
+	UiDesign_NodeSetHint(n, "GB");
+	json = UiDesign_ToJson(&a);
+	CHECK(json != NULL);
+	CHECK(json && has_sub(json, "\"type\":\"ringprogress\""));
+	CHECK(json && has_sub(json, "\"ringMax\":10"));
+	CHECK(json && has_sub(json, "\"ringWidth\":18"));
+	CHECK(json && has_sub(json, "\"checked\":0"));
+	CHECK(json && has_sub(json, "\"color\":\"#802563eb\""));
+	CHECK(json && has_sub(json, "\"text\":\"存储空间\""));
+	CHECK(json && has_sub(json, "\"hint\":\"GB\""));
+	UiDesign_Init(&b);
+	if (json && UiDesign_FromJson(&b, json)) {
+		int br1 = UiDesign_FindNode(&b, 0, "ring");
+		int br2 = UiDesign_FindNode(&b, 0, "ring2");
+		CHECK(br1 >= 0 && UiDesign_Node(&b, br1)->type == UI_DN_RINGPROGRESS);
+		CHECK(br1 >= 0 && UiDesign_Node(&b, br1)->ringMax == 10.0f);
+		CHECK(br1 >= 0 && UiDesign_Node(&b, br1)->ringWidth == 18.0f);
+		CHECK(br1 >= 0 && UiDesign_Node(&b, br1)->checked == 0);
+		CHECK(br1 >= 0 && UiDesign_Node(&b, br1)->color == 0x802563EBu);
+		CHECK(br1 >= 0 && strcmp(UiDesign_Node(&b, br1)->text,
+			"存储空间") == 0);
+		CHECK(br1 >= 0 && strcmp(UiDesign_Node(&b, br1)->hint, "GB") == 0);
+		CHECK(br2 >= 0 && UiDesign_Node(&b, br2)->ringMax == 100.0f);
+		CHECK(br2 >= 0 && UiDesign_Node(&b, br2)->ringWidth == 14.0f);
+		CHECK(br2 >= 0 && UiDesign_Node(&b, br2)->checked == 1);
+		CHECK(br2 >= 0 && UiDesign_Node(&b, br2)->color == 0xFF4F6FF3u);
+	} else {
+		CHECK(0);
+	}
+	if (json) HeapFree(GetProcessHeap(), 0, json);
+
+	UiDesign_SetText(a.groups[g].outputC, UI_DN_PATH_MAX, "designer_ring.ui.c");
+	UiDesign_SetText(a.groups[g].outputH, UI_DN_PATH_MAX, "designer_ring.ui.h");
+	CreateDirectoryW(L"build\\gen", NULL);
+	lstrcpyW(pc, L"build\\gen\\designer_ring.ui.c");
+	lstrcpyW(ph, L"build\\gen\\designer_ring.ui.h");
+	DeleteFileW(pc);
+	DeleteFileW(ph);
+	CHECK(UiDesign_GenerateGroup(&a, g, L"build\\gen", report, sizeof(report)) == 2);
+	CHECK(read_all(pc, buf, sizeof(buf)) == 1);
+	CHECK(has_sub(buf, ", 20, "));
+	CHECK(has_sub(buf, "p1->value=0.720f;"));
+	CHECK(has_sub(buf, "p1->ringMax=10.000f;"));
+	CHECK(has_sub(buf, "p1->ringWidth=18.000f;"));
+	CHECK(has_sub(buf, "p1->checked=0;"));
+	CHECK(has_sub(buf, "p1->color=0x802563ebu;"));
+	CHECK(has_sub(buf, "p1, \"存储空间\""));
+	CHECK(has_sub(buf, "p1, \"GB\""));
+	/* 默认圆环不输出无效/默认字段 */
+	CHECK(!has_sub(buf, "p2->value="));
+	CHECK(!has_sub(buf, "p2->checked="));
+	CHECK(!has_sub(buf, "p2->color="));
+	CHECK(!has_sub(buf, "p2->ringMax="));
+	CHECK(!has_sub(buf, "p2->ringWidth="));
+	DeleteFileW(pc);
+	DeleteFileW(ph);
+
+	UiDesign_Free(&a);
+	UiDesign_Free(&b);
+}
+
 static void test_qrcode_node(void)
 {
 	UiDesignDoc a, b;
@@ -839,6 +935,7 @@ void __stdcall startup(void)
 	test_symbol();
 	test_components();
 	test_qrcode_node();
+	test_ringprogress_node();
 	test_grid_columns();
 	test_view_host_model();
 	test_size_mode_normalize();
