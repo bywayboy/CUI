@@ -172,7 +172,7 @@ CUI/
       ├─ ui_scroll.*       滚动容器 + 高度 measure 缓存/可见区间/滚动条
       ├─ ui_tab.*          TabBar（LINE/PILL/CARD）+ TabPager 转场
       ├─ ui_icon.*         图标 GLYPH 后端（Segoe MDL2 Assets）
-      ├─ ui_controls.*     Checkbox/RadioGroup/Switch/Slider
+      ├─ ui_controls.*     Checkbox/Radio/RadioGroup/Switch/Slider
       ├─ ui_popup.*        弹层定位 + UiPopupManager（外部点击/Esc/焦点回归）
       ├─ ui_dialog.*       窗内 Dialog / ConfirmDialog（动画/焦点循环/输入隔离）
       ├─ ui_select.*       Select 下拉（长列表滚动/禁用项/键盘）
@@ -386,7 +386,7 @@ if (ui.clicked == Ui_Id("btn", 0, 0)) { /* 动作推迟到帧结束后执行 */ 
 | `UiTabPager` | `Init/GoTo/Tick/Busy/Draw` | 横/纵/淡入转场、reverse、页面输入锁 |
 | | `UiTabStyle_Line/Pill/Card` | header 样式 token（提示：CARD 需 DrawActive 两阶段） |
 | `UiIcon` | `UiIcon_Glyph/UiIcon_Draw` `Gfx_CreateFontFamily` | 图标字体 glyph（Segoe MDL2 Assets），主题 tint/禁用/DPI |
-| `UiControls` | `Checkbox/CheckboxGroup/RadioGroup/Switch/Slider` | 表单控件；应用持有状态、键盘/禁用、Slider hover/press 反馈 + 抓取偏移跟手拖动 |
+| `UiControls` | `Checkbox/CheckboxGroup/Radio/RadioGroup/Switch/Slider` | 表单控件；RadioGroup 为透明语义组，Radio 几何由调用方布局；应用持有状态、键盘/禁用、Slider hover/press 反馈 + 抓取偏移跟手拖动 |
 | `UiPopup` | `UiPopup_Place` | below/above/right/left 翻转 + 视口夹取 |
 | `UiPopupManager` | `Init/BeginFrame/IsOpen/AnyOpen/Open/Close/Key` | 单弹层、点击外部/Esc 关闭、焦点回归、弹层打开时底层不参与命中 |
 | `UiSelect` | `Init/Shutdown/SetItems/SetSelected/SetDisabledMask/SetScrollSmoothing/Busy` | 单选/多选下拉；列表复用 `UiScrollView`（平滑滚轮/thumb 拖动/轨道翻页）、禁用项、键盘 |

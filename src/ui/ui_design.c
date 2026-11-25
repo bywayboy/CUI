@@ -40,6 +40,28 @@ static void dn_free(void *p)
 	if (p) HeapFree(GetProcessHeap(), 0, p);
 }
 
+static char *dn_strdup(const char *s)
+{
+	size_t n;
+	char *p;
+	if (!s) s = "";
+	n = strlen(s) + 1;
+	p = (char *)dn_alloc(n);
+	if (p) memcpy(p, s, n);
+	return p;
+}
+
+int UiDesign_SetString(char **dst, const char *src)
+{
+	char *p;
+	if (!dst) return 0;
+	p = dn_strdup(src);
+	if (!p) return 0;
+	dn_free(*dst);
+	*dst = p;
+	return 1;
+}
+
 void UiDesign_SetText(char *dst, int cap, const char *src)
 {
 	int i = 0;
@@ -53,19 +75,19 @@ void UiDesign_SetText(char *dst, int cap, const char *src)
 	dst[i] = 0;
 }
 
-void UiDesign_NodeSetText(UiDesignNode *n, const char *text)
+int UiDesign_NodeSetText(UiDesignNode *n, const char *text)
 {
-	if (n) UiDesign_SetText(n->text, UI_DN_TEXT_MAX, text);
+	return n ? UiDesign_SetString(&n->text, text) : 0;
 }
 
-void UiDesign_NodeSetHint(UiDesignNode *n, const char *hint)
+int UiDesign_NodeSetHint(UiDesignNode *n, const char *hint)
 {
-	if (n) UiDesign_SetText(n->hint, (int)sizeof(n->hint), hint);
+	return n ? UiDesign_SetString(&n->hint, hint) : 0;
 }
 
-void UiDesign_NodeSetOptions(UiDesignNode *n, const char *options)
+int UiDesign_NodeSetOptions(UiDesignNode *n, const char *options)
 {
-	if (n) UiDesign_SetText(n->options, UI_DN_TEXT_MAX, options);
+	return n ? UiDesign_SetString(&n->options, options) : 0;
 }
 
 void UiDesign_Init(UiDesignDoc *doc)
@@ -74,16 +96,77 @@ void UiDesign_Init(UiDesignDoc *doc)
 	memset(doc, 0, sizeof(*doc));
 }
 
+static void dn_free_node_strings(UiDesignNode *n)
+{
+	if (!n) return;
+	dn_free(n->id);
+	dn_free(n->name);
+	dn_free(n->gridColTracks);
+	dn_free(n->text);
+	dn_free(n->hint);
+	dn_free(n->options);
+	dn_free(n->logoSrc);
+	dn_free(n->onClick);
+	dn_free(n->onChange);
+}
+
+static void dn_free_view_strings(UiDesignView *v)
+{
+	if (!v) return;
+	dn_free(v->id);
+	dn_free(v->name);
+}
+
+static void dn_free_host_strings(UiDesignHost *h)
+{
+	if (!h) return;
+	dn_free(h->id);
+	dn_free(h->name);
+	dn_free(h->title);
+}
+
+static void dn_free_group_strings(UiDesignGroup *g)
+{
+	if (!g) return;
+	dn_free(g->id);
+	dn_free(g->name);
+	dn_free(g->outputC);
+	dn_free(g->outputH);
+	dn_free(g->symbolPrefix);
+}
+
+static void dn_free_radio_group_strings(UiDesignRadioGroup *g)
+{
+	if (!g) return;
+	dn_free(g->id);
+	dn_free(g->name);
+	dn_free(g->selectedRadioId);
+	dn_free(g->onChange);
+}
+
 void UiDesign_Free(UiDesignDoc *doc)
 {
 	int i;
 	if (!doc) return;
-	for (i = 0; i < doc->nodeCount; i++)
+	for (i = 0; i < doc->nodeCount; i++) {
 		dn_free(doc->nodes[i].children);
+		dn_free_node_strings(&doc->nodes[i]);
+	}
+	for (i = 0; i < doc->groupCount; i++)
+		dn_free_group_strings(&doc->groups[i]);
+	for (i = 0; i < doc->radioGroupCount; i++)
+		dn_free_radio_group_strings(&doc->radioGroups[i]);
+	for (i = 0; i < doc->viewCount; i++)
+		dn_free_view_strings(&doc->views[i]);
+	for (i = 0; i < doc->hostCount; i++)
+		dn_free_host_strings(&doc->hosts[i]);
 	dn_free(doc->groups);
+	dn_free(doc->radioGroups);
 	dn_free(doc->views);
 	dn_free(doc->hosts);
 	dn_free(doc->nodes);
+	dn_free(doc->name);
+	dn_free(doc->path);
 	memset(doc, 0, sizeof(*doc));
 }
 
@@ -136,7 +219,7 @@ static const struct {
 	{ "colorsel", 180, 34, 0 },
 	{ "qrcode", 120, 120, 0 },
 	{ "ringprogress", 160, 160, 0 },
-	{ "radiogroup", 160, 84, 0 }
+	{ "radio", 120, 24, 0 }
 };
 
 const char *UiDesign_TypeName(int type)
@@ -162,6 +245,25 @@ int UiDesign_IsContainer(int type)
 	return type >= 0 && type < UI_DN_COUNT && kTypes[type].container;
 }
 
+int UiDesign_IsLayoutContainer(int type)
+{
+	return type == UI_DN_ABSOLUTE || type == UI_DN_COLUMN ||
+		type == UI_DN_ROW || type == UI_DN_GRID || type == UI_DN_PANEL ||
+		type == UI_DN_TABS;
+}
+
+int UiDesign_CanParent(int parentType, int childType)
+{
+	(void)childType;
+	return UiDesign_IsContainer(parentType);
+}
+
+int UiDesign_LayoutParent(const UiDesignDoc *doc, int index)
+{
+	if (!doc || index < 0 || index >= doc->nodeCount) return -1;
+	return doc->nodes[index].parent;
+}
+
 int UiDesign_TypeFromName(const char *name)
 {
 	int i;
@@ -173,21 +275,75 @@ int UiDesign_TypeFromName(const char *name)
 
 /* ── 模型增删 ───────────────────────────────────────────────────────── */
 
-static int dn_option_count(const char *s)
+int UiDesign_OptionCount(const char *options)
 {
 	int count = 0;
-	if (!s) return 0;
+	if (!options) return 0;
 	for (;;) {
-		const char *start = s, *end;
-		while (*s && *s != ',') s++;
-		end = s;
+		const char *start = options, *end;
+		while (*options && *options != ',') options++;
+		end = options;
 		while (start < end && (*start == ' ' || *start == '\t')) start++;
 		while (end > start && (end[-1] == ' ' || end[-1] == '\t')) end--;
 		if (start < end) count++;
-		if (!*s) break;
-		s++;
+		if (!*options) break;
+		options++;
 	}
 	return count;
+}
+
+int UiDesign_OptionsUpdate(UiDesignOptions *opt, const char *options)
+{
+	char *cache, *storage, *p;
+	const char **items;
+	int count;
+	if (!opt) return -1;
+	if (!options) options = "";
+	if (opt->cache && strcmp(options, opt->cache) == 0) return 0;
+	count = UiDesign_OptionCount(options);
+	if (count > opt->itemCap) {
+		items = (const char **)dn_realloc(opt->items,
+			(size_t)count * sizeof(*items));
+		if (!items) return -1;
+		opt->items = items;
+		opt->itemCap = count;
+	}
+	cache = dn_strdup(options);
+	storage = dn_strdup(options);
+	if (!cache || !storage) {
+		dn_free(cache);
+		dn_free(storage);
+		return -1;
+	}
+	p = storage;
+	count = 0;
+	while (*p) {
+		char *start = p, *comma = p, *end;
+		while (*comma && *comma != ',') comma++;
+		end = comma;
+		while (start < end && (*start == ' ' || *start == '\t')) start++;
+		while (end > start && (end[-1] == ' ' || end[-1] == '\t')) end--;
+		p = *comma == ',' ? comma + 1 : comma;
+		if (start < end) {
+			*end = 0;
+			opt->items[count++] = start;
+		}
+	}
+	dn_free(opt->cache);
+	dn_free(opt->storage);
+	opt->cache = cache;
+	opt->storage = storage;
+	opt->count = count;
+	return 1;
+}
+
+void UiDesign_OptionsFree(UiDesignOptions *opt)
+{
+	if (!opt) return;
+	dn_free(opt->cache);
+	dn_free(opt->storage);
+	dn_free(opt->items);
+	memset(opt, 0, sizeof(*opt));
 }
 
 static int dn_reserve(void **arr, int *cap, int need, size_t elem)
@@ -195,8 +351,13 @@ static int dn_reserve(void **arr, int *cap, int need, size_t elem)
 	int nc;
 	void *np;
 	if (need <= *cap) return 1;
+	if (need < 0 || elem == 0 || (size_t)need > (size_t)-1 / elem) return 0;
 	nc = *cap > 0 ? *cap : 8;
-	while (nc < need) nc *= 2;
+	while (nc < need) {
+		if (nc > 0x3FFFFFFF) { nc = need; break; }
+		nc *= 2;
+	}
+	if ((size_t)nc > (size_t)-1 / elem) return 0;
 	np = dn_realloc(*arr, (size_t)nc * elem);
 	if (!np) return 0;
 	*arr = np;
@@ -213,9 +374,18 @@ int UiDesign_AddGroup(UiDesignDoc *doc, const char *id, const char *name)
 	idx = doc->groupCount++;
 	g = &doc->groups[idx];
 	memset(g, 0, sizeof(*g));
-	UiDesign_SetText(g->id, UI_DN_ID_MAX, id ? id : "group");
-	UiDesign_SetText(g->name, UI_DN_NAME_MAX, name ? name : id ? id : "分组");
-	UiDesign_Symbol(g->id, g->symbolPrefix, UI_DN_SYM_MAX);
+	if (!UiDesign_SetString(&g->id, id ? id : "group") ||
+	    !UiDesign_SetString(&g->name, name ? name : id ? id : "分组")) {
+		dn_free_group_strings(g);
+		doc->groupCount--;
+		return -1;
+	}
+	g->symbolPrefix = UiDesign_SymbolAlloc(g->id);
+	if (!g->symbolPrefix) {
+		dn_free_group_strings(g);
+		doc->groupCount--;
+		return -1;
+	}
 	return idx;
 }
 
@@ -228,8 +398,12 @@ int UiDesign_AddView(UiDesignDoc *doc, const char *id, const char *name)
 	idx = doc->viewCount++;
 	v = &doc->views[idx];
 	memset(v, 0, sizeof(*v));
-	UiDesign_SetText(v->id, UI_DN_ID_MAX, id ? id : "view");
-	UiDesign_SetText(v->name, UI_DN_NAME_MAX, name ? name : id ? id : "视图");
+	if (!UiDesign_SetString(&v->id, id ? id : "view") ||
+	    !UiDesign_SetString(&v->name, name ? name : id ? id : "视图")) {
+		dn_free_view_strings(v);
+		doc->viewCount--;
+		return -1;
+	}
 	v->group = -1;
 	v->w = 800.0f;
 	v->h = 540.0f;
@@ -247,9 +421,13 @@ int UiDesign_AddHost(UiDesignDoc *doc, const char *id, const char *name,
 	idx = doc->hostCount++;
 	h = &doc->hosts[idx];
 	memset(h, 0, sizeof(*h));
-	UiDesign_SetText(h->id, UI_DN_ID_MAX, id ? id : "host");
-	UiDesign_SetText(h->name, UI_DN_NAME_MAX, name ? name : id ? id : "宿主");
-	UiDesign_SetText(h->title, 128, name ? name : id ? id : "窗口");
+	if (!UiDesign_SetString(&h->id, id ? id : "host") ||
+	    !UiDesign_SetString(&h->name, name ? name : id ? id : "宿主") ||
+	    !UiDesign_SetString(&h->title, name ? name : id ? id : "窗口")) {
+		dn_free_host_strings(h);
+		doc->hostCount--;
+		return -1;
+	}
 	h->kind = kind == UI_DH_DIALOG ? UI_DH_DIALOG
 		: (kind == UI_DH_PANEL ? UI_DH_PANEL : UI_DH_WINDOW);
 	h->group = group;
@@ -302,7 +480,9 @@ int UiDesign_ViewRemove(UiDesignDoc *doc, int view)
 		int k, w;
 		if (map[i] < 0) {
 			dn_free(n->children);
+			dn_free_node_strings(n);
 			n->children = NULL;
+			n->options = NULL;
 			continue;
 		}
 		if (j != i) doc->nodes[j] = *n;
@@ -327,9 +507,23 @@ int UiDesign_ViewRemove(UiDesignDoc *doc, int view)
 			doc->views[i].root = map[doc->views[i].root];
 	}
 	doc->nodeCount = j;
+	dn_free_view_strings(&doc->views[view]);
 	for (i = view + 1; i < doc->viewCount; i++)
 		doc->views[i - 1] = doc->views[i];
 	doc->viewCount--;
+	/* RadioGroup 是文档级元数据: 丢弃属于被删视图的组, 其余 owner 前移. */
+	for (i = doc->radioGroupCount - 1; i >= 0; i--) {
+		UiDesignRadioGroup *rg = &doc->radioGroups[i];
+		if (rg->owner == view) {
+			int k;
+			dn_free_radio_group_strings(rg);
+			for (k = i + 1; k < doc->radioGroupCount; k++)
+				doc->radioGroups[k - 1] = doc->radioGroups[k];
+			doc->radioGroupCount--;
+		} else if (rg->owner > view) {
+			rg->owner--;
+		}
+	}
 	for (i = 0; i < doc->hostCount; i++) {
 		if (doc->hosts[i].view == view) doc->hosts[i].view = -1;
 		else if (doc->hosts[i].view > view) doc->hosts[i].view--;
@@ -360,11 +554,273 @@ void UiDesign_NodeDetach(UiDesignDoc *doc, int index)
 	n->parent = -1;
 }
 
+/* ── RadioGroup 元数据 ─────────────────────────────────────────────── */
+
+static int dn_group_count_at(const UiDesignDoc *doc, int index, unsigned uid,
+	int owner)
+{
+	const UiDesignNode *n;
+	int i, count;
+	if (!doc || index < 0 || index >= doc->nodeCount) return 0;
+	n = &doc->nodes[index];
+	if (n->owner != owner) return 0;
+	count = n->type == UI_DN_RADIO && n->radioGroupUid == uid ? 1 : 0;
+	for (i = 0; i < n->childCount; i++)
+		count += dn_group_count_at(doc, n->children[i], uid, owner);
+	return count;
+}
+
+static int dn_group_at(const UiDesignDoc *doc, int index, unsigned uid,
+	int owner, int *ordinal)
+{
+	const UiDesignNode *n;
+	int i, found;
+	if (!doc || index < 0 || index >= doc->nodeCount || *ordinal < 0)
+		return -1;
+	n = &doc->nodes[index];
+	if (n->owner != owner) return -1;
+	if (n->type == UI_DN_RADIO && n->radioGroupUid == uid) {
+		if (*ordinal == 0) return index;
+		(*ordinal)--;
+	}
+	for (i = 0; i < n->childCount; i++) {
+		found = dn_group_at(doc, n->children[i], uid, owner, ordinal);
+		if (found >= 0) return found;
+	}
+	return -1;
+}
+
+static int dn_group_first_visible(const UiDesignDoc *doc, int index,
+	unsigned uid, int owner)
+{
+	const UiDesignNode *n;
+	int i, found;
+	if (!doc || index < 0 || index >= doc->nodeCount) return -1;
+	n = &doc->nodes[index];
+	if (n->owner != owner) return -1;
+	if (n->type == UI_DN_RADIO && n->radioGroupUid == uid && n->visible)
+		return index;
+	for (i = 0; i < n->childCount; i++) {
+		found = dn_group_first_visible(doc, n->children[i], uid, owner);
+		if (found >= 0) return found;
+	}
+	return -1;
+}
+
+static int dn_group_id_taken(const UiDesignDoc *doc, int owner, const char *id,
+	int skip)
+{
+	int i;
+	if (!doc || !id) return 0;
+	for (i = 0; i < doc->radioGroupCount; i++) {
+		if (i == skip || doc->radioGroups[i].owner != owner) continue;
+		if (strcmp(doc->radioGroups[i].id, id) == 0) return 1;
+	}
+	return 0;
+}
+
+/* 解析用: 组 id 为空或重复时生成同视图内唯一 id (堆分配). */
+static char *dn_group_unique_id(const UiDesignDoc *doc, int owner,
+	const char *base, int skip)
+{
+	size_t len = base && base[0] ? strlen(base) : 5;
+	char *id = (char *)dn_alloc(len + 32);
+	unsigned suffix = 0;
+	if (!id) return NULL;
+	if (!base || !base[0]) base = "group";
+	for (;;) {
+		if (suffix == 0) sprintf(id, "%s", base);
+		else sprintf(id, "%s_%u", base, suffix);
+		if (!dn_group_id_taken(doc, owner, id, skip)) return id;
+		suffix++;
+	}
+}
+
+int UiDesign_RadioGroupFind(const UiDesignDoc *doc, unsigned uid)
+{
+	int i;
+	if (!doc || uid == 0) return -1;
+	for (i = 0; i < doc->radioGroupCount; i++)
+		if (doc->radioGroups[i].uid == uid) return i;
+	return -1;
+}
+
+UiDesignRadioGroup *UiDesign_RadioGroup(UiDesignDoc *doc, int group)
+{
+	if (!doc || group < 0 || group >= doc->radioGroupCount) return NULL;
+	return &doc->radioGroups[group];
+}
+
+static const UiDesignRadioGroup *dn_group_c(const UiDesignDoc *doc, int group)
+{
+	if (!doc || group < 0 || group >= doc->radioGroupCount) return NULL;
+	return &doc->radioGroups[group];
+}
+
+int UiDesign_RadioGroupForNode(const UiDesignDoc *doc, int node)
+{
+	if (!doc || node < 0 || node >= doc->nodeCount) return -1;
+	return UiDesign_RadioGroupFind(doc, doc->nodes[node].radioGroupUid);
+}
+
+int UiDesign_RadioGroupAdd(UiDesignDoc *doc, int view,
+	const char *id, const char *name)
+{
+	UiDesignRadioGroup *g;
+	unsigned uid;
+	int idx;
+	if (!doc || view < 0 || view >= doc->viewCount) return -1;
+	if (!id || !id[0]) return -1;
+	if (dn_group_id_taken(doc, view, id, -1)) return -1;
+	if (!dn_reserve((void **)&doc->radioGroups, &doc->radioGroupCap,
+		doc->radioGroupCount + 1, sizeof(UiDesignRadioGroup))) return -1;
+	uid = doc->nextRadioGroupUid ? doc->nextRadioGroupUid : 1;
+	while (UiDesign_RadioGroupFind(doc, uid) >= 0) uid++;
+	idx = doc->radioGroupCount++;
+	g = &doc->radioGroups[idx];
+	memset(g, 0, sizeof(*g));
+	if (!UiDesign_SetString(&g->id, id) ||
+	    !UiDesign_SetString(&g->name, name ? name : id) ||
+	    !UiDesign_SetString(&g->selectedRadioId, "") ||
+	    !UiDesign_SetString(&g->onChange, "")) {
+		dn_free_radio_group_strings(g);
+		doc->radioGroupCount--;
+		return -1;
+	}
+	g->uid = uid;
+	g->owner = view;
+	g->enabled = 1;
+	doc->nextRadioGroupUid = uid + 1;
+	doc->dirty = 1;
+	return idx;
+}
+
+int UiDesign_RadioGroupRemove(UiDesignDoc *doc, int group)
+{
+	int i;
+	if (!doc || group < 0 || group >= doc->radioGroupCount) return 0;
+	{
+		unsigned uid = doc->radioGroups[group].uid;
+		for (i = 0; i < doc->nodeCount; i++)
+			if (doc->nodes[i].radioGroupUid == uid)
+				doc->nodes[i].radioGroupUid = 0;
+	}
+	dn_free_radio_group_strings(&doc->radioGroups[group]);
+	for (i = group + 1; i < doc->radioGroupCount; i++)
+		doc->radioGroups[i - 1] = doc->radioGroups[i];
+	doc->radioGroupCount--;
+	doc->dirty = 1;
+	return 1;
+}
+
+int UiDesign_RadioGroupMemberCount(const UiDesignDoc *doc, int group)
+{
+	const UiDesignRadioGroup *g = dn_group_c(doc, group);
+	if (!g || g->owner < 0 || g->owner >= doc->viewCount) return 0;
+	if (doc->views[g->owner].root < 0) return 0;
+	return dn_group_count_at(doc, doc->views[g->owner].root, g->uid, g->owner);
+}
+
+int UiDesign_RadioGroupMemberAt(const UiDesignDoc *doc, int group, int ordinal)
+{
+	const UiDesignRadioGroup *g = dn_group_c(doc, group);
+	if (!g || g->owner < 0 || g->owner >= doc->viewCount ||
+	    ordinal < 0) return -1;
+	if (doc->views[g->owner].root < 0) return -1;
+	return dn_group_at(doc, doc->views[g->owner].root, g->uid, g->owner,
+		&ordinal);
+}
+
+int UiDesign_RadioGroupNormalize(UiDesignDoc *doc, int group)
+{
+	UiDesignRadioGroup *g = UiDesign_RadioGroup(doc, group);
+	int idx = -1;
+	if (!g || g->owner < 0 || g->owner >= doc->viewCount) return -1;
+	if (g->selectedRadioId[0]) {
+		idx = UiDesign_FindNode(doc, g->owner, g->selectedRadioId);
+		if (idx >= 0 && doc->nodes[idx].type == UI_DN_RADIO &&
+		    doc->nodes[idx].radioGroupUid == g->uid &&
+		    doc->nodes[idx].visible)
+			return 1;
+	}
+	idx = doc->views[g->owner].root >= 0
+		? dn_group_first_visible(doc, doc->views[g->owner].root,
+			g->uid, g->owner)
+		: -1;
+	if (idx >= 0)
+		UiDesign_SetString(&g->selectedRadioId, doc->nodes[idx].id);
+	else
+		UiDesign_SetString(&g->selectedRadioId, "");
+	return 1;
+}
+
+int UiDesign_RadioGroupSelectedNode(const UiDesignDoc *doc, int group)
+{
+	const UiDesignRadioGroup *g = dn_group_c(doc, group);
+	int idx;
+	if (!g || !g->selectedRadioId[0]) return -1;
+	idx = UiDesign_FindNode(doc, g->owner, g->selectedRadioId);
+	if (idx < 0 || doc->nodes[idx].type != UI_DN_RADIO ||
+	    doc->nodes[idx].radioGroupUid != g->uid)
+		return -1;
+	return idx;
+}
+
+int UiDesign_RadioGroupSetSelectedNode(UiDesignDoc *doc, int group, int node)
+{
+	UiDesignRadioGroup *g = UiDesign_RadioGroup(doc, group);
+	if (!g || node < 0 || node >= doc->nodeCount) return 0;
+	if (doc->nodes[node].type != UI_DN_RADIO ||
+	    doc->nodes[node].radioGroupUid != g->uid ||
+	    doc->nodes[node].owner != g->owner)
+		return 0;
+	doc->dirty = 1;
+	return UiDesign_SetString(&g->selectedRadioId, doc->nodes[node].id);
+}
+
+int UiDesign_RadioGroupAssign(UiDesignDoc *doc, int node, int group)
+{
+	UiDesignRadioGroup *g;
+	UiDesignNode *n;
+	unsigned uid;
+	int oldGroup, newGroup;
+	if (!doc || node < 0 || node >= doc->nodeCount) return 0;
+	n = &doc->nodes[node];
+	if (n->type != UI_DN_RADIO) return 0;
+	oldGroup = UiDesign_RadioGroupForNode(doc, node);
+	if (group < 0) {
+		n->radioGroupUid = 0;
+		if (oldGroup >= 0) {
+			if (UiDesign_RadioGroupMemberCount(doc, oldGroup) == 0)
+				UiDesign_RadioGroupRemove(doc, oldGroup);
+			else
+				UiDesign_RadioGroupNormalize(doc, oldGroup);
+		}
+		doc->dirty = 1;
+		return 1;
+	}
+	g = UiDesign_RadioGroup(doc, group);
+	if (!g || g->owner != n->owner) return 0;
+	uid = g->uid;
+	n->radioGroupUid = uid;
+	if (oldGroup >= 0 && oldGroup != group) {
+		if (UiDesign_RadioGroupMemberCount(doc, oldGroup) == 0)
+			UiDesign_RadioGroupRemove(doc, oldGroup);
+		else
+			UiDesign_RadioGroupNormalize(doc, oldGroup);
+	}
+	newGroup = UiDesign_RadioGroupFind(doc, uid);
+	if (newGroup >= 0) UiDesign_RadioGroupNormalize(doc, newGroup);
+	doc->dirty = 1;
+	return 1;
+}
+
 void UiDesign_NodeAddChild(UiDesignDoc *doc, int parent, int child)
 {
 	UiDesignNode *p;
 	if (!doc || parent < 0 || child < 0 || parent >= doc->nodeCount ||
 	    child >= doc->nodeCount) return;
+	if (!UiDesign_CanParent(doc->nodes[parent].type, doc->nodes[child].type)) return;
 	UiDesign_NodeDetach(doc, child);
 	p = &doc->nodes[parent];
 	if (!dn_reserve((void **)&p->children, &p->childCap,
@@ -378,6 +834,10 @@ int UiDesign_AddNode(UiDesignDoc *doc, int view, int type, int parent,
 {
 	UiDesignNode *n;
 	int idx;
+	if (!doc || type < 0 || type >= UI_DN_COUNT) return -1;
+	if (parent < 0 && type == UI_DN_RADIO) return -1;
+	if (parent >= 0 && (parent >= doc->nodeCount ||
+	    !UiDesign_CanParent(doc->nodes[parent].type, type))) return -1;
 	if (!doc || !dn_reserve((void **)&doc->nodes, &doc->nodeCap,
 		doc->nodeCount + 1, sizeof(UiDesignNode))) return -1;
 	if (type < 0 || type >= UI_DN_COUNT) type = UI_DN_LABEL;
@@ -415,8 +875,19 @@ int UiDesign_AddNode(UiDesignDoc *doc, int view, int type, int parent,
 	n->ecc = UI_QR_ECC_M;
 	n->logoRatio = UI_QR_LOGO_RATIO_DEFAULT;
 	n->qrPad = UI_QR_PAD_DEFAULT;
-	UiDesign_SetText(n->id, UI_DN_ID_MAX, id ? id : "node");
-	UiDesign_SetText(n->name, UI_DN_NAME_MAX, name ? name : id ? id : "组件");
+	if (!UiDesign_SetString(&n->id, id ? id : "node") ||
+	    !UiDesign_SetString(&n->name, name ? name : id ? id : "组件") ||
+	    !UiDesign_SetString(&n->gridColTracks, "") ||
+	    !UiDesign_SetString(&n->text, "") ||
+	    !UiDesign_SetString(&n->hint, "") ||
+	    !UiDesign_SetString(&n->options, "") ||
+	    !UiDesign_SetString(&n->logoSrc, "") ||
+	    !UiDesign_SetString(&n->onClick, "") ||
+	    !UiDesign_SetString(&n->onChange, "")) {
+		dn_free_node_strings(n);
+		doc->nodeCount--;
+		return -1;
+	}
 	if (parent >= 0) UiDesign_NodeAddChild(doc, parent, idx);
 	return idx;
 }
@@ -429,6 +900,48 @@ static void dn_remove_subtree(UiDesignDoc *doc, int index)
 	for (i = n->childCount - 1; i >= 0; i--)
 		dn_remove_subtree(doc, n->children[i]);
 	UiDesign_NodeDetach(doc, index);
+}
+
+static void dn_clear_group_uid(UiDesignDoc *doc, int index)
+{
+	UiDesignNode *n = UiDesign_Node(doc, index);
+	int i;
+	if (!n) return;
+	n->radioGroupUid = 0;
+	for (i = 0; i < n->childCount; i++)
+		dn_clear_group_uid(doc, n->children[i]);
+}
+
+/* 删除子树并维护 RadioGroup 元数据: 清成员标记, 归一化选中项,
+ * 组失去最后一个成员时删除组元数据. */
+static void dn_remove_subtree_groups(UiDesignDoc *doc, int index)
+{
+	int *before;
+	int g, count;
+	if (!doc) return;
+	count = doc->radioGroupCount;
+	before = count > 0 ? (int *)dn_alloc((size_t)count * sizeof(int)) : NULL;
+	if (count > 0 && !before) {
+		dn_remove_subtree(doc, index);
+		dn_clear_group_uid(doc, index);
+		return;
+	}
+	for (g = 0; g < count; g++)
+		before[g] = UiDesign_RadioGroupMemberCount(doc, g);
+	dn_remove_subtree(doc, index);
+	dn_clear_group_uid(doc, index);
+	for (g = doc->radioGroupCount - 1; g >= 0 && g < count; g--) {
+		int now = UiDesign_RadioGroupMemberCount(doc, g);
+		if (before[g] > 0 && now == 0) {
+			UiDesign_RadioGroupRemove(doc, g);
+			continue;
+		}
+		if (now != before[g] ||
+		    (doc->radioGroups[g].selectedRadioId[0] &&
+		     UiDesign_RadioGroupSelectedNode(doc, g) < 0))
+			UiDesign_RadioGroupNormalize(doc, g);
+	}
+	dn_free(before);
 }
 
 static UiDesignNode *dn_tabs_node(UiDesignDoc *doc, int tabs)
@@ -531,7 +1044,7 @@ int UiDesign_TabsInsertPage(UiDesignDoc *doc, int tabs, int pos,
 	UiDesignNode *n = dn_tabs_node(doc, tabs);
 	UiDesignNode *pg;
 	int idx, count;
-	if (!n || n->childCount >= UI_DN_TABS_MAX_PAGES) return -1;
+	if (!n) return -1;
 	count = n->childCount;
 	if (pos < 0 || pos > count) pos = count;
 	idx = UiDesign_AddNode(doc, n->owner, UI_DN_COLUMN, tabs,
@@ -558,7 +1071,7 @@ int UiDesign_TabsRemovePage(UiDesignDoc *doc, int tabs, int page)
 	if (!n || page < 0 || page >= n->childCount) return 0;
 	selNode = dn_tabs_selected_node(doc, tabs);
 	pageNode = n->children[page];
-	dn_remove_subtree(doc, pageNode);
+	dn_remove_subtree_groups(doc, pageNode);
 	n = &doc->nodes[tabs];
 	if (n->childCount <= 0) {
 		n->selected = -1;
@@ -594,7 +1107,7 @@ int UiDesign_NodeRemove(UiDesignDoc *doc, int index)
 		int page = dn_tabs_index_of_node(doc, p, index);
 		if (page >= 0) return UiDesign_TabsRemovePage(doc, p, page);
 	}
-	dn_remove_subtree(doc, index);
+	dn_remove_subtree_groups(doc, index);
 	return 1;
 }
 
@@ -603,13 +1116,17 @@ int UiDesign_NodeMove(UiDesignDoc *doc, int index, int parent, int pos)
 	UiDesignNode *p;
 	int i, j;
 	int oldParent, oldSelNode = -1, newSelNode = -1;
+	int radioGroup;
 	if (!doc || index < 0 || index >= doc->nodeCount ||
 	    parent < 0 || parent >= doc->nodeCount) return 0;
 	if (index == parent) return 0;
+	if (!UiDesign_CanParent(doc->nodes[parent].type, doc->nodes[index].type)) return 0;
 	/* 禁止移到自己的子树 */
 	for (i = parent; i >= 0; i = doc->nodes[i].parent)
 		if (i == index) return 0;
 	oldParent = doc->nodes[index].parent;
+	radioGroup = doc->nodes[index].type == UI_DN_RADIO
+		? UiDesign_RadioGroupForNode(doc, index) : -1;
 	if (oldParent >= 0 && doc->nodes[oldParent].type == UI_DN_TABS)
 		oldSelNode = dn_tabs_selected_node(doc, oldParent);
 	if (doc->nodes[parent].type == UI_DN_TABS)
@@ -623,6 +1140,17 @@ int UiDesign_NodeMove(UiDesignDoc *doc, int index, int parent, int pos)
 	p->children[pos] = index;
 	p->childCount++;
 	doc->nodes[index].parent = parent;
+	/* Radio 换父节点后仍属于原组仅当新父节点在同视图且是布局容器. */
+	if (radioGroup >= 0 && oldParent != parent &&
+	    (doc->nodes[parent].owner != doc->nodes[index].owner ||
+	     doc->radioGroups[radioGroup].owner != doc->nodes[index].owner ||
+	     !UiDesign_IsLayoutContainer(doc->nodes[parent].type))) {
+		doc->nodes[index].radioGroupUid = 0;
+		if (UiDesign_RadioGroupMemberCount(doc, radioGroup) == 0)
+			UiDesign_RadioGroupRemove(doc, radioGroup);
+		else
+			UiDesign_RadioGroupNormalize(doc, radioGroup);
+	}
 	if (oldParent >= 0 && oldParent != parent &&
 	    doc->nodes[oldParent].type == UI_DN_TABS)
 		dn_tabs_select_node(doc, oldParent, oldSelNode);
@@ -678,22 +1206,73 @@ int UiDesign_NodeMoveDown(UiDesignDoc *doc, int index)
 	return 1;
 }
 
+static char *dn_clone_id(const UiDesignDoc *doc, const char *base, int owner)
+{
+	size_t len = strlen(base);
+	char *id = (char *)dn_alloc(len + 32);
+	unsigned suffix = 0;
+	if (!id) return NULL;
+	for (;;) {
+		if (suffix == 0) sprintf(id, "%s_copy", base);
+		else sprintf(id, "%s_copy%u", base, suffix);
+		if (UiDesign_FindNode(doc, owner, id) < 0) return id;
+		suffix++;
+	}
+}
+
 static int dn_clone_node(UiDesignDoc *doc, int src, int parent)
 {
 	UiDesignNode *s = UiDesign_Node(doc, src), *n;
-	int idx, i;
-	char id[UI_DN_ID_MAX];
+	UiDesignNode copy;
+	int *children = NULL;
+	char *id;
+	int idx, i, childCount;
 	if (!s) return -1;
-	sprintf(id, "%.48s_copy", s->id);
-	idx = UiDesign_AddNode(doc, s->owner, s->type, parent, id, s->name);
+	copy = *s;
+	childCount = s->childCount;
+	if (childCount > 0) {
+		children = (int *)dn_alloc((size_t)childCount * sizeof(*children));
+		if (!children) return -1;
+		memcpy(children, s->children, (size_t)childCount * sizeof(*children));
+	}
+	copy.id = copy.name = copy.gridColTracks = copy.text = copy.hint = NULL;
+	copy.options = copy.logoSrc = copy.onClick = copy.onChange = NULL;
+	if (!(copy.id = dn_strdup(s->id)) ||
+	    !(copy.name = dn_strdup(s->name)) ||
+	    !(copy.gridColTracks = dn_strdup(s->gridColTracks)) ||
+	    !(copy.text = dn_strdup(s->text)) ||
+	    !(copy.hint = dn_strdup(s->hint)) ||
+	    !(copy.options = dn_strdup(s->options)) ||
+	    !(copy.logoSrc = dn_strdup(s->logoSrc)) ||
+	    !(copy.onClick = dn_strdup(s->onClick)) ||
+	    !(copy.onChange = dn_strdup(s->onChange))) {
+		dn_free_node_strings(&copy);
+		dn_free(children);
+		return -1;
+	}
+	id = dn_clone_id(doc, copy.id, copy.owner);
+	if (!id) {
+		dn_free_node_strings(&copy);
+		dn_free(children);
+		return -1;
+	}
+	dn_free(copy.id);
+	copy.id = id;
+	idx = UiDesign_AddNode(doc, copy.owner, copy.type, parent, copy.id, copy.name);
 	n = UiDesign_Node(doc, idx);
-	if (!n) return -1;
-	*n = *s;
+	if (!n) {
+		dn_free_node_strings(&copy);
+		dn_free(children);
+		return -1;
+	}
+	dn_free_node_strings(n);
+	*n = copy;
 	n->parent = parent;
 	n->children = NULL;
 	n->childCount = n->childCap = 0;
-	for (i = 0; i < s->childCount; i++)
-		dn_clone_node(doc, s->children[i], idx);
+	for (i = 0; i < childCount; i++)
+		dn_clone_node(doc, children[i], idx);
+	dn_free(children);
 	return idx;
 }
 
@@ -708,7 +1287,7 @@ int UiDesign_NodeDuplicate(UiDesignDoc *doc, int index)
 	for (i = 0; i < doc->nodes[p].childCount; i++)
 		if (doc->nodes[p].children[i] == index) break;
 	pos = i + 1;
-	dup = dn_clone_node(doc, index, -1);
+	dup = dn_clone_node(doc, index, p);
 	if (dup < 0) return -1;
 	UiDesign_NodeMove(doc, dup, p, pos);
 	return dup;
@@ -756,23 +1335,23 @@ int UiDesign_DefaultDoc(UiDesignDoc *doc)
 	int g, v, hd, root, label, col;
 	UiDesignNode *n;
 	UiDesignView *view;
-	UiDesignHost *host;
 	UiDesignGroup *grp;
 	if (!doc) return 0;
 	UiDesign_Init(doc);
-	UiDesign_SetText(doc->name, UI_DN_NAME_MAX, "未命名工程");
+	if (!UiDesign_SetString(&doc->name, "未命名工程")) return 0;
 	g = UiDesign_AddGroup(doc, "main", "主分组");
 	v = UiDesign_AddView(doc, "main", "主视图");
 	hd = UiDesign_AddHost(doc, "main", "主窗口", UI_DH_WINDOW, g);
 	if (g < 0 || v < 0 || hd < 0) return 0;
 	grp = UiDesign_Group(doc, g);
-	UiDesign_SetText(grp->outputC, UI_DN_PATH_MAX, "main.ui.c");
-	UiDesign_SetText(grp->outputH, UI_DN_PATH_MAX, "main.ui.h");
-	UiDesign_SetText(grp->symbolPrefix, UI_DN_SYM_MAX, "Main");
+	if (!UiDesign_SetString(&grp->outputC, "main.ui.c") ||
+	    !UiDesign_SetString(&grp->outputH, "main.ui.h") ||
+	    !UiDesign_SetString(&grp->symbolPrefix, "Main")) return 0;
 	view = UiDesign_View(doc, v);
 	view->group = g;
 	view->root = UiDesign_AddNode(doc, v, UI_DN_COLUMN, -1, "root", "根容器");
 	root = view->root;
+	if (root < 0) return 0;
 	UiDesign_Host(doc, hd)->view = v;
 	n = UiDesign_Node(doc, root);
 	n->wMode = UI_DN_SIZE_FILL;
@@ -780,12 +1359,14 @@ int UiDesign_DefaultDoc(UiDesignDoc *doc)
 	n->padding[0] = n->padding[1] = n->padding[2] = n->padding[3] = 16.0f;
 	n->gap = 8.0f;
 	label = UiDesign_AddNode(doc, v, UI_DN_LABEL, root, "title", "标题");
+	if (label < 0) return 0;
 	n = UiDesign_Node(doc, label);
 	n->wMode = UI_DN_SIZE_FILL;
 	n->hMode = UI_DN_SIZE_FIXED;
 	n->h = 28.0f;
-	UiDesign_SetText(n->text, UI_DN_TEXT_MAX, "新建窗口");
+	UiDesign_NodeSetText(n, "新建窗口");
 	col = UiDesign_AddNode(doc, v, UI_DN_BUTTON, root, "ok", "确定按钮");
+	if (col < 0) return 0;
 	n = UiDesign_Node(doc, col);
 	n->wMode = UI_DN_SIZE_FIXED;
 	n->hMode = UI_DN_SIZE_FIXED;
@@ -793,7 +1374,7 @@ int UiDesign_DefaultDoc(UiDesignDoc *doc)
 	n->h = 32.0f;
 	n->variant = 1;
 	n->enabled = 1;
-	UiDesign_SetText(n->text, UI_DN_TEXT_MAX, "确定");
+	UiDesign_NodeSetText(n, "确定");
 	return 1;
 }
 
@@ -802,6 +1383,7 @@ int UiDesign_DefaultDoc(UiDesignDoc *doc)
 typedef struct UiDStr {
 	char *p;
 	int n, cap;
+	int failed;
 } UiDStr;
 
 static void ds_init(UiDStr *s)
@@ -819,11 +1401,15 @@ static int ds_reserve(UiDStr *s, int need)
 {
 	int nc;
 	char *np;
+	if (s->failed) return 0;
 	if (need <= s->cap) return 1;
 	nc = s->cap > 0 ? s->cap : 512;
-	while (nc < need) nc *= 2;
+	while (nc < need) {
+		if (nc > 0x3FFFFFFF) { s->failed = 1; return 0; }
+		nc *= 2;
+	}
 	np = (char *)dn_realloc(s->p, (size_t)nc);
-	if (!np) return 0;
+	if (!np) { s->failed = 1; return 0; }
 	s->p = np;
 	s->cap = nc;
 	return 1;
@@ -832,7 +1418,7 @@ static int ds_reserve(UiDStr *s, int need)
 static void ds_add(UiDStr *s, const char *text)
 {
 	int n;
-	if (!s || !text) return;
+	if (!s || !text || s->failed) return;
 	n = (int)strlen(text);
 	if (!ds_reserve(s, s->n + n + 1)) return;
 	memcpy(s->p + s->n, text, (size_t)n);
@@ -842,18 +1428,35 @@ static void ds_add(UiDStr *s, const char *text)
 
 static void ds_addf(UiDStr *s, const char *fmt, ...)
 {
-	char b[256];
+	char b[256], *text = b;
 	va_list ap;
+	size_t cap = sizeof(b);
 	int n;
-	va_start(ap, fmt);
-	n = vsnprintf(b, sizeof(b), fmt, ap);
-	va_end(ap);
-	if (n < 0) return;
-	if (n >= (int)sizeof(b)) n = (int)sizeof(b) - 1;
-	if (!ds_reserve(s, s->n + n + 1)) return;
-	memcpy(s->p + s->n, b, (size_t)n);
-	s->n += n;
-	s->p[s->n] = 0;
+	if (!s || !fmt || s->failed) return;
+	for (;;) {
+		va_start(ap, fmt);
+		n = vsnprintf(text, cap, fmt, ap);
+		va_end(ap);
+		if (n < 0) { s->failed = 1; break; }
+		if ((size_t)n < cap - 1) break;
+		if (cap > 0x3FFFFFFF) { s->failed = 1; break; }
+		{
+			char *next = (char *)dn_alloc(cap * 2);
+			if (!next) { s->failed = 1; break; }
+			if (text != b) dn_free(text);
+			text = next;
+			cap *= 2;
+		}
+	}
+	if (!s->failed) {
+		if (!ds_reserve(s, s->n + n + 1)) n = -1;
+		else {
+			memcpy(s->p + s->n, text, (size_t)n);
+			s->n += n;
+			s->p[s->n] = 0;
+		}
+	}
+	if (text != b) dn_free(text);
 }
 
 static void ds_json_str(UiDStr *s, const char *text)
@@ -881,9 +1484,7 @@ static void ds_json_str(UiDStr *s, const char *text)
 
 static void ds_num(UiDStr *s, float v)
 {
-	char b[40];
-	sprintf(b, "%.3f", v);
-	ds_add(s, b);
+	ds_addf(s, "%.3f", v);
 }
 
 static void ds_color(UiDStr *s, unsigned c)
@@ -945,8 +1546,10 @@ static void ds_node(UiDStr *s, const UiDesignDoc *doc, int index)
 	ds_add(s, ",\"options\":");
 	ds_json_str(s, n->options);
 	ds_add(s, ",\"value\":"); ds_num(s, n->value);
-	ds_addf(s, ",\"checked\":%d,\"enabled\":%d,\"selected\":%d,\"variant\":%d",
-		n->checked, n->enabled, n->selected, n->variant);
+	ds_addf(s, ",\"checked\":%d,\"enabled\":%d", n->checked, n->enabled);
+	if (n->type == UI_DN_RADIO)
+		ds_addf(s, ",\"radioGroupUid\":%u", n->radioGroupUid);
+	ds_addf(s, ",\"selected\":%d,\"variant\":%d", n->selected, n->variant);
 	ds_addf(s, ",\"mode\":%d,\"readonly\":%d,\"color\":", n->mode, n->readonly);
 	ds_color(s, n->color);
 	if (n->type == UI_DN_QRCODE) {
@@ -983,7 +1586,7 @@ char *UiDesign_ToJson(const UiDesignDoc *doc)
 	int i;
 	if (!doc) return NULL;
 	ds_init(&s);
-	ds_add(&s, "{\n  \"format\":\"cui-design\",\n  \"version\":2,\n  \"name\":");
+	ds_add(&s, "{\n  \"format\":\"cui-design\",\n  \"version\":4,\n  \"name\":");
 	ds_json_str(&s, doc->name);
 	ds_add(&s, ",\n  \"groups\":[");
 	for (i = 0; i < doc->groupCount; i++) {
@@ -1020,6 +1623,21 @@ char *UiDesign_ToJson(const UiDesignDoc *doc)
 		else ds_add(&s, "null");
 		ds_add(&s, "}");
 	}
+	ds_add(&s, "\n  ],\n  \"radioGroups\":[");
+	for (i = 0; i < doc->radioGroupCount; i++) {
+		const UiDesignRadioGroup *rg = &doc->radioGroups[i];
+		if (i) ds_add(&s, ",");
+		ds_addf(&s, "\n    {\"uid\":%u,\"owner\":%d,\"id\":",
+			rg->uid, rg->owner);
+		ds_json_str(&s, rg->id);
+		ds_add(&s, ",\"name\":");
+		ds_json_str(&s, rg->name);
+		ds_addf(&s, ",\"enabled\":%d,\"selectedRadioId\":", rg->enabled);
+		ds_json_str(&s, rg->selectedRadioId);
+		ds_add(&s, ",\"onChange\":");
+		ds_json_str(&s, rg->onChange);
+		ds_add(&s, "}");
+	}
 	ds_add(&s, "\n  ],\n  \"hosts\":[");
 	for (i = 0; i < doc->hostCount; i++) {
 		const UiDesignHost *w = &doc->hosts[i];
@@ -1045,6 +1663,10 @@ char *UiDesign_ToJson(const UiDesignDoc *doc)
 		ds_add(&s, "}");
 	}
 	ds_add(&s, "\n  ]\n}\n");
+	if (s.failed) {
+		ds_free(&s);
+		return NULL;
+	}
 	return s.p;
 }
 
@@ -1062,6 +1684,16 @@ static int jp_ch(JP *j, char c)
 {
 	jp_ws(j);
 	if (j->p < j->end && *j->p == c) { j->p++; return 1; }
+	return 0;
+}
+
+/* 空数组之后: 吃掉尾随逗号继续外层的键, 或吃掉文档结尾 '}'.
+ * 返回 1 = 继续外层循环, 2 = 文档已结束, 0 = 语法错误. */
+static int jp_empty_tail(JP *j)
+{
+	jp_ws(j);
+	if (jp_ch(j, ',')) return 1;
+	if (jp_ch(j, '}')) return 2;
 	return 0;
 }
 
@@ -1101,6 +1733,64 @@ static int jp_string(JP *j, char *out, int cap)
 		}
 		if (c && out && n < cap - 1) out[n++] = c;
 	}
+	return 0;
+}
+
+static int jp_string_dyn(JP *j, char **out)
+{
+	char *buf, *np;
+	size_t cap = 64, n = 0;
+	jp_ws(j);
+	if (!out || j->p >= j->end || *j->p != '"') return 0;
+	j->p++;
+	buf = (char *)dn_alloc(cap);
+	if (!buf) return 0;
+	while (j->p < j->end) {
+		char c = *j->p++;
+		if (c == '"') {
+			buf[n] = 0;
+			dn_free(*out);
+			*out = buf;
+			return 1;
+		}
+		if (c == '\\') {
+			if (j->p >= j->end) break;
+			c = *j->p++;
+			if (c == 'n') c = '\n';
+			else if (c == 'r') c = '\r';
+			else if (c == 't') c = '\t';
+			else if (c == 'b') c = '\b';
+			else if (c == 'f') c = '\f';
+			else if (c == 'u') {
+				unsigned v = 0;
+				int k;
+				for (k = 0; k < 4 && j->p < j->end; k++) {
+					char h = *j->p++;
+					v <<= 4;
+					if (h >= '0' && h <= '9') v |= (unsigned)(h - '0');
+					else if (h >= 'a' && h <= 'f') v |= (unsigned)(h - 'a' + 10);
+					else if (h >= 'A' && h <= 'F') v |= (unsigned)(h - 'A' + 10);
+				}
+				if (v < 0x80) c = (char)v;
+				else {
+					c = '?';
+				}
+			}
+		}
+		if (c) {
+			if (n + 1 >= cap) {
+				cap *= 2;
+				np = (char *)dn_realloc(buf, cap);
+				if (!np) {
+					dn_free(buf);
+					return 0;
+				}
+				buf = np;
+			}
+			buf[n++] = c;
+		}
+	}
+	dn_free(buf);
 	return 0;
 }
 
@@ -1237,13 +1927,42 @@ static int jp_array_float(JP *j, float *out, int count)
 
 static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex);
 
+static int jp_node_type(JP *j, int *outType)
+{
+	JP scan = *j;
+	char key[64];
+	if (!jp_ch(&scan, '{')) return 0;
+	for (;;) {
+		jp_ws(&scan);
+		if (jp_ch(&scan, '}')) {
+			*outType = UI_DN_LABEL;
+			return 1;
+		}
+		if (!jp_key(&scan, key, sizeof(key))) return 0;
+		if (strcmp(key, "type") == 0) {
+			char *value = NULL;
+			int type;
+			if (!jp_string_dyn(&scan, &value)) return 0;
+			type = UiDesign_TypeFromName(value);
+			dn_free(value);
+			if (type < 0) return 0;
+			*outType = type;
+			return 1;
+		}
+		if (!jp_skip(&scan)) return 0;
+		jp_ws(&scan);
+		if (jp_ch(&scan, ',')) continue;
+	}
+}
+
 static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 {
-	char key[64], val[UI_DN_TEXT_MAX];
+	char key[64];
 	int idx, type = UI_DN_LABEL;
 	int gotType = 0, gotRadius = 0, gotColor = 0, gotBg = 0, gotEcc = 0;
 	int gotLogo = 0, gotLogoRatio = 0, gotQrPad = 0;
 	int gotChecked = 0, gotRingMax = 0, gotRingWidth = 0;
+	if (!jp_node_type(j, &type)) return 0;
 	if (!jp_ch(j, '{')) return 0;
 	idx = UiDesign_AddNode(doc, win, type, parent, "node", "组件");
 	if (idx < 0) return 0;
@@ -1253,14 +1972,14 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 		if (jp_ch(j, '}')) break;
 		if (!jp_key(j, key, sizeof(key))) return 0;
 		if (strcmp(key, "id") == 0) {
-			jp_string(j, val, sizeof(val));
-			UiDesign_SetText(doc->nodes[idx].id, UI_DN_ID_MAX, val);
+			if (!jp_string_dyn(j, &doc->nodes[idx].id)) return 0;
 		} else if (strcmp(key, "name") == 0) {
-			jp_string(j, val, sizeof(val));
-			UiDesign_SetText(doc->nodes[idx].name, UI_DN_NAME_MAX, val);
+			if (!jp_string_dyn(j, &doc->nodes[idx].name)) return 0;
 		} else if (strcmp(key, "type") == 0) {
-			jp_string(j, val, sizeof(val));
-			type = UiDesign_TypeFromName(val);
+			char *value = NULL;
+			if (!jp_string_dyn(j, &value)) return 0;
+			type = UiDesign_TypeFromName(value);
+			dn_free(value);
 			if (type >= 0) doc->nodes[idx].type = type;
 			gotType = 1;
 		} else if (strcmp(key, "visible") == 0) jp_bool(j, &doc->nodes[idx].visible);
@@ -1303,9 +2022,9 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 				else if (strcmp(lk, "gridCol") == 0) jp_int(j, &doc->nodes[idx].gridCol);
 				else if (strcmp(lk, "rowSpan") == 0) jp_int(j, &doc->nodes[idx].rowSpan);
 				else if (strcmp(lk, "colSpan") == 0) jp_int(j, &doc->nodes[idx].colSpan);
-				else if (strcmp(lk, "gridColTracks") == 0)
-					jp_string(j, doc->nodes[idx].gridColTracks,
-						UI_DN_GRID_TRACKS_MAX);
+				else if (strcmp(lk, "gridColTracks") == 0) {
+					if (!jp_string_dyn(j, &doc->nodes[idx].gridColTracks)) return 0;
+				}
 				else if (!jp_skip(j)) return 0;
 				jp_ws(j);
 				if (jp_ch(j, ',')) continue;
@@ -1317,9 +2036,13 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 				jp_ws(j);
 				if (jp_ch(j, '}')) break;
 				if (!jp_key(j, pk, sizeof(pk))) return 0;
-				if (strcmp(pk, "text") == 0) jp_string(j, doc->nodes[idx].text, UI_DN_TEXT_MAX);
-				else if (strcmp(pk, "hint") == 0) jp_string(j, doc->nodes[idx].hint, (int)sizeof(doc->nodes[idx].hint));
-				else if (strcmp(pk, "options") == 0) jp_string(j, doc->nodes[idx].options, UI_DN_TEXT_MAX);
+				if (strcmp(pk, "text") == 0) {
+					if (!jp_string_dyn(j, &doc->nodes[idx].text)) return 0;
+				} else if (strcmp(pk, "hint") == 0) {
+					if (!jp_string_dyn(j, &doc->nodes[idx].hint)) return 0;
+				} else if (strcmp(pk, "options") == 0) {
+					if (!jp_string_dyn(j, &doc->nodes[idx].options)) return 0;
+				}
 				else if (strcmp(pk, "value") == 0) jp_number(j, &doc->nodes[idx].value);
 				else if (strcmp(pk, "checked") == 0) {
 					jp_bool(j, &doc->nodes[idx].checked);
@@ -1327,6 +2050,12 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 				}
 				else if (strcmp(pk, "enabled") == 0) jp_bool(j, &doc->nodes[idx].enabled);
 				else if (strcmp(pk, "selected") == 0) jp_int(j, &doc->nodes[idx].selected);
+				else if (strcmp(pk, "radioGroupUid") == 0) {
+					int uid = 0;
+					jp_int(j, &uid);
+					if (uid > 0)
+						doc->nodes[idx].radioGroupUid = (unsigned)uid;
+				}
 				else if (strcmp(pk, "variant") == 0) jp_int(j, &doc->nodes[idx].variant);
 				else if (strcmp(pk, "mode") == 0) jp_int(j, &doc->nodes[idx].mode);
 				else if (strcmp(pk, "readonly") == 0) jp_bool(j, &doc->nodes[idx].readonly);
@@ -1340,7 +2069,7 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 					jp_int(j, &doc->nodes[idx].ecc);
 					gotEcc = 1;
 				} else if (strcmp(pk, "src") == 0) {
-					jp_string(j, doc->nodes[idx].logoSrc, UI_DN_PATH_MAX);
+					if (!jp_string_dyn(j, &doc->nodes[idx].logoSrc)) return 0;
 					gotLogo = 1;
 				} else if (strcmp(pk, "logoRatio") == 0) {
 					jp_number(j, &doc->nodes[idx].logoRatio);
@@ -1359,9 +2088,11 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 				jp_ws(j);
 				if (jp_ch(j, ',')) continue;
 			}
-		} else if (strcmp(key, "onClick") == 0) jp_string(j, doc->nodes[idx].onClick, UI_DN_ID_MAX);
-		else if (strcmp(key, "onChange") == 0) jp_string(j, doc->nodes[idx].onChange, UI_DN_ID_MAX);
-		else if (strcmp(key, "children") == 0) {
+		} else if (strcmp(key, "onClick") == 0) {
+			if (!jp_string_dyn(j, &doc->nodes[idx].onClick)) return 0;
+		} else if (strcmp(key, "onChange") == 0) {
+			if (!jp_string_dyn(j, &doc->nodes[idx].onChange)) return 0;
+		} else if (strcmp(key, "children") == 0) {
 			if (!jp_ch(j, '[')) return 0;
 			jp_ws(j);
 			if (jp_ch(j, ']')) continue;
@@ -1412,7 +2143,7 @@ static int jp_node(JP *j, UiDesignDoc *doc, int win, int parent, int *outIndex)
 int UiDesign_FromJson(UiDesignDoc *doc, const char *text)
 {
 	JP j;
-	char key[64], val[UI_DN_PATH_MAX];
+	char key[64];
 	int version = 1;
 	if (!doc || !text) return 0;
 	UiDesign_Free(doc);
@@ -1425,65 +2156,148 @@ int UiDesign_FromJson(UiDesignDoc *doc, const char *text)
 		if (jp_ch(&j, '}')) break;
 		if (!jp_key(&j, key, sizeof(key))) return 0;
 		if (strcmp(key, "name") == 0) {
-			jp_string(&j, doc->name, UI_DN_NAME_MAX);
+			if (!jp_string_dyn(&j, &doc->name)) return 0;
 		} else if (strcmp(key, "version") == 0) {
 			jp_int(&j, &version);
 		} else if (strcmp(key, "groups") == 0) {
 			if (!jp_ch(&j, '[')) return 0;
 			jp_ws(&j);
-			if (jp_ch(&j, ']')) continue;
+			if (jp_ch(&j, ']')) {
+				int t = jp_empty_tail(&j);
+				if (t == 1) continue;
+				if (t == 2) break;
+				return 0;
+			}
 			for (;;) {
 				int gi;
 				jp_ws(&j);
 				if (!jp_ch(&j, '{')) return 0;
 				gi = UiDesign_AddGroup(doc, "group", "分组");
+				if (gi < 0) return 0;
 				for (;;) {
 					char gk[48];
 					jp_ws(&j);
 					if (jp_ch(&j, '}')) break;
 					if (!jp_key(&j, gk, sizeof(gk))) return 0;
-					if (strcmp(gk, "id") == 0) jp_string(&j, doc->groups[gi].id, UI_DN_ID_MAX);
-					else if (strcmp(gk, "name") == 0) jp_string(&j, doc->groups[gi].name, UI_DN_NAME_MAX);
-					else if (strcmp(gk, "outputC") == 0) jp_string(&j, doc->groups[gi].outputC, UI_DN_PATH_MAX);
-					else if (strcmp(gk, "outputH") == 0) jp_string(&j, doc->groups[gi].outputH, UI_DN_PATH_MAX);
-					else if (strcmp(gk, "symbolPrefix") == 0) jp_string(&j, doc->groups[gi].symbolPrefix, UI_DN_SYM_MAX);
-					else if (!jp_skip(&j)) return 0;
+					if (strcmp(gk, "id") == 0) {
+						if (!jp_string_dyn(&j, &doc->groups[gi].id)) return 0;
+					} else if (strcmp(gk, "name") == 0) {
+						if (!jp_string_dyn(&j, &doc->groups[gi].name)) return 0;
+					} else if (strcmp(gk, "outputC") == 0) {
+						if (!jp_string_dyn(&j, &doc->groups[gi].outputC)) return 0;
+					} else if (strcmp(gk, "outputH") == 0) {
+						if (!jp_string_dyn(&j, &doc->groups[gi].outputH)) return 0;
+					} else if (strcmp(gk, "symbolPrefix") == 0) {
+						if (!jp_string_dyn(&j, &doc->groups[gi].symbolPrefix)) return 0;
+					} else if (!jp_skip(&j)) return 0;
 					jp_ws(&j);
 					if (jp_ch(&j, ',')) continue;
 				}
-				if (!doc->groups[gi].symbolPrefix[0])
-					UiDesign_Symbol(doc->groups[gi].id,
-						doc->groups[gi].symbolPrefix, UI_DN_SYM_MAX);
+				if (!doc->groups[gi].symbolPrefix[0]) {
+					char *symbol = UiDesign_SymbolAlloc(doc->groups[gi].id);
+					if (!symbol) return 0;
+					dn_free(doc->groups[gi].symbolPrefix);
+					doc->groups[gi].symbolPrefix = symbol;
+				}
 				jp_ws(&j);
 				if (jp_ch(&j, ']')) break;
 				if (!jp_ch(&j, ',')) return 0;
 			}
-		} else if (strcmp(key, "views") == 0) {
+		} else if (strcmp(key, "radioGroups") == 0) {
+				if (!jp_ch(&j, '[')) return 0;
+				jp_ws(&j);
+				if (jp_ch(&j, ']')) {
+					int t = jp_empty_tail(&j);
+					if (t == 1) continue;
+					if (t == 2) break;
+					return 0;
+				}
+				for (;;) {
+					UiDesignRadioGroup *rg;
+					int gi;
+					jp_ws(&j);
+					if (!jp_ch(&j, '{')) return 0;
+					if (!dn_reserve((void **)&doc->radioGroups,
+						&doc->radioGroupCap, doc->radioGroupCount + 1,
+						sizeof(UiDesignRadioGroup))) return 0;
+					gi = doc->radioGroupCount++;
+					rg = &doc->radioGroups[gi];
+					memset(rg, 0, sizeof(*rg));
+					rg->owner = -1;
+					rg->enabled = 1;
+					if (!UiDesign_SetString(&rg->id, "") ||
+					    !UiDesign_SetString(&rg->name, "") ||
+					    !UiDesign_SetString(&rg->selectedRadioId, "") ||
+					    !UiDesign_SetString(&rg->onChange, "")) {
+						dn_free_radio_group_strings(rg);
+						doc->radioGroupCount--;
+						return 0;
+					}
+					for (;;) {
+						char rk[48];
+						jp_ws(&j);
+						if (jp_ch(&j, '}')) break;
+						if (!jp_key(&j, rk, sizeof(rk))) return 0;
+						if (strcmp(rk, "uid") == 0) {
+							int v = 0;
+							jp_int(&j, &v);
+							if (v > 0) rg->uid = (unsigned)v;
+						} else if (strcmp(rk, "owner") == 0) {
+							jp_int(&j, &rg->owner);
+						} else if (strcmp(rk, "id") == 0) {
+							if (!jp_string_dyn(&j, &rg->id)) return 0;
+						} else if (strcmp(rk, "name") == 0) {
+							if (!jp_string_dyn(&j, &rg->name)) return 0;
+						} else if (strcmp(rk, "enabled") == 0) {
+							jp_bool(&j, &rg->enabled);
+						} else if (strcmp(rk, "selectedRadioId") == 0) {
+							if (!jp_string_dyn(&j, &rg->selectedRadioId)) return 0;
+						} else if (strcmp(rk, "onChange") == 0) {
+							if (!jp_string_dyn(&j, &rg->onChange)) return 0;
+						} else if (!jp_skip(&j)) return 0;
+						jp_ws(&j);
+						if (jp_ch(&j, ',')) continue;
+					}
+					jp_ws(&j);
+					if (jp_ch(&j, ']')) break;
+					if (!jp_ch(&j, ',')) return 0;
+				}
+			} else if (strcmp(key, "views") == 0) {
 			if (!jp_ch(&j, '[')) return 0;
 			jp_ws(&j);
-			if (jp_ch(&j, ']')) continue;
+			if (jp_ch(&j, ']')) {
+				int t = jp_empty_tail(&j);
+				if (t == 1) continue;
+				if (t == 2) break;
+				return 0;
+			}
 			for (;;) {
 				int vi, gi = -1;
-				char group[UI_DN_ID_MAX] = "";
+				char *group = NULL;
 				UiDesignView *v;
 				jp_ws(&j);
 				if (!jp_ch(&j, '{')) return 0;
 				vi = UiDesign_AddView(doc, "view", "视图");
+				if (vi < 0) return 0;
 				v = UiDesign_View(doc, vi);
 				for (;;) {
 					char vk[48];
 					jp_ws(&j);
 					if (jp_ch(&j, '}')) break;
 					if (!jp_key(&j, vk, sizeof(vk))) return 0;
-					if (strcmp(vk, "id") == 0) jp_string(&j, v->id, UI_DN_ID_MAX);
-					else if (strcmp(vk, "name") == 0) jp_string(&j, v->name, UI_DN_NAME_MAX);
-					else if (strcmp(vk, "width") == 0) jp_number(&j, &v->w);
+					if (strcmp(vk, "id") == 0) {
+						if (!jp_string_dyn(&j, &v->id)) return 0;
+					} else if (strcmp(vk, "name") == 0) {
+						if (!jp_string_dyn(&j, &v->name)) return 0;
+					} else if (strcmp(vk, "width") == 0) jp_number(&j, &v->w);
 					else if (strcmp(vk, "height") == 0) jp_number(&j, &v->h);
 					else if (strcmp(vk, "group") == 0) {
 						jp_ws(&j);
 						if (j.p < j.end && *j.p == '"') {
-							if (jp_string(&j, group, sizeof(group)))
-								gi = UiDesign_FindGroup(doc, group);
+							if (!jp_string_dyn(&j, &group)) return 0;
+							gi = UiDesign_FindGroup(doc, group);
+							dn_free(group);
+							group = NULL;
 						} else if (!jp_skip(&j)) return 0;
 					} else if (strcmp(vk, "root") == 0) {
 						int root = -1;
@@ -1506,36 +2320,49 @@ int UiDesign_FromJson(UiDesignDoc *doc, const char *text)
 		} else if (strcmp(key, "hosts") == 0) {
 			if (!jp_ch(&j, '[')) return 0;
 			jp_ws(&j);
-			if (jp_ch(&j, ']')) continue;
+			if (jp_ch(&j, ']')) {
+				int t = jp_empty_tail(&j);
+				if (t == 1) continue;
+				if (t == 2) break;
+				return 0;
+			}
 			for (;;) {
 				int hi, gi = -1, vi = -1;
-				char group[UI_DN_ID_MAX] = "";
-				char viewId[UI_DN_ID_MAX] = "";
+				char *group = NULL;
+				char *viewId = NULL;
 				UiDesignHost *w;
 				jp_ws(&j);
 				if (!jp_ch(&j, '{')) return 0;
 				hi = UiDesign_AddHost(doc, "host", "宿主", UI_DH_WINDOW, -1);
+				if (hi < 0) return 0;
 				w = UiDesign_Host(doc, hi);
 				for (;;) {
 					char hk[48];
 					jp_ws(&j);
 					if (jp_ch(&j, '}')) break;
 					if (!jp_key(&j, hk, sizeof(hk))) return 0;
-					if (strcmp(hk, "id") == 0) jp_string(&j, w->id, UI_DN_ID_MAX);
-					else if (strcmp(hk, "name") == 0) jp_string(&j, w->name, UI_DN_NAME_MAX);
-					else if (strcmp(hk, "title") == 0) jp_string(&j, w->title, 128);
-					else if (strcmp(hk, "kind") == 0) jp_int(&j, &w->kind);
+					if (strcmp(hk, "id") == 0) {
+						if (!jp_string_dyn(&j, &w->id)) return 0;
+					} else if (strcmp(hk, "name") == 0) {
+						if (!jp_string_dyn(&j, &w->name)) return 0;
+					} else if (strcmp(hk, "title") == 0) {
+						if (!jp_string_dyn(&j, &w->title)) return 0;
+					} else if (strcmp(hk, "kind") == 0) jp_int(&j, &w->kind);
 					else if (strcmp(hk, "group") == 0) {
 						jp_ws(&j);
 						if (j.p < j.end && *j.p == '"') {
-							if (jp_string(&j, group, sizeof(group)))
-								gi = UiDesign_FindGroup(doc, group);
+							if (!jp_string_dyn(&j, &group)) return 0;
+							gi = UiDesign_FindGroup(doc, group);
+							dn_free(group);
+							group = NULL;
 						} else if (!jp_skip(&j)) return 0;
 					} else if (strcmp(hk, "view") == 0) {
 						jp_ws(&j);
 						if (j.p < j.end && *j.p == '"') {
-							jp_string(&j, viewId, sizeof(viewId));
+							if (!jp_string_dyn(&j, &viewId)) return 0;
 							vi = UiDesign_FindView(doc, viewId);
+							dn_free(viewId);
+							viewId = NULL;
 						} else if (!jp_skip(&j)) return 0;
 					} else if (strcmp(hk, "width") == 0) jp_number(&j, &w->w);
 					else if (strcmp(hk, "height") == 0) jp_number(&j, &w->h);
@@ -1558,16 +2385,22 @@ int UiDesign_FromJson(UiDesignDoc *doc, const char *text)
 			/* v1 迁移: 每个窗口生成一个同名视图 + 宿主. */
 			if (!jp_ch(&j, '[')) return 0;
 			jp_ws(&j);
-			if (jp_ch(&j, ']')) continue;
+			if (jp_ch(&j, ']')) {
+				int t = jp_empty_tail(&j);
+				if (t == 1) continue;
+				if (t == 2) break;
+				return 0;
+			}
 			for (;;) {
 				int vi, wi, gi = -1;
-				char group[UI_DN_ID_MAX] = "";
+				char *group = NULL;
 				UiDesignView *v;
 				UiDesignHost *w;
 				jp_ws(&j);
 				if (!jp_ch(&j, '{')) return 0;
 				vi = UiDesign_AddView(doc, "view", "视图");
 				wi = UiDesign_AddHost(doc, "window", "窗口", UI_DH_WINDOW, -1);
+				if (vi < 0 || wi < 0) return 0;
 				v = UiDesign_View(doc, vi);
 				w = UiDesign_Host(doc, wi);
 				w->view = vi;
@@ -1577,18 +2410,21 @@ int UiDesign_FromJson(UiDesignDoc *doc, const char *text)
 					if (jp_ch(&j, '}')) break;
 					if (!jp_key(&j, wk, sizeof(wk))) return 0;
 					if (strcmp(wk, "id") == 0) {
-						jp_string(&j, v->id, UI_DN_ID_MAX);
-						UiDesign_SetText(w->id, UI_DN_ID_MAX, v->id);
+						if (!jp_string_dyn(&j, &v->id) ||
+						    !UiDesign_SetString(&w->id, v->id)) return 0;
 					} else if (strcmp(wk, "name") == 0) {
-						jp_string(&j, v->name, UI_DN_NAME_MAX);
-						UiDesign_SetText(w->name, UI_DN_NAME_MAX, v->name);
-					} else if (strcmp(wk, "title") == 0) jp_string(&j, w->title, 128);
-					else if (strcmp(wk, "kind") == 0) jp_int(&j, &w->kind);
+						if (!jp_string_dyn(&j, &v->name) ||
+						    !UiDesign_SetString(&w->name, v->name)) return 0;
+					} else if (strcmp(wk, "title") == 0) {
+						if (!jp_string_dyn(&j, &w->title)) return 0;
+					} else if (strcmp(wk, "kind") == 0) jp_int(&j, &w->kind);
 					else if (strcmp(wk, "group") == 0) {
 						jp_ws(&j);
 						if (j.p < j.end && *j.p == '"') {
-							if (jp_string(&j, group, sizeof(group)))
-								gi = UiDesign_FindGroup(doc, group);
+							if (!jp_string_dyn(&j, &group)) return 0;
+							gi = UiDesign_FindGroup(doc, group);
+							dn_free(group);
+							group = NULL;
 						} else if (!jp_skip(&j)) return 0;
 					} else if (strcmp(wk, "width") == 0) {
 						jp_number(&j, &w->w);
@@ -1615,8 +2451,9 @@ int UiDesign_FromJson(UiDesignDoc *doc, const char *text)
 				v->group = gi;
 				w->group = gi;
 				w->kind = w->kind == 1 ? UI_DH_DIALOG : UI_DH_WINDOW;
-				if (v->id[0] == 0)
-					UiDesign_SetText(v->id, UI_DN_ID_MAX, w->id);
+				if (v->id[0] == 0) {
+					if (!UiDesign_SetString(&v->id, w->id)) return 0;
+				}
 				jp_ws(&j);
 				if (jp_ch(&j, ']')) break;
 				if (!jp_ch(&j, ',')) return 0;
@@ -1625,21 +2462,51 @@ int UiDesign_FromJson(UiDesignDoc *doc, const char *text)
 		jp_ws(&j);
 		if (jp_ch(&j, ',')) continue;
 	}
-	(void)version;
+	if (version != 4) return 0;
+	/* RadioGroup 表校验: 丢弃无效 owner, 补齐 id/uid, 再校验节点引用. */
+	for (int gi = doc->radioGroupCount - 1; gi >= 0; gi--) {
+		UiDesignRadioGroup *rg = &doc->radioGroups[gi];
+		int k;
+		if (rg->owner >= 0 && rg->owner < doc->viewCount) continue;
+		dn_free_radio_group_strings(rg);
+		for (k = gi + 1; k < doc->radioGroupCount; k++)
+			doc->radioGroups[k - 1] = doc->radioGroups[k];
+		doc->radioGroupCount--;
+	}
+	for (int gi = 0; gi < doc->radioGroupCount; gi++) {
+		UiDesignRadioGroup *rg = &doc->radioGroups[gi];
+		unsigned uid;
+		if (dn_group_id_taken(doc, rg->owner, rg->id, gi)) {
+			char *id = dn_group_unique_id(doc, rg->owner, rg->id, gi);
+			if (!id) return 0;
+			dn_free(rg->id);
+			rg->id = id;
+		}
+		if (rg->uid == 0 || UiDesign_RadioGroupFind(doc, rg->uid) != gi) {
+			uid = doc->nextRadioGroupUid ? doc->nextRadioGroupUid : 1;
+			while (UiDesign_RadioGroupFind(doc, uid) >= 0) uid++;
+			rg->uid = uid;
+		}
+		if (doc->nextRadioGroupUid <= rg->uid)
+			doc->nextRadioGroupUid = rg->uid + 1;
+	}
+	for (int ni = 0; ni < doc->nodeCount; ni++) {
+		UiDesignNode *n = &doc->nodes[ni];
+		int gi;
+		if (n->type != UI_DN_RADIO) {
+			n->radioGroupUid = 0;
+			continue;
+		}
+		if (!n->radioGroupUid) continue;
+		gi = UiDesign_RadioGroupFind(doc, n->radioGroupUid);
+		if (gi < 0 || doc->radioGroups[gi].owner != n->owner)
+			n->radioGroupUid = 0;
+	}
+	for (int gi = 0; gi < doc->radioGroupCount; gi++)
+		UiDesign_RadioGroupNormalize(doc, gi);
 	for (int ni = 0; ni < doc->nodeCount; ni++) {
 		if (doc->nodes[ni].type == UI_DN_TABS)
 			UiDesign_TabsNormalize(doc, ni);
-		else if (doc->nodes[ni].type == UI_DN_RADIOGROUP) {
-			int count = dn_option_count(doc->nodes[ni].options);
-			if (count > UI_DN_OPTIONS_MAX) count = UI_DN_OPTIONS_MAX;
-			if (count > 0) {
-				if (doc->nodes[ni].selected < 0) doc->nodes[ni].selected = 0;
-				if (doc->nodes[ni].selected >= count)
-					doc->nodes[ni].selected = count - 1;
-			} else {
-				doc->nodes[ni].selected = -1;
-			}
-		}
 	}
 	doc->dirty = 0;
 	return 1;
@@ -1673,6 +2540,15 @@ double atof_local(const char *s)
 
 /* ── 符号名 ─────────────────────────────────────────────────────────── */
 
+char *UiDesign_SymbolAlloc(const char *id)
+{
+	size_t len = id ? strlen(id) : 0;
+	char *out = (char *)dn_alloc(len + 4);
+	if (!out) return NULL;
+	UiDesign_Symbol(id, out, (int)(len + 4));
+	return out;
+}
+
 const char *UiDesign_Symbol(const char *id, char *out, int cap)
 {
 	int i = 0, n = 0;
@@ -1693,11 +2569,12 @@ const char *UiDesign_Symbol(const char *id, char *out, int cap)
 	}
 	out[n] = 0;
 	if (out[0] >= '0' && out[0] <= '9') {
-		char tmp[UI_DN_SYM_MAX];
-		UiDesign_SetText(tmp, UI_DN_SYM_MAX, out);
+		char *tmp = dn_strdup(out);
+		if (!tmp) return out;
 		out[0] = 0;
 		UiDesign_SetText(out, cap, "Ui_");
 		if (cap > 3) UiDesign_SetText(out + 3, cap - 3, tmp);
+		dn_free(tmp);
 	}
 	return out;
 }
@@ -1754,11 +2631,17 @@ static int dn_write_utf8(const wchar_t *path, const char *text, int len)
 	return (int)wrote == len;
 }
 
-static void dn_path_utf8(const wchar_t *path, char *out, int cap)
+static char *dn_path_utf8(const wchar_t *path)
 {
-	if (!path || !out || cap <= 0) return;
-	WideCharToMultiByte(CP_UTF8, 0, path, -1, out, cap, NULL, NULL);
-	out[cap - 1] = 0;
+	int n;
+	char *out;
+	if (!path) return NULL;
+	n = WideCharToMultiByte(CP_UTF8, 0, path, -1, NULL, 0, NULL, NULL);
+	if (n <= 0) return NULL;
+	out = (char *)dn_alloc((size_t)n);
+	if (!out) return NULL;
+	WideCharToMultiByte(CP_UTF8, 0, path, -1, out, n, NULL, NULL);
+	return out;
 }
 
 int UiDesign_LoadFile(UiDesignDoc *doc, const wchar_t *path)
@@ -1771,7 +2654,10 @@ int UiDesign_LoadFile(UiDesignDoc *doc, const wchar_t *path)
 	ok = UiDesign_FromJson(doc, text);
 	dn_free(text);
 	if (ok) {
-		dn_path_utf8(path, doc->path, UI_DN_PATH_MAX);
+		char *path8 = dn_path_utf8(path);
+		if (!path8) return 0;
+		dn_free(doc->path);
+		doc->path = path8;
 		doc->dirty = 0;
 	}
 	return ok;
@@ -1788,7 +2674,10 @@ int UiDesign_SaveFile(UiDesignDoc *doc, const wchar_t *path)
 	ok = dn_write_utf8(path, text, len);
 	dn_free(text);
 	if (ok) {
-		dn_path_utf8(path, doc->path, UI_DN_PATH_MAX);
+		char *path8 = dn_path_utf8(path);
+		if (!path8) return 0;
+		dn_free(doc->path);
+		doc->path = path8;
 		doc->dirty = 0;
 	}
 	return ok;
@@ -1809,8 +2698,7 @@ static float dn_natural_w(const UiDesignNode *n)
 
 static float dn_natural_h(const UiDesignNode *n)
 {
-	float h = n->h > 0.0f ? n->h : UiDesign_DefaultH(n->type);
-	return h;
+	return n->h > 0.0f ? n->h : UiDesign_DefaultH(n->type);
 }
 
 /* 与 UiTabStyle_Line/Pill/Card 的默认高度一致. */
@@ -1840,10 +2728,11 @@ static void dn_layout_absolute(const UiDesignDoc *doc, const UiDesignNode *p,
 	int i;
 	for (i = 0; i < p->childCount; i++) {
 		int ci = p->children[i];
-		UiDesignNode *n = &doc->nodes[ci];
+		UiDesignNode *n;
 		UiRect r;
 		float w, h;
-		if (!n->visible) { rects[ci] = Ui_Rect(0, 0, 0, 0); continue; }
+		if (!doc->nodes[ci].visible) continue;
+		n = &doc->nodes[ci];
 		w = n->wMode == UI_DN_SIZE_FILL ? inner.w : dn_natural_w(n);
 		h = n->hMode == UI_DN_SIZE_FILL ? inner.h : dn_natural_h(n);
 		if (n->wMode == UI_DN_SIZE_FILL && (n->anchors & (UI_DN_ANCHOR_LEFT | UI_DN_ANCHOR_RIGHT))) {
@@ -1870,61 +2759,95 @@ static void dn_layout_absolute(const UiDesignDoc *doc, const UiDesignNode *p,
 	}
 }
 
+static const float *dn_layout_margin(const UiDesignNode *n)
+{
+	static const float none[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+	return n->type == UI_DN_RADIO ? n->margin : none;
+}
+
 static void dn_layout_linear(const UiDesignDoc *doc, const UiDesignNode *p,
 	UiRect inner, int row, UiRect *rects)
 {
-	int i, grows = 0;
+	int i, count = 0, grows = 0;
 	float avail = row ? inner.w : inner.h;
 	float fixed = 0.0f;
-	float gapTotal = p->gap * (p->childCount > 1 ? p->childCount - 1 : 0);
+	float marginTotal = 0.0f;
+	float gapTotal;
 	float cursor = row ? inner.x : inner.y;
-	int count = p->childCount;
+	for (i = 0; i < p->childCount; i++)
+		if (doc->nodes[p->children[i]].visible) count++;
+	if (count <= 0) return;
+	gapTotal = p->gap * (count > 1 ? count - 1 : 0);
 	if (gapTotal > avail) gapTotal = avail;
 	avail -= gapTotal;
-	for (i = 0; i < count; i++) {
-		UiDesignNode *n = &doc->nodes[p->children[i]];
-		int mode = row ? n->wMode : n->hMode;
-		if (!n->visible) continue;
+	for (i = 0; i < p->childCount; i++) {
+		int ci = p->children[i];
+		UiDesignNode *n;
+		const float *m;
+		int mode;
+		if (!doc->nodes[ci].visible) continue;
+		n = &doc->nodes[ci];
+		m = dn_layout_margin(n);
+		mode = row ? n->wMode : n->hMode;
+		marginTotal += row ? m[0] + m[2] : m[1] + m[3];
 		if (mode == UI_DN_SIZE_GROW || mode == UI_DN_SIZE_FILL) grows++;
-		else if (mode == UI_DN_SIZE_FIXED) fixed += row ? n->w : n->h;
+		else if (mode == UI_DN_SIZE_FIXED)
+			fixed += row ? n->w : dn_natural_h(n);
 		else fixed += row ? dn_natural_w(n) : dn_natural_h(n);
 	}
 	if (fixed > avail) fixed = avail;
-	for (i = 0; i < count; i++) {
+	for (i = 0; i < p->childCount; i++) {
 		int ci = p->children[i];
-		UiDesignNode *n = &doc->nodes[ci];
+		UiDesignNode *n;
+		const float *m;
 		int mode, cmode;
 		float mainSize, crossSize, mainPos, crossPos = 0.0f;
+		float mainBefore, mainAfter, crossBefore, crossAfter, crossAvail;
 		UiRect r;
-		if (!n->visible) { rects[ci] = Ui_Rect(0, 0, 0, 0); continue; }
+		if (!doc->nodes[ci].visible) continue;
+		n = &doc->nodes[ci];
+		m = dn_layout_margin(n);
+		mainBefore = row ? m[0] : m[1];
+		mainAfter = row ? m[2] : m[3];
+		crossBefore = row ? m[1] : m[0];
+		crossAfter = row ? m[3] : m[2];
+		crossAvail = (row ? inner.h : inner.w) -
+			crossBefore - crossAfter;
+		if (crossAvail < 0.0f) crossAvail = 0.0f;
 		mode = row ? n->wMode : n->hMode;
 		cmode = row ? n->hMode : n->wMode;
 		if (mode == UI_DN_SIZE_GROW || mode == UI_DN_SIZE_FILL)
-			mainSize = grows > 0 ? (avail - fixed) / grows : 0.0f;
-		else if (mode == UI_DN_SIZE_FIXED) mainSize = row ? n->w : n->h;
+			mainSize = grows > 0
+				? (avail - fixed - marginTotal) / grows -
+					mainBefore - mainAfter : 0.0f;
+		else if (mode == UI_DN_SIZE_FIXED) mainSize = row ? n->w : dn_natural_h(n);
 		else mainSize = row ? dn_natural_w(n) : dn_natural_h(n);
 		if (mainSize < 0.0f) mainSize = 0.0f;
 		if (cmode == UI_DN_SIZE_FILL || cmode == UI_DN_SIZE_GROW)
-			crossSize = row ? inner.h : inner.w;
+			crossSize = crossAvail;
 		else crossSize = row ? dn_natural_h(n) : dn_natural_w(n);
 		if (row) {
-			mainPos = cursor;
-			if (crossSize < inner.h) {
-				if (n->align == UI_DN_ALIGN_CENTER) crossPos = inner.y + (inner.h - crossSize) * 0.5f;
-				else if (n->align == UI_DN_ALIGN_END) crossPos = inner.y + inner.h - crossSize;
-				else crossPos = inner.y;
-			} else crossPos = inner.y;
+			mainPos = cursor + mainBefore;
+			if (crossSize < crossAvail) {
+				if (n->align == UI_DN_ALIGN_CENTER)
+					crossPos = inner.y + crossBefore + (crossAvail - crossSize) * 0.5f;
+				else if (n->align == UI_DN_ALIGN_END)
+					crossPos = inner.y + crossBefore + crossAvail - crossSize;
+				else crossPos = inner.y + crossBefore;
+			} else crossPos = inner.y + crossBefore;
 			r = Ui_Rect(mainPos, crossPos, mainSize, crossSize);
 		} else {
-			mainPos = cursor;
-			if (crossSize < inner.w) {
-				if (n->align == UI_DN_ALIGN_CENTER) crossPos = inner.x + (inner.w - crossSize) * 0.5f;
-				else if (n->align == UI_DN_ALIGN_END) crossPos = inner.x + inner.w - crossSize;
-				else crossPos = inner.x;
-			} else crossPos = inner.x;
+			mainPos = cursor + mainBefore;
+			if (crossSize < crossAvail) {
+				if (n->align == UI_DN_ALIGN_CENTER)
+					crossPos = inner.x + crossBefore + (crossAvail - crossSize) * 0.5f;
+				else if (n->align == UI_DN_ALIGN_END)
+					crossPos = inner.x + crossBefore + crossAvail - crossSize;
+				else crossPos = inner.x + crossBefore;
+			} else crossPos = inner.x + crossBefore;
 			r = Ui_Rect(crossPos, mainPos, crossSize, mainSize);
 		}
-		cursor += mainSize + p->gap;
+		cursor += mainBefore + mainSize + mainAfter + p->gap;
 		dn_layout_node(doc, ci, r, rects);
 	}
 }
@@ -1937,39 +2860,37 @@ static int dn_parse_col_tracks(const char *spec, int *kinds, float *vals, int ca
 	int n = 0;
 	const char *p = spec;
 	while (p && *p && n < cap) {
-		char tok[32];
-		int len = 0, digits = 0, isFr = 0, neg = 0;
+		const char *q, *end;
+		int digits = 0, isFr = 0, neg = 0;
 		float v = 0.0f;
-		const char *q;
 		while (*p == ' ' || *p == '\t') p++;
 		if (!*p) break;
-		while (*p && *p != ',' && len < (int)sizeof(tok) - 1)
-			tok[len++] = *p++;
+		q = p;
+		while (*p && *p != ',') p++;
+		end = p;
 		if (*p == ',') p++;
-		tok[len] = 0;
-		while (len > 0 && (tok[len - 1] == ' ' || tok[len - 1] == '\t'))
-			tok[--len] = 0;
-		if (!len) continue;
-		if ((tok[0] == 'a' || tok[0] == 'A') &&
-		    (tok[1] == 'u' || tok[1] == 'U') &&
-		    (tok[2] == 't' || tok[2] == 'T') &&
-		    (tok[3] == 'o' || tok[3] == 'O') && !tok[4]) {
+		while (end > q && (end[-1] == ' ' || end[-1] == '\t')) end--;
+		if (end == q) continue;
+		if (end - q == 4 &&
+		    (q[0] == 'a' || q[0] == 'A') &&
+		    (q[1] == 'u' || q[1] == 'U') &&
+		    (q[2] == 't' || q[2] == 'T') &&
+		    (q[3] == 'o' || q[3] == 'O')) {
 			kinds[n] = DN_TRACK_AUTO;
 			vals[n] = 0.0f;
 			n++;
 			continue;
 		}
-		q = tok;
 		if (*q == '-') { neg = 1; q++; }
-		while (*q >= '0' && *q <= '9') {
+		while (q < end && *q >= '0' && *q <= '9') {
 			v = v * 10.0f + (float)(*q - '0');
 			q++;
 			digits = 1;
 		}
-		if (*q == '.') {
+		if (q < end && *q == '.') {
 			float f = 0.0f, div = 1.0f;
 			q++;
-			while (*q >= '0' && *q <= '9') {
+			while (q < end && *q >= '0' && *q <= '9') {
 				f = f * 10.0f + (float)(*q - '0');
 				div *= 10.0f;
 				q++;
@@ -1978,13 +2899,13 @@ static int dn_parse_col_tracks(const char *spec, int *kinds, float *vals, int ca
 			v += f / div;
 		}
 		if (neg) v = -v;
-		if (*q == 'f' || *q == 'F') {
+		if (q < end && (*q == 'f' || *q == 'F')) {
 			isFr = 1;
 			q++;
-			if (*q == 'r' || *q == 'R') q++;
-		} else if (*q == 'p' || *q == 'P') {
+			if (q < end && (*q == 'r' || *q == 'R')) q++;
+		} else if (q < end && (*q == 'p' || *q == 'P')) {
 			q++;
-			if (*q == 'x' || *q == 'X') q++;
+			if (q < end && (*q == 'x' || *q == 'X')) q++;
 		}
 		if (!digits) {
 			kinds[n] = DN_TRACK_FR;
@@ -2004,39 +2925,62 @@ static int dn_parse_col_tracks(const char *spec, int *kinds, float *vals, int ca
 static void dn_grid_auto_widths(const UiDesignDoc *doc, const UiDesignNode *p,
 	int cols, float *widths)
 {
-	int i;
+	int i, ordinal = 0;
 	for (i = 0; i < p->childCount; i++) {
-		UiDesignNode *n = &doc->nodes[p->children[i]];
+		int ci = p->children[i];
+		UiDesignNode *n;
+		const float *m;
+		float w;
 		int c, cs;
-		if (!n->visible) continue;
-		c = n->gridCol >= 0 ? n->gridCol : i % cols;
+		if (!doc->nodes[ci].visible) continue;
+		n = &doc->nodes[ci];
+		c = n->gridCol >= 0 ? n->gridCol : ordinal % cols;
+		ordinal++;
 		cs = n->colSpan > 0 ? n->colSpan : 1;
 		if (c < 0) c = 0;
 		if (c >= cols) c = cols - 1;
-		if (cs > 1) continue;   /* 跨列项不参与 AUTO 列宽 */
-		{
-			float w = dn_natural_w(n);
-			if (w > widths[c]) widths[c] = w;
-		}
+		if (cs > 1) continue;
+		m = dn_layout_margin(n);
+		w = dn_natural_w(n) + m[0] + m[2];
+		if (w > widths[c]) widths[c] = w;
 	}
+}
+
+static int dn_grid_track_count(const char *spec)
+{
+	int count = 0;
+	const char *p = spec;
+	if (!p) return 0;
+	while (*p) {
+		while (*p == ',' || *p == ' ' || *p == '\t') p++;
+		if (!*p) break;
+		count++;
+		while (*p && *p != ',') p++;
+	}
+	return count;
 }
 
 int UiDesign_GridColumns(const UiDesignDoc *doc, const UiDesignNode *n,
 	UiRect inner, float *xs, float *ws, int cap)
 {
-	int kinds[UI_DN_GRID_MAX_COLS];
-	float vals[UI_DN_GRID_MAX_COLS];
-	float widths[UI_DN_GRID_MAX_COLS];
+	int *kinds = NULL;
+	float *vals = NULL, *widths = NULL;
 	float fixedSum = 0.0f, frSum = 0.0f, autoSum = 0.0f;
 	float avail, remain, cursor = inner.x;
 	int ntok, cols, i;
 	if (!doc || !n || !xs || !ws || cap <= 0) return 0;
-	ntok = dn_parse_col_tracks(n->gridColTracks, kinds, vals,
-		UI_DN_GRID_MAX_COLS);
+	ntok = dn_grid_track_count(n->gridColTracks);
 	cols = n->gridCols > 0 ? n->gridCols : (ntok > 0 ? ntok : 1);
 	if (cols < 1) cols = 1;
-	if (cols > UI_DN_GRID_MAX_COLS) cols = UI_DN_GRID_MAX_COLS;
 	if (cols > cap) cols = cap;
+	kinds = (int *)dn_alloc((size_t)cols * sizeof(*kinds));
+	vals = (float *)dn_alloc((size_t)cols * sizeof(*vals));
+	widths = (float *)dn_alloc((size_t)cols * sizeof(*widths));
+	if (!kinds || !vals || !widths) {
+		dn_free(kinds); dn_free(vals); dn_free(widths);
+		return 0;
+	}
+	ntok = dn_parse_col_tracks(n->gridColTracks, kinds, vals, cols);
 	for (i = 0; i < cols; i++) {
 		if (i >= ntok) {
 			kinds[i] = DN_TRACK_FR;
@@ -2064,36 +3008,57 @@ int UiDesign_GridColumns(const UiDesignDoc *doc, const UiDesignNode *n,
 		ws[i] = w;
 		cursor += w + n->gridColGap;
 	}
+	dn_free(kinds);
+	dn_free(vals);
+	dn_free(widths);
 	return cols;
 }
 
 static void dn_layout_grid(const UiDesignDoc *doc, const UiDesignNode *p,
 	UiRect inner, UiRect *rects)
 {
-	float xs[UI_DN_GRID_MAX_COLS], ws[UI_DN_GRID_MAX_COLS];
-	int cols;
-	int rows;
+	float *xs = NULL, *ws = NULL;
+	int cols, rows, count = 0, i, ordinal = 0;
 	float rowGap = p->gridRowGap;
 	float cellH;
-	int i;
-	cols = UiDesign_GridColumns(doc, p, inner, xs, ws, UI_DN_GRID_MAX_COLS);
+	cols = dn_grid_track_count(p->gridColTracks);
+	if (p->gridCols > cols) cols = p->gridCols;
 	if (cols < 1) cols = 1;
-	/* gridRows <= 0: 按子节点数量自动确定行数. */
+	xs = (float *)dn_alloc((size_t)cols * sizeof(*xs));
+	ws = (float *)dn_alloc((size_t)cols * sizeof(*ws));
+	if (!xs || !ws) {
+		dn_free(xs); dn_free(ws);
+		return;
+	}
+	cols = UiDesign_GridColumns(doc, p, inner, xs, ws, cols);
+	if (cols < 1) cols = 1;
+	for (i = 0; i < p->childCount; i++)
+		if (doc->nodes[p->children[i]].visible) count++;
+	if (count <= 0) {
+		dn_free(xs); dn_free(ws);
+		return;
+	}
 	rows = p->gridRows > 0 ? p->gridRows
-		: (p->childCount + cols - 1) / cols;
+		: count / cols + (count % cols != 0);
 	if (rows < 1) rows = 1;
 	cellH = (inner.h - rowGap * (rows - 1)) / rows;
 	if (cellH < 0.0f) cellH = 0.0f;
 	for (i = 0; i < p->childCount; i++) {
 		int ci = p->children[i];
-		UiDesignNode *n = &doc->nodes[ci];
-		int r = n->gridRow >= 0 ? n->gridRow : i / cols;
-		int c = n->gridCol >= 0 ? n->gridCol : i % cols;
-		int rs = n->rowSpan > 0 ? n->rowSpan : 1;
-		int cs = n->colSpan > 0 ? n->colSpan : 1;
+		UiDesignNode *n;
+		int r, c, rs, cs;
 		float w, h;
 		UiRect cell;
-		if (!n->visible) { rects[ci] = Ui_Rect(0, 0, 0, 0); continue; }
+		const float *m;
+		float innerW, innerH;
+		if (!doc->nodes[ci].visible) continue;
+		n = &doc->nodes[ci];
+		r = n->gridRow >= 0 ? n->gridRow : ordinal / cols;
+		c = n->gridCol >= 0 ? n->gridCol : ordinal % cols;
+		ordinal++;
+		rs = n->rowSpan > 0 ? n->rowSpan : 1;
+		cs = n->colSpan > 0 ? n->colSpan : 1;
+		m = dn_layout_margin(n);
 		if (r >= rows) r = rows - 1;
 		if (c >= cols) c = cols - 1;
 		if (rs > rows - r) rs = rows - r;
@@ -2102,23 +3067,29 @@ static void dn_layout_grid(const UiDesignDoc *doc, const UiDesignNode *p,
 		cell.y = inner.y + r * (cellH + rowGap);
 		cell.w = xs[c + cs - 1] + ws[c + cs - 1] - xs[c];
 		cell.h = cellH * rs + rowGap * (rs - 1);
+		innerW = cell.w - m[0] - m[2];
+		innerH = cell.h - m[1] - m[3];
+		if (innerW < 0.0f) innerW = 0.0f;
+		if (innerH < 0.0f) innerH = 0.0f;
 		w = n->wMode == UI_DN_SIZE_FIXED ? n->w
-			: (n->wMode == UI_DN_SIZE_AUTO ? dn_natural_w(n) : cell.w);
-		h = n->hMode == UI_DN_SIZE_FIXED ? n->h
-			: (n->hMode == UI_DN_SIZE_AUTO ? dn_natural_h(n) : cell.h);
+			: (n->wMode == UI_DN_SIZE_AUTO ? dn_natural_w(n) : innerW);
+		h = n->hMode == UI_DN_SIZE_FIXED ? dn_natural_h(n)
+			: (n->hMode == UI_DN_SIZE_AUTO ? dn_natural_h(n) : innerH);
 		{
-			UiRect rct = Ui_Rect(cell.x, cell.y, w, h);
+			UiRect rct = Ui_Rect(cell.x + m[0], cell.y + m[1], w, h);
 			float ox = 0.0f, oy = 0.0f;
-			if (w < cell.w) {
-				if (n->align == UI_DN_ALIGN_CENTER) ox = (cell.w - w) * 0.5f;
-				else if (n->align == UI_DN_ALIGN_END) ox = cell.w - w;
+			if (w < innerW) {
+				if (n->align == UI_DN_ALIGN_CENTER) ox = (innerW - w) * 0.5f;
+				else if (n->align == UI_DN_ALIGN_END) ox = innerW - w;
 			}
-			if (h < cell.h) oy = (cell.h - h) * 0.5f;
+			if (h < innerH) oy = (innerH - h) * 0.5f;
 			rct.x += ox;
 			rct.y += oy;
 			dn_layout_node(doc, ci, rct, rects);
 		}
 	}
+	dn_free(xs);
+	dn_free(ws);
 }
 
 static void dn_layout_node(const UiDesignDoc *doc, int index, UiRect rect,
@@ -2206,6 +3177,67 @@ static UiId dn_widget_id(const UiDesignInstance *inst, int idx, int kind)
 	return Ui_IdIndex("cui.design", inst->view, idx, kind);
 }
 
+static UiId dn_node_widget_id(const UiDesignDoc *doc, int idx, int kind)
+{
+	const char *p = doc->nodes[idx].id;
+	uint64_t h = 1469598103934665603ULL;
+	unsigned char owner[4];
+	int i;
+	for (i = 0; i < 4; i++) owner[i] =
+		(unsigned char)((unsigned)doc->nodes[idx].owner >> (i * 8));
+	for (i = 0; i < 4; i++) {
+		h ^= owner[i];
+		h *= 1099511628211ULL;
+	}
+	while (*p) {
+		h ^= (unsigned char)*p++;
+		h *= 1099511628211ULL;
+	}
+	return Ui_IdIndex("cui.design.named", (int)(h >> 32), (int)h, kind);
+}
+
+static UiId dn_named_widget_id(const UiDesignInstance *inst, int idx, int kind)
+{
+	return dn_node_widget_id(inst->doc, idx, kind);
+}
+
+static UiId dn_radio_group_widget_id(const UiDesignDoc *doc, int group)
+{
+	if (!doc || group < 0 || group >= doc->radioGroupCount) return 0;
+	return Ui_Id("cui.design.radiogroup", (int)doc->radioGroups[group].uid,
+		doc->radioGroups[group].owner);
+}
+
+static int dn_group_selected_slot(const UiDesignInstance *inst, int group)
+{
+	UiDesignRadioGroupState *gs;
+	UiDesignRadioGroup *rg;
+	int node, slot;
+	if (!inst || group < 0 || group >= inst->radioStateCount ||
+	    group >= inst->doc->radioGroupCount) return -1;
+	rg = &inst->doc->radioGroups[group];
+	gs = &inst->radioStates[group];
+	node = UiDesign_RadioGroupSelectedNode(inst->doc, group);
+	if (node < 0 || node >= inst->stateCount) return -1;
+	slot = inst->states[node].radioSlot;
+	return slot >= 0 && slot < gs->radio.count ? slot : -1;
+}
+
+static int dn_group_slot_node(const UiDesignInstance *inst, int group, int slot)
+{
+	const UiDesignRadioGroup *rg;
+	int i;
+	if (!inst || group < 0 || group >= inst->doc->radioGroupCount) return -1;
+	rg = &inst->doc->radioGroups[group];
+	for (i = 0; i < inst->stateCount; i++) {
+		const UiDesignNode *n = &inst->doc->nodes[i];
+		if (n->type == UI_DN_RADIO && n->radioGroupUid == rg->uid &&
+		    inst->states[i].radioSlot == slot)
+			return i;
+	}
+	return -1;
+}
+
 static UiDesignNodeState *dn_state(UiDesignInstance *inst, int idx)
 {
 	if (!inst || idx < 0 || idx >= inst->stateCount) return NULL;
@@ -2214,44 +3246,49 @@ static UiDesignNodeState *dn_state(UiDesignInstance *inst, int idx)
 
 static void dn_options_select(UiDesignNode *n, UiDesignNodeState *st)
 {
-	int count = st->optCount;
-	if (n->type == UI_DN_SELECT) {
+	int count = st->options.count;
+	if (n->type == UI_DN_SELECT)
 		UiSelect_SetSelected(&st->select,
 			n->selected >= 0 && n->selected < count ? n->selected : 0);
-	} else if (n->type == UI_DN_RADIOGROUP) {
-		UiRadioGroup_SetSelected(&st->radio,
-			n->selected >= 0 && n->selected < count ? n->selected : 0);
-	}
 }
 
 static int dn_options_parse(UiDesignNode *n, UiDesignNodeState *st)
 {
-	int count = 0, i = 0;
-	if (strcmp(n->options, st->optCache) == 0) {
-		dn_options_select(n, st);
-		return st->optCount;
-	}
-	UiDesign_SetText(st->optCache, sizeof(st->optCache), n->options);
-	while (n->options[i] && count < UI_DN_OPTIONS_MAX) {
-		int start = i, j = 0;
-		while (n->options[i] && n->options[i] != ',') i++;
-		while (start < i && (n->options[start] == ' ' || n->options[start] == '\t')) start++;
-		while (start < i && j < UI_DN_OPTION_TEXT_MAX - 1)
-			st->optItems[count][j++] = n->options[start++];
-		while (j > 0 && (st->optItems[count][j - 1] == ' ' ||
-			st->optItems[count][j - 1] == '\t')) j--;
-		st->optItems[count][j] = 0;
-		if (j > 0) {
-			st->optPtrs[count] = st->optItems[count];
-			count++;
-		}
-		if (n->options[i] == ',') i++;
-	}
-	st->optCount = count;
-	if (n->type == UI_DN_SELECT) UiSelect_SetItems(&st->select, st->optPtrs, count);
-	else if (n->type == UI_DN_RADIOGROUP) st->radio.count = count;
-	dn_options_select(n, st);
+	int count = st->options.count;
+	int changed = UiDesign_OptionsUpdate(&st->options, n->options);
+	if (changed < 0) return count;
+	count = st->options.count;
+	if (changed > 0)
+		UiSelect_SetItems(&st->select, st->options.items, count);
+	if (!st->select.changed) dn_options_select(n, st);
 	return count;
+}
+
+static char *dn_utf8_from_wide(const wchar_t *text, int len)
+{
+	int n;
+	char *out;
+	if (!text || len <= 0) return dn_strdup("");
+	n = WideCharToMultiByte(CP_UTF8, 0, text, len, NULL, 0, NULL, NULL);
+	if (n <= 0) return NULL;
+	out = (char *)dn_alloc((size_t)n + 1);
+	if (!out) return NULL;
+	WideCharToMultiByte(CP_UTF8, 0, text, len, out, n, NULL, NULL);
+	out[n] = 0;
+	return out;
+}
+
+static wchar_t *dn_wide_from_utf8(const char *text)
+{
+	int n;
+	wchar_t *out;
+	if (!text) text = "";
+	n = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0);
+	if (n <= 0) return NULL;
+	out = (wchar_t *)dn_alloc((size_t)n * sizeof(*out));
+	if (!out) return NULL;
+	MultiByteToWideChar(CP_UTF8, 0, text, -1, out, n);
+	return out;
 }
 
 static void dn_state_init(UiDesignInstance *inst, int idx)
@@ -2262,12 +3299,13 @@ static void dn_state_init(UiDesignInstance *inst, int idx)
 	st = &inst->states[idx];
 	if (st->inited) return;
 	n = &inst->doc->nodes[idx];
+	st->text = dn_strdup(n->text);
+	if (!st->text) return;
 	st->inited = 1;
-	UiDesign_SetText(st->text, UI_DN_TEXT_MAX, n->text);
 	switch (n->type) {
 	case UI_DN_INPUT:
 		UiInput_Init(&st->input, inst->ui, inst->ime);
-		UiInput_Add(&st->input, dn_widget_id(inst, idx, 1), 255, 0, NULL, NULL);
+		UiInput_Add(&st->input, dn_widget_id(inst, idx, 1), 0, 0, NULL, NULL);
 		Edit_SetTextUtf8(UiInput_Edit(&st->input, 0), st->text);
 		st->input.blinkOn = 1;
 		break;
@@ -2284,22 +3322,14 @@ static void dn_state_init(UiDesignInstance *inst, int idx)
 	case UI_DN_SELECT:
 		UiSelect_Init(&st->select, dn_widget_id(inst, idx, 5));
 		UiSelect_AttachIme(&st->select, inst->ime);
-		st->optCache[0] = 0;
-		dn_options_parse(n, st);
-		break;
-	case UI_DN_RADIOGROUP:
-		UiRadioGroup_Init(&st->radio, dn_widget_id(inst, idx, 11), 0);
-		st->optCache[0] = 0;
 		dn_options_parse(n, st);
 		break;
 	case UI_DN_TEXTAREA:
-		UiTextArea_Init(&st->ta, dn_widget_id(inst, idx, 7),
-			(UI_DN_TEXT_MAX - 1) / 4);
+		UiTextArea_Init(&st->ta, dn_widget_id(inst, idx, 7), 0);
 		UiTextArea_AttachIme(&st->ta, inst->ime);
 		UiTextArea_SetTextUtf8(&st->ta, st->text);
-		MultiByteToWideChar(CP_UTF8, 0, n->hint[0] ? n->hint : "多行文本",
-			-1, st->taHint, 128);
-		UiTextArea_SetPlaceholder(&st->ta, st->taHint);
+		st->taHint = dn_wide_from_utf8(n->hint[0] ? n->hint : "多行文本");
+		if (st->taHint) UiTextArea_SetPlaceholder(&st->ta, st->taHint);
 		UiTextArea_SetReadonly(&st->ta, n->readonly);
 		break;
 	case UI_DN_DATEPICKER: {
@@ -2310,7 +3340,7 @@ static void dn_state_init(UiDesignInstance *inst, int idx)
 		if (n->hint[0]) UiDatePicker_SetPlaceholder(&st->dp, n->hint);
 		if (mode >= UI_DP_RANGE_DATE) {
 			UiDateTime a, b;
-			if (n->text[0] && n->options[0] &&
+			if (n->text[0] && n->options && n->options[0] &&
 			    UiDate_Parse(n->text, st->dp.format, &a) &&
 			    UiDate_Parse(n->options, st->dp.format, &b))
 				UiDatePicker_SetRange(&st->dp, &a, &b);
@@ -2334,7 +3364,7 @@ static void dn_state_init(UiDesignInstance *inst, int idx)
 		UiRingProgress_SetDurationMs(&st->ring, 0);
 		break;
 	case UI_DN_TABS:
-		st->barCount = n->childCount > 32 ? 32 : n->childCount;
+		st->barCount = n->childCount;
 		UiTabBar_Init(&st->bar, dn_widget_id(inst, idx, 6), st->barCount);
 		if (n->selected >= 0 && n->selected < st->barCount)
 			UiTabBar_SetSelected(&st->bar, n->selected);
@@ -2347,6 +3377,7 @@ static void dn_state_init(UiDesignInstance *inst, int idx)
 int UiDesignInstance_Init(UiDesignInstance *inst, UiDesignDoc *doc,
 	int host, UiContext *ui, UiPopupManager *pm, UiIme *ime)
 {
+	int i;
 	if (!inst) return 0;
 	memset(inst, 0, sizeof(*inst));
 	if (!doc || !ui || host < 0 || host >= doc->hostCount) return 0;
@@ -2363,6 +3394,20 @@ int UiDesignInstance_Init(UiDesignInstance *inst, UiDesignDoc *doc,
 	if (!inst->rects || !inst->states) {
 		UiDesignInstance_Shutdown(inst);
 		return 0;
+	}
+	for (i = 0; i < inst->stateCount; i++)
+		inst->states[i].radioSlot = -1;
+	inst->radioStateCount = doc->radioGroupCount;
+	if (inst->radioStateCount > 0) {
+		inst->radioStates = (UiDesignRadioGroupState *)dn_alloc(
+			(size_t)inst->radioStateCount * sizeof(UiDesignRadioGroupState));
+		if (!inst->radioStates) {
+			UiDesignInstance_Shutdown(inst);
+			return 0;
+		}
+		for (i = 0; i < inst->radioStateCount; i++)
+			UiRadioGroup_Init(&inst->radioStates[i].radio,
+				dn_radio_group_widget_id(doc, i));
 	}
 	if (doc->hosts[host].kind == UI_DH_DIALOG) {
 		UiDialog_Init(&inst->dialog, Ui_Id("cui.design.dialog", host, 0));
@@ -2381,6 +3426,10 @@ void UiDesignInstance_Shutdown(UiDesignInstance *inst)
 		if (!st->inited) continue;
 		UiInput_Shutdown(&st->input);
 		UiSelect_Shutdown(&st->select);
+		UiDesign_OptionsFree(&st->options);
+		dn_free(st->text);
+		dn_free(st->taHint);
+		dn_free(st->tabLabels);
 		if (inst->doc->nodes[i].type == UI_DN_TEXTAREA)
 			UiTextArea_Shutdown(&st->ta);
 		else if (inst->doc->nodes[i].type == UI_DN_DATEPICKER)
@@ -2392,6 +3441,9 @@ void UiDesignInstance_Shutdown(UiDesignInstance *inst)
 		else if (inst->doc->nodes[i].type == UI_DN_RINGPROGRESS)
 			UiRingProgress_Shutdown(&st->ring);
 	}
+	for (i = 0; i < inst->radioStateCount; i++)
+		dn_free(inst->radioStates[i].items);
+	dn_free(inst->radioStates);
 	dn_free(inst->rects);
 	dn_free(inst->states);
 	memset(inst, 0, sizeof(*inst));
@@ -2441,13 +3493,15 @@ void UiDesign_SetTextValue(UiDesignInstance *inst, const char *nodeId,
 	int idx;
 	UiDesignNodeState *st;
 	if (!inst || !nodeId) return;
+	if (!text) text = "";
 	idx = UiDesign_FindNode(inst->doc, inst->view, nodeId);
 	if (idx < 0) return;
 	UiDesign_NodeSetText(&inst->doc->nodes[idx], text);
 	if (!inst->states[idx].inited)
 		dn_state_init(inst, idx);
 	st = &inst->states[idx];
-	UiDesign_SetText(st->text, UI_DN_TEXT_MAX, text);
+	dn_free(st->text);
+	st->text = dn_strdup(text);
 	if (inst->doc->nodes[idx].type == UI_DN_INPUT)
 		Edit_SetTextUtf8(UiInput_Edit(&st->input, 0), text);
 	else if (inst->doc->nodes[idx].type == UI_DN_TEXTAREA)
@@ -2456,6 +3510,104 @@ void UiDesign_SetTextValue(UiDesignInstance *inst, const char *nodeId,
 		UiDateTime v;
 		if (text[0] && UiDate_Parse(text, st->dp.format, &v))
 			UiDatePicker_SetValue(&st->dp, &v);
+	}
+}
+
+static void dn_radio_collect(UiDesignInstance *inst, int idx)
+{
+	const UiDesignNode *n;
+	int gi, i, slot;
+	UiDesignRadioGroupState *gs;
+	if (!inst || idx < 0 || idx >= inst->stateCount) return;
+	n = &inst->doc->nodes[idx];
+	if (!n->visible) return;
+	if (n->type == UI_DN_RADIO && n->radioGroupUid) {
+		gi = UiDesign_RadioGroupForNode(inst->doc, idx);
+		if (gi >= 0 && gi < inst->radioStateCount) {
+			gs = &inst->radioStates[gi];
+			slot = gs->radio.count;
+			if (slot >= gs->itemCap) {
+				int nc = gs->itemCap > 0 ? gs->itemCap : 4;
+				UiRadio *next;
+				while (nc <= slot) nc *= 2;
+				next = (UiRadio *)dn_realloc(gs->items,
+					(size_t)nc * sizeof(*next));
+				if (!next) return;
+				gs->items = next;
+				gs->itemCap = nc;
+			}
+			gs->items[slot].id = dn_named_widget_id(inst, idx, 12);
+			gs->items[slot].enabled =
+				inst->doc->radioGroups[gi].enabled && n->enabled;
+			inst->states[idx].radioSlot = slot;
+			gs->radio.count++;
+		}
+	}
+	if (n->type == UI_DN_TABS && n->childCount > 0) {
+		int sel = n->selected;
+		if (sel < 0 || sel >= n->childCount) sel = 0;
+		dn_radio_collect(inst, n->children[sel]);
+		return;
+	}
+	for (i = 0; i < n->childCount; i++)
+		dn_radio_collect(inst, n->children[i]);
+}
+
+/* 每帧一次 O(N): 按绘制顺序收集成员, 不做逐 Radio 兄弟扫描. */
+static void dn_radio_prepare(UiDesignInstance *inst)
+{
+	int g, i;
+	if (!inst || !inst->doc) return;
+	for (i = 0; i < inst->stateCount; i++)
+		inst->states[i].radioSlot = -1;
+	for (g = 0; g < inst->radioStateCount && g < inst->doc->radioGroupCount; g++)
+		inst->radioStates[g].radio.count = 0;
+	if (inst->view >= 0 && inst->view < inst->doc->viewCount &&
+	    inst->doc->views[inst->view].root >= 0)
+		dn_radio_collect(inst, inst->doc->views[inst->view].root);
+	for (g = 0; g < inst->radioStateCount && g < inst->doc->radioGroupCount; g++) {
+		UiDesignRadioGroupState *gs = &inst->radioStates[g];
+		int slot;
+		UiId selected = 0;
+		UiRadioGroup_SetItems(&gs->radio, gs->items, gs->radio.count);
+		slot = dn_group_selected_slot(inst, g);
+		if (slot >= 0) selected = gs->items[slot].id;
+		if (!gs->radio.changed && gs->radio.selectedId != selected)
+			UiRadioGroup_SetSelectedId(&gs->radio, selected);
+	}
+}
+
+static void dn_radio_group_event(UiDesignInstance *inst, int group)
+{
+	UiDesignRadioGroup *rg;
+	if (!inst || group < 0 || group >= inst->doc->radioGroupCount) return;
+	rg = &inst->doc->radioGroups[group];
+	inst->lastEventNode = -1;
+	inst->lastEventKind = 2;
+	if (inst->eventFn)
+		inst->eventFn(inst->eventUser, inst, rg->id, rg->onChange, 2);
+}
+
+static void dn_radio_sync(UiDesignInstance *inst)
+{
+	int g;
+	if (!inst) return;
+	for (g = 0; g < inst->radioStateCount && g < inst->doc->radioGroupCount; g++) {
+		UiDesignRadioGroupState *gs = &inst->radioStates[g];
+		UiDesignRadioGroup *rg = &inst->doc->radioGroups[g];
+		int slot, node = -1;
+		if (!UiRadioGroup_TakeChanged(&gs->radio)) continue;
+		for (slot = 0; slot < gs->radio.count; slot++)
+			if (gs->items[slot].id == gs->radio.selectedId) {
+				node = dn_group_slot_node(inst, g, slot);
+				break;
+			}
+		if (node < 0) continue;
+		if (!rg->selectedRadioId[0] ||
+		    strcmp(rg->selectedRadioId, inst->doc->nodes[node].id) != 0) {
+			UiDesign_SetString(&rg->selectedRadioId, inst->doc->nodes[node].id);
+			dn_radio_group_event(inst, g);
+		}
 	}
 }
 
@@ -2472,13 +3624,21 @@ static void dn_draw_node(UiDesignInstance *inst, int idx)
 	dn_state_init(inst, idx);
 	st = dn_state(inst, idx);
 	if (n->type == UI_DN_TABS) {
-		const char *labels[32];
+		const char **labels;
 		UiTabStyle stl;
 		UiRect inner, page;
 		int cnt, i, sel, ci;
 		float hh;
 		if (!st) return;
-		cnt = n->childCount > 32 ? 32 : n->childCount;
+		cnt = n->childCount;
+		if (cnt > st->tabLabelCap) {
+			const char **next = (const char **)dn_realloc(st->tabLabels,
+				(SIZE_T)cnt * sizeof(*next));
+			if (!next) return;
+			st->tabLabels = next;
+			st->tabLabelCap = cnt;
+		}
+		labels = st->tabLabels;
 		if (cnt != st->barCount) {
 			UiTabBar_SetCount(&st->bar, cnt);
 			st->barCount = cnt;
@@ -2551,16 +3711,22 @@ static void dn_draw_node(UiDesignInstance *inst, int idx)
 		break;
 	}
 	case UI_DN_INPUT: {
-		char buf[UI_DN_TEXT_MAX];
+		char *buf;
 		if (!st) break;
 		UiInput_SetRect(&st->input, 0, r);
 		UiInput_Draw(&st->input, 0);
-		Edit_TextUtf8(UiInput_Edit(&st->input, 0), buf, UI_DN_TEXT_MAX);
+		buf = dn_utf8_from_wide(UiInput_Edit(&st->input, 0)->text,
+			UiInput_Edit(&st->input, 0)->len);
+		if (!buf) break;
 		if (strcmp(buf, st->text) != 0) {
-			UiDesign_SetText(st->text, UI_DN_TEXT_MAX, buf);
-			UiDesign_SetText(n->text, UI_DN_TEXT_MAX, buf);
-			dn_emit_event(inst, idx, 2);
+			char *next = dn_strdup(buf);
+			if (next && UiDesign_NodeSetText(n, buf)) {
+				dn_free(st->text);
+				st->text = next;
+				dn_emit_event(inst, idx, 2);
+			} else dn_free(next);
 		}
+		dn_free(buf);
 		break;
 	}
 	case UI_DN_CHECKBOX: {
@@ -2588,23 +3754,21 @@ static void dn_draw_node(UiDesignInstance *inst, int idx)
 		if (!st) break;
 		dn_options_parse(n, st);
 		if (Ui_Select(&st->select, inst->pm, ui, r,
-			n->hint[0] ? n->hint : "请选择", n->enabled)) {
+			n->hint[0] ? n->hint : "请选择", n->enabled) ||
+			n->selected != st->select.selected) {
 			n->selected = st->select.selected;
 			dn_emit_event(inst, idx, 2);
 		}
 		break;
 	}
-	case UI_DN_RADIOGROUP: {
-		int before;
-		if (!st) break;
-		dn_options_parse(n, st);
-		before = st->radio.selected;
-		if (UiRadioGroup_Draw(&st->radio, ui, r, st->optPtrs, 28.0f, n->enabled) &&
-			st->radio.selected != before) {
-			n->selected = st->radio.selected;
-			dn_emit_event(inst, idx, 2);
-		}
-		if (n->selected != st->radio.selected) n->selected = st->radio.selected;
+	case UI_DN_RADIO: {
+		int group = UiDesign_RadioGroupForNode(inst->doc, idx);
+		int slot = st ? st->radioSlot : -1;
+		UiDesignRadioGroupState *gs;
+		if (group < 0 || group >= inst->radioStateCount || slot < 0) break;
+		gs = &inst->radioStates[group];
+		if (slot < gs->radio.count)
+			Ui_Radio(&gs->items[slot], &gs->radio, ui, r, n->text);
 		break;
 	}
 	case UI_DN_IMAGE: {
@@ -2619,9 +3783,16 @@ static void dn_draw_node(UiDesignInstance *inst, int idx)
 		if (!st) break;
 		UiTextArea_SetReadonly(&st->ta, n->readonly);
 		if (Ui_TextArea(&st->ta, ui, r, n->enabled)) {
-			UiTextArea_TextUtf8(&st->ta, st->text, UI_DN_TEXT_MAX);
-			UiDesign_SetText(n->text, UI_DN_TEXT_MAX, st->text);
-			dn_emit_event(inst, idx, 2);
+			char *buf = dn_utf8_from_wide(st->ta.text, st->ta.len);
+			if (buf) {
+				char *next = dn_strdup(buf);
+				if (next && UiDesign_NodeSetText(n, buf)) {
+					dn_free(st->text);
+					st->text = next;
+					dn_emit_event(inst, idx, 2);
+				} else dn_free(next);
+				dn_free(buf);
+			}
 		}
 		break;
 	case UI_DN_DATEPICKER:
@@ -2629,15 +3800,16 @@ static void dn_draw_node(UiDesignInstance *inst, int idx)
 		Ui_DatePicker(&st->dp, inst->pm, ui, r,
 			n->hint[0] ? n->hint : NULL, n->enabled);
 		if (st->dp.changed || st->dp.committed) {
-			if (st->dp.hasValue)
-				UiDate_Format(&st->dp.value, st->dp.format, n->text,
-					UI_DN_TEXT_MAX);
-			else n->text[0] = 0;
+			char value[64], end[64];
+			if (st->dp.hasValue) {
+				UiDate_Format(&st->dp.value, st->dp.format, value, (int)sizeof(value));
+				UiDesign_NodeSetText(n, value);
+			} else UiDesign_NodeSetText(n, "");
 			if (st->dp.mode >= UI_DP_RANGE_DATE) {
-				if (st->dp.hasEnd)
-					UiDate_Format(&st->dp.end, st->dp.format, n->options,
-						UI_DN_TEXT_MAX);
-				else n->options[0] = 0;
+				if (st->dp.hasEnd) {
+					UiDate_Format(&st->dp.end, st->dp.format, end, (int)sizeof(end));
+					UiDesign_NodeSetOptions(n, end);
+				} else UiDesign_NodeSetOptions(n, "");
 			}
 			st->dp.changed = 0;
 			st->dp.committed = 0;
@@ -2695,6 +3867,7 @@ void UiDesign_Draw(UiDesignInstance *inst, UiRect rc)
 	inst->lastEventKind = 0;
 	if (inst->view < 0 || inst->view >= inst->doc->viewCount) return;
 	UiDesign_Layout(inst->doc, inst->view, rc, inst->rects, inst->stateCount);
+	dn_radio_prepare(inst);
 	for (i = 0; i < inst->stateCount; i++) {
 		UiDesignNodeState *st = &inst->states[i];
 		if (st->inited && st->input.focus >= 0) {
@@ -2704,6 +3877,7 @@ void UiDesign_Draw(UiDesignInstance *inst, UiRect rc)
 	}
 	if (inst->doc->views[inst->view].root >= 0)
 		dn_draw_node(inst, inst->doc->views[inst->view].root);
+	dn_radio_sync(inst);
 }
 
 void UiDesign_DrawOverlay(UiDesignInstance *inst)
@@ -2869,6 +4043,15 @@ int UiDesign_Key(UiDesignInstance *inst, UINT vk)
 {
 	int i;
 	if (!inst) return 0;
+	dn_radio_prepare(inst);
+	for (i = 0; i < inst->radioStateCount && i < inst->doc->radioGroupCount; i++) {
+		UiDesignRadioGroup *rg = &inst->doc->radioGroups[i];
+		if (rg->enabled && UiRadioGroup_Key(&inst->radioStates[i].radio,
+			inst->ui, vk)) {
+			dn_radio_sync(inst);
+			return 1;
+		}
+	}
 	for (i = 0; i < inst->stateCount; i++) {
 		UiDesignNodeState *st = &inst->states[i];
 		UiDesignNode *n;
@@ -2885,15 +4068,6 @@ int UiDesign_Key(UiDesignInstance *inst, UINT vk)
 			if (UiTabBar_Key(&st->bar, inst->ui, vk)) {
 				if (st->bar.selected != before) {
 					n->selected = st->bar.selected;
-					dn_emit_event(inst, i, 2);
-				}
-				return 1;
-			}
-		} else if (n->type == UI_DN_RADIOGROUP && n->enabled) {
-			int before = st->radio.selected;
-			if (UiRadioGroup_Key(&st->radio, inst->ui, vk)) {
-				if (st->radio.selected != before) {
-					n->selected = st->radio.selected;
 					dn_emit_event(inst, i, 2);
 				}
 				return 1;
@@ -3008,12 +4182,13 @@ static void cg_quote(UiDStr *s, const char *text)
 	ds_add(s, "\"");
 }
 
-static void cg_upper(const char *id, char *out, int cap)
+static char *cg_upper_alloc(const char *id)
 {
+	size_t len = id ? strlen(id) : 0;
+	char *out = (char *)dn_alloc(len + 1);
 	int i = 0, n = 0;
-	if (!out || cap <= 0) return;
-	out[0] = 0;
-	while (id && id[i] && n < cap - 1) {
+	if (!out) return NULL;
+	while (id && id[i]) {
 		char c = id[i++];
 		if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
 		if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')
@@ -3021,8 +4196,13 @@ static void cg_upper(const char *id, char *out, int cap)
 		else if (n > 0 && out[n - 1] != '_')
 			out[n++] = '_';
 	}
+	if (n == 0) {
+		out[n++] = 'W';
+		out[n++] = 'I';
+		out[n++] = 'N';
+	}
 	out[n] = 0;
-	if (n == 0) UiDesign_SetText(out, cap, "WIN");
+	return out;
 }
 
 static void cg_num(UiDStr *s, float v)
@@ -3036,7 +4216,8 @@ static int cg_uses_enabled(int t)
 	case UI_DN_LABEL: case UI_DN_BUTTON: case UI_DN_INPUT:
 	case UI_DN_CHECKBOX: case UI_DN_SWITCH: case UI_DN_SLIDER:
 	case UI_DN_SELECT: case UI_DN_TEXTAREA: case UI_DN_DATEPICKER:
-	case UI_DN_COLORSEL: case UI_DN_TABS: case UI_DN_RADIOGROUP:
+	case UI_DN_COLORSEL: case UI_DN_TABS:
+	case UI_DN_RADIO:
 		return 1;
 	default:
 		return 0;
@@ -3049,7 +4230,7 @@ static int cg_uses_text(int t)
 	case UI_DN_LABEL: case UI_DN_BUTTON: case UI_DN_INPUT:
 	case UI_DN_CHECKBOX: case UI_DN_SWITCH: case UI_DN_IMAGE:
 	case UI_DN_TEXTAREA: case UI_DN_DATEPICKER: case UI_DN_QRCODE:
-	case UI_DN_RINGPROGRESS:
+	case UI_DN_RINGPROGRESS: case UI_DN_RADIO:
 		return 1;
 	default:
 		return 0;
@@ -3069,7 +4250,6 @@ static int cg_uses_change(int t)
 	case UI_DN_INPUT: case UI_DN_CHECKBOX: case UI_DN_SWITCH:
 	case UI_DN_SLIDER: case UI_DN_SELECT: case UI_DN_TEXTAREA:
 	case UI_DN_DATEPICKER: case UI_DN_COLORSEL: case UI_DN_TABS:
-	case UI_DN_RADIOGROUP:
 		return 1;
 	default:
 		return 0;
@@ -3079,9 +4259,11 @@ static int cg_uses_change(int t)
 static int cg_parent_type(const UiDesignDoc *doc, const UiDesignNode *n,
 	int wantFree, int wantGrid)
 {
-	int pt;
+	int pt, lp;
 	if (!doc || !n || n->parent < 0 || n->parent >= doc->nodeCount) return 0;
-	pt = doc->nodes[n->parent].type;
+	lp = UiDesign_LayoutParent(doc, (int)(n - doc->nodes));
+	if (lp < 0) return 0;
+	pt = doc->nodes[lp].type;
 	if (wantFree) return pt == UI_DN_ABSOLUTE || pt == UI_DN_PANEL;
 	return pt == UI_DN_GRID;
 }
@@ -3096,7 +4278,7 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int viewNew,
 	int gridParent = cg_parent_type(doc, n, 0, 1);
 	/* 根节点由宿主窗口定尺寸; Tabs 子页由页区定尺寸, 生成这些值无效. */
 	int sized = n->parent >= 0 &&
-		doc->nodes[n->parent].type != UI_DN_TABS;
+		doc->nodes[UiDesign_LayoutParent(doc, old)].type != UI_DN_TABS;
 	int i;
 	ds_addf(s, "    int n%d = UiDesign_AddNode(&gDoc, %d, ",
 		old, viewNew);
@@ -3136,7 +4318,7 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int viewNew,
 	if (n->maxH != 0.0f && sized) {
 		ds_addf(s, "    p%d->maxH=", old); cg_num(s, n->maxH); ds_add(s, ";\n");
 	}
-	if (n->align != UI_DN_ALIGN_START)
+	if (n->align != UI_DN_ALIGN_START && sized)
 		ds_addf(s, "    p%d->align=%d;\n", old, n->align);
 	if (n->type == UI_DN_LABEL) {
 		if (n->textAlign != UI_DN_ALIGN_START)
@@ -3152,7 +4334,7 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int viewNew,
 	    n->radius != (n->type == UI_DN_IMAGE ? 6.0f : 8.0f)) {
 		ds_addf(s, "    p%d->radius=", old); cg_num(s, n->radius); ds_add(s, ";\n");
 	}
-	if (UiDesign_IsContainer(n->type)) {
+	if (UiDesign_IsLayoutContainer(n->type)) {
 		for (i = 0; i < 4; i++)
 			if (n->padding[i] != 0.0f) {
 				ds_addf(s, "    p%d->padding[%d]=", old, i);
@@ -3176,6 +4358,14 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int viewNew,
 		if (n->anchors)
 			ds_addf(s, "    p%d->anchors=%u;\n", old, n->anchors);
 	}
+	if (!freeParent && n->type == UI_DN_RADIO) {
+		for (i = 0; i < 4; i++)
+			if (n->margin[i] != 0.0f) {
+				ds_addf(s, "    p%d->margin[%d]=", old, i);
+				cg_num(s, n->margin[i]);
+				ds_add(s, ";\n");
+			}
+	}
 	if (n->type == UI_DN_GRID) {
 		if (n->gridCols != 1)
 			ds_addf(s, "    p%d->gridCols=%d;\n", old, n->gridCols);
@@ -3192,7 +4382,7 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int viewNew,
 			ds_add(s, ";\n");
 		}
 		if (n->gridColTracks[0]) {
-			ds_addf(s, "    UiDesign_SetText(p%d->gridColTracks, UI_DN_GRID_TRACKS_MAX, ",
+			ds_addf(s, "    UiDesign_SetString(&p%d->gridColTracks, ",
 				old);
 			cg_quote(s, n->gridColTracks);
 			ds_add(s, ");\n");
@@ -3218,9 +4408,9 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int viewNew,
 		cg_quote(s, n->hint);
 		ds_add(s, ");\n");
 	}
-	if ((n->type == UI_DN_SELECT || n->type == UI_DN_RADIOGROUP ||
+	if ((n->type == UI_DN_SELECT ||
 	    (n->type == UI_DN_DATEPICKER && n->mode >= UI_DP_RANGE_DATE)) &&
-	    n->options[0]) {
+	    n->options && n->options[0]) {
 		ds_addf(s, "    UiDesign_NodeSetOptions(p%d, ", old);
 		cg_quote(s, n->options);
 		ds_add(s, ");\n");
@@ -3235,9 +4425,10 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int viewNew,
 		ds_addf(s, "    p%d->checked=1;\n", old);
 	if (n->type == UI_DN_RINGPROGRESS && !n->checked)
 		ds_addf(s, "    p%d->checked=0;\n", old);
-	if ((n->type == UI_DN_SELECT || n->type == UI_DN_TABS ||
-	    n->type == UI_DN_RADIOGROUP) && n->selected > 0)
+	if ((n->type == UI_DN_SELECT || n->type == UI_DN_TABS) && n->selected > 0)
 		ds_addf(s, "    p%d->selected=%d;\n", old, n->selected);
+	if (n->type == UI_DN_RADIO && n->radioGroupUid)
+		ds_addf(s, "    p%d->radioGroupUid=%u;\n", old, n->radioGroupUid);
 	if ((n->type == UI_DN_BUTTON || n->type == UI_DN_TABS) && n->variant)
 		ds_addf(s, "    p%d->variant=%d;\n", old, n->variant);
 	if (n->type == UI_DN_DATEPICKER && n->mode)
@@ -3278,19 +4469,19 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int viewNew,
 			ds_add(s, ";\n");
 		}
 		if (n->logoSrc[0]) {
-			ds_addf(s, "    UiDesign_SetText(p%d->logoSrc, UI_DN_PATH_MAX, ",
+			ds_addf(s, "    UiDesign_SetString(&p%d->logoSrc, ",
 				old);
 			cg_quote(s, n->logoSrc);
 			ds_add(s, ");\n");
 		}
 	}
 	if (n->type == UI_DN_BUTTON && n->onClick[0]) {
-		ds_addf(s, "    UiDesign_SetText(p%d->onClick, UI_DN_ID_MAX, ", old);
+		ds_addf(s, "    UiDesign_SetString(&p%d->onClick, ", old);
 		cg_quote(s, n->onClick);
 		ds_add(s, ");\n");
 	}
 	if (cg_uses_change(n->type) && n->onChange[0]) {
-		ds_addf(s, "    UiDesign_SetText(p%d->onChange, UI_DN_ID_MAX, ", old);
+		ds_addf(s, "    UiDesign_SetString(&p%d->onChange, ", old);
 		cg_quote(s, n->onChange);
 		ds_add(s, ");\n");
 	}
@@ -3299,76 +4490,91 @@ static void cg_node(UiDStr *s, const UiDesignDoc *doc, int old, int viewNew,
 		cg_node(s, doc, n->children[i], viewNew, old, NULL);
 }
 
-static int cg_join_path(const wchar_t *dir, const char *name, wchar_t *out, int cap)
+static wchar_t *cg_join_path_alloc(const wchar_t *dir, const char *name)
 {
-	int n;
-	if (!out || cap <= 0) return 0;
-	if (!name || !name[0]) return 0;
+	int dirLen = 0, nameLen, slash = 0, at;
+	wchar_t *out;
+	if (!name || !name[0]) return NULL;
+	nameLen = MultiByteToWideChar(CP_UTF8, 0, name, -1, NULL, 0);
+	if (nameLen <= 0) return NULL;
 	if (name[0] == '/' || name[0] == '\\' ||
 	    (name[0] && name[1] == ':')) {
-		return MultiByteToWideChar(CP_UTF8, 0, name, -1, out, cap) > 0;
+		out = (wchar_t *)dn_alloc((size_t)nameLen * sizeof(*out));
+		if (!out) return NULL;
+		MultiByteToWideChar(CP_UTF8, 0, name, -1, out, nameLen);
+		return out;
 	}
-	n = 0;
-	if (dir && dir[0]) {
-		while (dir[n] && n < cap - 1) { out[n] = dir[n]; n++; }
-		if (n > 0 && out[n - 1] != L'\\' && out[n - 1] != L'/') out[n++] = L'\\';
-	}
-	out[n] = 0;
-	return MultiByteToWideChar(CP_UTF8, 0, name, -1, out + n, cap - n) > 0;
-}
-
-static const char *cg_base_name(const char *path, char *out, int cap)
-{
-	int i, n = 0, start = 0;
-	if (!path) return "";
-	for (i = 0; path[i]; i++)
-		if (path[i] == '\\' || path[i] == '/') start = i + 1;
-	while (path[start + n] && n < cap - 1) { out[n] = path[start + n]; n++; }
-	out[n] = 0;
+	if (dir) dirLen = lstrlenW(dir);
+	if (dirLen > 0 && dir[dirLen - 1] != L'\\' && dir[dirLen - 1] != L'/')
+		slash = 1;
+	out = (wchar_t *)dn_alloc((size_t)(dirLen + slash + nameLen) * sizeof(*out));
+	if (!out) return NULL;
+	if (dirLen > 0) memcpy(out, dir, (size_t)dirLen * sizeof(*out));
+	at = dirLen;
+	if (slash) out[at++] = L'\\';
+	MultiByteToWideChar(CP_UTF8, 0, name, -1, out + at, nameLen);
 	return out;
 }
 
+static const char *cg_base_name(const char *path)
+{
+	const char *base = path ? path : "";
+	while (path && *path) {
+		if (*path == '\\' || *path == '/') base = path + 1;
+		path++;
+	}
+	return base;
+}
+
+static char *cg_name_alloc(const char *base, const char *suffix)
+{
+	UiDStr s;
+	ds_init(&s);
+	ds_add(&s, base);
+	ds_add(&s, suffix);
+	if (!s.p) return NULL;
+	return s.p;
+}
+
 static int cg_build_group(const UiDesignDoc *doc, int group, int onlyHost,
-	UiDStr *c, UiDStr *h, char *outC, int outCCap, char *outH, int outHCap,
-	char *prefix, int prefixCap, int *hostCount)
+	UiDStr *c, UiDStr *h, char **outC, char **outH, char **prefixOut,
+	int *hostCount)
 {
 	int i, count = 0, vcount = 0;
 	int *vmap = NULL;
 	const UiDesignGroup *g = NULL;
-	const char *gid, *gname;
-	char baseH[UI_DN_PATH_MAX];
-	if (!doc) return -1;
+	const char *gid, *gname, *baseH;
+	char *guard = NULL, *prefix = NULL;
+	if (!doc || !outC || !outH || !prefixOut) return -1;
+	*outC = *outH = NULL;
+	*prefixOut = NULL;
 	if (group >= 0) {
 		if (group >= doc->groupCount) return -1;
 		g = &doc->groups[group];
 		gid = g->id;
 		gname = g->name;
-		if (g->outputC[0])
-			UiDesign_SetText(outC, outCCap, g->outputC);
-		else
-			snprintf(outC, (size_t)outCCap, "%s.ui.c", g->id);
-		if (g->outputH[0])
-			UiDesign_SetText(outH, outHCap, g->outputH);
-		else
-			snprintf(outH, (size_t)outHCap, "%s.ui.h", g->id);
-		UiDesign_Symbol(g->symbolPrefix[0] ? g->symbolPrefix : g->id, prefix,
-			prefixCap);
+		*outC = g->outputC[0] ? dn_strdup(g->outputC)
+			: cg_name_alloc(g->id, ".ui.c");
+		*outH = g->outputH[0] ? dn_strdup(g->outputH)
+			: cg_name_alloc(g->id, ".ui.h");
+		prefix = UiDesign_SymbolAlloc(g->symbolPrefix[0] ? g->symbolPrefix : g->id);
 	} else {
 		const UiDesignHost *w;
-		char sym[UI_DN_SYM_MAX];
 		if (onlyHost < 0 || onlyHost >= doc->hostCount) return -1;
 		w = &doc->hosts[onlyHost];
 		gid = w->id;
 		gname = w->name;
-		UiDesign_Symbol(w->id, sym, sizeof(sym));
-		UiDesign_Symbol(w->id, prefix, prefixCap);
-		snprintf(outC, (size_t)outCCap, "%s.ui.c", sym);
-		snprintf(outH, (size_t)outHCap, "%s.ui.h", sym);
+		prefix = UiDesign_SymbolAlloc(w->id);
+		if (prefix) {
+			*outC = cg_name_alloc(prefix, ".ui.c");
+			*outH = cg_name_alloc(prefix, ".ui.h");
+		}
 	}
-	cg_base_name(outH, baseH, sizeof(baseH));
+	if (!*outC || !*outH || !prefix) goto fail;
+	baseH = cg_base_name(*outH);
 	if (doc->viewCount > 0) {
 		vmap = (int *)dn_alloc((size_t)doc->viewCount * sizeof(int));
-		if (!vmap) return -1;
+		if (!vmap) goto fail;
 		for (i = 0; i < doc->viewCount; i++) vmap[i] = -1;
 	}
 
@@ -3383,29 +4589,61 @@ static int cg_build_group(const UiDesignDoc *doc, int group, int onlyHost,
 	/* 视图: 同一视图只构建一次, 可被多个宿主复用. */
 	for (i = 0; i < doc->viewCount; i++) {
 		const UiDesignView *v = &doc->views[i];
-		int vn, root = -1;
+		int vn;
 		if (onlyHost >= 0) {
 			int hv = doc->hosts[onlyHost].view;
 			if (i != hv) continue;
 		} else if (v->group != group) continue;
 		vn = vcount++;
 		vmap[i] = vn;
-		ds_addf(c, "    { int v%d = UiDesign_AddView(&gDoc, ", vn);
+		ds_addf(c, "    int v%d;\n", vn);
+		ds_addf(c, "    v%d = UiDesign_AddView(&gDoc, ", vn);
 		cg_quote(c, v->id); ds_add(c, ", "); cg_quote(c, v->name);
 		ds_add(c, ");\n");
-		ds_addf(c, "      UiDesignView *pv%d = UiDesign_View(&gDoc, v%d);\n",
-			vn, vn);
 		if (v->w != 800.0f) {
-			ds_addf(c, "      pv%d->w=", vn); cg_num(c, v->w); ds_add(c, ";\n");
+			ds_addf(c, "    UiDesign_View(&gDoc, v%d)->w=", vn);
+			cg_num(c, v->w); ds_add(c, ";\n");
 		}
 		if (v->h != 540.0f) {
-			ds_addf(c, "      pv%d->h=", vn); cg_num(c, v->h); ds_add(c, ";\n");
+			ds_addf(c, "    UiDesign_View(&gDoc, v%d)->h=", vn);
+			cg_num(c, v->h); ds_add(c, ";\n");
 		}
-		if (v->root >= 0) {
-			int oldRoot = v->root;
-			cg_node(c, doc, oldRoot, vn, -1, &root);
-			ds_addf(c, "      pv%d->root=n%d;\n", vn, oldRoot);
+	}
+	/* RadioGroup 是文档级元数据: 必须在节点前建立, 节点只记录 uid. */
+	for (i = 0; i < doc->radioGroupCount; i++) {
+		const UiDesignRadioGroup *rg = &doc->radioGroups[i];
+		int vn;
+		if (rg->owner < 0 || rg->owner >= doc->viewCount) continue;
+		vn = vmap[rg->owner];
+		if (vn < 0) continue;
+		ds_addf(c, "    { int rg%d = UiDesign_RadioGroupAdd(&gDoc, v%d, ",
+			i, vn);
+		cg_quote(c, rg->id); ds_add(c, ", "); cg_quote(c, rg->name);
+		ds_add(c, ");\n");
+		ds_addf(c, "      UiDesignRadioGroup *prg%d = UiDesign_RadioGroup(&gDoc, rg%d);\n",
+			i, i);
+		if (rg->uid)
+			ds_addf(c, "      prg%d->uid=%u;\n", i, rg->uid);
+		if (rg->selectedRadioId[0]) {
+			ds_addf(c, "      UiDesign_SetString(&prg%d->selectedRadioId, ", i);
+			cg_quote(c, rg->selectedRadioId); ds_add(c, ");\n");
 		}
+		if (rg->onChange[0]) {
+			ds_addf(c, "      UiDesign_SetString(&prg%d->onChange, ", i);
+			cg_quote(c, rg->onChange); ds_add(c, ");\n");
+		}
+		if (!rg->enabled)
+			ds_addf(c, "      prg%d->enabled=0;\n", i);
+		ds_add(c, "    }\n");
+	}
+	for (i = 0; i < doc->viewCount; i++) {
+		const UiDesignView *v = &doc->views[i];
+		int vn = vmap ? vmap[i] : -1;
+		if (vn < 0 || v->root < 0) continue;
+		ds_add(c, "    {\n");
+		cg_node(c, doc, v->root, vn, -1, NULL);
+		ds_addf(c, "      UiDesign_View(&gDoc, v%d)->root=n%d;\n",
+			vn, v->root);
 		ds_add(c, "    }\n");
 	}
 	/* 宿主: 只记录外壳与挂载的视图. */
@@ -3424,7 +4662,7 @@ static int cg_build_group(const UiDesignDoc *doc, int group, int onlyHost,
 		ds_addf(c, "      UiDesignHost *pw%d = UiDesign_Host(&gDoc, w%d);\n",
 			n0, n0);
 		if (w->title[0] && strcmp(w->title, w->name) != 0) {
-			ds_addf(c, "      UiDesign_SetText(pw%d->title, 128, ", n0);
+			ds_addf(c, "      UiDesign_SetString(&pw%d->title, ", n0);
 			cg_quote(c, w->title); ds_add(c, ");\n");
 		}
 		if (w->kind != UI_DH_PANEL) {
@@ -3452,11 +4690,9 @@ static int cg_build_group(const UiDesignDoc *doc, int group, int onlyHost,
 	ds_add(c, "    if (!gBuilt) build_doc();\n    return &gDoc;\n}\n\n");
 
 	ds_add(h, "/* Generated by CUI Designer. Do not edit by hand. */\n");
-	{
-		char guard[UI_DN_SYM_MAX + 16];
-		cg_upper(prefix, guard, sizeof(guard));
-		ds_addf(h, "#ifndef %s_UI_H\n#define %s_UI_H\n\n", guard, guard);
-	}
+	guard = cg_upper_alloc(prefix);
+	if (!guard) goto fail;
+	ds_addf(h, "#ifndef %s_UI_H\n#define %s_UI_H\n\n", guard, guard);
 	ds_add(h, "#include \"ui/ui_design.h\"\n\n");
 	ds_add(h, "UiDesignDoc *"); ds_add(h, prefix); ds_add(h, "_Doc(void);\n\n");
 	{
@@ -3466,9 +4702,10 @@ static int cg_build_group(const UiDesignDoc *doc, int group, int onlyHost,
 				if (i != onlyHost) continue;
 			} else if (doc->hosts[i].group != group) continue;
 			{
-				char wu[UI_DN_SYM_MAX];
-				cg_upper(doc->hosts[i].id, wu, sizeof(wu));
+				char *wu = cg_upper_alloc(doc->hosts[i].id);
+				if (!wu) goto fail;
 				ds_addf(h, "#define %s_HOST_%s %d\n", prefix, wu, wi++);
+				dn_free(wu);
 			}
 		}
 	}
@@ -3476,11 +4713,12 @@ static int cg_build_group(const UiDesignDoc *doc, int group, int onlyHost,
 	count = 0;
 	for (i = 0; i < doc->hostCount; i++) {
 		const UiDesignHost *w = &doc->hosts[i];
-		char ws[UI_DN_SYM_MAX];
+		char *ws;
 		if (onlyHost >= 0) {
 			if (i != onlyHost) continue;
 		} else if (w->group != group) continue;
-		UiDesign_Symbol(w->id, ws, sizeof(ws));
+		ws = UiDesign_SymbolAlloc(w->id);
+		if (!ws) goto fail;
 		ds_addf(h, "void %s_%s_Init(UiDesignInstance *inst, UiContext *ui, UiPopupManager *pm, UiIme *ime);\n", prefix, ws);
 		if (w->kind == UI_DH_DIALOG) {
 			ds_addf(h, "int  %s_%s_DialogOpen(UiDesignInstance *inst, UiId owner);\n", prefix, ws);
@@ -3498,15 +4736,22 @@ static int cg_build_group(const UiDesignDoc *doc, int group, int onlyHost,
 			ds_addf(c, "void %s_%s_Draw(UiDesignInstance *inst, UiRect rc)\n{\n    UiDesign_Draw(inst, rc);\n    UiDesign_DrawOverlay(inst);\n}\n\n", prefix, ws);
 		}
 		count++;
+		dn_free(ws);
 	}
-	{
-		char guard[UI_DN_SYM_MAX + 16];
-		cg_upper(prefix, guard, sizeof(guard));
-		ds_addf(h, "#endif /* %s_UI_H */\n", guard);
-	}
+	ds_addf(h, "#endif /* %s_UI_H */\n", guard);
+	if (c->failed || h->failed) goto fail;
 	if (vmap) dn_free(vmap);
 	if (hostCount) *hostCount = count;
+	*prefixOut = prefix;
 	return 0;
+fail:
+	if (vmap) dn_free(vmap);
+	dn_free(guard);
+	dn_free(prefix);
+	dn_free(*outC);
+	dn_free(*outH);
+	*outC = *outH = NULL;
+	return -1;
 }
 
 int UiDesign_GenerateGroup(const UiDesignDoc *doc, int group,
@@ -3514,26 +4759,24 @@ int UiDesign_GenerateGroup(const UiDesignDoc *doc, int group,
 {
 	UiDStr c, h;
 	int wrote = 0, count = 0;
-	char prefix[UI_DN_SYM_MAX], outC[UI_DN_PATH_MAX], outH[UI_DN_PATH_MAX];
-	wchar_t wc[UI_DN_PATH_MAX * 2], wh[UI_DN_PATH_MAX * 2];
+	char *prefix = NULL, *outC = NULL, *outH = NULL;
+	wchar_t *wc = NULL, *wh = NULL;
 	if (!doc || group < 0 || group >= doc->groupCount) return -1;
 	ds_init(&c);
 	ds_init(&h);
-	if (cg_build_group(doc, group, -1, &c, &h, outC, sizeof(outC), outH,
-	    sizeof(outH), prefix, sizeof(prefix), &count) < 0) {
-		ds_free(&c); ds_free(&h);
-		return -1;
-	}
-	if (!cg_join_path(dir, outC, wc, (int)(sizeof(wc) / sizeof(wc[0]))) ||
-	    !cg_join_path(dir, outH, wh, (int)(sizeof(wh) / sizeof(wh[0])))) {
-		ds_free(&c); ds_free(&h);
-		return -1;
-	}
+	if (cg_build_group(doc, group, -1, &c, &h, &outC, &outH, &prefix,
+	    &count) < 0) goto done;
+	wc = cg_join_path_alloc(dir, outC);
+	wh = cg_join_path_alloc(dir, outH);
+	if (!wc || !wh) goto done;
 	if (dn_write_utf8(wc, c.p ? c.p : "", c.n)) wrote++;
 	if (dn_write_utf8(wh, h.p ? h.p : "", h.n)) wrote++;
-	ds_free(&c); ds_free(&h);
 	if (report) snprintf(report, cap, "group %s: %d file(s), %d host(s)",
 		doc->groups[group].name, wrote, count);
+done:
+	dn_free(wc); dn_free(wh);
+	dn_free(prefix); dn_free(outC); dn_free(outH);
+	ds_free(&c); ds_free(&h);
 	return wrote == 2 ? 2 : -1;
 }
 
@@ -3542,26 +4785,24 @@ int UiDesign_GenerateHost(const UiDesignDoc *doc, int host,
 {
 	UiDStr c, h;
 	int wrote = 0, count = 0;
-	char prefix[UI_DN_SYM_MAX], outC[UI_DN_PATH_MAX], outH[UI_DN_PATH_MAX];
-	wchar_t wc[UI_DN_PATH_MAX * 2], wh[UI_DN_PATH_MAX * 2];
+	char *prefix = NULL, *outC = NULL, *outH = NULL;
+	wchar_t *wc = NULL, *wh = NULL;
 	if (!doc || host < 0 || host >= doc->hostCount) return -1;
 	ds_init(&c);
 	ds_init(&h);
-	if (cg_build_group(doc, -1, host, &c, &h, outC, sizeof(outC), outH,
-	    sizeof(outH), prefix, sizeof(prefix), &count) < 0) {
-		ds_free(&c); ds_free(&h);
-		return -1;
-	}
-	if (!cg_join_path(dir, outC, wc, (int)(sizeof(wc) / sizeof(wc[0]))) ||
-	    !cg_join_path(dir, outH, wh, (int)(sizeof(wh) / sizeof(wh[0])))) {
-		ds_free(&c); ds_free(&h);
-		return -1;
-	}
+	if (cg_build_group(doc, -1, host, &c, &h, &outC, &outH, &prefix,
+	    &count) < 0) goto done;
+	wc = cg_join_path_alloc(dir, outC);
+	wh = cg_join_path_alloc(dir, outH);
+	if (!wc || !wh) goto done;
 	if (dn_write_utf8(wc, c.p ? c.p : "", c.n)) wrote++;
 	if (dn_write_utf8(wh, h.p ? h.p : "", h.n)) wrote++;
-	ds_free(&c); ds_free(&h);
 	if (report) snprintf(report, cap, "host %s: %d file(s)",
 		doc->hosts[host].name, wrote);
+done:
+	dn_free(wc); dn_free(wh);
+	dn_free(prefix); dn_free(outC); dn_free(outH);
+	ds_free(&c); ds_free(&h);
 	return wrote == 2 ? 2 : -1;
 }
 
@@ -3649,23 +4890,18 @@ static int cg_preview_one(const UiDesignDoc *doc, int group, int onlyHost,
 	int *stored, int *fresh, int *changed, int *same)
 {
 	UiDStr c, h;
-	char prefix[UI_DN_SYM_MAX], outC[UI_DN_PATH_MAX], outH[UI_DN_PATH_MAX];
-	wchar_t wc[UI_DN_PATH_MAX * 2], wh[UI_DN_PATH_MAX * 2];
+	char *prefix = NULL, *outC = NULL, *outH = NULL;
+	wchar_t *wc = NULL, *wh = NULL;
 	const char *texts[2], *names[2];
 	wchar_t *paths[2];
-	int k;
+	int k, result = -1;
 	ds_init(&c);
 	ds_init(&h);
-	if (cg_build_group(doc, group, onlyHost, &c, &h, outC, sizeof(outC), outH,
-	    sizeof(outH), prefix, sizeof(prefix), NULL) < 0) {
-		ds_free(&c); ds_free(&h);
-		return -1;
-	}
-	if (!cg_join_path(dir, outC, wc, (int)(sizeof(wc) / sizeof(wc[0]))) ||
-	    !cg_join_path(dir, outH, wh, (int)(sizeof(wh) / sizeof(wh[0])))) {
-		ds_free(&c); ds_free(&h);
-		return -1;
-	}
+	if (cg_build_group(doc, group, onlyHost, &c, &h, &outC, &outH, &prefix,
+	    NULL) < 0) goto done;
+	wc = cg_join_path_alloc(dir, outC);
+	wh = cg_join_path_alloc(dir, outH);
+	if (!wc || !wh) goto done;
 	texts[0] = c.p ? c.p : "";
 	texts[1] = h.p ? h.p : "";
 	names[0] = outC;
@@ -3693,7 +4929,11 @@ static int cg_preview_one(const UiDesignDoc *doc, int group, int onlyHost,
 		}
 		if (files && *stored < maxFiles) {
 			UiDesignGenFile *f = &files[*stored];
-			UiDesign_SetText(f->name, (int)sizeof(f->name), names[k]);
+			f->name = dn_strdup(names[k]);
+			if (!f->name) {
+				dn_free(old);
+				goto done;
+			}
 			f->status = status;
 			f->oldLines = oldLines;
 			f->newLines = newLines;
@@ -3703,8 +4943,22 @@ static int cg_preview_one(const UiDesignDoc *doc, int group, int onlyHost,
 		}
 		if (old) dn_free(old);
 	}
+	result = 2;
+done:
+	dn_free(wc); dn_free(wh);
+	dn_free(prefix); dn_free(outC); dn_free(outH);
 	ds_free(&c); ds_free(&h);
-	return 2;
+	return result;
+}
+
+void UiDesign_GenFilesFree(UiDesignGenFile *files, int count)
+{
+	int i;
+	if (!files) return;
+	for (i = 0; i < count; i++) {
+		dn_free(files[i].name);
+		files[i].name = NULL;
+	}
 }
 
 int UiDesign_PreviewAll(const UiDesignDoc *doc, const wchar_t *dir,

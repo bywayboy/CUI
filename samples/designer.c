@@ -43,8 +43,14 @@ typedef enum {
 	DSEL_WINDOW = 0,
 	DSEL_VIEW,
 	DSEL_GROUP,
-	DSEL_NODE
+	DSEL_NODE,
+	DSEL_RADIOGROUP   /* 虚拟单选组行 (元数据, 无节点索引) */
 } DSelKind;
+
+enum {
+	DROW_NODE = 0,
+	DROW_RADIOGROUP
+};
 
 enum {
 	DPK_TEXT = 0,
@@ -53,7 +59,8 @@ enum {
 	DPK_ENUM,
 	DPK_BOOL,
 	DPK_READONLY,
-	DPK_COLOR
+	DPK_COLOR,
+	DPK_MULTILINE
 };
 
 enum {
@@ -71,7 +78,10 @@ enum {
 	DK_N_GRIDCOLTRACKS, DK_N_RADIUS,
 	DK_N_MODE, DK_N_READONLY, DK_N_COLOR, DK_N_SELECTED,
 	DK_N_ECC, DK_N_BGCOLOR, DK_N_LOGOSRC, DK_N_LOGORATIO, DK_N_QRPAD,
-	DK_N_RINGMAX, DK_N_RINGWIDTH, DK_N_PAGECOUNT, DK_N_ADDPAGE
+	DK_N_RINGMAX, DK_N_RINGWIDTH, DK_N_PAGECOUNT, DK_N_ADDPAGE,
+	DK_N_MARGINL, DK_N_MARGINT, DK_N_MARGINR, DK_N_MARGINB,
+	DK_N_RADIOGROUP, DK_N_RADIOSELECTED,
+	DK_RG_ID = 200, DK_RG_NAME, DK_RG_ENABLED, DK_RG_SELECTED, DK_RG_CHANGE
 };
 
 enum {
@@ -87,7 +97,29 @@ typedef struct DProp {
 	int sec;
 	const char *label;
 	char value[160];
+	const char *valueRef;
 } DProp;
+
+typedef struct DDragItem {
+	int idx;
+	float x, y;
+} DDragItem;
+
+typedef struct DTreeRow {
+	UiRect rc;
+	int idx;             /* DROW_NODE: 节点索引; DROW_RADIOGROUP: -1 */
+	int kind;            /* DROW_* */
+	int group;           /* DROW_RADIOGROUP: 单选组索引 */
+} DTreeRow;
+
+typedef struct DPreviewTab {
+	int node, sel;
+} DPreviewTab;
+
+typedef struct DPreviewRadio {
+	unsigned uid;        /* 单选组元数据 uid */
+	char *selectedRadioId;
+} DPreviewRadio;
 
 typedef struct Designer Designer;
 
@@ -101,17 +133,15 @@ typedef struct Designer {
 	int selView;         /* 当前画布/组件树视图 */
 	int selGroup;
 	int selNode;
-	int selSet[128];
-	int selSetN;
+	int selRadioGroup;   /* DSEL_RADIOGROUP: 单选组元数据索引, -1 无 */
+	int *selSet;
+	int selSetCap, selSetN;
 
-	int dragListN;
-	int dragListIdx[128];
-	float dragListX[128];
-	float dragListY[128];
+	int dragListN, dragListCap;
+	DDragItem *dragList;
 
-	UiRect treeRowRc[128];
-	int treeRowIdx[128];
-	int treeRowN;
+	DTreeRow *treeRows;
+	int treeRowN, treeRowCap;
 	int treeDragIdx;
 	int treeDropIdx;
 	int treeDropMode;
@@ -131,13 +161,15 @@ typedef struct Designer {
 	UiDesignInstance inst;
 	int instReady;
 	int previewDialogTried;
-	int previewTabNodes[64];
-	int previewTabSel[64];
-	int previewTabN;
+	DPreviewTab *previewTabs;
+	int previewTabN, previewTabCap;
+	DPreviewRadio *previewRadios;
+	int previewRadioN, previewRadioCap;
 
 	UiInput propForm;
+	UiTextArea propOptionsForm;
 	int propField;
-	int editActive, editKey, editChanged;
+	int editActive, editKey, editChanged, editMultiline;
 	int propDrag, propDragKey;
 	float propDragX, propDragVal;
 	int propDragIsInt;
@@ -147,6 +179,16 @@ typedef struct Designer {
 	UiColorSelect propColorBg; /* 二维码背景色行 */
 	int propColorBgReady;
 	int propColorBgNode;
+	UiSelect propRgSelect;     /* Radio 的单选组下拉 */
+	int propRgReady;
+	int propRgNode;            /* 最近一次绘制下拉的 Radio 节点 */
+	int propRgOwner;
+	char *propRgPool;          /* 标签池 (UiSelect items 指向它) */
+	const char **propRgItems;
+	int *propRgMap;            /* 项 -> radioGroups 下标; -1 = 未分组 */
+	int propRgN;
+	unsigned propRgSig;
+	int propRgSigValid;
 	int propsTab;          /* 0=属性 1=组件表 */
 	int palettePage;
 	int propScroll;
@@ -185,6 +227,8 @@ typedef struct Designer {
 	float dragStartX, dragStartY;
 	float dragNodeX, dragNodeY, dragNodeW, dragNodeH;
 	int dragMoved;
+	int dragClickNode;
+	int dragReorderParent, dragReorderPos;
 
 	/* 撤销 */
 	char *undo[40];
@@ -192,13 +236,13 @@ typedef struct Designer {
 
 	char status[320];
 	char error[320];
-	WCHAR lastDir[MAX_PATH];
-	WCHAR startupFile[MAX_PATH];
+	WCHAR *lastDir;
+	WCHAR *startupFile;
 
 	int genPreview;
-	UiDesignGenFile genFiles[64];
+	UiDesignGenFile *genFiles;
 	int genFileN;
-	WCHAR genDir[MAX_PATH];
+	WCHAR *genDir;
 	int titleDirty;
 
 	/* 属性/树行 */
@@ -209,6 +253,32 @@ typedef struct Designer {
 
 static Designer g_d;
 
+static int d_reserve(void **ptr, int *cap, int need, size_t elem)
+{
+	int next;
+	void *p;
+	if (need <= *cap) return 1;
+	next = *cap > 0 ? *cap : 16;
+	while (next < need) {
+		if (next > 0x3FFFFFFF) { next = need; break; }
+		next *= 2;
+	}
+	p = *ptr ? HeapReAlloc(GetProcessHeap(), 0, *ptr, (SIZE_T)next * elem)
+		: HeapAlloc(GetProcessHeap(), 0, (SIZE_T)next * elem);
+	if (!p) return 0;
+	*ptr = p;
+	*cap = next;
+	return 1;
+}
+
+static int d_sel_add(int idx)
+{
+	if (!d_reserve((void **)&g_d.selSet, &g_d.selSetCap,
+	    g_d.selSetN + 1, sizeof(*g_d.selSet))) return 0;
+	g_d.selSet[g_d.selSetN++] = idx;
+	return 1;
+}
+
 static void d_prop_apply_text(int key, const char *text);
 static float fabsf_local(float v);
 static void d_preview_shutdown(void);
@@ -218,6 +288,13 @@ static void d_sel_toggle(int idx);
 static void d_collect_nodes(const UiDesignDoc *doc, int idx, int *out, int cap,
 	int *count);
 static int d_validate(char *msg, int cap);
+static int d_rg_count(void);
+static UiDesignRadioGroup *d_rg(int gi);
+static int d_node_group_index(int idx);
+static void d_sel_radio_group(int gi);
+static void d_rg_prune(void);
+static void d_layout_current(void);
+static float d_round4(float v);
 
 /* ── 通用辅助 ───────────────────────────────────────────────────────── */
 
@@ -297,19 +374,7 @@ static unsigned d_parse_color(const char *s, unsigned fallback)
 
 static int d_option_count(const char *s)
 {
-	int count = 0;
-	if (!s) return 0;
-	for (;;) {
-		const char *start = s, *end;
-		while (*s && *s != ',') s++;
-		end = s;
-		while (start < end && (*start == ' ' || *start == '\t')) start++;
-		while (end > start && (end[-1] == ' ' || end[-1] == '\t')) end--;
-		if (start < end) count++;
-		if (!*s) break;
-		s++;
-	}
-	return count;
+	return UiDesign_OptionCount(s);
 }
 
 static int d_track_count(const char *s)
@@ -366,9 +431,58 @@ static void d_utf8(const WCHAR *w, char *out, int cap)
 	if (w) WideCharToMultiByte(CP_UTF8, 0, w, -1, out, cap, NULL, NULL);
 }
 
+static char *d_strdup(const char *s)
+{
+	size_t n;
+	char *p;
+	if (!s) s = "";
+	n = strlen(s) + 1;
+	p = (char *)HeapAlloc(GetProcessHeap(), 0, n);
+	if (p) memcpy(p, s, n);
+	return p;
+}
+
 static int d_file_exists(const WCHAR *path)
 {
 	return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+}
+
+static wchar_t *d_wstrdup(const WCHAR *s)
+{
+	size_t n;
+	wchar_t *p;
+	if (!s) s = L"";
+	n = (lstrlenW(s) + 1) * sizeof(*p);
+	p = (wchar_t *)HeapAlloc(GetProcessHeap(), 0, n);
+	if (p) memcpy(p, s, n);
+	return p;
+}
+
+static WCHAR *d_wide_alloc(const char *utf8)
+{
+	int len;
+	WCHAR *out;
+	if (!utf8) utf8 = "";
+	len = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, NULL, 0);
+	if (len <= 0) return NULL;
+	out = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)len * sizeof(*out));
+	if (out) MultiByteToWideChar(CP_UTF8, 0, utf8, -1, out, len);
+	return out;
+}
+
+static void d_set_dir(WCHAR **dst, const WCHAR *file)
+{
+	WCHAR *next;
+	int i, cut = -1, len;
+	if (!file) return;
+	for (i = 0; file[i]; i++) if (file[i] == L'\\' || file[i] == L'/') cut = i;
+	len = cut >= 0 ? cut + 1 : 0;
+	next = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)(len + 1) * sizeof(*next));
+	if (!next) return;
+	for (i = 0; i < len; i++) next[i] = file[i];
+	next[len] = 0;
+	HeapFree(GetProcessHeap(), 0, *dst);
+	*dst = next;
 }
 
 static void d_dir_of(const WCHAR *file, WCHAR *out, int cap)
@@ -436,13 +550,52 @@ static void d_undo_reset(void)
 	d_undo_push();
 }
 
+static char *d_wtext_utf8_alloc(const wchar_t *text, int len)
+{
+	char *p;
+	int n;
+	if (!text || len <= 0) {
+		p = (char *)HeapAlloc(GetProcessHeap(), 0, 1);
+		if (p) p[0] = 0;
+		return p;
+	}
+	n = WideCharToMultiByte(CP_UTF8, 0, text, len, NULL, 0, NULL, NULL);
+	if (n <= 0) return NULL;
+	p = (char *)HeapAlloc(GetProcessHeap(), 0, (size_t)n + 1);
+	if (!p) return NULL;
+	WideCharToMultiByte(CP_UTF8, 0, text, len, p, n, NULL, NULL);
+	p[n] = 0;
+	return p;
+}
+
+static char *d_textarea_utf8_alloc(const UiTextArea *ta)
+{
+	return ta ? d_wtext_utf8_alloc(ta->text, ta->len) : NULL;
+}
+
+static char *d_edit_utf8_alloc(const UiEdit *e)
+{
+	return e ? d_wtext_utf8_alloc(e->text, e->len) : NULL;
+}
+
 static void d_after_edit(void)
 {
-	char b[256];
 	if (!g_d.editActive) return;
-	Edit_TextUtf8(UiInput_Edit(&g_d.propForm, 0), b, (int)sizeof(b));
-	d_prop_apply_text(g_d.editKey, b);
+	if (g_d.editMultiline) {
+		char *text = d_textarea_utf8_alloc(&g_d.propOptionsForm);
+		if (text) {
+			d_prop_apply_text(g_d.editKey, text);
+			HeapFree(GetProcessHeap(), 0, text);
+		}
+	} else {
+		char *text = d_edit_utf8_alloc(UiInput_Edit(&g_d.propForm, 0));
+		if (text) {
+			d_prop_apply_text(g_d.editKey, text);
+			HeapFree(GetProcessHeap(), 0, text);
+		}
+	}
 	g_d.editActive = 0;
+	g_d.editMultiline = 0;
 	g_d.propForm.focus = -1;
 	if (g_d.app) UiIme_SetFocus(&g_d.app->ime, NULL);
 	Ui_SetFocusId(&g_d.app->ui, UI_ID_NONE);
@@ -498,12 +651,12 @@ static void d_undo_step(int redo)
 	if (g_d.selView >= g_d.doc.viewCount) g_d.selView = g_d.doc.viewCount > 0 ? 0 : -1;
 	if (g_d.selWin >= 0) g_d.selView = g_d.doc.hosts[g_d.selWin].view;
 	g_d.selNode = -1;
+	g_d.selRadioGroup = -1;
 	g_d.selKind = g_d.selView >= 0 ? DSEL_VIEW : DSEL_WINDOW;
 	d_sel_clear();
 	if (d_view_root() >= 0) {
 		g_d.selNode = d_view_root();
-		g_d.selSet[0] = g_d.selNode;
-		g_d.selSetN = 1;
+		d_sel_add(g_d.selNode);
 	}
 	g_d.treeDragIdx = -1;
 	g_d.marquee = 0;
@@ -513,34 +666,51 @@ static void d_undo_step(int redo)
 
 /* ── 文件 ───────────────────────────────────────────────────────────── */
 
-static int d_open_dialog(WCHAR *file, int cap)
+static int d_open_dialog(WCHAR **file)
 {
 	OPENFILENAMEW ofn;
+	WCHAR *buf;
 	ZeroMemory(&ofn, sizeof(ofn));
+	buf = (WCHAR *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 32768 * sizeof(*buf));
+	if (!buf) return 0;
 	ofn.lStructSize = sizeof(ofn);
 	ofn.hwndOwner = g_d.app ? g_d.app->hwnd : NULL;
 	ofn.lpstrFilter = L"CUI 设计工程 (*.cui)\0*.cui\0";
-	ofn.lpstrFile = file;
-	ofn.nMaxFile = cap;
+	ofn.lpstrFile = buf;
+	ofn.nMaxFile = 32768;
 	ofn.lpstrDefExt = L"cui";
 	ofn.Flags = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
-	if (g_d.lastDir[0]) ofn.lpstrInitialDir = g_d.lastDir;
-	return GetOpenFileNameW(&ofn) ? 1 : 0;
+	if (g_d.lastDir && g_d.lastDir[0]) ofn.lpstrInitialDir = g_d.lastDir;
+	if (!GetOpenFileNameW(&ofn)) {
+		HeapFree(GetProcessHeap(), 0, buf);
+		return 0;
+	}
+	*file = buf;
+	return 1;
 }
 
-static int d_save_dialog(WCHAR *file, int cap)
+static int d_save_dialog(WCHAR **file, const WCHAR *initial)
 {
 	OPENFILENAMEW ofn;
+	WCHAR *buf;
 	ZeroMemory(&ofn, sizeof(ofn));
+	buf = (WCHAR *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 32768 * sizeof(*buf));
+	if (!buf) return 0;
+	if (initial) lstrcpynW(buf, initial, 32768);
 	ofn.lStructSize = sizeof(ofn);
 	ofn.hwndOwner = g_d.app ? g_d.app->hwnd : NULL;
 	ofn.lpstrFilter = L"CUI 设计工程 (*.cui)\0*.cui\0";
-	ofn.lpstrFile = file;
-	ofn.nMaxFile = cap;
+	ofn.lpstrFile = buf;
+	ofn.nMaxFile = 32768;
 	ofn.lpstrDefExt = L"cui";
 	ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-	if (g_d.lastDir[0]) ofn.lpstrInitialDir = g_d.lastDir;
-	return GetSaveFileNameW(&ofn) ? 1 : 0;
+	if (g_d.lastDir && g_d.lastDir[0]) ofn.lpstrInitialDir = g_d.lastDir;
+	if (!GetSaveFileNameW(&ofn)) {
+		HeapFree(GetProcessHeap(), 0, buf);
+		return 0;
+	}
+	*file = buf;
+	return 1;
 }
 
 static void d_preview_capture_tabs(void)
@@ -548,13 +718,13 @@ static void d_preview_capture_tabs(void)
 	int i;
 	if (g_d.previewTabN > 0) return;
 	g_d.previewTabN = 0;
-	for (i = 0; i < g_d.doc.nodeCount &&
-	    g_d.previewTabN < (int)(sizeof(g_d.previewTabNodes) /
-	    sizeof(g_d.previewTabNodes[0])); i++) {
+	for (i = 0; i < g_d.doc.nodeCount; i++) {
 		UiDesignNode *n = &g_d.doc.nodes[i];
 		if (n->type != UI_DN_TABS || n->parent < 0) continue;
-		g_d.previewTabNodes[g_d.previewTabN] = i;
-		g_d.previewTabSel[g_d.previewTabN] = n->selected;
+		if (!d_reserve((void **)&g_d.previewTabs, &g_d.previewTabCap,
+		    g_d.previewTabN + 1, sizeof(*g_d.previewTabs))) break;
+		g_d.previewTabs[g_d.previewTabN].node = i;
+		g_d.previewTabs[g_d.previewTabN].sel = n->selected;
 		g_d.previewTabN++;
 	}
 }
@@ -563,14 +733,55 @@ static void d_preview_restore_tabs(void)
 {
 	int i;
 	for (i = 0; i < g_d.previewTabN; i++) {
-		int idx = g_d.previewTabNodes[i];
+		int idx = g_d.previewTabs[i].node;
 		if (idx >= 0 && idx < g_d.doc.nodeCount &&
 		    g_d.doc.nodes[idx].type == UI_DN_TABS) {
-			g_d.doc.nodes[idx].selected = g_d.previewTabSel[i];
+			g_d.doc.nodes[idx].selected = g_d.previewTabs[i].sel;
 			UiDesign_TabsNormalize(&g_d.doc, idx);
 		}
 	}
-	g_d.previewTabN = 0;
+	HeapFree(GetProcessHeap(), 0, g_d.previewTabs);
+	g_d.previewTabs = NULL;
+	g_d.previewTabN = g_d.previewTabCap = 0;
+}
+
+static void d_preview_capture_radios(void)
+{
+	int i;
+	if (g_d.previewRadioN > 0) return;
+	g_d.previewRadioN = 0;
+	for (i = 0; i < d_rg_count(); i++) {
+		UiDesignRadioGroup *rg = d_rg(i);
+		DPreviewRadio *item;
+		char *selected;
+		if (!rg) continue;
+		if (!d_reserve((void **)&g_d.previewRadios, &g_d.previewRadioCap,
+		    g_d.previewRadioN + 1, sizeof(*g_d.previewRadios))) break;
+		selected = d_strdup(rg->selectedRadioId ? rg->selectedRadioId : "");
+		if (!selected) break;
+		item = &g_d.previewRadios[g_d.previewRadioN++];
+		item->uid = rg->uid;
+		item->selectedRadioId = selected;
+	}
+}
+
+static void d_preview_restore_radios(void)
+{
+	int i;
+	for (i = 0; i < g_d.previewRadioN; i++) {
+		int gi = UiDesign_RadioGroupFind(&g_d.doc, g_d.previewRadios[i].uid);
+		UiDesignRadioGroup *rg = d_rg(gi);
+		if (rg) {
+			/* 只恢复元数据, 不影响 dirty/撤销. */
+			UiDesign_SetString(&rg->selectedRadioId,
+				g_d.previewRadios[i].selectedRadioId);
+			UiDesign_RadioGroupNormalize(&g_d.doc, gi);
+		}
+		HeapFree(GetProcessHeap(), 0, g_d.previewRadios[i].selectedRadioId);
+	}
+	HeapFree(GetProcessHeap(), 0, g_d.previewRadios);
+	g_d.previewRadios = NULL;
+	g_d.previewRadioN = g_d.previewRadioCap = 0;
 }
 
 static void d_preview_shutdown(void)
@@ -580,6 +791,7 @@ static void d_preview_shutdown(void)
 		g_d.instReady = 0;
 	}
 	d_preview_restore_tabs();
+	d_preview_restore_radios();
 	g_d.previewDialogTried = 0;
 }
 
@@ -593,8 +805,9 @@ static void d_reset_selection(void)
 	g_d.selGroup = g_d.doc.groupCount > 0 ? 0 : -1;
 	g_d.selKind = g_d.selView >= 0 ? DSEL_VIEW : DSEL_WINDOW;
 	g_d.selNode = d_view_root();
+	g_d.selRadioGroup = -1;
 	d_sel_clear();
-	if (g_d.selNode >= 0) { g_d.selSet[0] = g_d.selNode; g_d.selSetN = 1; }
+	if (g_d.selNode >= 0) d_sel_add(g_d.selNode);
 	g_d.treeDragIdx = -1;
 	g_d.treeDropIdx = -1;
 	g_d.marquee = 0;
@@ -627,17 +840,19 @@ static void d_new_doc(void)
 
 static void d_open_file(void)
 {
-	WCHAR file[MAX_PATH] = L"";
+	WCHAR *file = NULL;
 	d_after_edit();
 	if (!d_confirm_discard()) return;
-	if (!d_open_dialog(file, MAX_PATH)) return;
+	if (!d_open_dialog(&file)) return;
 	d_preview_shutdown();
 	if (!UiDesign_LoadFile(&g_d.doc, file)) {
 		d_error("打开失败: .cui 解析错误");
+		HeapFree(GetProcessHeap(), 0, file);
 		return;
 	}
 	d_normalize_modes();
-	d_dir_of(file, g_d.lastDir, MAX_PATH);
+	d_set_dir(&g_d.lastDir, file);
+	HeapFree(GetProcessHeap(), 0, file);
 	d_reset_selection();
 	d_undo_reset();
 	d_status("打开工程");
@@ -645,27 +860,33 @@ static void d_open_file(void)
 
 static void d_save_file(int saveAs)
 {
-	WCHAR file[MAX_PATH];
+	WCHAR *file = NULL;
 	d_after_edit();
-	if (!g_d.doc.path[0] || saveAs) {
-		file[0] = 0;
-		if (g_d.doc.path[0]) d_wide(g_d.doc.path, file, MAX_PATH);
-		if (!d_save_dialog(file, MAX_PATH)) return;
+	if ((!g_d.doc.path || !g_d.doc.path[0]) || saveAs) {
+		WCHAR *initial = g_d.doc.path ? d_wide_alloc(g_d.doc.path) : NULL;
+		if (!d_save_dialog(&file, initial)) {
+			HeapFree(GetProcessHeap(), 0, initial);
+			return;
+		}
+		HeapFree(GetProcessHeap(), 0, initial);
 	} else {
-		d_wide(g_d.doc.path, file, MAX_PATH);
+		file = d_wide_alloc(g_d.doc.path);
+		if (!file) { d_error("保存失败: 内存不足"); return; }
 	}
 	if (!UiDesign_SaveFile(&g_d.doc, file)) {
 		d_error("保存失败");
+		HeapFree(GetProcessHeap(), 0, file);
 		return;
 	}
-	d_dir_of(file, g_d.lastDir, MAX_PATH);
+	d_set_dir(&g_d.lastDir, file);
+	HeapFree(GetProcessHeap(), 0, file);
 	d_undo_reset();
 	d_status("已保存 .cui");
 }
 
 static void d_generate_window(void)
 {
-	WCHAR dir[MAX_PATH] = L".";
+	WCHAR *dir = NULL;
 	char report[256], err[256];
 	d_after_edit();
 	if (g_d.selWin < 0 || g_d.selWin >= g_d.doc.hostCount) {
@@ -676,10 +897,17 @@ static void d_generate_window(void)
 		d_error(err);
 		return;
 	}
-	if (g_d.doc.path[0]) {
-		WCHAR file[MAX_PATH];
-		d_wide(g_d.doc.path, file, MAX_PATH);
-		d_dir_of(file, dir, MAX_PATH);
+	dir = d_wstrdup(L".");
+	if (!dir) { d_error("内存不足"); return; }
+	if (g_d.doc.path && g_d.doc.path[0]) {
+		WCHAR *file = d_wide_alloc(g_d.doc.path);
+		if (!file) { HeapFree(GetProcessHeap(), 0, dir); d_error("内存不足"); return; }
+		HeapFree(GetProcessHeap(), 0, dir);
+		dir = (WCHAR *)HeapAlloc(GetProcessHeap(), 0,
+			(lstrlenW(file) + 1) * sizeof(*dir));
+		if (dir) d_dir_of(file, dir, (int)lstrlenW(file) + 1);
+		HeapFree(GetProcessHeap(), 0, file);
+		if (!dir) { d_error("内存不足"); return; }
 	}
 	if (UiDesign_GenerateHost(&g_d.doc, g_d.selWin, dir, report,
 	    sizeof(report)) < 0)
@@ -691,6 +919,7 @@ static void d_generate_window(void)
 	} else {
 		d_status(report);
 	}
+	HeapFree(GetProcessHeap(), 0, dir);
 }
 
 static void d_generate_commit(void)
@@ -706,25 +935,60 @@ static void d_generate_commit(void)
 
 static void d_generate(void)
 {
-	WCHAR dir[MAX_PATH] = L".";
+	WCHAR *dir = NULL;
 	char report[256], err[256];
+	int i, need = 0;
 	d_after_edit();
 	if (!d_validate(err, sizeof(err))) {
 		d_error(err);
 		return;
 	}
-	if (g_d.doc.path[0]) {
-		WCHAR file[MAX_PATH];
-		d_wide(g_d.doc.path, file, MAX_PATH);
-		d_dir_of(file, dir, MAX_PATH);
+	dir = d_wstrdup(L".");
+	if (!dir) { d_error("内存不足"); return; }
+	if (g_d.doc.path && g_d.doc.path[0]) {
+		WCHAR *file = d_wide_alloc(g_d.doc.path);
+		if (!file) { HeapFree(GetProcessHeap(), 0, dir); d_error("内存不足"); return; }
+		HeapFree(GetProcessHeap(), 0, dir);
+		dir = (WCHAR *)HeapAlloc(GetProcessHeap(), 0,
+			(lstrlenW(file) + 1) * sizeof(*dir));
+		if (dir) d_dir_of(file, dir, (int)lstrlenW(file) + 1);
+		HeapFree(GetProcessHeap(), 0, file);
+		if (!dir) { d_error("内存不足"); return; }
 	}
-	g_d.genFileN = UiDesign_PreviewAll(&g_d.doc, dir, g_d.genFiles, 64,
-		report, sizeof(report));
+	{
+		need = g_d.doc.groupCount * 2;
+		for (i = 0; i < g_d.doc.hostCount; i++)
+			if (g_d.doc.hosts[i].group < 0) need += 2;
+		if (g_d.genFiles) {
+			UiDesign_GenFilesFree(g_d.genFiles, g_d.genFileN > 0 ? g_d.genFileN : 0);
+			HeapFree(GetProcessHeap(), 0, g_d.genFiles);
+			g_d.genFiles = NULL;
+		}
+		g_d.genFileN = 0;
+		if (need > 0) {
+			g_d.genFiles = (UiDesignGenFile *)HeapAlloc(GetProcessHeap(),
+				HEAP_ZERO_MEMORY, (SIZE_T)need * sizeof(*g_d.genFiles));
+			if (!g_d.genFiles) {
+				HeapFree(GetProcessHeap(), 0, dir);
+				d_error("生成预览失败: 内存不足");
+				return;
+			}
+		}
+		g_d.genFileN = UiDesign_PreviewAll(&g_d.doc, dir, g_d.genFiles, need,
+			report, sizeof(report));
+	}
 	if (g_d.genFileN < 0) {
+		if (g_d.genFiles) UiDesign_GenFilesFree(g_d.genFiles, need);
+		HeapFree(GetProcessHeap(), 0, g_d.genFiles);
+		g_d.genFiles = NULL;
+		HeapFree(GetProcessHeap(), 0, dir);
 		d_error("生成预览失败 (检查分组输出路径)");
 		return;
 	}
-	lstrcpynW(g_d.genDir, dir, MAX_PATH);
+	HeapFree(GetProcessHeap(), 0, g_d.genDir);
+	g_d.genDir = d_wstrdup(dir);
+	HeapFree(GetProcessHeap(), 0, dir);
+	if (!g_d.genDir) { d_error("生成预览失败: 内存不足"); return; }
 	g_d.genPreview = 1;
 	if (err[0]) {
 		char out[512];
@@ -743,6 +1007,430 @@ static UiDesignNode *d_selnode(void)
 	return g_d.selNode >= 0 ? UiDesign_Node(&g_d.doc, g_d.selNode) : NULL;
 }
 
+static int d_layout_parent(int idx)
+{
+	return UiDesign_LayoutParent(&g_d.doc, idx);
+}
+
+/* ── 单选组元数据辅助 ──────────────────────────────────────────────── */
+
+static int d_rg_count(void)
+{
+	return g_d.doc.radioGroupCount;
+}
+
+static UiDesignRadioGroup *d_rg(int gi)
+{
+	return gi >= 0 ? UiDesign_RadioGroup(&g_d.doc, gi) : NULL;
+}
+
+static int d_sel_radio_group_index(void)
+{
+	return g_d.selKind == DSEL_RADIOGROUP ? g_d.selRadioGroup : -1;
+}
+
+static UiDesignRadioGroup *d_selrg(void)
+{
+	return d_rg(d_sel_radio_group_index());
+}
+
+/* 节点所属单选组索引; 非 Radio 或未分组返回 -1. */
+static int d_node_group_index(int idx)
+{
+	return UiDesign_RadioGroupForNode(&g_d.doc, idx);
+}
+
+/* 选中项 Radio 的节点索引 (无选中返回 -1). */
+static int d_rg_selected_node(int gi)
+{
+	return UiDesign_RadioGroupSelectedNode(&g_d.doc, gi);
+}
+
+static int d_rg_member_count(int gi)
+{
+	return UiDesign_RadioGroupMemberCount(&g_d.doc, gi);
+}
+
+static int d_rg_member_at(int gi, int ordinal)
+{
+	return UiDesign_RadioGroupMemberAt(&g_d.doc, gi, ordinal);
+}
+
+static int d_rg_member_parent(int gi)
+{
+	int n = d_rg_member_at(gi, 0);
+	return n >= 0 ? g_d.doc.nodes[n].parent : -1;
+}
+
+/* ── 单选组下拉 (属性面板) ─────────────────────────────────────────── */
+
+static unsigned d_rg_hash_str(unsigned h, const char *s)
+{
+	if (s) while (*s) { h ^= (unsigned char)*s++; h *= 16777619u; }
+	return h * 16777619u;
+}
+
+static unsigned d_rg_hash_int(unsigned h, unsigned v)
+{
+	int k;
+	for (k = 0; k < 4; k++) { h ^= (v >> (k * 8)) & 0xFFu; h *= 16777619u; }
+	return h;
+}
+
+/* 组标签重名时附加 ID, 避免下拉出现无法区分的同名项. */
+static int d_rg_label_dup(const UiDesignRadioGroup *rg)
+{
+	const char *a = rg->name[0] ? rg->name : rg->id;
+	int i;
+	for (i = 0; i < g_d.doc.radioGroupCount; i++) {
+		const UiDesignRadioGroup *o = &g_d.doc.radioGroups[i];
+		const char *b;
+		if (o == rg || o->owner != rg->owner) continue;
+		b = o->name[0] ? o->name : o->id;
+		if (strcmp(a, b) == 0) return 1;
+	}
+	return 0;
+}
+
+static unsigned d_rg_combo_signature(int owner)
+{
+	unsigned h = 2166136261u;
+	int i;
+	h = d_rg_hash_int(h, (unsigned)owner);
+	for (i = 0; i < g_d.doc.radioGroupCount; i++) {
+		const UiDesignRadioGroup *rg = &g_d.doc.radioGroups[i];
+		if (rg->owner != owner) continue;
+		h = d_rg_hash_int(h, rg->uid);
+		h = d_rg_hash_str(h, rg->id);
+		h = d_rg_hash_str(h, rg->name);
+	}
+	return h;
+}
+
+static void d_rg_combo_clear(void)
+{
+	HeapFree(GetProcessHeap(), 0, g_d.propRgPool);
+	HeapFree(GetProcessHeap(), 0, g_d.propRgItems);
+	HeapFree(GetProcessHeap(), 0, g_d.propRgMap);
+	g_d.propRgPool = NULL;
+	g_d.propRgItems = NULL;
+	g_d.propRgMap = NULL;
+	g_d.propRgN = 0;
+	g_d.propRgSigValid = 0;
+}
+
+static void d_rg_combo_build(int owner)
+{
+	UiSelect *s = &g_d.propRgSelect;
+	int i, n = 1, total = (int)sizeof("未分组");
+	char *p;
+	unsigned k;
+	d_rg_combo_clear();
+	for (i = 0; i < g_d.doc.radioGroupCount; i++) {
+		const UiDesignRadioGroup *rg = &g_d.doc.radioGroups[i];
+		const char *label;
+		if (rg->owner != owner) continue;
+		label = rg->name[0] ? rg->name : rg->id;
+		n++;
+		total += 1 + (int)strlen(label);
+		if (d_rg_label_dup(rg))
+			total += (int)strlen(" · ") + (int)strlen(rg->id);
+	}
+	g_d.propRgPool = (char *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)total);
+	g_d.propRgItems = (const char **)HeapAlloc(GetProcessHeap(), 0,
+		(SIZE_T)n * sizeof(*g_d.propRgItems));
+	g_d.propRgMap = (int *)HeapAlloc(GetProcessHeap(), 0,
+		(SIZE_T)n * sizeof(*g_d.propRgMap));
+	if (!g_d.propRgPool || !g_d.propRgItems || !g_d.propRgMap) {
+		d_rg_combo_clear();
+		UiSelect_SetItems(s, NULL, 0);
+		return;
+	}
+	p = g_d.propRgPool;
+	memcpy(p, "未分组", sizeof("未分组"));
+	g_d.propRgItems[0] = p;
+	g_d.propRgMap[0] = -1;
+	p += sizeof("未分组");
+	k = 1;
+	for (i = 0; i < g_d.doc.radioGroupCount; i++) {
+		const UiDesignRadioGroup *rg = &g_d.doc.radioGroups[i];
+		const char *label;
+		size_t len;
+		if (rg->owner != owner) continue;
+		label = rg->name[0] ? rg->name : rg->id;
+		len = strlen(label);
+		g_d.propRgItems[k] = p;
+		g_d.propRgMap[k] = i;
+		memcpy(p, label, len);
+		p += len;
+		if (d_rg_label_dup(rg)) {
+			memcpy(p, " · ", 4);
+			p += 4;
+			len = strlen(rg->id);
+			memcpy(p, rg->id, len);
+			p += len;
+		}
+		*p++ = 0;
+		k++;
+	}
+	g_d.propRgN = n;
+	UiSelect_SetItems(s, g_d.propRgItems, n);
+}
+
+/* 按 owner 过滤并刷新项; 返回当前组成员对应的项下标. */
+static int d_rg_combo_index(int owner, int curGroup)
+{
+	unsigned sig;
+	int i;
+	if (!g_d.propRgSigValid || g_d.propRgOwner != owner) {
+		d_rg_combo_build(owner);
+		g_d.propRgOwner = owner;
+		g_d.propRgSig = d_rg_combo_signature(owner);
+		g_d.propRgSigValid = 1;
+	} else {
+		sig = d_rg_combo_signature(owner);
+		if (sig != g_d.propRgSig) {
+			d_rg_combo_build(owner);
+			g_d.propRgSig = sig;
+		}
+	}
+	if (curGroup < 0) return 0;
+	for (i = 0; i < g_d.propRgN; i++)
+		if (g_d.propRgMap[i] == curGroup) return i;
+	return 0;
+}
+
+static void d_rg_combo_commit(void)
+{
+	UiDesignNode *n;
+	int node = g_d.propRgNode;
+	int idx, gi, old;
+	if (!g_d.propRgReady || !g_d.propRgSelect.committed) return;
+	g_d.propRgSelect.committed = 0;
+	idx = g_d.propRgSelect.selected;
+	if (node < 0 || node >= g_d.doc.nodeCount ||
+	    g_d.selKind != DSEL_NODE || g_d.selNode != node)
+		return;
+	n = &g_d.doc.nodes[node];
+	if (n->type != UI_DN_RADIO || idx < 0 || idx >= g_d.propRgN) return;
+	gi = g_d.propRgMap[idx];
+	old = d_node_group_index(node);
+	if (gi == old) return;
+	if (!UiDesign_RadioGroupAssign(&g_d.doc, node, gi)) {
+		d_status("单选组不属于当前窗口");
+		return;
+	}
+	d_undo_push();
+	g_d.layoutReady = 0;
+	d_status(gi >= 0 ? "已绑定单选组" : "已解除单选组");
+	UiApp_Invalidate(g_d.app);
+}
+
+/* 组成员并集矩形 (仅可见且属于当前视图); 无可见成员返回 0. */
+static int d_rg_union_rect(int gi, UiRect *out)
+{
+	int i, count = d_rg_member_count(gi), got = 0;
+	UiRect u = Ui_Rect(0, 0, 0, 0);
+	if (!g_d.layoutReady || !out) return 0;
+	for (i = 0; i < count; i++) {
+		int ni = d_rg_member_at(gi, i);
+		UiRect r;
+		if (ni < 0 || ni >= g_d.doc.nodeCount) continue;
+		if (g_d.doc.nodes[ni].owner != g_d.selView) continue;
+		if (!g_d.doc.nodes[ni].visible) continue;
+		r = g_d.rects[ni];
+		if (r.w <= 0.0f && r.h <= 0.0f) continue;
+		if (!got) { u = r; got = 1; }
+		else {
+			float x0 = u.x < r.x ? u.x : r.x;
+			float y0 = u.y < r.y ? u.y : r.y;
+			float x1 = u.x + u.w > r.x + r.w ? u.x + u.w : r.x + r.w;
+			float y1 = u.y + u.h > r.y + r.h ? u.y + u.h : r.y + r.h;
+			u = Ui_Rect(x0, y0, x1 - x0, y1 - y0);
+		}
+	}
+	if (got && out) *out = u;
+	return got;
+}
+
+/* 视图中唯一的单选组 ID. */
+static char *d_unique_rg_id(int view, const char *base)
+{
+	int i, n;
+	size_t cap = strlen(base) + 32;
+	char *out = (char *)HeapAlloc(GetProcessHeap(), 0, cap);
+	if (!out) return NULL;
+	for (n = 1; n < 10000; n++) {
+		int used = 0;
+		snprintf(out, cap, "%s%d", base, n);
+		for (i = 0; i < d_rg_count(); i++) {
+			UiDesignRadioGroup *rg = d_rg(i);
+			if (rg && rg->owner == view && strcmp(rg->id, out) == 0) {
+				used = 1;
+				break;
+			}
+		}
+		if (!used) return out;
+	}
+	snprintf(out, cap, "%s", base);
+	return out;
+}
+
+/* 组成员当前父容器中的起始位置与数量 (假设成员连续). */
+static int d_rg_block_span(int gi, int *parent, int *start, int *count)
+{
+	int p = d_rg_member_parent(gi);
+	int i, n = d_rg_member_count(gi), s = -1, found = 0;
+	if (p < 0 || p >= g_d.doc.nodeCount || n <= 0) return 0;
+	for (i = 0; i < g_d.doc.nodes[p].childCount; i++) {
+		int ci = g_d.doc.nodes[p].children[i];
+		UiDesignNode *cn = UiDesign_Node(&g_d.doc, ci);
+		if (!cn || cn->type != UI_DN_RADIO) continue;
+		if (d_node_group_index(ci) != gi) continue;
+		if (s < 0) s = i;
+		found++;
+	}
+	if (s < 0 || found != n) return 0;   /* 跨父容器时不做块移动 */
+	if (parent) *parent = p;
+	if (start) *start = s;
+	if (count) *count = n;
+	return 1;
+}
+
+/* 整组移动到父容器 newStart 位置 (保持成员相对顺序). */
+static int d_rg_block_move_to(int gi, int newStart)
+{
+	int parent = -1, start = 0, count = 0, i, total;
+	int *members;
+	if (!d_rg_block_span(gi, &parent, &start, &count)) return 0;
+	total = g_d.doc.nodes[parent].childCount;
+	if (newStart > total - count) newStart = total - count;
+	if (newStart < 0) newStart = 0;
+	if (newStart == start) return 0;
+	members = (int *)HeapAlloc(GetProcessHeap(), 0,
+		(SIZE_T)count * sizeof(*members));
+	if (!members) return 0;
+	for (i = 0; i < count; i++) {
+		members[i] = d_rg_member_at(gi, i);
+		if (members[i] < 0) {
+			HeapFree(GetProcessHeap(), 0, members);
+			return 0;
+		}
+	}
+	for (i = 0; i < count; i++)
+		UiDesign_NodeMove(&g_d.doc, members[i], parent, newStart + i);
+	HeapFree(GetProcessHeap(), 0, members);
+	return 1;
+}
+
+static int d_rg_block_move(int gi, int dir)
+{
+	int start = 0;
+	if (!d_rg_block_span(gi, NULL, &start, NULL)) return 0;
+	return d_rg_block_move_to(gi, start + (dir ? 1 : -1));
+}
+
+/* 删除所有成员后移除元数据. */
+static int d_del_radio_group(int gi)
+{
+	UiDesignRadioGroup *rg = d_rg(gi);
+	int i, n, parent = -1;
+	if (!rg) return 0;
+	parent = d_rg_member_parent(gi);
+	n = d_rg_member_count(gi);
+	for (i = 0; i < n; i++) {
+		int ni = d_rg_member_at(gi, i);
+		if (ni >= 0) UiDesign_NodeRemove(&g_d.doc, ni);
+	}
+	/* 元数据索引会因删除而前移; 按 uid 重新查找. */
+	{
+		unsigned uid = rg->uid;
+		int at = UiDesign_RadioGroupFind(&g_d.doc, uid);
+		if (at >= 0) UiDesign_RadioGroupRemove(&g_d.doc, at);
+	}
+	g_d.selRadioGroup = -1;
+	g_d.selKind = DSEL_NODE;
+	g_d.selNode = parent >= 0 ? parent : d_view_root();
+	d_sel_clear();
+	if (g_d.selNode >= 0) d_sel_add(g_d.selNode);
+	g_d.doc.dirty = 1;
+	g_d.layoutReady = 0;
+	d_undo_push();
+	d_status("已删除单选组");
+	return 1;
+}
+
+static int d_node_set_id(int idx, const char *id)
+{
+	UiDesignNode *n = UiDesign_Node(&g_d.doc, idx);
+	char *old;
+	int gi, changed = 0;
+	if (!n) return 0;
+	old = d_strdup(n->id);
+	if (!old) return 0;
+	if (!UiDesign_SetString(&n->id, id)) {
+		HeapFree(GetProcessHeap(), 0, old);
+		return 0;
+	}
+	/* 单选组选中项使用稳定节点 ID, 重命名时同步. */
+	gi = d_node_group_index(idx);
+	if (gi >= 0) {
+		UiDesignRadioGroup *rg = d_rg(gi);
+		if (rg && rg->selectedRadioId && strcmp(rg->selectedRadioId, old) == 0) {
+			UiDesign_SetString(&rg->selectedRadioId, n->id);
+			changed = 1;
+		}
+	}
+	HeapFree(GetProcessHeap(), 0, old);
+	return changed;
+}
+
+/* 参与布局的真实子项 (Radio 也是普通子项). */
+static int d_layout_item_count(int parent)
+{
+	const UiDesignNode *p = UiDesign_Node(&g_d.doc, parent);
+	int i, count = 0;
+	if (!p) return 0;
+	for (i = 0; i < p->childCount; i++) {
+		const UiDesignNode *n = UiDesign_Node(&g_d.doc, p->children[i]);
+		if (n && n->visible) count++;
+	}
+	return count;
+}
+
+static int d_layout_item_at(int parent, int pos)
+{
+	UiDesignNode *p = UiDesign_Node(&g_d.doc, parent);
+	int i, at = 0;
+	if (!p || pos < 0) return -1;
+	for (i = 0; i < p->childCount; i++) {
+		UiDesignNode *n = UiDesign_Node(&g_d.doc, p->children[i]);
+		if (!n || !n->visible) continue;
+		if (at++ == pos) return p->children[i];
+	}
+	return -1;
+}
+
+static void d_translate_layout_node(int idx, float dx, float dy)
+{
+	UiDesignNode *n = UiDesign_Node(&g_d.doc, idx);
+	int i, gi;
+	if (!n) return;
+	gi = d_node_group_index(idx);
+	if (gi >= 0) {
+		int count = d_rg_member_count(gi);
+		for (i = 0; i < count; i++) {
+			UiDesignNode *r = UiDesign_Node(&g_d.doc, d_rg_member_at(gi, i));
+			if (!r) continue;
+			r->x += dx;
+			r->y += dy;
+		}
+		return;
+	}
+	n->x += dx;
+	n->y += dy;
+}
+
 static int d_sel_has(int idx)
 {
 	int i;
@@ -758,28 +1446,48 @@ static int d_parent_free(int parent)
 		g_d.doc.nodes[parent].type == UI_DN_PANEL;
 }
 
+static int d_drag_append(int idx)
+{
+	UiDesignNode *n = UiDesign_Node(&g_d.doc, idx);
+	int k;
+	if (!n || n->parent < 0 || !d_parent_free(d_layout_parent(idx))) return 0;
+	for (k = 0; k < g_d.dragListN; k++)
+		if (g_d.dragList[k].idx == idx) return 1;
+	if (!d_reserve((void **)&g_d.dragList, &g_d.dragListCap,
+	    g_d.dragListN + 1, sizeof(*g_d.dragList))) return 0;
+	g_d.dragList[g_d.dragListN].idx = idx;
+	g_d.dragList[g_d.dragListN].x = n->x;
+	g_d.dragList[g_d.dragListN].y = n->y;
+	g_d.dragListN++;
+	return 1;
+}
+
 static void d_drag_begin(int primary)
 {
 	int i;
 	g_d.dragListN = 0;
-	for (i = 0; i < g_d.selSetN; i++) {
-		int idx = g_d.selSet[i];
-		UiDesignNode *n = UiDesign_Node(&g_d.doc, idx);
-		if (!n || n->parent < 0 || !d_parent_free(n->parent)) continue;
-		if (g_d.dragListN >= (int)(sizeof(g_d.dragListIdx) / sizeof(g_d.dragListIdx[0])))
-			break;
-		g_d.dragListIdx[g_d.dragListN] = idx;
-		g_d.dragListX[g_d.dragListN] = n->x;
-		g_d.dragListY[g_d.dragListN] = n->y;
-		g_d.dragListN++;
+	g_d.dragReorderParent = g_d.dragReorderPos = -1;
+	if (g_d.selKind == DSEL_RADIOGROUP && g_d.selRadioGroup >= 0) {
+		int count = d_rg_member_count(g_d.selRadioGroup);
+		for (i = 0; i < count; i++)
+			d_drag_append(d_rg_member_at(g_d.selRadioGroup, i));
+	} else {
+		for (i = 0; i < g_d.selSetN; i++) {
+			int idx = g_d.selSet[i], k;
+			int duplicate = 0;
+			for (k = 0; k < i; k++)
+				if (g_d.selSet[k] == idx) duplicate = 1;
+			if (!duplicate) d_drag_append(idx);
+		}
 	}
-	if (g_d.dragListN == 0) {
-		UiDesignNode *n = UiDesign_Node(&g_d.doc, primary);
-		if (n && n->parent >= 0 && d_parent_free(n->parent)) {
-			g_d.dragListIdx[0] = primary;
-			g_d.dragListX[0] = n->x;
-			g_d.dragListY[0] = n->y;
-			g_d.dragListN = 1;
+	if (g_d.dragListN == 0) d_drag_append(primary);
+	if (primary >= 0 && primary < g_d.doc.nodeCount) {
+		UiDesignNode *n = &g_d.doc.nodes[primary];
+		g_d.dragReorderParent = n->parent;
+		if (g_d.dragReorderParent >= 0) {
+			UiDesignNode *p = &g_d.doc.nodes[g_d.dragReorderParent];
+			for (i = 0; i < p->childCount; i++)
+				if (p->children[i] == primary) { g_d.dragReorderPos = i; break; }
 		}
 	}
 }
@@ -815,9 +1523,9 @@ static void d_tabs_reveal(int idx)
 static void d_sel_single(int idx)
 {
 	d_sel_clear();
+	g_d.selRadioGroup = -1;
 	if (idx >= 0) {
-		g_d.selSet[0] = idx;
-		g_d.selSetN = 1;
+		d_sel_add(idx);
 		g_d.selNode = idx;
 		g_d.selKind = DSEL_NODE;
 		d_tabs_reveal(idx);
@@ -827,9 +1535,9 @@ static void d_sel_single(int idx)
 static void d_sel_toggle(int idx)
 {
 	int i;
+	g_d.selRadioGroup = -1;
 	if (!d_sel_has(idx)) {
-		if (g_d.selSetN < (int)(sizeof(g_d.selSet) / sizeof(g_d.selSet[0])))
-			g_d.selSet[g_d.selSetN++] = idx;
+		d_sel_add(idx);
 		g_d.selNode = idx;
 		g_d.selKind = DSEL_NODE;
 		d_tabs_reveal(idx);
@@ -843,6 +1551,15 @@ static void d_sel_toggle(int idx)
 			break;
 		}
 	g_d.selNode = g_d.selSetN > 0 ? g_d.selSet[g_d.selSetN - 1] : -1;
+}
+
+/* 选中虚拟单选组行: 不占用 selNode/selSet. */
+static void d_sel_radio_group(int gi)
+{
+	d_sel_clear();
+	g_d.selRadioGroup = gi;
+	g_d.selNode = -1;
+	g_d.selKind = DSEL_RADIOGROUP;
 }
 
 static void d_sel_prune(void)
@@ -896,6 +1613,7 @@ static void d_prop_add(int key, int kind, const char *label, const char *val)
 	p->kind = kind;
 	p->sec = g_d.propSection;
 	p->label = label;
+	p->valueRef = (kind == DPK_TEXT || kind == DPK_MULTILINE) ? val : NULL;
 	UiDesign_SetText(p->value, sizeof(p->value), val ? val : "");
 }
 
@@ -954,21 +1672,44 @@ static void d_build_props(void)
 		d_prop_add(DK_G_SYM, DPK_TEXT, "符号前缀", gr->symbolPrefix);
 		return;
 	}
+	if (g_d.selKind == DSEL_RADIOGROUP) {
+		UiDesignRadioGroup *rg = d_selrg();
+		int selNode;
+		char selText[160];
+		if (!rg) return;
+		d_prop_add(DK_RG_ID, DPK_TEXT, "ID", rg->id);
+		d_prop_add(DK_RG_NAME, DPK_TEXT, "名称", rg->name);
+		d_prop_add(DK_RG_ENABLED, DPK_BOOL, "Enabled", rg->enabled ? "1" : "0");
+		selNode = d_rg_selected_node(g_d.selRadioGroup);
+		if (selNode >= 0)
+			snprintf(selText, sizeof(selText), "%s · %s",
+				g_d.doc.nodes[selNode].id, g_d.doc.nodes[selNode].text);
+		else
+			snprintf(selText, sizeof(selText), "无");
+		d_prop_add(DK_RG_SELECTED, DPK_ENUM, "选中项", selText);
+		snprintf(b, sizeof(b), "%d", d_rg_member_count(g_d.selRadioGroup));
+		d_prop_add(DK_N_PAGECOUNT, DPK_READONLY, "成员数", b);
+		g_d.propSection = 4;
+		d_prop_add(DK_RG_CHANGE, DPK_TEXT, "OnChange",
+			rg->onChange ? rg->onChange : "");
+		return;
+	}
 	{
 		UiDesignNode *n = d_selnode();
-		int freeParent, gridParent;
+		int layoutParent, freeParent, gridParent;
 		if (!n) return;
-		freeParent = n->parent >= 0 &&
-			(g_d.doc.nodes[n->parent].type == UI_DN_ABSOLUTE ||
-			 g_d.doc.nodes[n->parent].type == UI_DN_PANEL);
-		gridParent = n->parent >= 0 &&
-			g_d.doc.nodes[n->parent].type == UI_DN_GRID;
+		layoutParent = d_layout_parent(g_d.selNode);
+		freeParent = layoutParent >= 0 &&
+			(g_d.doc.nodes[layoutParent].type == UI_DN_ABSOLUTE ||
+			 g_d.doc.nodes[layoutParent].type == UI_DN_PANEL);
+		gridParent = layoutParent >= 0 &&
+			g_d.doc.nodes[layoutParent].type == UI_DN_GRID;
 		d_prop_add(DK_N_ID, DPK_TEXT, "ID", n->id);
 		d_prop_add(DK_N_NAME, DPK_TEXT, "名称", n->name);
 		d_prop_add(DK_N_TYPE, DPK_READONLY, "类型", UiDesign_TypeName(n->type));
 		g_d.propSection = 2;
 		if (n->parent >= 0 &&
-		    g_d.doc.nodes[n->parent].type != UI_DN_TABS) {
+		    (layoutParent < 0 || g_d.doc.nodes[layoutParent].type != UI_DN_TABS)) {
 			d_fmt(b, sizeof(b), n->w); d_prop_add(DK_N_W, DPK_FLOAT, "宽", b);
 			d_fmt(b, sizeof(b), n->h); d_prop_add(DK_N_H, DPK_FLOAT, "高", b);
 		}
@@ -976,8 +1717,14 @@ static void d_build_props(void)
 			d_fmt(b, sizeof(b), n->x); d_prop_add(DK_N_X, DPK_FLOAT, "X", b);
 			d_fmt(b, sizeof(b), n->y); d_prop_add(DK_N_Y, DPK_FLOAT, "Y", b);
 		}
+		if (n->type == UI_DN_RADIO && layoutParent >= 0) {
+			d_fmt(b, sizeof(b), n->margin[0]); d_prop_add(DK_N_MARGINL, DPK_FLOAT, "Margin L", b);
+			d_fmt(b, sizeof(b), n->margin[1]); d_prop_add(DK_N_MARGINT, DPK_FLOAT, "Margin T", b);
+			d_fmt(b, sizeof(b), n->margin[2]); d_prop_add(DK_N_MARGINR, DPK_FLOAT, "Margin R", b);
+			d_fmt(b, sizeof(b), n->margin[3]); d_prop_add(DK_N_MARGINB, DPK_FLOAT, "Margin B", b);
+		}
 		g_d.propSection = 1;
-		if (UiDesign_IsContainer(n->type)) {
+		if (UiDesign_IsLayoutContainer(n->type)) {
 			d_fmt(b, sizeof(b), n->padding[0]); d_prop_add(DK_N_PADL, DPK_FLOAT, "Padding L", b);
 			d_fmt(b, sizeof(b), n->padding[1]); d_prop_add(DK_N_PADT, DPK_FLOAT, "Padding T", b);
 			d_fmt(b, sizeof(b), n->padding[2]); d_prop_add(DK_N_PADR, DPK_FLOAT, "Padding R", b);
@@ -1048,18 +1795,24 @@ static void d_build_props(void)
 			d_fmt(b, sizeof(b), n->value); d_prop_add(DK_N_VALUE, DPK_FLOAT, "Value", b);
 			break;
 		case UI_DN_SELECT:
-			d_prop_add(DK_N_OPTIONS, DPK_TEXT, "Options", n->options);
+			d_prop_add(DK_N_OPTIONS, DPK_MULTILINE, "Options", n->options);
 			snprintf(b, sizeof(b), "%d", n->selected);
 			d_prop_add(DK_N_SELECTED, DPK_ENUM, "Selected", b);
 			d_prop_add(DK_N_HINT, DPK_TEXT, "Hint", n->hint);
 			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
 			break;
-		case UI_DN_RADIOGROUP:
-			d_prop_add(DK_N_OPTIONS, DPK_TEXT, "Options", n->options);
-			snprintf(b, sizeof(b), "%d", n->selected);
-			d_prop_add(DK_N_SELECTED, DPK_ENUM, "Selected", b);
+		case UI_DN_RADIO: {
+			int gi = d_node_group_index(g_d.selNode);
+			UiDesignRadioGroup *rg = d_rg(gi);
+			int selNode = gi >= 0 ? d_rg_selected_node(gi) : -1;
+			d_prop_add(DK_N_TEXT, DPK_TEXT, "Text", n->text);
 			d_prop_add(DK_N_ENABLED, DPK_BOOL, "Enabled", n->enabled ? "1" : "0");
+			d_prop_add(DK_N_RADIOGROUP, DPK_READONLY, "单选组",
+				rg ? rg->name : "未分组");
+			d_prop_add(DK_N_RADIOSELECTED, DPK_READONLY, "组选中项",
+				selNode == g_d.selNode ? "是" : "否");
 			break;
+		}
 		case UI_DN_IMAGE:
 			d_prop_add(DK_N_TEXT, DPK_TEXT, "Text", n->text);
 			break;
@@ -1072,8 +1825,7 @@ static void d_build_props(void)
 				snprintf(b, sizeof(b), "无页");
 			}
 			d_prop_add(DK_N_SELECTED, DPK_ENUM, "当前页", b);
-			snprintf(b, sizeof(b), "%d / %d", n->childCount,
-				UI_DN_TABS_MAX_PAGES);
+			snprintf(b, sizeof(b), "%d", n->childCount);
 			d_prop_add(DK_N_PAGECOUNT, DPK_READONLY, "页数", b);
 			d_prop_add(DK_N_ADDPAGE, DPK_ENUM, "页面操作", "＋ 新增页");
 			d_prop_add(DK_N_VARIANT, DPK_ENUM, "页签样式",
@@ -1148,7 +1900,6 @@ static void d_build_props(void)
 		case UI_DN_INPUT: case UI_DN_CHECKBOX: case UI_DN_SWITCH:
 		case UI_DN_SLIDER: case UI_DN_SELECT: case UI_DN_TEXTAREA:
 		case UI_DN_DATEPICKER: case UI_DN_COLORSEL: case UI_DN_TABS:
-		case UI_DN_RADIOGROUP:
 			d_prop_add(DK_N_CHANGE, DPK_TEXT, "OnChange", n->onChange);
 			break;
 		default:
@@ -1197,6 +1948,30 @@ static void d_prop_cycle(int key)
 			if (g >= g_d.doc.groupCount) g = -1;
 			v->group = g;
 		}
+	} else if (g_d.selKind == DSEL_RADIOGROUP) {
+		UiDesignRadioGroup *rg = d_selrg();
+		if (!rg) return;
+		if (key == DK_RG_ENABLED) {
+			rg->enabled = !rg->enabled;
+		} else if (key == DK_RG_SELECTED) {
+			int count = d_rg_member_count(g_d.selRadioGroup);
+			int cur = d_rg_selected_node(g_d.selRadioGroup);
+			int ord = -1, i, next = -1;
+			for (i = 0; i < count; i++) {
+				int mi = d_rg_member_at(g_d.selRadioGroup, i);
+				if (cur < 0) { next = mi; break; }
+				if (mi == cur) { ord = i; break; }
+			}
+			if (ord >= 0 && count > 1)
+				next = d_rg_member_at(g_d.selRadioGroup, (ord + 1) % count);
+			if (next >= 0)
+				UiDesign_RadioGroupSetSelectedNode(&g_d.doc,
+					g_d.selRadioGroup, next);
+		}
+		g_d.doc.dirty = 1;
+		d_undo_push();
+		UiApp_Invalidate(g_d.app);
+		return;
 	} else if (g_d.selKind == DSEL_NODE && n) {
 		if (key == DK_N_ADDPAGE) {
 			d_tabs_add_page();
@@ -1241,9 +2016,9 @@ static void d_prop_apply_text(int key, const char *text)
 	UiDesignHost *w = d_selwindow();
 	UiDesignGroup *gr = d_selgroup();
 	if (g_d.selKind == DSEL_WINDOW && w) {
-		if (key == DK_W_ID) UiDesign_SetText(w->id, UI_DN_ID_MAX, text);
-		else if (key == DK_W_NAME) UiDesign_SetText(w->name, UI_DN_NAME_MAX, text);
-		else if (key == DK_W_TITLE) UiDesign_SetText(w->title, 128, text);
+		if (key == DK_W_ID) UiDesign_SetString(&w->id, text);
+		else if (key == DK_W_NAME) UiDesign_SetString(&w->name, text);
+		else if (key == DK_W_TITLE) UiDesign_SetString(&w->title, text);
 		else if (key == DK_W_W) w->w = (float)d_atof(text);
 		else if (key == DK_W_H) w->h = (float)d_atof(text);
 		else if (key == DK_W_MINW) w->minW = (float)d_atof(text);
@@ -1251,19 +2026,24 @@ static void d_prop_apply_text(int key, const char *text)
 		d_autosize_window(w);
 	} else if (g_d.selKind == DSEL_VIEW && d_selview()) {
 		UiDesignView *v = d_selview();
-		if (key == DK_V_ID) UiDesign_SetText(v->id, UI_DN_ID_MAX, text);
-		else if (key == DK_V_NAME) UiDesign_SetText(v->name, UI_DN_NAME_MAX, text);
+		if (key == DK_V_ID) UiDesign_SetString(&v->id, text);
+		else if (key == DK_V_NAME) UiDesign_SetString(&v->name, text);
 		else if (key == DK_V_W) v->w = (float)d_atof(text);
 		else if (key == DK_V_H) v->h = (float)d_atof(text);
 	} else if (g_d.selKind == DSEL_GROUP && gr) {
-		if (key == DK_G_ID) UiDesign_SetText(gr->id, UI_DN_ID_MAX, text);
-		else if (key == DK_G_NAME) UiDesign_SetText(gr->name, UI_DN_NAME_MAX, text);
-		else if (key == DK_G_OUTC) UiDesign_SetText(gr->outputC, UI_DN_PATH_MAX, text);
-		else if (key == DK_G_OUTH) UiDesign_SetText(gr->outputH, UI_DN_PATH_MAX, text);
-		else if (key == DK_G_SYM) UiDesign_SetText(gr->symbolPrefix, UI_DN_SYM_MAX, text);
+		if (key == DK_G_ID) UiDesign_SetString(&gr->id, text);
+		else if (key == DK_G_NAME) UiDesign_SetString(&gr->name, text);
+		else if (key == DK_G_OUTC) UiDesign_SetString(&gr->outputC, text);
+		else if (key == DK_G_OUTH) UiDesign_SetString(&gr->outputH, text);
+		else if (key == DK_G_SYM) UiDesign_SetString(&gr->symbolPrefix, text);
+	} else if (g_d.selKind == DSEL_RADIOGROUP && d_selrg()) {
+		UiDesignRadioGroup *rg = d_selrg();
+		if (key == DK_RG_ID) UiDesign_SetString(&rg->id, text);
+		else if (key == DK_RG_NAME) UiDesign_SetString(&rg->name, text);
+		else if (key == DK_RG_CHANGE) UiDesign_SetString(&rg->onChange, text);
 	} else if (g_d.selKind == DSEL_NODE && n) {
-		if (key == DK_N_ID) UiDesign_SetText(n->id, UI_DN_ID_MAX, text);
-		else if (key == DK_N_NAME) UiDesign_SetText(n->name, UI_DN_NAME_MAX, text);
+		if (key == DK_N_ID) d_node_set_id(g_d.selNode, text);
+		else if (key == DK_N_NAME) UiDesign_SetString(&n->name, text);
 		else if (key == DK_N_W) n->w = (float)d_atof(text);
 		else if (key == DK_N_H) n->h = (float)d_atof(text);
 		else if (key == DK_N_GROW) n->grow = (float)d_atof(text);
@@ -1275,24 +2055,20 @@ static void d_prop_apply_text(int key, const char *text)
 		else if (key == DK_N_PADB) n->padding[3] = (float)d_atof(text);
 		else if (key == DK_N_X) n->x = (float)d_atof(text);
 		else if (key == DK_N_Y) n->y = (float)d_atof(text);
+		else if (key == DK_N_MARGINL) n->margin[0] = (float)d_atof(text);
+		else if (key == DK_N_MARGINT) n->margin[1] = (float)d_atof(text);
+		else if (key == DK_N_MARGINR) n->margin[2] = (float)d_atof(text);
+		else if (key == DK_N_MARGINB) n->margin[3] = (float)d_atof(text);
 		else if (key == DK_N_TEXT) UiDesign_NodeSetText(n, text);
 		else if (key == DK_N_HINT) UiDesign_NodeSetHint(n, text);
-		else if (key == DK_N_OPTIONS) {
-			UiDesign_NodeSetOptions(n, text);
-			if (n->type == UI_DN_RADIOGROUP) {
-				int count = d_option_count(n->options);
-				if (count == 0) n->selected = -1;
-				else if (n->selected < 0) n->selected = 0;
-				else if (n->selected >= count) n->selected = count - 1;
-			}
-		}
+		else if (key == DK_N_OPTIONS) UiDesign_NodeSetOptions(n, text);
 		else if (key == DK_N_VALUE) {
 			n->value = (float)d_atof(text);
 			if (n->type == UI_DN_RINGPROGRESS)
 				n->value = d_clampf(n->value, 0.0f, 1.0f);
 		}
-		else if (key == DK_N_CLICK) UiDesign_SetText(n->onClick, UI_DN_ID_MAX, text);
-		else if (key == DK_N_CHANGE) UiDesign_SetText(n->onChange, UI_DN_ID_MAX, text);
+		else if (key == DK_N_CLICK) UiDesign_SetString(&n->onClick, text);
+		else if (key == DK_N_CHANGE) UiDesign_SetString(&n->onChange, text);
 		else if (key == DK_N_GRIDCOLS) n->gridCols = d_atoi(text) > 0 ? d_atoi(text) : 1;
 		else if (key == DK_N_GRIDROWS) n->gridRows = d_atoi(text) > 0 ? d_atoi(text) : 0;
 		else if (key == DK_N_GRIDROW) n->gridRow = d_atoi(text);
@@ -1301,7 +2077,7 @@ static void d_prop_apply_text(int key, const char *text)
 		else if (key == DK_N_GRIDCOLGAP) n->gridColGap = (float)d_atof(text);
 		else if (key == DK_N_GRIDCOLTRACKS) {
 			int tn = d_track_count(text);
-			UiDesign_SetText(n->gridColTracks, UI_DN_GRID_TRACKS_MAX, text);
+			UiDesign_SetString(&n->gridColTracks, text);
 			if (tn > n->gridCols) n->gridCols = tn;
 			d_status("列宽: 120 固定 / 1fr 弹性 / auto 随子项, 空=均分");
 		}
@@ -1310,7 +2086,7 @@ static void d_prop_apply_text(int key, const char *text)
 		else if (key == DK_N_COLOR) n->color = d_parse_color(text, n->color);
 		else if (key == DK_N_BGCOLOR) n->bgColor = d_parse_color(text, n->bgColor);
 		else if (key == DK_N_LOGOSRC) {
-			UiDesign_SetText(n->logoSrc, UI_DN_PATH_MAX, text);
+			UiDesign_SetString(&n->logoSrc, text);
 			if (n->logoSrc[0] && n->ecc < UI_QR_ECC_H)
 				d_status("Logo 会遮挡码区, 建议纠错等级 H");
 		}
@@ -1356,9 +2132,19 @@ static void d_prop_start_edit(int row)
 	g_d.editActive = 1;
 	g_d.editKey = p->key;
 	g_d.editChanged = 0;
+	g_d.editMultiline = p->kind == DPK_MULTILINE;
+	if (g_d.editMultiline) {
+		UiTextArea_SetTextUtf8(&g_d.propOptionsForm,
+			p->valueRef ? p->valueRef : p->value);
+		UiTextArea_SetCaret(&g_d.propOptionsForm, g_d.propOptionsForm.len);
+		g_d.propOptionsForm.blinkOn = 1;
+		Ui_SetFocusId(&g_d.app->ui, g_d.propOptionsForm.id);
+		return;
+	}
 	g_d.propForm.focus = 0;
 	g_d.propForm.blinkOn = 1;
-	Edit_SetTextUtf8(UiInput_Edit(&g_d.propForm, 0), p->value);
+	Edit_SetTextUtf8(UiInput_Edit(&g_d.propForm, 0),
+		p->valueRef ? p->valueRef : p->value);
 	if (g_d.app)
 		UiIme_SetFocus(&g_d.app->ime, UiInput_Edit(&g_d.propForm, 0));
 	Ui_SetFocusId(&g_d.app->ui, g_d.propForm.fields[0].id);
@@ -1366,23 +2152,32 @@ static void d_prop_start_edit(int row)
 
 static void d_prop_apply_edit(void)
 {
-	char b[256];
+	char *text;
 	if (!g_d.editActive) return;
-	Edit_TextUtf8(UiInput_Edit(&g_d.propForm, 0), b, (int)sizeof(b));
-	d_prop_apply_text(g_d.editKey, b);
+	if (g_d.editMultiline)
+		text = d_textarea_utf8_alloc(&g_d.propOptionsForm);
+	else
+		text = d_edit_utf8_alloc(UiInput_Edit(&g_d.propForm, 0));
+	if (text) {
+		d_prop_apply_text(g_d.editKey, text);
+		HeapFree(GetProcessHeap(), 0, text);
+	}
 }
 
 /* ── 操作 ───────────────────────────────────────────────────────────── */
 
-static int d_unique_node_id(int win, const char *base, char *out, int cap)
+static char *d_unique_node_id(int win, const char *base)
 {
 	int i;
+	size_t cap = strlen(base) + 32;
+	char *out = (char *)HeapAlloc(GetProcessHeap(), 0, cap);
+	if (!out) return NULL;
 	for (i = 1; i < 10000; i++) {
-		snprintf(out, (size_t)cap, "%.48s%d", base, i);
-		if (UiDesign_FindNode(&g_d.doc, win, out) < 0) return 1;
+		snprintf(out, cap, "%s%d", base, i);
+		if (UiDesign_FindNode(&g_d.doc, win, out) < 0) return out;
 	}
-	UiDesign_SetText(out, cap, base);
-	return 1;
+	snprintf(out, cap, "%s", base);
+	return out;
 }
 
 static int d_container_parent(void)
@@ -1412,16 +2207,240 @@ static void d_grid_defaults(UiDesignNode *n)
 	if (n->gridRowGap <= 0.0f) n->gridRowGap = 8.0f;
 }
 
+static int d_grid_cell_at(int parent, float x, float y, int *row, int *col)
+{
+	UiDesignNode *p = UiDesign_Node(&g_d.doc, parent);
+	UiRect pr, inner;
+	float *xs = NULL, *ws = NULL, cellH;
+	int cols, rows, i, r, c;
+	if (!p || p->type != UI_DN_GRID) return 0;
+	pr = g_d.rects[parent];
+	d_inset(pr, p->padding, &inner);
+	cols = d_track_count(p->gridColTracks);
+	if (p->gridCols > cols) cols = p->gridCols;
+	if (cols < 1) cols = 1;
+	xs = (float *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)cols * sizeof(*xs));
+	ws = (float *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)cols * sizeof(*ws));
+	if (!xs || !ws) { HeapFree(GetProcessHeap(), 0, xs); HeapFree(GetProcessHeap(), 0, ws); return 0; }
+	cols = UiDesign_GridColumns(&g_d.doc, p, inner, xs, ws, cols);
+	if (cols < 1) cols = 1;
+	rows = p->gridRows > 0 ? p->gridRows
+		: (d_layout_item_count(parent) + cols - 1) / cols;
+	if (rows < 1) rows = 1;
+	cellH = (inner.h - p->gridRowGap * (rows - 1)) / rows;
+	if (cellH + p->gridRowGap <= 0.0001f) {
+		HeapFree(GetProcessHeap(), 0, xs);
+		HeapFree(GetProcessHeap(), 0, ws);
+		return 0;
+	}
+	r = (int)((y - inner.y) / (cellH + p->gridRowGap));
+	if (r < 0) r = 0;
+	if (r >= rows) r = rows - 1;
+	c = cols - 1;
+	for (i = 0; i < cols; i++) {
+		if (x < xs[i] + ws[i]) { c = i; break; }
+	}
+	if (row) *row = r;
+	if (col) *col = c;
+	HeapFree(GetProcessHeap(), 0, xs);
+	HeapFree(GetProcessHeap(), 0, ws);
+	return 1;
+}
+
+static void d_tabs_add_pages(int win, int tabsIdx);
+
+static void d_init_added_node(int idx, int parent, int type, float x, float y)
+{
+	UiDesignNode *n = UiDesign_Node(&g_d.doc, idx);
+	int layoutParent = d_layout_parent(idx);
+	if (!n) return;
+	if (UiDesign_IsContainer(type)) {
+		n->wMode = UI_DN_SIZE_FILL;
+		n->hMode = UI_DN_SIZE_FIXED;
+		n->h = type == UI_DN_ROW ? 64.0f : 180.0f;
+		n->padding[0] = n->padding[1] = n->padding[2] = n->padding[3] = 8.0f;
+		n->gap = 8.0f;
+		if (type == UI_DN_GRID) d_grid_defaults(n);
+	} else {
+		n->wMode = UI_DN_SIZE_FIXED;
+		n->hMode = UI_DN_SIZE_FIXED;
+		n->w = UiDesign_DefaultW(type);
+		n->h = UiDesign_DefaultH(type);
+		if (layoutParent >= 0) {
+			int pt = g_d.doc.nodes[layoutParent].type;
+			if (pt == UI_DN_GRID) {
+				n->wMode = UI_DN_SIZE_FILL;
+				n->hMode = UI_DN_SIZE_FILL;
+			} else if (pt == UI_DN_COLUMN) {
+				n->wMode = UI_DN_SIZE_FILL;
+			} else if (pt == UI_DN_ROW) {
+				n->hMode = UI_DN_SIZE_FILL;
+			} else if (pt == UI_DN_PANEL && g_d.doc.nodes[layoutParent].parent >= 0 &&
+				g_d.doc.nodes[g_d.doc.nodes[layoutParent].parent].type == UI_DN_TABS) {
+				n->wMode = UI_DN_SIZE_FILL;
+			}
+		}
+		if (parent >= 0) {
+			UiDesignNode *p = UiDesign_Node(&g_d.doc, layoutParent >= 0 ? layoutParent : parent);
+			if (p && (p->type == UI_DN_ABSOLUTE || p->type == UI_DN_PANEL)) {
+				n->x = x;
+				n->y = y;
+			}
+		}
+		if (type == UI_DN_LABEL) UiDesign_NodeSetText(n, "Label");
+		else if (type == UI_DN_BUTTON) UiDesign_NodeSetText(n, "Button");
+		else if (type == UI_DN_INPUT) UiDesign_NodeSetHint(n, "请输入");
+		else if (type == UI_DN_SELECT) {
+			UiDesign_NodeSetOptions(n, "选项1,选项2,选项3");
+			UiDesign_NodeSetHint(n, "请选择");
+		} else if (type == UI_DN_IMAGE) UiDesign_NodeSetText(n, "Image");
+		else if (type == UI_DN_TEXTAREA) UiDesign_NodeSetHint(n, "多行文本");
+		else if (type == UI_DN_DATEPICKER) UiDesign_NodeSetHint(n, "选择日期");
+		else if (type == UI_DN_RINGPROGRESS) {
+			UiDesign_NodeSetText(n, "任务完成度");
+			UiDesign_NodeSetHint(n, "%");
+		}
+	}
+	if (type == UI_DN_TABS) {
+		n->h = 220.0f;
+		n->padding[0] = n->padding[1] = n->padding[2] = n->padding[3] = 10.0f;
+		n->gap = 0.0f;
+		n->selected = 0;
+		d_tabs_add_pages(g_d.selView, idx);
+	}
+}
+
+/* 在组末尾/父容器指定位置创建一个 Radio 成员. x/y 为设计坐标
+ * (自由布局父容器下换算为相对父容器的坐标). pos<0 表示追加到组块之后. */
+static int d_create_radio_node(int gi, int parent, float x, float y, int pos)
+{
+	UiDesignNode *p = UiDesign_Node(&g_d.doc, parent);
+	UiDesignRadioGroup *rg = d_rg(gi);
+	char *id;
+	char text[48];
+	int idx, count = d_rg_member_count(gi);
+	if (!p || !rg) return -1;
+	snprintf(text, sizeof(text), "选项%d", count + 1);
+	id = d_unique_node_id(g_d.selView, "radio");
+	if (!id) return -1;
+	idx = UiDesign_AddNode(&g_d.doc, g_d.selView, UI_DN_RADIO, parent, id, text);
+	HeapFree(GetProcessHeap(), 0, id);
+	if (idx < 0) return -1;
+	d_init_added_node(idx, parent, UI_DN_RADIO, 8.0f, 8.0f);
+	UiDesign_NodeSetText(UiDesign_Node(&g_d.doc, idx), text);
+	if (p->type == UI_DN_ABSOLUTE || p->type == UI_DN_PANEL) {
+		UiRect pr = g_d.layoutReady ? g_d.rects[parent] : Ui_Rect(0, 0, 0, 0);
+		g_d.doc.nodes[idx].x = d_round4(x - pr.x - p->padding[0]);
+		g_d.doc.nodes[idx].y = d_round4(y - pr.y - p->padding[1]);
+	}
+	if (pos >= 0) UiDesign_NodeMove(&g_d.doc, idx, parent, pos);
+	if (!UiDesign_RadioGroupAssign(&g_d.doc, idx, gi)) {
+		UiDesign_NodeRemove(&g_d.doc, idx);
+		return -1;
+	}
+	if (d_rg_selected_node(gi) < 0)
+		UiDesign_RadioGroupSetSelectedNode(&g_d.doc, gi, idx);
+	UiDesign_RadioGroupNormalize(&g_d.doc, gi);
+	return idx;
+}
+
+/* 组在当前父容器中最后成员之后的位置 (组块尾部). */
+static int d_rg_insert_pos(int gi)
+{
+	int parent = d_rg_member_parent(gi);
+	int i, n = d_rg_member_count(gi), pos = -1;
+	if (parent < 0 || parent >= g_d.doc.nodeCount) return -1;
+	for (i = 0; i < n; i++) {
+		int ni = d_rg_member_at(gi, i);
+		int k;
+		for (k = 0; k < g_d.doc.nodes[parent].childCount; k++)
+			if (g_d.doc.nodes[parent].children[k] == ni) {
+				if (k + 1 > pos) pos = k + 1;
+				break;
+			}
+	}
+	if (pos < 0) pos = g_d.doc.nodes[parent].childCount;
+	return pos;
+}
+
+/* 追加一个 Radio 到已有组. */
+static int d_append_radio(int gi, float x, float y)
+{
+	int parent = d_rg_member_parent(gi);
+	int pos = d_rg_insert_pos(gi);
+	if (parent < 0) return -1;
+	return d_create_radio_node(gi, parent, x, y, pos);
+}
+
+/* 新建单选组: 元数据 + 3 个连续 Radio 直接子节点. 返回组索引. */
+static int d_new_radio_group(int parent, float x, float y, int selectGroup)
+{
+	UiDesignNode *p = UiDesign_Node(&g_d.doc, parent);
+	char name[64], *id;
+	int gi, i, first = -1, pos;
+	float baseX = 8.0f, baseY = 8.0f;
+	if (!p || g_d.selView < 0) return -1;
+	if (!UiDesign_CanParent(p->type, UI_DN_RADIO)) {
+		d_status("当前容器不能放置单选组");
+		return -1;
+	}
+	if (p->type == UI_DN_ABSOLUTE || p->type == UI_DN_PANEL) {
+		if (!g_d.layoutReady) d_layout_current();
+		baseX = x;
+		baseY = y;
+	}
+	id = d_unique_rg_id(g_d.selView, "radiogroup");
+	if (!id) return -1;
+	snprintf(name, sizeof(name), "单选组 %d", d_rg_count() + 1);
+	gi = UiDesign_RadioGroupAdd(&g_d.doc, g_d.selView, id, name);
+	HeapFree(GetProcessHeap(), 0, id);
+	if (gi < 0) return -1;
+	pos = p->childCount;
+	if (p->type != UI_DN_ABSOLUTE && p->type != UI_DN_PANEL) {
+		baseX = 8.0f;
+		baseY = 8.0f;
+	}
+	for (i = 0; i < 3; i++) {
+		int idx = d_create_radio_node(gi, parent, baseX, baseY + (float)i * 28.0f,
+			pos + i);
+		if (idx < 0) {
+			/* 回滚已创建的成员与元数据 */
+			int k, n = d_rg_member_count(gi);
+			for (k = n - 1; k >= 0; k--)
+				UiDesign_NodeRemove(&g_d.doc, d_rg_member_at(gi, k));
+			{
+				int at = UiDesign_RadioGroupFind(&g_d.doc, d_rg(gi)->uid);
+				if (at >= 0) UiDesign_RadioGroupRemove(&g_d.doc, at);
+			}
+			return -1;
+		}
+		if (first < 0) first = idx;
+	}
+	if (first >= 0)
+		UiDesign_RadioGroupSetSelectedNode(&g_d.doc, gi, first);
+	UiDesign_RadioGroupNormalize(&g_d.doc, gi);
+	g_d.doc.dirty = 1;
+	g_d.layoutReady = 0;
+	if (selectGroup) d_sel_radio_group(gi);
+	else if (first >= 0) d_sel_single(first);
+	d_undo_push();
+	d_status("已添加单选组 · 3 个选项");
+	return gi;
+}
+
 static void d_tabs_add_pages(int win, int tabsIdx)
 {
 	int i;
 	for (i = 0; i < 2; i++) {
-		char id[UI_DN_ID_MAX], name[UI_DN_NAME_MAX], base[24];
+		char base[24], name[32];
+		char *id;
 		snprintf(base, sizeof(base), "page%d", i + 1);
-		d_unique_node_id(win, base, id, sizeof(id));
+		id = d_unique_node_id(win, base);
+		if (!id) return;
 		snprintf(name, sizeof(name), "页 %d", i + 1);
 		UiDesign_TabsInsertPage(&g_d.doc, tabsIdx,
 			UiDesign_TabsPageCount(&g_d.doc, tabsIdx), id, name);
+		HeapFree(GetProcessHeap(), 0, id);
 	}
 	UiDesign_TabsSetSelectedPage(&g_d.doc, tabsIdx, 0);
 }
@@ -1441,24 +2460,23 @@ static void d_tabs_add_page(void)
 {
 	int tabs = d_tabs_context_idx();
 	int count, pos, idx;
-	char id[UI_DN_ID_MAX], name[UI_DN_NAME_MAX], base[24];
+	char base[24], name[32];
+	char *id;
 
 	if (tabs < 0) {
 		d_status("请先选中标签页或页内节点");
 		return;
 	}
 	count = UiDesign_TabsPageCount(&g_d.doc, tabs);
-	if (count >= UI_DN_TABS_MAX_PAGES) {
-		d_status("标签页最多 32 页, 无法继续新增");
-		return;
-	}
 	pos = UiDesign_TabsSelectedPage(&g_d.doc, tabs);
 	pos = pos < 0 ? count : pos + 1;
 	snprintf(base, sizeof(base), "page%d", count + 1);
-	d_unique_node_id(g_d.selView, base, id, sizeof(id));
+	id = d_unique_node_id(g_d.selView, base);
+	if (!id) return;
 	snprintf(name, sizeof(name), "页 %d", count + 1);
 	d_after_edit();
 	idx = UiDesign_TabsInsertPage(&g_d.doc, tabs, pos, id, name);
+	HeapFree(GetProcessHeap(), 0, id);
 	if (idx < 0) {
 		d_status("新增页失败");
 		return;
@@ -1472,65 +2490,38 @@ static void d_tabs_add_page(void)
 
 static void d_add_node(int type)
 {
-	int parent = d_container_parent();
-	int view = g_d.selView;
-	int idx;
-	char id[UI_DN_ID_MAX];
-	char name[UI_DN_NAME_MAX];
-	UiDesignNode *n;
-	if (view < 0 || parent < 0) return;
-	d_after_edit();
-	d_unique_node_id(view, UiDesign_TypeName(type), id, sizeof(id));
-	UiDesign_SetText(name, sizeof(name), UiDesign_TypeName(type));
-	idx = UiDesign_AddNode(&g_d.doc, view, type, parent, id, name);
-	n = UiDesign_Node(&g_d.doc, idx);
-	if (!n) return;
-	if (UiDesign_IsContainer(type)) {
-		n->wMode = UI_DN_SIZE_FILL;
-		n->hMode = UI_DN_SIZE_FIXED;
-		n->h = type == UI_DN_ROW ? 64.0f : 180.0f;
-		n->padding[0] = n->padding[1] = n->padding[2] = n->padding[3] = 8.0f;
-		n->gap = 8.0f;
-		if (type == UI_DN_GRID) d_grid_defaults(n);
-	} else {
-		n->wMode = UI_DN_SIZE_FIXED;
-		n->hMode = UI_DN_SIZE_FIXED;
-		n->w = UiDesign_DefaultW(type);
-		n->h = UiDesign_DefaultH(type);
-		/* 线性布局里按交叉轴铺满, 与普通 UI 的预期一致. */
-		if (parent >= 0) {
-			int pt = g_d.doc.nodes[parent].type;
-			if (pt == UI_DN_GRID) {
-				n->wMode = UI_DN_SIZE_FILL;
-				n->hMode = UI_DN_SIZE_FILL;
-			} else if (pt == UI_DN_COLUMN) {
-				n->wMode = UI_DN_SIZE_FILL;
-			} else if (pt == UI_DN_ROW) {
-				n->hMode = UI_DN_SIZE_FILL;
-			} else if (pt == UI_DN_PANEL &&
-			    g_d.doc.nodes[parent].parent >= 0 &&
-			    g_d.doc.nodes[g_d.doc.nodes[parent].parent].type == UI_DN_TABS) {
-				/* 旧文档的 Tabs 页仍是自由 Panel, 同样按页宽铺满. */
-				n->wMode = UI_DN_SIZE_FILL;
-			}
+	int parent, idx;
+	char *id;
+	if (g_d.selView < 0) return;
+	if (type == UI_DN_RADIO) {
+		int gi = -1;
+		if (g_d.selKind == DSEL_RADIOGROUP) gi = d_sel_radio_group_index();
+		else if (g_d.selKind == DSEL_NODE) gi = d_node_group_index(g_d.selNode);
+		if (gi < 0) {
+			d_status("请先选中单选组或其选项");
+			return;
 		}
-		if (type == UI_DN_LABEL) UiDesign_NodeSetText(n, "Label");
-		else if (type == UI_DN_BUTTON) UiDesign_NodeSetText(n, "Button");
-		else if (type == UI_DN_INPUT) UiDesign_NodeSetHint(n, "请输入");
-		else if (type == UI_DN_SELECT || type == UI_DN_RADIOGROUP) {
-			UiDesign_NodeSetOptions(n, "选项1,选项2,选项3");
-			if (type == UI_DN_SELECT) UiDesign_NodeSetHint(n, "请选择");
-		} else if (type == UI_DN_IMAGE) UiDesign_NodeSetText(n, "Image");
-		else if (type == UI_DN_TEXTAREA) UiDesign_NodeSetHint(n, "多行文本");
-		else if (type == UI_DN_DATEPICKER) UiDesign_NodeSetHint(n, "选择日期");
+		d_after_edit();
+		idx = d_append_radio(gi, 8.0f, 8.0f);
+		if (idx < 0) { d_status("添加组件失败"); return; }
+		d_sel_single(idx);
+		g_d.doc.dirty = 1;
+		g_d.layoutReady = 0;
+		d_undo_push();
+		d_status("已添加选项");
+		return;
 	}
-	if (type == UI_DN_TABS) {
-		n->h = 220.0f;
-		n->padding[0] = n->padding[1] = n->padding[2] = n->padding[3] = 10.0f;
-		n->gap = 0.0f;
-		n->selected = 0;
-		d_tabs_add_pages(view, idx);
-	}
+	parent = d_container_parent();
+	if (parent < 0) return;
+	if (!UiDesign_CanParent(g_d.doc.nodes[parent].type, type)) return;
+	d_after_edit();
+	id = d_unique_node_id(g_d.selView, UiDesign_TypeName(type));
+	if (!id) return;
+	idx = UiDesign_AddNode(&g_d.doc, g_d.selView, type, parent, id,
+		UiDesign_TypeName(type));
+	HeapFree(GetProcessHeap(), 0, id);
+	if (idx < 0) { d_status("添加组件失败"); return; }
+	d_init_added_node(idx, parent, type, 8.0f, 8.0f);
 	d_sel_single(idx);
 	g_d.doc.dirty = 1;
 	g_d.layoutReady = 0;
@@ -1542,8 +2533,8 @@ static void d_add_window(int kind)
 {
 	int wi, vi, gi = g_d.selGroup;
 	int root;
-	char id[UI_DN_ID_MAX], name[UI_DN_NAME_MAX];
-	char vid[UI_DN_ID_MAX], vname[UI_DN_NAME_MAX];
+	char id[32], name[64];
+	char vid[64], vname[96];
 	if (g_d.doc.groupCount <= 0) {
 		UiDesign_AddGroup(&g_d.doc, "group1", "分组 1");
 		gi = 0;
@@ -1586,7 +2577,7 @@ static void d_add_window(int kind)
 	g_d.selKind = DSEL_VIEW;
 	g_d.selNode = root;
 	d_sel_clear();
-	if (root >= 0) { g_d.selSet[0] = root; g_d.selSetN = 1; }
+	if (root >= 0) d_sel_add(root);
 	g_d.doc.dirty = 1;
 	g_d.layoutReady = 0;
 	d_undo_push();
@@ -1596,7 +2587,7 @@ static void d_add_window(int kind)
 static void d_add_group(void)
 {
 	int i;
-	char id[UI_DN_ID_MAX], name[UI_DN_NAME_MAX];
+	char id[32], name[64];
 	for (i = 1; i < 100; i++) {
 		snprintf(id, sizeof(id), "group%d", i);
 		if (UiDesign_FindGroup(&g_d.doc, id) < 0) break;
@@ -1626,6 +2617,7 @@ static void d_del_node(void)
 		}
 		UiDesign_NodeRemove(&g_d.doc, idx);
 	}
+	d_rg_prune();
 	d_sel_clear();
 	if (tabsAfter >= 0 && g_d.doc.nodes[tabsAfter].parent < 0)
 		tabsAfter = -1;
@@ -1649,6 +2641,9 @@ static void d_del_window(void)
 	int wi = g_d.selWin, i;
 	if (g_d.preview || wi < 0 || wi >= g_d.doc.hostCount) return;
 	d_preview_shutdown();
+	HeapFree(GetProcessHeap(), 0, g_d.doc.hosts[wi].id);
+	HeapFree(GetProcessHeap(), 0, g_d.doc.hosts[wi].name);
+	HeapFree(GetProcessHeap(), 0, g_d.doc.hosts[wi].title);
 	for (i = wi + 1; i < g_d.doc.hostCount; i++)
 		g_d.doc.hosts[i - 1] = g_d.doc.hosts[i];
 	g_d.doc.hostCount--;
@@ -1658,7 +2653,7 @@ static void d_del_window(void)
 	g_d.selKind = g_d.selView >= 0 ? DSEL_VIEW : DSEL_WINDOW;
 	g_d.selNode = d_view_root();
 	d_sel_clear();
-	if (g_d.selNode >= 0) { g_d.selSet[0] = g_d.selNode; g_d.selSetN = 1; }
+	if (g_d.selNode >= 0) d_sel_add(g_d.selNode);
 	g_d.doc.dirty = 1;
 	g_d.layoutReady = 0;
 	d_undo_push();
@@ -1678,10 +2673,7 @@ static void d_del_view(void)
 	if (g_d.selView >= 0) {
 		g_d.selKind = DSEL_VIEW;
 		g_d.selNode = d_view_root();
-		if (g_d.selNode >= 0) {
-			g_d.selSet[0] = g_d.selNode;
-			g_d.selSetN = 1;
-		}
+		if (g_d.selNode >= 0) d_sel_add(g_d.selNode);
 	} else {
 		g_d.selKind = g_d.selWin >= 0 ? DSEL_WINDOW : DSEL_NODE;
 	}
@@ -1694,7 +2686,7 @@ static void d_del_view(void)
 static void d_add_view(void)
 {
 	int vi, root, gi = g_d.selGroup;
-	char id[UI_DN_ID_MAX], name[UI_DN_NAME_MAX];
+	char id[32], name[64];
 	int i;
 	for (i = 1; i < 1000; i++) {
 		snprintf(id, sizeof(id), "view%d", i);
@@ -1716,8 +2708,7 @@ static void d_add_view(void)
 	g_d.selKind = DSEL_VIEW;
 	g_d.selNode = root;
 	d_sel_clear();
-	g_d.selSet[0] = root;
-	g_d.selSetN = 1;
+	d_sel_add(root);
 	g_d.doc.dirty = 1;
 	g_d.layoutReady = 0;
 	d_undo_push();
@@ -1727,7 +2718,7 @@ static void d_add_view(void)
 static void d_add_panel_host(void)
 {
 	int vi = g_d.selView, hi;
-	char id[UI_DN_ID_MAX], name[UI_DN_NAME_MAX];
+	char id[32], name[64];
 	int i;
 	if (vi < 0) {
 		d_add_view();
@@ -1751,6 +2742,11 @@ static void d_del_group(void)
 {
 	int gi = g_d.selGroup, i;
 	if (g_d.preview || gi < 0 || gi >= g_d.doc.groupCount) return;
+	HeapFree(GetProcessHeap(), 0, g_d.doc.groups[gi].id);
+	HeapFree(GetProcessHeap(), 0, g_d.doc.groups[gi].name);
+	HeapFree(GetProcessHeap(), 0, g_d.doc.groups[gi].outputC);
+	HeapFree(GetProcessHeap(), 0, g_d.doc.groups[gi].outputH);
+	HeapFree(GetProcessHeap(), 0, g_d.doc.groups[gi].symbolPrefix);
 	for (i = 0; i < g_d.doc.hostCount; i++) {
 		if (g_d.doc.hosts[i].group == gi) g_d.doc.hosts[i].group = -1;
 		else if (g_d.doc.hosts[i].group > gi) g_d.doc.hosts[i].group--;
@@ -1769,11 +2765,31 @@ static void d_del_group(void)
 	d_status("已删除生成组");
 }
 
+/* 清理已无成员的组元数据并修正选中索引. */
+static void d_rg_prune(void)
+{
+	int i;
+	for (i = g_d.doc.radioGroupCount - 1; i >= 0; i--) {
+		if (UiDesign_RadioGroupMemberCount(&g_d.doc, i) > 0) {
+			UiDesign_RadioGroupNormalize(&g_d.doc, i);
+			continue;
+		}
+		UiDesign_RadioGroupRemove(&g_d.doc, i);
+		if (g_d.selKind == DSEL_RADIOGROUP && g_d.selRadioGroup >= 0) {
+			if (g_d.selRadioGroup == i) {
+				g_d.selRadioGroup = -1;
+				g_d.selKind = DSEL_NODE;
+			} else if (g_d.selRadioGroup > i) g_d.selRadioGroup--;
+		}
+	}
+}
+
 static void d_del_selected(void)
 {
 	if (g_d.selKind == DSEL_WINDOW) d_del_window();
 	else if (g_d.selKind == DSEL_VIEW) d_del_view();
 	else if (g_d.selKind == DSEL_GROUP) d_del_group();
+	else if (g_d.selKind == DSEL_RADIOGROUP) d_del_radio_group(g_d.selRadioGroup);
 	else d_del_node();
 }
 
@@ -1799,26 +2815,99 @@ static void d_unique_all_ids(int win)
 			if (g_d.doc.nodes[j].owner != win) continue;
 			if (strcmp(g_d.doc.nodes[j].id, n->id) != 0) continue;
 			{
-				char base[UI_DN_ID_MAX], id[UI_DN_ID_MAX];
-				UiDesign_SetText(base, sizeof(base), n->id);
-				d_unique_node_id(win, base, id, sizeof(id));
-				UiDesign_SetText(n->id, UI_DN_ID_MAX, id);
+				char *id = d_unique_node_id(win, n->id);
+				if (!id) return;
+				d_node_set_id(i, id);
+				HeapFree(GetProcessHeap(), 0, id);
 			}
 			j = -1;
 		}
 	}
 }
 
+static void d_dup_radio_group(void)
+{
+	int gi = d_sel_radio_group_index();
+	UiDesignRadioGroup *rg = d_rg(gi);
+	int parent, start = 0, count, i, first = -1, ngi, after;
+	int *members, origSel;
+	char *id, *onChange;
+	char name[96];
+	int enabled;
+	if (!rg) return;
+	parent = d_rg_member_parent(gi);
+	count = d_rg_member_count(gi);
+	if (parent < 0 || count <= 0) return;
+	d_after_edit();
+	origSel = d_rg_selected_node(gi);
+	enabled = rg->enabled;
+	onChange = rg->onChange[0] ? d_strdup(rg->onChange) : NULL;
+	snprintf(name, sizeof(name), "%s 副本", rg->name);
+	members = (int *)HeapAlloc(GetProcessHeap(), 0,
+		(SIZE_T)count * sizeof(*members));
+	if (!members) {
+		HeapFree(GetProcessHeap(), 0, onChange);
+		return;
+	}
+	for (i = 0; i < count; i++) members[i] = d_rg_member_at(gi, i);
+	if (d_rg_block_span(gi, NULL, &start, &count))
+		after = start + count;
+	else
+		after = g_d.doc.nodes[parent].childCount;
+	id = d_unique_rg_id(g_d.selView, "radiogroup");
+	if (!id) {
+		HeapFree(GetProcessHeap(), 0, members);
+		HeapFree(GetProcessHeap(), 0, onChange);
+		return;
+	}
+	ngi = UiDesign_RadioGroupAdd(&g_d.doc, g_d.selView, id, name);
+	HeapFree(GetProcessHeap(), 0, id);
+	if (ngi < 0) {
+		HeapFree(GetProcessHeap(), 0, members);
+		HeapFree(GetProcessHeap(), 0, onChange);
+		return;
+	}
+	{
+		UiDesignRadioGroup *ng = d_rg(ngi);
+		if (onChange) UiDesign_SetString(&ng->onChange, onChange);
+		ng->enabled = enabled;
+	}
+	HeapFree(GetProcessHeap(), 0, onChange);
+	for (i = 0; i < count; i++) {
+		int dup = UiDesign_NodeDuplicate(&g_d.doc, members[i]);
+		if (dup < 0) continue;
+		UiDesign_NodeMove(&g_d.doc, dup, parent, after + i);
+		if (!UiDesign_RadioGroupAssign(&g_d.doc, dup, ngi)) continue;
+		if (members[i] == origSel && first < 0) first = dup;
+	}
+	HeapFree(GetProcessHeap(), 0, members);
+	d_unique_all_ids(g_d.selView);
+	UiDesign_RadioGroupNormalize(&g_d.doc, ngi);
+	if (first >= 0)
+		UiDesign_RadioGroupSetSelectedNode(&g_d.doc, ngi, first);
+	d_sel_radio_group(ngi);
+	g_d.doc.dirty = 1;
+	g_d.layoutReady = 0;
+	d_undo_push();
+	d_status("已复制单选组");
+}
+
 static void d_dup_node(void)
 {
 	int i, idx, dup, count = 0, last = -1;
-	int sel[128];
+	int *sel;
+	if (g_d.selKind == DSEL_RADIOGROUP) {
+		d_dup_radio_group();
+		return;
+	}
 	if (g_d.selKind != DSEL_NODE) return;
 	d_after_edit();
 	if (g_d.selSetN <= 1) {
 		if (!d_selnode() || d_selnode()->parent < 0) return;
 		dup = UiDesign_NodeDuplicate(&g_d.doc, g_d.selNode);
 		if (dup < 0) return;
+		if (g_d.doc.nodes[dup].type == UI_DN_RADIO)
+			UiDesign_RadioGroupAssign(&g_d.doc, dup, -1);
 		d_unique_all_ids(g_d.selView);
 		g_d.selNode = dup;
 		g_d.selKind = DSEL_NODE;
@@ -1829,26 +2918,31 @@ static void d_dup_node(void)
 		d_status("已复制组件");
 		return;
 	}
-	for (i = 0; i < g_d.selSetN && i < 128; i++) sel[i] = g_d.selSet[i];
-	{
-		int n = g_d.selSetN < 128 ? g_d.selSetN : 128;
-		for (i = 0; i < n; i++) {
-			UiDesignNode *sn;
-			idx = sel[i];
-			if (idx < 0 || idx >= g_d.doc.nodeCount) continue;
-			sn = &g_d.doc.nodes[idx];
-			if (sn->parent < 0 || d_has_selected_ancestor(idx)) continue;
-			dup = UiDesign_NodeDuplicate(&g_d.doc, idx);
-			if (dup < 0) continue;
-			sel[count++] = dup;
-			last = dup;
-		}
+	sel = (int *)HeapAlloc(GetProcessHeap(), 0,
+		(SIZE_T)g_d.selSetN * sizeof(*sel));
+	if (!sel) return;
+	for (i = 0; i < g_d.selSetN; i++) sel[i] = g_d.selSet[i];
+	for (i = 0; i < g_d.selSetN; i++) {
+		UiDesignNode *sn;
+		idx = sel[i];
+		if (idx < 0 || idx >= g_d.doc.nodeCount) continue;
+		sn = &g_d.doc.nodes[idx];
+		if (sn->parent < 0 || d_has_selected_ancestor(idx)) continue;
+		dup = UiDesign_NodeDuplicate(&g_d.doc, idx);
+		if (dup < 0) continue;
+		if (g_d.doc.nodes[dup].type == UI_DN_RADIO)
+			UiDesign_RadioGroupAssign(&g_d.doc, dup, -1);
+		sel[count++] = dup;
+		last = dup;
 	}
-	if (count <= 0) return;
+	if (count <= 0) {
+		HeapFree(GetProcessHeap(), 0, sel);
+		return;
+	}
 	d_unique_all_ids(g_d.selView);
 	d_sel_clear();
-	for (i = 0; i < count && g_d.selSetN < 128; i++)
-		g_d.selSet[g_d.selSetN++] = sel[i];
+	for (i = 0; i < count; i++) d_sel_add(sel[i]);
+	HeapFree(GetProcessHeap(), 0, sel);
 	g_d.selNode = last;
 	g_d.selKind = DSEL_NODE;
 	g_d.doc.dirty = 1;
@@ -1859,6 +2953,16 @@ static void d_dup_node(void)
 
 static void d_move_node(int dir)
 {
+	if (g_d.selKind == DSEL_RADIOGROUP) {
+		d_after_edit();
+		if (d_rg_block_move(g_d.selRadioGroup, dir)) {
+			g_d.doc.dirty = 1;
+			g_d.layoutReady = 0;
+			d_undo_push();
+			d_status("单选组顺序已调整");
+		}
+		return;
+	}
 	if (g_d.selKind != DSEL_NODE || !d_selnode()) return;
 	d_after_edit();
 	if (dir ? UiDesign_NodeMoveDown(&g_d.doc, g_d.selNode)
@@ -1877,7 +2981,7 @@ static void d_select_window(int wi)
 	g_d.selKind = DSEL_WINDOW;
 	g_d.selNode = d_view_root();
 	d_sel_clear();
-	if (g_d.selNode >= 0) { g_d.selSet[0] = g_d.selNode; g_d.selSetN = 1; }
+	if (g_d.selNode >= 0) d_sel_add(g_d.selNode);
 	g_d.layoutReady = 0;
 	d_preview_shutdown();
 }
@@ -1910,15 +3014,16 @@ static void d_select_node(int idx)
 /* ── 静态预览绘制 ───────────────────────────────────────────────────── */
 
 static int d_tabs_geom(int idx, UiTabBarGeometry *geo, UiTabStyle *stl,
-	const char **labels, int cap)
+	const char **labels)
 {
-	UiDesignNode *n = &g_d.doc.nodes[idx];
+	UiDesignNode *n;
 	UiRect inner;
 	int i, cnt;
-	if (idx < 0 || idx >= g_d.doc.nodeCount || n->type != UI_DN_TABS)
-		return 0;
-	cnt = n->childCount > UI_TAB_GEOM_MAX ? UI_TAB_GEOM_MAX : n->childCount;
-	if (cnt <= 0 || cnt > cap) return 0;
+	if (idx < 0 || idx >= g_d.doc.nodeCount) return 0;
+	n = &g_d.doc.nodes[idx];
+	if (n->type != UI_DN_TABS) return 0;
+	cnt = n->childCount;
+	if (cnt <= 0 || !labels) return 0;
 	for (i = 0; i < cnt; i++)
 		labels[i] = g_d.doc.nodes[n->children[i]].name;
 	if (n->variant == 1) *stl = UiTabStyle_Pill();
@@ -1932,37 +3037,59 @@ static int d_tabs_item_at(int idx, float x, float y)
 {
 	UiTabBarGeometry geo;
 	UiTabStyle stl;
-	const char *labels[UI_TAB_GEOM_MAX];
-	int i, cnt = d_tabs_geom(idx, &geo, &stl, labels, UI_TAB_GEOM_MAX);
-	if (cnt <= 0) return -1;
-	if (!Ui_RectContains(geo.header, x, y)) return -1;
-	for (i = 0; i < cnt; i++)
-		if (Ui_RectContains(geo.items[i], x, y)) return i;
-	return -1;
+	const char **labels;
+	int i, cnt, found = -1;
+	if (idx < 0 || idx >= g_d.doc.nodeCount) return -1;
+	ZeroMemory(&geo, sizeof(geo));
+	labels = (const char **)HeapAlloc(GetProcessHeap(), 0,
+		(SIZE_T)g_d.doc.nodes[idx].childCount * sizeof(*labels));
+	if (!labels) return -1;
+	cnt = d_tabs_geom(idx, &geo, &stl, labels);
+	if (cnt > 0 && Ui_RectContains(geo.header, x, y)) {
+		for (i = 0; i < cnt; i++)
+			if (Ui_RectContains(geo.items[i], x, y)) { found = i; break; }
+	}
+	UiTabBarGeometry_Free(&geo);
+	HeapFree(GetProcessHeap(), 0, labels);
+	return found;
 }
 
 /* activePass=0 画非活动页签与 Line/Pill 活动态; Card 活动页签在页面内容
  * 之后用 activePass=1 覆盖, 与运行时 DrawActive 的两阶段顺序一致. */
 static void d_tabs_draw_header(int idx, int activePass)
 {
-	UiDesignNode *n = &g_d.doc.nodes[idx];
+	UiDesignNode *n;
 	UiTheme *t = &g_d.app->theme;
 	Gfx *g = g_d.app->gfx;
 	UiTabBarGeometry geo;
 	UiTabStyle stl;
-	const char *labels[UI_TAB_GEOM_MAX];
+	const char **labels;
 	UiColor cBorder = t->neutral.border;
 	UiColor cCardBg = t->neutral.soft;
 	UiColor cActiveBg = t->neutral.base;
 	int i, cnt, variant, sel;
 	float radius;
 
-	cnt = d_tabs_geom(idx, &geo, &stl, labels, UI_TAB_GEOM_MAX);
-	if (cnt <= 0) return;
+	if (idx < 0 || idx >= g_d.doc.nodeCount) return;
+	n = &g_d.doc.nodes[idx];
+	ZeroMemory(&geo, sizeof(geo));
+	labels = (const char **)HeapAlloc(GetProcessHeap(), 0,
+		(SIZE_T)g_d.doc.nodes[idx].childCount * sizeof(*labels));
+	if (!labels) return;
+	cnt = d_tabs_geom(idx, &geo, &stl, labels);
+	if (cnt <= 0) {
+		UiTabBarGeometry_Free(&geo);
+		HeapFree(GetProcessHeap(), 0, labels);
+		return;
+	}
 	variant = geo.variant;
 	sel = n->selected;
 	if (sel < 0 || sel >= n->childCount) sel = 0;
-	if (activePass && variant != UI_TAB_CARD) return;
+	if (activePass && variant != UI_TAB_CARD) {
+		UiTabBarGeometry_Free(&geo);
+		HeapFree(GetProcessHeap(), 0, labels);
+		return;
+	}
 	radius = stl.radius > 0.0f ? stl.radius : 8.0f;
 	Gfx_PushClip(g, geo.header);
 	if (!activePass && variant == UI_TAB_PILL)
@@ -2012,6 +3139,8 @@ static void d_tabs_draw_header(int idx, int activePass)
 			geo.header.x + geo.header.w, geo.header.y + geo.header.h - 1,
 			t->border, 1.0f);
 	Gfx_PopClip(g);
+	UiTabBarGeometry_Free(&geo);
+	HeapFree(GetProcessHeap(), 0, labels);
 }
 
 /* 设计画布上的二维码预览: 每个节点复用一份编码/纹理, 避免逐帧重编码. */
@@ -2123,43 +3252,26 @@ static void d_draw_ring_node(UiDesignNode *n, UiRect rc)
 			GFX_TEXT_CENTER | GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 }
 
-static void d_draw_radio_group(Gfx *g, UiRect r, const UiDesignNode *n,
+static void d_draw_radio(Gfx *g, UiRect r, const UiDesignNode *n,
 	const UiTheme *t)
 {
-	char items[UI_DN_OPTIONS_MAX][UI_DN_OPTION_TEXT_MAX];
-	const char *labels[UI_DN_OPTIONS_MAX];
-	int count = 0, i = 0, row;
-	while (n->options[i] && count < UI_DN_OPTIONS_MAX) {
-		int start = i, j = 0;
-		while (n->options[i] && n->options[i] != ',') i++;
-		while (start < i && (n->options[start] == ' ' || n->options[start] == '\t')) start++;
-		while (start < i && j < UI_DN_OPTION_TEXT_MAX - 1)
-			items[count][j++] = n->options[start++];
-		while (j > 0 && (items[count][j - 1] == ' ' || items[count][j - 1] == '\t')) j--;
-		items[count][j] = 0;
-		if (j > 0) {
-			labels[count] = items[count];
-			count++;
-		}
-		if (n->options[i] == ',') i++;
-	}
-	Gfx_PushClip(g, r);
-	for (row = 0; row < count; row++) {
-		UiRect rr = Ui_Rect(r.x, r.y + (float)row * 28.0f, r.w, 28.0f);
-		float cx = rr.x + 9.0f, cy = rr.y + rr.h * 0.5f;
-		UiColor fg = n->enabled ? t->text2 : t->btnDisabledText;
-		UiColor bd = n->enabled ? (row == n->selected ? t->primary.base : t->border)
-			: t->btnDisabledText;
-		if (rr.y >= r.y + r.h) break;
-		Gfx_StrokeEllipse(g, cx, cy, 8.0f, bd, 1.2f);
-		if (row == n->selected)
-			Gfx_FillEllipse(g, cx, cy, 4.0f, 4.0f,
-				n->enabled ? t->primary.base : t->btnDisabledText);
-		Gfx_Text(g, t->fBody, labels[row],
-			Ui_Rect(rr.x + 26.0f, rr.y, rr.w - 26.0f, rr.h), fg,
-			GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
-	}
-	Gfx_PopClip(g);
+	int idx = (int)(n - g_d.doc.nodes);
+	int gi = d_node_group_index(idx);
+	UiDesignRadioGroup *rg = d_rg(gi);
+	int selected = rg && rg->selectedRadioId[0] &&
+		strcmp(rg->selectedRadioId, n->id) == 0;
+	int enabled = n->enabled && (!rg || rg->enabled);
+	float cx = r.x + 9.0f, cy = r.y + r.h * 0.5f;
+	UiColor fg = enabled ? t->text2 : t->btnDisabledText;
+	UiColor bd = enabled ? (selected ? t->primary.base : t->border)
+		: t->btnDisabledText;
+	Gfx_StrokeEllipse(g, cx, cy, 8.0f, bd, 1.2f);
+	if (selected)
+		Gfx_FillEllipse(g, cx, cy, 4.0f, 4.0f,
+			enabled ? t->primary.base : t->btnDisabledText);
+	Gfx_Text(g, t->fBody, n->text,
+		Ui_Rect(r.x + 26.0f, r.y, r.w - 26.0f, r.h), fg,
+		GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 }
 
 static void d_draw_static_node(int idx)
@@ -2173,9 +3285,13 @@ static void d_draw_static_node(int idx)
 	if (n->type == UI_DN_TABS) {
 		UiTabBarGeometry geo;
 		UiTabStyle stl;
-		const char *labels[UI_TAB_GEOM_MAX];
+		const char **labels;
 		UiRect inner, page;
-		int cnt = d_tabs_geom(idx, &geo, &stl, labels, UI_TAB_GEOM_MAX);
+		int cnt;
+		ZeroMemory(&geo, sizeof(geo));
+		labels = (const char **)HeapAlloc(GetProcessHeap(), 0,
+			(SIZE_T)n->childCount * sizeof(*labels));
+		cnt = labels ? d_tabs_geom(idx, &geo, &stl, labels) : 0;
 		if (cnt > 0) {
 			page = Ui_Rect(geo.header.x, geo.header.y + geo.header.h,
 				geo.header.w, geo.inner.h - geo.header.h);
@@ -2189,7 +3305,7 @@ static void d_draw_static_node(int idx)
 			{
 				int sel = n->selected;
 				if (sel < 0 || sel >= n->childCount) sel = 0;
-				d_draw_static_node(n->children[sel]);
+				if (n->childCount > 0) d_draw_static_node(n->children[sel]);
 			}
 			d_tabs_draw_header(idx, 1);
 		} else {
@@ -2201,6 +3317,8 @@ static void d_draw_static_node(int idx)
 				Ui_Rect(inner.x, inner.y + hh, inner.w, inner.h - hh),
 				t->text4, GFX_TEXT_CENTER | GFX_TEXT_VCENTER);
 		}
+		UiTabBarGeometry_Free(&geo);
+		HeapFree(GetProcessHeap(), 0, labels);
 		return;
 	}
 	if (UiDesign_IsContainer(n->type)) {
@@ -2268,8 +3386,8 @@ static void d_draw_static_node(int idx)
 			n->enabled ? t->text : t->text4, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 		break;
 	}
-	case UI_DN_RADIOGROUP:
-		d_draw_radio_group(g, r, n, t);
+	case UI_DN_RADIO:
+		d_draw_radio(g, r, n, t);
 		break;
 	case UI_DN_SWITCH: {
 		UiRect tr = Ui_Rect(r.x, r.y + (r.h - 20) * 0.5f, 38, 20);
@@ -2422,22 +3540,35 @@ static UiRect d_canvas_area(void)
 static void d_draw_grid_cells(const UiDesignNode *n, UiRect inner, GfxColor c)
 {
 	Gfx *g = g_d.app->gfx;
-	float xs[UI_DN_GRID_MAX_COLS], ws[UI_DN_GRID_MAX_COLS];
-	int cols = UiDesign_GridColumns(&g_d.doc, n, inner, xs, ws,
-		UI_DN_GRID_MAX_COLS);
-	int rows = n->gridRows > 0 ? n->gridRows
-		: (n->childCount + cols - 1) / cols;
-	float rh;
-	int i;
+	float *xs = NULL, *ws = NULL;
+	int cols = n->gridCols > d_track_count(n->gridColTracks)
+		? n->gridCols : d_track_count(n->gridColTracks);
+	int rows, i;
+	if (cols > 0) {
+		xs = (float *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)cols * sizeof(*xs));
+		ws = (float *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)cols * sizeof(*ws));
+		if (!xs || !ws) {
+			HeapFree(GetProcessHeap(), 0, xs);
+			HeapFree(GetProcessHeap(), 0, ws);
+			return;
+		}
+		cols = UiDesign_GridColumns(&g_d.doc, n, inner, xs, ws, cols);
+	}
 	if (cols < 1) cols = 1;
+	rows = n->gridRows > 0 ? n->gridRows
+		: (d_layout_item_count((int)(n - g_d.doc.nodes)) + cols - 1) / cols;
 	if (rows < 1) rows = 1;
-	rh = (inner.h - n->gridRowGap * (rows - 1)) / rows;
-	for (i = 1; i < cols; i++)
-		Gfx_Line(g, xs[i] - n->gridColGap * 0.5f, inner.y,
-			xs[i] - n->gridColGap * 0.5f, inner.y + inner.h, c, 1.0f);
-	for (i = 1; i < rows; i++)
-		Gfx_Line(g, inner.x, inner.y + i * (rh + n->gridRowGap),
-			inner.x + inner.w, inner.y + i * (rh + n->gridRowGap), c, 1.0f);
+	{
+		float rh = (inner.h - n->gridRowGap * (rows - 1)) / rows;
+		for (i = 1; i < cols; i++)
+			Gfx_Line(g, xs[i] - n->gridColGap * 0.5f, inner.y,
+				xs[i] - n->gridColGap * 0.5f, inner.y + inner.h, c, 1.0f);
+		for (i = 1; i < rows; i++)
+			Gfx_Line(g, inner.x, inner.y + i * (rh + n->gridRowGap),
+				inner.x + inner.w, inner.y + i * (rh + n->gridRowGap), c, 1.0f);
+	}
+	HeapFree(GetProcessHeap(), 0, xs);
+	HeapFree(GetProcessHeap(), 0, ws);
 }
 
 static void d_draw_layout_guides(void)
@@ -2447,19 +3578,22 @@ static void d_draw_layout_guides(void)
 	UiDesignNode *n = d_selnode();
 	UiRect nr, inner;
 	char b[160];
+	int layoutParent;
 	if (!n || !g_d.layoutReady) return;
 	nr = g_d.rects[g_d.selNode];
-	if (n->parent >= 0 && UiDesign_IsContainer(g_d.doc.nodes[n->parent].type)) {
-		UiDesignNode *p = &g_d.doc.nodes[n->parent];
-		UiRect pr = g_d.rects[n->parent];
+	layoutParent = d_layout_parent(g_d.selNode);
+	if (layoutParent >= 0 &&
+	    UiDesign_IsLayoutContainer(g_d.doc.nodes[layoutParent].type)) {
+		UiDesignNode *p = &g_d.doc.nodes[layoutParent];
+		UiRect pr = g_d.rects[layoutParent];
 		UiRect pi;
 		d_inset(pr, p->padding, &pi);
 		Gfx_StrokeRoundRectCornersDashed(g, pi, Gfx_Corners(0, 0, 0, 0),
 			Ui_ColorAlpha(t->primary.base, 170), 1.0f);
 		{
-			int i;
-			for (i = 0; i < p->childCount; i++) {
-				UiRect cr = g_d.rects[p->children[i]];
+			int i, count = d_layout_item_count(layoutParent);
+			for (i = 0; i < count; i++) {
+				UiRect cr = g_d.rects[d_layout_item_at(layoutParent, i)];
 				if (p->type == UI_DN_COLUMN || p->type == UI_DN_ROW) {
 					if (p->type == UI_DN_COLUMN)
 						Gfx_FillRect(g, Ui_Rect(pi.x, cr.y + cr.h,
@@ -2473,14 +3607,14 @@ static void d_draw_layout_guides(void)
 				d_draw_grid_cells(p, pi, Ui_ColorAlpha(t->primary.base, 35));
 		}
 	}
-	if (UiDesign_IsContainer(n->type)) {
+	if (UiDesign_IsLayoutContainer(n->type)) {
 		d_inset(nr, n->padding, &inner);
 		Gfx_StrokeRoundRectCornersDashed(g, inner, Gfx_Corners(0, 0, 0, 0),
 			Ui_ColorAlpha(t->primary.base, 200), 1.0f);
 		if (n->type == UI_DN_GRID) {
 			int cols = n->gridCols > 0 ? n->gridCols : 1;
 			int rows = n->gridRows > 0 ? n->gridRows
-				: (n->childCount + cols - 1) / cols;
+				: (d_layout_item_count(g_d.selNode) + cols - 1) / cols;
 			if (rows < 1) rows = 1;
 			snprintf(b, sizeof(b), "Grid %d×%d · gap %d/%d · W:%s H:%s",
 				cols, rows, (int)n->gridColGap, (int)n->gridRowGap,
@@ -2631,6 +3765,16 @@ static void d_draw_canvas(void)
 							Ui_ColorAlpha(t->primary.base, 190), 1.5f);
 					}
 				}
+				if (g_d.selKind == DSEL_RADIOGROUP) {
+					UiDesignRadioGroup *rg = d_selrg();
+					UiRect ur;
+					if (rg && rg->owner == g_d.selView &&
+					    d_rg_union_rect(g_d.selRadioGroup, &ur)) {
+						UiRect gr = Ui_Rect(ur.x - 3, ur.y - 3, ur.w + 6, ur.h + 6);
+						Gfx_StrokeRoundRectCornersDashed(g, gr, Gfx_Corners(4, 4, 4, 4),
+							Ui_ColorAlpha(t->primary.base, 220), 1.5f);
+					}
+				}
 				if (g_d.selKind == DSEL_NODE && g_d.selNode >= 0 &&
 				    g_d.doc.nodes[g_d.selNode].owner == g_d.selView) {
 					d_draw_layout_guides();
@@ -2674,7 +3818,8 @@ enum {
 	DTB_DUPLICATE,
 	DTB_MOVE_UP,
 	DTB_MOVE_DOWN,
-	DTB_PREVIEW
+	DTB_PREVIEW,
+	DTB_RADIOGROUP
 };
 
 typedef struct DToolItem {
@@ -2685,9 +3830,12 @@ typedef struct DToolItem {
 } DToolItem;
 
 #define D_TOOL_LAYOUT_N 6
-#define D_TOOL_COMP_N   17
+#define D_TOOL_COMP_N   18
 #define D_TOOL_ACTION_N 5
 #define D_TOOL_LEFT_N   (D_TOOL_LAYOUT_N + D_TOOL_COMP_N)
+
+/* 单选组不是节点类型, 用超出 UI_DN_* 范围的插入工具值表示. */
+#define D_INSERT_RADIOGROUP 1000
 
 static const DToolItem kToolbarItems[] = {
 	{ "选择", DTB_LAYOUT, -1, 0xE8B0u },
@@ -2704,7 +3852,8 @@ static const DToolItem kToolbarItems[] = {
 	{ "滑块", DTB_COMPONENT, UI_DN_SLIDER, 0xEC13u },
 	{ "进度条", DTB_COMPONENT, UI_DN_PROGRESS, 0xF16Au },
 	{ "下拉框", DTB_COMPONENT, UI_DN_SELECT, 0xE70Du },
-	{ "单选组", DTB_COMPONENT, UI_DN_RADIOGROUP, 0x0000u },
+	{ "单选组", DTB_RADIOGROUP, 0, 0x0000u },
+	{ "单选项", DTB_COMPONENT, UI_DN_RADIO, 0x0000u },
 	{ "图片", DTB_COMPONENT, UI_DN_IMAGE, 0xE8B9u },
 	{ "分隔线", DTB_COMPONENT, UI_DN_SEPARATOR, 0xEF3Du },
 	{ "Tabs", DTB_COMPONENT, UI_DN_TABS, 0x0000u },
@@ -2724,12 +3873,24 @@ static const DToolItem kToolbarItems[] = {
 
 static int d_toolbar_item_enabled(const DToolItem *it)
 {
+	UiDesignNode *n;
 	if (!it) return 0;
+	if (it->kind == DTB_RADIOGROUP) {
+		int parent = d_container_parent();
+		if (parent < 0) return 0;
+		return UiDesign_CanParent(g_d.doc.nodes[parent].type, UI_DN_RADIO);
+	}
+	if (it->kind == DTB_COMPONENT && it->value == UI_DN_RADIO) {
+		if (g_d.selKind == DSEL_RADIOGROUP) return d_sel_radio_group_index() >= 0;
+		n = d_selnode();
+		return g_d.selKind == DSEL_NODE && n && n->type == UI_DN_RADIO &&
+			d_node_group_index(g_d.selNode) >= 0;
+	}
 	switch (it->kind) {
 	case DTB_DUPLICATE:
 	case DTB_MOVE_UP:
 	case DTB_MOVE_DOWN:
-		return g_d.selKind == DSEL_NODE;
+		return g_d.selKind == DSEL_NODE || g_d.selKind == DSEL_RADIOGROUP;
 	default:
 		return 1;
 	}
@@ -2737,7 +3898,10 @@ static int d_toolbar_item_enabled(const DToolItem *it)
 
 static int d_toolbar_item_selected(const DToolItem *it)
 {
-	return it && (it->kind == DTB_LAYOUT || it->kind == DTB_COMPONENT) &&
+	if (!it) return 0;
+	if (it->kind == DTB_RADIOGROUP)
+		return g_d.insertType == D_INSERT_RADIOGROUP;
+	return (it->kind == DTB_LAYOUT || it->kind == DTB_COMPONENT) &&
 		g_d.insertType == it->value;
 }
 
@@ -2752,6 +3916,10 @@ static void d_toolbar_activate(const DToolItem *it)
 	case DTB_COMPONENT:
 		g_d.insertType = it->value;
 		d_status("组件工具: 在画布中点击插入 (Esc 退出)");
+		break;
+	case DTB_RADIOGROUP:
+		g_d.insertType = D_INSERT_RADIOGROUP;
+		d_status("单选组工具: 在画布中点击插入 (Esc 退出)");
 		break;
 	case DTB_DELETE:
 		d_del_selected();
@@ -2778,6 +3946,7 @@ static void d_toolbar_activate(const DToolItem *it)
 				g_d.preview = 1;
 				g_d.instReady = 0;
 				d_preview_capture_tabs();
+				d_preview_capture_radios();
 			}
 			d_status(g_d.preview ? "预览模式" : "设计模式");
 		}
@@ -2915,6 +4084,7 @@ static void d_nav_do(int kind)
 		g_d.preview = 1;
 		g_d.instReady = 0;
 		d_preview_capture_tabs();
+		d_preview_capture_radios();
 		d_status("预览模式");
 		break;
 	default: break;
@@ -3013,7 +4183,8 @@ static void d_draw_tool_item(UiContext *ui, const DToolItem *it, int index,
 	const UiButtonStyle *st = d_toolbar_item_selected(it) ? &selected : &normal;
 	UiIcon ic;
 	UiId id = Ui_Id("dsn.tool", index, 0);
-	int customIcon = it->value == UI_DN_TABS || it->value == UI_DN_RADIOGROUP;
+	int customIcon = it->value == UI_DN_TABS || it->kind == DTB_RADIOGROUP ||
+		it->value == UI_DN_RADIO;
 	int enabled = d_toolbar_item_enabled(it);
 	int clicked;
 	if (it->kind == DTB_DELETE) st = &danger;
@@ -3027,7 +4198,13 @@ static void d_draw_tool_item(UiContext *ui, const DToolItem *it, int index,
 			: t->text2) : t->btnDisabledText;
 		if (d_toolbar_item_selected(it) && ui->hover == id) color = 0xFFFFFFFFu;
 		if (it->value == UI_DN_TABS) d_draw_tabs_icon(ui->gfx, rc, color);
-		else d_draw_radio_icon(ui->gfx, rc, color);
+		else if (it->value == UI_DN_RADIO) {
+			float cx = rc.x + rc.w * 0.38f, cy = rc.y + rc.h * 0.5f;
+			Gfx_StrokeEllipse(ui->gfx, cx, cy, 5.0f, color, 1.3f);
+			Gfx_FillEllipse(ui->gfx, cx, cy, 2.5f, 2.5f, color);
+			Gfx_Line(ui->gfx, cx + 8.0f, cy, rc.x + rc.w - 6.0f, cy,
+				color, 1.3f);
+		} else d_draw_radio_icon(ui->gfx, rc, color);
 	}
 	if (clicked) d_toolbar_activate(it);
 	if (ui->hover == id) {
@@ -3107,6 +4284,27 @@ static void d_draw_toolbar(void)
 			UiFrame_Now());
 }
 
+/* 该 Radio 是否为其父容器中同组第一项: 决定虚拟组行插入位置. */
+static int d_rg_parent_first(int idx)
+{
+	UiDesignNode *n;
+	int gi, p, i;
+	if (idx < 0 || idx >= g_d.doc.nodeCount) return 0;
+	n = &g_d.doc.nodes[idx];
+	if (n->type != UI_DN_RADIO) return 0;
+	gi = d_node_group_index(idx);
+	if (gi < 0) return 0;
+	p = n->parent;
+	if (p < 0) return 1;
+	for (i = 0; i < g_d.doc.nodes[p].childCount; i++) {
+		int ci = g_d.doc.nodes[p].children[i];
+		if (ci == idx) return 1;
+		if (g_d.doc.nodes[ci].type == UI_DN_RADIO &&
+		    d_node_group_index(ci) == gi) return 0;
+	}
+	return 1;
+}
+
 static void d_draw_tree_rec(int idx, int depth, float *y, UiRect panel)
 {
 	UiDesignNode *nd;
@@ -3116,12 +4314,47 @@ static void d_draw_tree_rec(int idx, int depth, float *y, UiRect panel)
 	char b[160];
 	if (idx < 0 || idx >= g_d.doc.nodeCount) return;
 	if (*y + ROW_H > panel.y + panel.h - 8) return;
+	if (d_rg_parent_first(idx)) {
+		int gi = d_node_group_index(idx);
+		UiDesignRadioGroup *rg = d_rg(gi);
+		if (rg) {
+			UiRect grc = Ui_Rect(panel.x + 8 + depth * 14.0f, *y,
+				panel.w - 16 - depth * 14.0f, ROW_H);
+			UiWidgetState gs = Ui_StateInstant(&g_d.app->ui,
+				Ui_IdIndex("dsn.treegrp", gi, 0, 0), grc, 1);
+			if (g_d.selKind == DSEL_RADIOGROUP && g_d.selRadioGroup == gi)
+				Gfx_FillRoundRect(g_d.app->gfx, grc, 4.0f,
+					g_d.app->theme.primary.soft);
+			else if (gs.hovered)
+				Gfx_FillRoundRect(g_d.app->gfx, grc, 4.0f, g_d.app->theme.rowOn);
+			if (d_reserve((void **)&g_d.treeRows, &g_d.treeRowCap,
+			    g_d.treeRowN + 1, sizeof(*g_d.treeRows))) {
+				g_d.treeRows[g_d.treeRowN].rc = grc;
+				g_d.treeRows[g_d.treeRowN].idx = -1;
+				g_d.treeRows[g_d.treeRowN].kind = DROW_RADIOGROUP;
+				g_d.treeRows[g_d.treeRowN].group = gi;
+				g_d.treeRowN++;
+			}
+			snprintf(b, sizeof(b), "◉ %s", rg->name[0] ? rg->name : rg->id);
+			Gfx_Text(g_d.app->gfx, g_d.app->theme.fSmall, b,
+				Ui_Rect(grc.x + 6, grc.y, grc.w - 82, grc.h),
+				g_d.app->theme.text2, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+			Gfx_Text(g_d.app->gfx, g_d.app->theme.fMini, "RadioGroup",
+				Ui_Rect(grc.x + grc.w - 74, grc.y, 70, grc.h),
+				g_d.app->theme.text4, GFX_TEXT_VCENTER | GFX_TEXT_RIGHT);
+			*y += ROW_H + 1;
+			if (*y + ROW_H > panel.y + panel.h - 8) return;
+		}
+	}
 	nd = &g_d.doc.nodes[idx];
 	rc = Ui_Rect(panel.x + 8 + depth * 14.0f, *y,
 		panel.w - 16 - depth * 14.0f, ROW_H);
-	if (g_d.treeRowN < (int)(sizeof(g_d.treeRowRc) / sizeof(g_d.treeRowRc[0]))) {
-		g_d.treeRowRc[g_d.treeRowN] = rc;
-		g_d.treeRowIdx[g_d.treeRowN] = idx;
+	if (d_reserve((void **)&g_d.treeRows, &g_d.treeRowCap,
+	    g_d.treeRowN + 1, sizeof(*g_d.treeRows))) {
+		g_d.treeRows[g_d.treeRowN].rc = rc;
+		g_d.treeRows[g_d.treeRowN].idx = idx;
+		g_d.treeRows[g_d.treeRowN].kind = DROW_NODE;
+		g_d.treeRows[g_d.treeRowN].group = -1;
 		g_d.treeRowN++;
 	}
 	id = Ui_IdIndex("dsn.tree", idx, 0, 0);
@@ -3277,43 +4510,61 @@ static void d_collect_nodes(const UiDesignDoc *doc, int idx, int *out, int cap,
 		d_collect_nodes(doc, n->children[i], out, cap, count);
 }
 
-static void d_group_paths(int gi, char *outC, char *outH, int cap)
+static char *d_with_suffix(const char *s, const char *suffix)
+{
+	size_t a = strlen(s), b = strlen(suffix);
+	char *out = (char *)HeapAlloc(GetProcessHeap(), 0, a + b + 1);
+	if (!out) return NULL;
+	memcpy(out, s, a);
+	memcpy(out + a, suffix, b + 1);
+	return out;
+}
+
+static int d_group_paths(int gi, char **outC, char **outH)
 {
 	const UiDesignGroup *g = &g_d.doc.groups[gi];
-	if (g->outputC[0]) UiDesign_SetText(outC, cap, g->outputC);
-	else snprintf(outC, (size_t)cap, "%s.ui.c", g->id);
-	if (g->outputH[0]) UiDesign_SetText(outH, cap, g->outputH);
-	else snprintf(outH, (size_t)cap, "%s.ui.h", g->id);
+	*outC = g->outputC[0] ? d_strdup(g->outputC) : d_with_suffix(g->id, ".ui.c");
+	*outH = g->outputH[0] ? d_strdup(g->outputH) : d_with_suffix(g->id, ".ui.h");
+	return *outC && *outH;
 }
 
 static int d_validate(char *msg, int cap)
 {
-	int i, j, k, n;
-	int list[256];
+	int i, j, k, n, ok = 0;
+	int *list = NULL;
+	char *ci = NULL, *hi = NULL, *cj = NULL, *hj = NULL;
+	char *sym = NULL, *wc = NULL, *wh = NULL, *sym2 = NULL;
+	if (g_d.doc.nodeCount > 0) {
+		list = (int *)HeapAlloc(GetProcessHeap(), 0,
+			(SIZE_T)g_d.doc.nodeCount * sizeof(*list));
+		if (!list) goto memfail;
+	}
 	for (i = 0; i < g_d.doc.groupCount; i++) {
-		char ci[UI_DN_PATH_MAX], hi[UI_DN_PATH_MAX];
+		HeapFree(GetProcessHeap(), 0, ci); ci = NULL;
+		HeapFree(GetProcessHeap(), 0, hi); hi = NULL;
+		if (!d_group_paths(i, &ci, &hi)) goto memfail;
 		for (j = i + 1; j < g_d.doc.groupCount; j++) {
 			if (strcmp(g_d.doc.groups[i].id, g_d.doc.groups[j].id) == 0) {
 				snprintf(msg, (size_t)cap, "生成组 ID 重复: %s", g_d.doc.groups[i].id);
-				return 0;
+				goto done;
 			}
 			if (strcmp(g_d.doc.groups[i].symbolPrefix, g_d.doc.groups[j].symbolPrefix) == 0) {
 				snprintf(msg, (size_t)cap, "生成组符号前缀重复: %s", g_d.doc.groups[i].symbolPrefix);
-				return 0;
+				goto done;
 			}
 		}
-		d_group_paths(i, ci, hi, UI_DN_PATH_MAX);
 		if (strcmp(ci, hi) == 0) {
 			snprintf(msg, (size_t)cap, "输出 .c/.h 路径相同: %s", ci);
-			return 0;
+			goto done;
 		}
 		for (j = i + 1; j < g_d.doc.groupCount; j++) {
-			char cj[UI_DN_PATH_MAX], hj[UI_DN_PATH_MAX];
-			d_group_paths(j, cj, hj, UI_DN_PATH_MAX);
+			HeapFree(GetProcessHeap(), 0, cj); cj = NULL;
+			HeapFree(GetProcessHeap(), 0, hj); hj = NULL;
+			if (!d_group_paths(j, &cj, &hj)) goto memfail;
 			if (strcmp(ci, cj) == 0 || strcmp(ci, hj) == 0 ||
 			    strcmp(hi, cj) == 0 || strcmp(hi, hj) == 0) {
 				snprintf(msg, (size_t)cap, "生成组输出路径冲突: %s", ci);
-				return 0;
+				goto done;
 			}
 		}
 	}
@@ -3321,110 +4572,107 @@ static int d_validate(char *msg, int cap)
 		for (j = i + 1; j < g_d.doc.hostCount; j++)
 			if (strcmp(g_d.doc.hosts[i].id, g_d.doc.hosts[j].id) == 0) {
 				snprintf(msg, (size_t)cap, "窗口 ID 重复: %s", g_d.doc.hosts[i].id);
-				return 0;
+				goto done;
 			}
-		if (g_d.doc.hosts[i].view < 0 ||
-		    g_d.doc.hosts[i].view >= g_d.doc.viewCount) {
+		if (g_d.doc.hosts[i].view < 0 || g_d.doc.hosts[i].view >= g_d.doc.viewCount) {
 			snprintf(msg, (size_t)cap, "宿主未挂载有效视图: %s", g_d.doc.hosts[i].id);
-			return 0;
+			goto done;
 		}
 		if (g_d.doc.views[g_d.doc.hosts[i].view].root < 0) {
 			snprintf(msg, (size_t)cap, "视图根节点缺失: %s",
 				g_d.doc.views[g_d.doc.hosts[i].view].id);
-			return 0;
+			goto done;
 		}
 		if (g_d.doc.hosts[i].group >= 0 &&
 		    g_d.doc.views[g_d.doc.hosts[i].view].group != g_d.doc.hosts[i].group) {
-			snprintf(msg, (size_t)cap,
-				"宿主与视图必须属于同一生成组: %s", g_d.doc.hosts[i].id);
-			return 0;
+			snprintf(msg, (size_t)cap, "宿主与视图必须属于同一生成组: %s", g_d.doc.hosts[i].id);
+			goto done;
 		}
 		if (g_d.doc.hosts[i].group < 0) {
-			/* 未分组窗口单独输出, 检查与生成组/其他窗口的路径冲突. */
-			char sym[UI_DN_SYM_MAX], wc[UI_DN_PATH_MAX], wh[UI_DN_PATH_MAX];
-			UiDesign_Symbol(g_d.doc.hosts[i].id, sym, sizeof(sym));
-			snprintf(wc, sizeof(wc), "%s.ui.c", sym);
-			snprintf(wh, sizeof(wh), "%s.ui.h", sym);
+			sym = UiDesign_SymbolAlloc(g_d.doc.hosts[i].id);
+			wc = sym ? d_with_suffix(sym, ".ui.c") : NULL;
+			wh = sym ? d_with_suffix(sym, ".ui.h") : NULL;
+			if (!wc || !wh) goto memfail;
 			for (j = 0; j < g_d.doc.groupCount; j++) {
-				char cj[UI_DN_PATH_MAX], hj[UI_DN_PATH_MAX];
-				d_group_paths(j, cj, hj, UI_DN_PATH_MAX);
+				HeapFree(GetProcessHeap(), 0, cj); cj = NULL;
+				HeapFree(GetProcessHeap(), 0, hj); hj = NULL;
+				if (!d_group_paths(j, &cj, &hj)) goto memfail;
 				if (strcmp(wc, cj) == 0 || strcmp(wc, hj) == 0 ||
 				    strcmp(wh, cj) == 0 || strcmp(wh, hj) == 0) {
-					snprintf(msg, (size_t)cap,
-						"未分组窗口输出与生成组冲突: %s", wc);
-					return 0;
+					snprintf(msg, (size_t)cap, "未分组窗口输出与生成组冲突: %s", wc);
+					goto done;
 				}
 			}
 			for (j = 0; j < i; j++) {
-				char sym2[UI_DN_SYM_MAX], cj[UI_DN_PATH_MAX], hj[UI_DN_PATH_MAX];
 				if (g_d.doc.hosts[j].group >= 0) continue;
-				UiDesign_Symbol(g_d.doc.hosts[j].id, sym2, sizeof(sym2));
-				snprintf(cj, sizeof(cj), "%s.ui.c", sym2);
-				snprintf(hj, sizeof(hj), "%s.ui.h", sym2);
+				HeapFree(GetProcessHeap(), 0, sym2); sym2 = NULL;
+				HeapFree(GetProcessHeap(), 0, cj); cj = NULL;
+				HeapFree(GetProcessHeap(), 0, hj); hj = NULL;
+				sym2 = UiDesign_SymbolAlloc(g_d.doc.hosts[j].id);
+				cj = sym2 ? d_with_suffix(sym2, ".ui.c") : NULL;
+				hj = sym2 ? d_with_suffix(sym2, ".ui.h") : NULL;
+				if (!cj || !hj) goto memfail;
 				if (strcmp(wc, cj) == 0 || strcmp(wc, hj) == 0 ||
 				    strcmp(wh, cj) == 0 || strcmp(wh, hj) == 0) {
-					snprintf(msg, (size_t)cap,
-						"未分组窗口输出冲突: %s", wc);
-					return 0;
+					snprintf(msg, (size_t)cap, "未分组窗口输出冲突: %s", wc);
+					goto done;
 				}
 			}
+			HeapFree(GetProcessHeap(), 0, sym); sym = NULL;
+			HeapFree(GetProcessHeap(), 0, wc); wc = NULL;
+			HeapFree(GetProcessHeap(), 0, wh); wh = NULL;
 		}
 		n = 0;
-		d_collect_nodes(&g_d.doc,
-			g_d.doc.views[g_d.doc.hosts[i].view].root, list, 256, &n);
+		d_collect_nodes(&g_d.doc, g_d.doc.views[g_d.doc.hosts[i].view].root,
+			list, g_d.doc.nodeCount, &n);
 		for (j = 0; j < n; j++)
 			for (k = j + 1; k < n; k++)
 				if (strcmp(g_d.doc.nodes[list[j]].id, g_d.doc.nodes[list[k]].id) == 0) {
 					snprintf(msg, (size_t)cap, "组件 ID 重复: %s", g_d.doc.nodes[list[j]].id);
-					return 0;
+					goto done;
 				}
 	}
 	for (i = 0; i < g_d.doc.viewCount; i++) {
 		for (j = i + 1; j < g_d.doc.viewCount; j++)
 			if (strcmp(g_d.doc.views[i].id, g_d.doc.views[j].id) == 0) {
 				snprintf(msg, (size_t)cap, "视图 ID 重复: %s", g_d.doc.views[i].id);
-				return 0;
+				goto done;
 			}
 		if (g_d.doc.views[i].root < 0) {
 			snprintf(msg, (size_t)cap, "视图根节点缺失: %s", g_d.doc.views[i].id);
-			return 0;
+			goto done;
 		}
 		n = 0;
-		d_collect_nodes(&g_d.doc, g_d.doc.views[i].root, list, 256, &n);
+		d_collect_nodes(&g_d.doc, g_d.doc.views[i].root, list, g_d.doc.nodeCount, &n);
 		for (j = 0; j < n; j++)
 			for (k = j + 1; k < n; k++)
 				if (strcmp(g_d.doc.nodes[list[j]].id, g_d.doc.nodes[list[k]].id) == 0) {
-					snprintf(msg, (size_t)cap, "组件 ID 重复: %s",
-						g_d.doc.nodes[list[j]].id);
-					return 0;
+					snprintf(msg, (size_t)cap, "组件 ID 重复: %s", g_d.doc.nodes[list[j]].id);
+					goto done;
 				}
 	}
 	msg[0] = 0;
 	for (i = 0; i < g_d.doc.nodeCount; i++) {
 		UiDesignNode *tn = &g_d.doc.nodes[i];
-		int j2;
-		if (tn->type == UI_DN_RADIOGROUP) {
-			int count = d_option_count(tn->options);
-			if (count == 0) {
-				snprintf(msg, (size_t)cap, "单选组无选项: %s", tn->id);
-				return 0;
+		int j2, isRoot = 0;
+		for (j2 = 0; j2 < g_d.doc.viewCount; j2++)
+			if (g_d.doc.views[j2].root == i) isRoot = 1;
+		if (tn->parent < 0) {
+			if (isRoot && tn->type == UI_DN_RADIO) {
+				snprintf(msg, (size_t)cap, "单选项不能作为根节点: %s", tn->id);
+				goto done;
 			}
-			if (count > UI_DN_OPTIONS_MAX) {
-				snprintf(msg, (size_t)cap, "单选组选项超过 %d: %s",
-					UI_DN_OPTIONS_MAX, tn->id);
-				return 0;
-			}
-			if (tn->selected < 0 || tn->selected >= count) {
-				tn->selected = 0;
-				g_d.doc.dirty = 1;
-			}
+			continue;    /* 已删除的分离节点不参与结构校验 */
 		}
+		if (tn->parent >= g_d.doc.nodeCount ||
+		    !UiDesign_CanParent(g_d.doc.nodes[tn->parent].type, tn->type)) {
+			snprintf(msg, (size_t)cap, "节点父容器不合法: %s", tn->id);
+			goto done;
+		}
+		if (tn->type == UI_DN_RADIO && tn->radioGroupUid &&
+		    UiDesign_RadioGroupFind(&g_d.doc, tn->radioGroupUid) < 0 && !msg[0])
+			snprintf(msg, (size_t)cap, "选项引用了不存在的单选组: %s", tn->id);
 		if (tn->type != UI_DN_TABS || tn->parent < 0) continue;
-		if (tn->childCount > UI_DN_TABS_MAX_PAGES) {
-			snprintf(msg, (size_t)cap, "标签页页数超过 %d: %s",
-				UI_DN_TABS_MAX_PAGES, tn->id);
-			return 0;
-		}
 		if (tn->selected < -1 || tn->selected >= tn->childCount) {
 			UiDesign_TabsNormalize(&g_d.doc, i);
 			g_d.doc.dirty = 1;
@@ -3432,14 +4680,22 @@ static int d_validate(char *msg, int cap)
 		if (tn->childCount == 0 && !msg[0])
 			snprintf(msg, (size_t)cap, "标签页无页面: %s", tn->id);
 		for (j2 = 0; j2 < tn->childCount; j2++)
-			if (!UiDesign_IsContainer(g_d.doc.nodes[tn->children[j2]].type) &&
-			    !msg[0]) {
-				snprintf(msg, (size_t)cap, "标签页含非容器页: %s",
-					g_d.doc.nodes[tn->children[j2]].name);
+			if (!UiDesign_IsContainer(g_d.doc.nodes[tn->children[j2]].type) && !msg[0]) {
+				snprintf(msg, (size_t)cap, "标签页含非容器页: %s", g_d.doc.nodes[tn->children[j2]].name);
 				break;
 			}
 	}
-	return 1;
+	ok = 1;
+	goto done;
+memfail:
+	snprintf(msg, (size_t)cap, "校验失败: 内存不足");
+done:
+	HeapFree(GetProcessHeap(), 0, list);
+	HeapFree(GetProcessHeap(), 0, ci); HeapFree(GetProcessHeap(), 0, hi);
+	HeapFree(GetProcessHeap(), 0, cj); HeapFree(GetProcessHeap(), 0, hj);
+	HeapFree(GetProcessHeap(), 0, sym); HeapFree(GetProcessHeap(), 0, sym2);
+	HeapFree(GetProcessHeap(), 0, wc); HeapFree(GetProcessHeap(), 0, wh);
+	return ok;
 }
 
 static float d_draw_constraints(UiContext *ui, UiRect panel, float y)
@@ -3516,28 +4772,19 @@ static float d_draw_constraints(UiContext *ui, UiRect panel, float y)
 	return y;
 }
 
-static int d_collect_free_sel(int *out, int cap)
-{
-	int i, n = 0;
-	for (i = 0; i < g_d.selSetN && n < cap; i++) {
-		int idx = g_d.selSet[i];
-		UiDesignNode *nd;
-		if (idx < 0 || idx >= g_d.doc.nodeCount) continue;
-		nd = &g_d.doc.nodes[idx];
-		if (nd->parent < 0 || !d_parent_free(nd->parent)) continue;
-		if (idx == d_view_root()) continue;
-		out[n++] = idx;
-	}
-	return n;
-}
-
 static void d_do_align(int action)
 {
-	int list[128], n, i, j;
+	int *list, n, i, j;
 	float minX = 0, maxX = 0, minY = 0, maxY = 0;
 	if (!g_d.layoutReady) d_layout_current();
-	n = d_collect_free_sel(list, 128);
+	g_d.dragListN = 0;
+	d_drag_begin(g_d.selNode);
+	list = (int *)HeapAlloc(GetProcessHeap(), 0,
+		(SIZE_T)(g_d.dragListN > 0 ? g_d.dragListN : 1) * sizeof(*list));
+	if (!list) return;
+	for (n = 0; n < g_d.dragListN; n++) list[n] = g_d.dragList[n].idx;
 	if (n < 2) {
+		HeapFree(GetProcessHeap(), 0, list);
 		d_status("对齐需要至少两个自由布局组件");
 		return;
 	}
@@ -3554,7 +4801,11 @@ static void d_do_align(int action)
 	}
 	if (action >= 6) {
 		/* 分布: 首尾不动, 中间按中心等距. */
-		if (n < 3) { d_status("分布需要至少三个组件"); return; }
+		if (n < 3) {
+			HeapFree(GetProcessHeap(), 0, list);
+			d_status("分布需要至少三个组件");
+			return;
+		}
 		for (i = 1; i < n; i++) {
 			int k = list[i];
 			for (j = i; j > 0; j--) {
@@ -3574,10 +4825,11 @@ static void d_do_align(int action)
 			for (i = 1; i < n - 1; i++) {
 				int idx = list[i];
 				UiDesignNode *nd = &g_d.doc.nodes[idx];
-				UiRect pr = g_d.rects[nd->parent];
+				int parent = d_layout_parent(idx);
+				UiRect pr = g_d.rects[parent];
 				float inner = action == 6
-					? pr.x + g_d.doc.nodes[nd->parent].padding[0]
-					: pr.y + g_d.doc.nodes[nd->parent].padding[1];
+					? pr.x + g_d.doc.nodes[parent].padding[0]
+					: pr.y + g_d.doc.nodes[parent].padding[1];
 				float c = c0 + step * (float)i;
 				if (action == 6) nd->x = c - g_d.rects[idx].w * 0.5f - inner;
 				else nd->y = c - g_d.rects[idx].h * 0.5f - inner;
@@ -3587,9 +4839,10 @@ static void d_do_align(int action)
 		for (i = 0; i < n; i++) {
 			int idx = list[i];
 			UiDesignNode *nd = &g_d.doc.nodes[idx];
-			UiRect pr = g_d.rects[nd->parent];
-			float innerX = pr.x + g_d.doc.nodes[nd->parent].padding[0];
-			float innerY = pr.y + g_d.doc.nodes[nd->parent].padding[1];
+			int parent = d_layout_parent(idx);
+			UiRect pr = g_d.rects[parent];
+			float innerX = pr.x + g_d.doc.nodes[parent].padding[0];
+			float innerY = pr.y + g_d.doc.nodes[parent].padding[1];
 			UiRect r = g_d.rects[idx];
 			if (action == 0) nd->x = minX - innerX;
 			else if (action == 1) nd->x = (minX + maxX - r.w) * 0.5f - innerX;
@@ -3599,6 +4852,7 @@ static void d_do_align(int action)
 			else if (action == 5) nd->y = maxY - r.h - innerY;
 		}
 	}
+	HeapFree(GetProcessHeap(), 0, list);
 	g_d.doc.dirty = 1;
 	g_d.layoutReady = 0;
 	d_undo_push();
@@ -3618,6 +4872,14 @@ static void d_draw_props(void)
 	float y;
 	int i;
 
+	/* 属性行不再对应某个 Radio 时, 收起遗留的下拉弹层. */
+	if (g_d.propRgReady && UiPopupManager_IsOpen(&g_d.pm, g_d.propRgSelect.id)) {
+		UiDesignNode *rn = d_selnode();
+		if (g_d.propsTab != 0 || g_d.selKind != DSEL_NODE || !rn ||
+		    rn->type != UI_DN_RADIO || g_d.selNode != g_d.propRgNode)
+			UiPopupManager_Close(&g_d.pm, ui);
+	}
+
 	Ui_Panel(ui, panel);
 	{
 		UiRect tab1 = Ui_Rect(panel.x + 8, panel.y + 6, 90, 28);
@@ -3635,14 +4897,17 @@ static void d_draw_props(void)
 	}
 	if (g_d.propsTab == 1) {
 		int root = d_view_root();
-		int list[256], count = 0;
+		int *list, count = 0;
 		y = props.y - (float)g_d.propScroll;
 		if (root < 0) {
 			Gfx_Text(g, t->fSmall, "当前视图没有组件", props, t->text4,
 				GFX_TEXT_CENTER | GFX_TEXT_VCENTER);
 			return;
 		}
-		d_collect_nodes(&g_d.doc, root, list, 256, &count);
+		list = (int *)HeapAlloc(GetProcessHeap(), 0,
+			(SIZE_T)g_d.doc.nodeCount * sizeof(*list));
+		if (!list) return;
+		d_collect_nodes(&g_d.doc, root, list, g_d.doc.nodeCount, &count);
 		Gfx_PushClip(g, props);
 		for (i = 0; i < count && y + 22 < props.y + props.h; i++) {
 			int ni = list[i];
@@ -3666,6 +4931,7 @@ static void d_draw_props(void)
 			y += 22;
 		}
 		Gfx_PopClip(g);
+		HeapFree(GetProcessHeap(), 0, list);
 		g_d.propContentH = (int)(y - (props.y - (float)g_d.propScroll));
 		if (g_d.propContentH <= (int)props.h) g_d.propScroll = 0;
 		return;
@@ -3700,7 +4966,7 @@ static void d_draw_props(void)
 	}
 
 	d_build_props();
-	if (g_d.editActive) UiInput_BeginFrame(&g_d.propForm);
+	if (g_d.editActive && !g_d.editMultiline) UiInput_BeginFrame(&g_d.propForm);
 	Gfx_PushClip(g, props);
 	y = props.y - (float)g_d.propScroll;
 	if (g_d.selKind == DSEL_NODE && d_selnode())
@@ -3738,6 +5004,10 @@ static void d_draw_props(void)
 				rr = Ui_Rect(props.x, y, props.w, PROP_ROW_H);
 				vr = Ui_Rect(props.x + 128, y + 2, props.w - 132, PROP_ROW_H - 4);
 			}
+			float rowH = g_d.editActive && g_d.editMultiline &&
+				g_d.editKey == p->key ? 120.0f : PROP_ROW_H;
+			rr.h = rowH;
+			vr.h = rowH - 4.0f;
 			g_d.propRowRc[i] = rr;
 			if (y > props.y + props.h) break;
 			if (g_d.secCollapsed[p->sec]) {
@@ -3779,6 +5049,19 @@ static void d_draw_props(void)
 				y += PROP_ROW_H;
 				continue;
 			}
+			if (p->key == DK_N_RADIOGROUP) {
+				UiDesignNode *rn = d_selnode();
+				if (rn && rn->type == UI_DN_RADIO && g_d.propRgReady) {
+					int ei = d_rg_combo_index(rn->owner,
+						d_node_group_index(g_d.selNode));
+					g_d.propRgNode = g_d.selNode;
+					UiSelect_SetSelected(&g_d.propRgSelect, ei);
+					Ui_Select(&g_d.propRgSelect, &g_d.pm, ui, vr,
+						"未分组", 1);
+				}
+				y += PROP_ROW_H;
+				continue;
+			}
 			if (!(g_d.editActive && g_d.editKey == p->key)) {
 				Gfx_FillRoundRect(g, vr, 4.0f, t->inputBg);
 				Gfx_StrokeRoundRect(g, vr, 4.0f, t->inputBorder, 1.0f);
@@ -3788,16 +5071,20 @@ static void d_draw_props(void)
 			}
 			if (ui->clicked == rid && !(g_d.editActive && g_d.editKey == p->key))
 				d_prop_start_edit(i);
-			y += PROP_ROW_H;
+			y += rowH;
 		}
 	}
 	if (g_d.editActive) {
 		for (i = 0; i < g_d.propN; i++) {
 			if (g_d.props[i].key == g_d.editKey) {
 				UiRect vr = Ui_Rect(props.x + 128, g_d.propRowRc[i].y + 2,
-					props.w - 132, PROP_ROW_H - 4);
-				UiInput_SetRect(&g_d.propForm, 0, vr);
-				UiInput_Draw(&g_d.propForm, 0);
+					props.w - 132, g_d.editMultiline ? 116.0f : PROP_ROW_H - 4.0f);
+				if (g_d.editMultiline)
+					Ui_TextArea(&g_d.propOptionsForm, ui, vr, 1);
+				else {
+					UiInput_SetRect(&g_d.propForm, 0, vr);
+					UiInput_Draw(&g_d.propForm, 0);
+				}
 				break;
 			}
 		}
@@ -3916,10 +5203,7 @@ static void d_draw_all(void)
 static void d_preview_update(void)
 {
 	if (!g_d.preview) {
-		if (g_d.instReady) {
-			UiDesignInstance_Shutdown(&g_d.inst);
-			g_d.instReady = 0;
-		}
+		d_preview_shutdown();
 		return;
 	}
 	if (g_d.selWin < 0 || g_d.selWin >= g_d.doc.hostCount) return;
@@ -3988,76 +5272,72 @@ static int d_container_at(float x, float y)
 
 static void d_insert_at(float x, float y)
 {
-	int parent, idx;
-	UiDesignNode *p, *n;
-	char id[UI_DN_ID_MAX], name[UI_DN_NAME_MAX];
-	if (g_d.insertType < 0 || g_d.selView < 0) return;
-	parent = d_container_at(x, y);
-	if (parent < 0) {
-		d_status("当前页不是容器, 无法放入组件");
+	int parent, idx = -1, type = g_d.insertType, gi = -1;
+	UiDesignNode *p;
+	char name[64];
+	char *id;
+	if (type < 0 || g_d.selView < 0) return;
+	if (type == D_INSERT_RADIOGROUP) {
+		parent = d_container_at(x, y);
+		if (parent < 0) {
+			d_status("当前页不是容器, 无法放入单选组");
+			return;
+		}
+		p = UiDesign_Node(&g_d.doc, parent);
+		if (!p || !UiDesign_CanParent(p->type, UI_DN_RADIO)) {
+			d_status("当前容器不能放入单选组");
+			return;
+		}
+		d_after_edit();
+		if (d_new_radio_group(parent, x, y, 1) < 0)
+			d_status("添加单选组失败");
 		return;
 	}
-	p = &g_d.doc.nodes[parent];
-	if (!UiDesign_IsContainer(p->type)) return;
-	d_after_edit();
-	d_unique_node_id(g_d.selView, UiDesign_TypeName(g_d.insertType), id, sizeof(id));
-	UiDesign_SetText(name, sizeof(name),
-		g_d.insertType == UI_DN_RINGPROGRESS ? "圆环" :
-		UiDesign_TypeName(g_d.insertType));
-	idx = UiDesign_AddNode(&g_d.doc, g_d.selView, g_d.insertType, parent, id, name);
-	n = UiDesign_Node(&g_d.doc, idx);
-	if (!n) return;
-	if (UiDesign_IsContainer(g_d.insertType)) {
-		n->wMode = UI_DN_SIZE_FILL;
-		n->hMode = UI_DN_SIZE_FIXED;
-		n->h = g_d.insertType == UI_DN_ROW ? 64.0f : 180.0f;
-		n->padding[0] = n->padding[1] = n->padding[2] = n->padding[3] = 8.0f;
-		n->gap = 8.0f;
-		if (g_d.insertType == UI_DN_GRID) d_grid_defaults(n);
+	if (type == UI_DN_RADIO) {
+		if (g_d.selKind == DSEL_RADIOGROUP) gi = d_sel_radio_group_index();
+		else if (g_d.selKind == DSEL_NODE) gi = d_node_group_index(g_d.selNode);
+		if (gi < 0) {
+			d_status("单选项只能插入所选单选组内");
+			return;
+		}
+		parent = d_rg_member_parent(gi);
+		if (parent < 0) {
+			d_status("单选组没有可用容器");
+			return;
+		}
 	} else {
-		n->wMode = UI_DN_SIZE_FIXED;
-		n->hMode = UI_DN_SIZE_FIXED;
-		n->w = UiDesign_DefaultW(g_d.insertType);
-		n->h = UiDesign_DefaultH(g_d.insertType);
-		/* Grid 子项铺满单元格; Column/Row 按交叉轴铺满容器. */
-		if (p->type == UI_DN_GRID) {
-			n->wMode = UI_DN_SIZE_FILL;
-			n->hMode = UI_DN_SIZE_FILL;
-		} else if (p->type == UI_DN_COLUMN) {
-			n->wMode = UI_DN_SIZE_FILL;
-		} else if (p->type == UI_DN_ROW) {
-			n->hMode = UI_DN_SIZE_FILL;
-		} else if (p->type == UI_DN_PANEL && p->parent >= 0 &&
-		    g_d.doc.nodes[p->parent].type == UI_DN_TABS) {
-			n->wMode = UI_DN_SIZE_FILL;
+		parent = d_container_at(x, y);
+		if (parent < 0) {
+			d_status("当前页不是容器, 无法放入组件");
+			return;
 		}
-		if (g_d.insertType == UI_DN_LABEL) UiDesign_NodeSetText(n, "Label");
-		else if (g_d.insertType == UI_DN_BUTTON) UiDesign_NodeSetText(n, "Button");
-		else if (g_d.insertType == UI_DN_INPUT) UiDesign_NodeSetHint(n, "请输入");
-		else if (g_d.insertType == UI_DN_SELECT || g_d.insertType == UI_DN_RADIOGROUP) {
-			UiDesign_NodeSetOptions(n, "选项1,选项2,选项3");
-			if (g_d.insertType == UI_DN_SELECT) UiDesign_NodeSetHint(n, "请选择");
-		} else if (g_d.insertType == UI_DN_IMAGE) UiDesign_NodeSetText(n, "Image");
-		else if (g_d.insertType == UI_DN_TEXTAREA) UiDesign_NodeSetHint(n, "多行文本");
-		else if (g_d.insertType == UI_DN_DATEPICKER) UiDesign_NodeSetHint(n, "选择日期");
-		else if (g_d.insertType == UI_DN_RINGPROGRESS) {
-			UiDesign_NodeSetText(n, "任务完成度");
-			UiDesign_NodeSetHint(n, "%");
+		p = UiDesign_Node(&g_d.doc, parent);
+		if (!p || !UiDesign_CanParent(p->type, type)) {
+			d_status("当前容器不能放入该组件");
+			return;
 		}
 	}
-	if (g_d.insertType == UI_DN_TABS) {
-		n->h = 220.0f;
-		n->padding[0] = n->padding[1] = n->padding[2] = n->padding[3] = 10.0f;
-		n->gap = 0.0f;
-		n->selected = 0;
-		d_tabs_add_pages(g_d.selView, idx);
-		p = &g_d.doc.nodes[parent];
-		n = &g_d.doc.nodes[idx];
+	d_after_edit();
+	if (type == UI_DN_RADIO) {
+		idx = d_append_radio(gi, x, y);
+	} else {
+		UiDesign_SetText(name, sizeof(name),
+			type == UI_DN_RINGPROGRESS ? "圆环" : UiDesign_TypeName(type));
+		id = d_unique_node_id(g_d.selView, UiDesign_TypeName(type));
+		if (!id) { d_status("内存不足"); return; }
+		idx = UiDesign_AddNode(&g_d.doc, g_d.selView, type, parent, id, name);
+		HeapFree(GetProcessHeap(), 0, id);
+		if (idx >= 0) d_init_added_node(idx, parent, type, x, y);
 	}
-	if (p->type == UI_DN_ABSOLUTE || p->type == UI_DN_PANEL) {
-		UiRect pr = g_d.rects[parent];
-		n->x = (float)((int)((x - pr.x - p->padding[0]) / 4.0f + 0.5f)) * 4.0f;
-		n->y = (float)((int)((y - pr.y - p->padding[1]) / 4.0f + 0.5f)) * 4.0f;
+	if (idx < 0) { d_status("插入组件失败"); return; }
+	if (type != UI_DN_RADIO) {
+		int lp = d_layout_parent(idx);
+		p = UiDesign_Node(&g_d.doc, lp);
+		if (p && (p->type == UI_DN_ABSOLUTE || p->type == UI_DN_PANEL)) {
+			UiRect pr = g_d.rects[lp];
+			g_d.doc.nodes[idx].x = d_round4(x - pr.x - p->padding[0]);
+			g_d.doc.nodes[idx].y = d_round4(y - pr.y - p->padding[1]);
+		}
 	}
 	d_sel_single(idx);
 	g_d.doc.dirty = 1;
@@ -4070,7 +5350,7 @@ static int d_tree_row_at(float x, float y)
 {
 	int i;
 	for (i = 0; i < g_d.treeRowN; i++)
-		if (Ui_RectContains(g_d.treeRowRc[i], x, y)) return i;
+		if (Ui_RectContains(g_d.treeRows[i].rc, x, y)) return i;
 	return -1;
 }
 
@@ -4095,6 +5375,7 @@ static void d_tree_drag_finish(void)
 		int srcParent = g_d.doc.nodes[src].parent;
 		int srcIsPage = srcParent >= 0 &&
 			g_d.doc.nodes[srcParent].type == UI_DN_TABS;
+		int srcIsRadio = g_d.doc.nodes[src].type == UI_DN_RADIO;
 		if (mode == 1 && UiDesign_IsContainer(dn->type)) {
 			parent = target;
 			pos = dn->childCount;
@@ -4107,9 +5388,20 @@ static void d_tree_drag_finish(void)
 			UiApp_Invalidate(g_d.app);
 			return;
 		}
+		if (srcIsRadio && parent != srcParent) {
+			d_status("单选项只能在所属单选组内重排");
+			UiApp_Invalidate(g_d.app);
+			return;
+		}
 		if (!srcIsPage && parent >= 0 &&
 		    g_d.doc.nodes[parent].type == UI_DN_TABS) {
 			d_status("普通节点不能直接拖入标签页; 请用属性页“新增页”");
+			UiApp_Invalidate(g_d.app);
+			return;
+		}
+		if (parent >= 0 && !UiDesign_CanParent(g_d.doc.nodes[parent].type,
+		    g_d.doc.nodes[src].type)) {
+			d_status("目标容器不能接收该组件");
 			UiApp_Invalidate(g_d.app);
 			return;
 		}
@@ -4129,13 +5421,17 @@ static void d_mouse_down(float x, float y)
 	int hitNode, handle;
 	float dx, dy;
 	if (g_d.genPreview) return;
+	if (UiPopupManager_AnyOpen(&g_d.pm)) return;
+	g_d.dragClickNode = -1;
 	if (g_d.preview) {
 		if (g_d.instReady) UiDesign_MouseDown(&g_d.inst, x, y);
 		return;
 	}
 	if (g_d.editActive) {
 		UiId hit = Ui_HitTest(&g_d.app->ui, x, y);
-		if (hit == g_d.propForm.fields[0].id) {
+		if (g_d.editMultiline) {
+			if (hit == g_d.propOptionsForm.id) return;
+		} else if (hit == g_d.propForm.fields[0].id) {
 			UiInput_MouseDown(&g_d.propForm, hit, x);
 			return;
 		}
@@ -4144,7 +5440,13 @@ static void d_mouse_down(float x, float y)
 	{
 		int tr = d_tree_row_at(x, y);
 		if (tr >= 0) {
-			int idx = g_d.treeRowIdx[tr];
+			int idx = g_d.treeRows[tr].idx;
+			if (g_d.treeRows[tr].kind == DROW_RADIOGROUP) {
+				d_sel_radio_group(g_d.treeRows[tr].group);
+				g_d.treeDragIdx = -1;
+				g_d.treeDropIdx = -1;
+				return;
+			}
 			if (GetKeyState(VK_CONTROL) & 0x8000) d_sel_toggle(idx);
 			else d_sel_single(idx);
 			g_d.treeDragIdx = idx == d_view_root() ? -1 : idx;
@@ -4177,6 +5479,7 @@ static void d_mouse_down(float x, float y)
 		g_d.panBaseY = g_d.panY;
 		return;
 	}
+	if (g_d.insertType >= 0 && !d_in_canvas(x, y)) return;
 	if (!d_to_design(x, y, &dx, &dy)) return;
 	x = dx;
 	y = dy;
@@ -4226,22 +5529,35 @@ static void d_mouse_down(float x, float y)
 				return;
 			}
 		}
-		if (additive) d_sel_toggle(hitNode);
-		else if (d_sel_has(hitNode)) {
-			g_d.selNode = hitNode;
-			g_d.selKind = DSEL_NODE;
-		} else d_sel_single(hitNode);
-		n = &g_d.doc.nodes[hitNode];
-		p = n->parent >= 0 ? &g_d.doc.nodes[n->parent] : NULL;
-		if (d_sel_has(hitNode) && p && d_parent_free(n->parent) &&
-		    hitNode != d_view_root()) {
-			g_d.dragging = 1;
-			g_d.dragStartX = x;
-			g_d.dragStartY = y;
-			g_d.dragNodeX = n->x;
-			g_d.dragNodeY = n->y;
-			g_d.dragMoved = 0;
-			d_drag_begin(hitNode);
+		{
+			int dragNode = hitNode, gi = -1, lp;
+			g_d.dragClickNode = -1;
+			if (hn->type == UI_DN_RADIO && hn->radioGroupUid)
+				gi = d_node_group_index(hitNode);
+			if (gi >= 0 && !additive) {
+				d_sel_radio_group(gi);
+				dragNode = hitNode;
+			} else if (additive) d_sel_toggle(hitNode);
+			else if (d_sel_has(hitNode)) {
+				g_d.selNode = hitNode;
+				g_d.selKind = DSEL_NODE;
+			} else d_sel_single(hitNode);
+			n = &g_d.doc.nodes[dragNode];
+			lp = d_layout_parent(dragNode);
+			p = lp >= 0 ? &g_d.doc.nodes[lp] : NULL;
+			/* 单选组仅在自由布局容器中整体拖动; 结构化容器里拖动会拆散成员. */
+			if (p && dragNode != d_view_root() &&
+			    (gi >= 0 ? d_parent_free(lp) : d_parent_free(lp) ||
+			     p->type == UI_DN_ROW || p->type == UI_DN_COLUMN || p->type == UI_DN_GRID) &&
+			    (gi >= 0 || d_sel_has(dragNode))) {
+				g_d.dragging = 1;
+				g_d.dragStartX = x;
+				g_d.dragStartY = y;
+				g_d.dragNodeX = n->x;
+				g_d.dragNodeY = n->y;
+				g_d.dragMoved = 0;
+				d_drag_begin(dragNode);
+			}
 		}
 		UiApp_Invalidate(g_d.app);
 		return;
@@ -4256,25 +5572,29 @@ static void d_mouse_down(float x, float y)
 
 static void d_snap_move(UiDesignNode *n, float *x, float *y)
 {
-	UiRect pr = g_d.rects[n->parent];
-	UiRect inner;
+	int idx = (int)(n - g_d.doc.nodes);
+	int parent = d_layout_parent(idx);
+	UiRect pr, inner, nr;
 	float bestX = 4.0f, bestY = 4.0f;
-	float cx[3], cy[3];
-	int i, k;
-	d_inset(pr, g_d.doc.nodes[n->parent].padding, &inner);
+	int i, k, count;
+	if (parent < 0) return;
+	pr = g_d.rects[parent];
+	nr = g_d.rects[idx];
+	d_inset(pr, g_d.doc.nodes[parent].padding, &inner);
 	g_d.snapX = g_d.snapY = 0;
-	cx[0] = inner.x; cx[1] = inner.x + inner.w * 0.5f; cx[2] = inner.x + inner.w;
-	cy[0] = inner.y; cy[1] = inner.y + inner.h * 0.5f; cy[2] = inner.y + inner.h;
-	for (i = 0; i < g_d.doc.nodes[n->parent].childCount; i++) {
-		int ci = g_d.doc.nodes[n->parent].children[i];
+	count = d_layout_item_count(parent);
+	for (i = 0; i < count; i++) {
+		int ci = d_layout_item_at(parent, i);
 		UiRect r;
-		if (ci == g_d.selNode) continue;
+		if (ci == idx || d_sel_has(ci) || d_has_selected_ancestor(ci)) continue;
 		r = g_d.rects[ci];
 		for (k = 0; k < 3; k++) {
 			float tx = k == 0 ? r.x : (k == 1 ? r.x + r.w * 0.5f : r.x + r.w);
 			float ty = k == 0 ? r.y : (k == 1 ? r.y + r.h * 0.5f : r.y + r.h);
-			float ax[3] = { *x, *x + n->w * 0.5f, *x + n->w };
-			float ay[3] = { *y, *y + n->h * 0.5f, *y + n->h };
+			float ax[3] = { *x + inner.x, *x + inner.x + nr.w * 0.5f,
+				*x + inner.x + nr.w };
+			float ay[3] = { *y + inner.y, *y + inner.y + nr.h * 0.5f,
+				*y + inner.y + nr.h };
 			int a;
 			for (a = 0; a < 3; a++) {
 				float dx = ax[a] - tx;
@@ -4294,20 +5614,43 @@ static void d_snap_move(UiDesignNode *n, float *x, float *y)
 			}
 		}
 	}
-	*x = (float)((int)(*x / 4.0f + 0.5f)) * 4.0f;
-	*y = (float)((int)(*y / 4.0f + 0.5f)) * 4.0f;
+	*x = d_round4(*x);
+	*y = d_round4(*y);
 }
 
 static int d_node_overflow(const UiDesignNode *n)
 {
+	int idx = (int)(n - g_d.doc.nodes);
+	int parent = d_layout_parent(idx);
 	UiRect pr, inner, nr;
-	if (!n || n->parent < 0) return 0;
-	pr = g_d.rects[n->parent];
-	d_inset(pr, g_d.doc.nodes[n->parent].padding, &inner);
-	nr = Ui_Rect(n->x + pr.x, n->y + pr.y, n->w, n->h);
+	if (!n || parent < 0) return 0;
+	pr = g_d.rects[parent];
+	d_inset(pr, g_d.doc.nodes[parent].padding, &inner);
+	nr = g_d.rects[idx];
 	return nr.x < inner.x - 1 || nr.y < inner.y - 1 ||
 		nr.x + nr.w > inner.x + inner.w + 1 ||
 		nr.y + nr.h > inner.y + inner.h + 1;
+}
+
+static void d_reorder_drag(UiDesignNode *n, float dx, float dy)
+{
+	int idx = (int)(n - g_d.doc.nodes);
+	int lp = d_layout_parent(idx), parent = n->parent;
+	int type, steps, target, current = 0, i;
+	if (lp < 0 || parent < 0 || parent != g_d.dragReorderParent) return;
+	type = g_d.doc.nodes[lp].type;
+	if (type != UI_DN_ROW && type != UI_DN_COLUMN && type != UI_DN_GRID) return;
+	if (type == UI_DN_ROW || (type == UI_DN_GRID && fabsf_local(dx) >= fabsf_local(dy)))
+		steps = (int)(dx / 32.0f);
+	else steps = (int)(dy / 32.0f);
+	target = g_d.dragReorderPos + steps;
+	if (target < 0) target = 0;
+	if (target >= g_d.doc.nodes[parent].childCount)
+		target = g_d.doc.nodes[parent].childCount - 1;
+	for (i = 0; i < g_d.doc.nodes[parent].childCount; i++)
+		if (g_d.doc.nodes[parent].children[i] == idx) { current = i; break; }
+	while (current < target && UiDesign_NodeMoveDown(&g_d.doc, idx)) current++;
+	while (current > target && UiDesign_NodeMoveUp(&g_d.doc, idx)) current--;
 }
 
 static void d_mouse_move(float x, float y)
@@ -4329,7 +5672,7 @@ static void d_mouse_move(float x, float y)
 		return;
 	}
 	if (g_d.editActive) {
-		UiInput_MouseMove(&g_d.propForm, x);
+		if (!g_d.editMultiline) UiInput_MouseMove(&g_d.propForm, x);
 		return;
 	}
 	if (g_d.panning) {
@@ -4340,12 +5683,12 @@ static void d_mouse_move(float x, float y)
 	}
 	if (g_d.treeDragIdx >= 0) {
 		int tr = d_tree_row_at(x, y);
-		if (tr < 0) {
+		if (tr < 0 || g_d.treeRows[tr].kind == DROW_RADIOGROUP) {
 			g_d.treeDropIdx = -1;
 		} else {
-			UiRect rc = g_d.treeRowRc[tr];
+			UiRect rc = g_d.treeRows[tr].rc;
 			float t = (y - rc.y) / (rc.h > 0 ? rc.h : 1.0f);
-			g_d.treeDropIdx = g_d.treeRowIdx[tr];
+			g_d.treeDropIdx = g_d.treeRows[tr].idx;
 			g_d.treeDropMode = t < 0.25f ? 0 : (t > 0.75f ? 2 : 1);
 		}
 		UiApp_Invalidate(g_d.app);
@@ -4358,24 +5701,33 @@ static void d_mouse_move(float x, float y)
 		return;
 	}
 	if (g_d.dragging) {
-		float dx = (x - g_d.viewTx) / g_d.zoom - g_d.dragStartX;
-		float dy = (y - g_d.viewTy) / g_d.zoom - g_d.dragStartY;
-		UiDesignNode *n = d_selnode();
-		if (!n) return;
-		if (fabsf_local(dx) + fabsf_local(dy) > 1.5f) g_d.dragMoved = 1;
-		if (g_d.dragging == 1) {
-			float nx = g_d.dragNodeX + dx, ny = g_d.dragNodeY + dy;
-			float sdx, sdy;
-			int i;
-			d_snap_move(n, &nx, &ny);
-			sdx = nx - g_d.dragNodeX;
-			sdy = ny - g_d.dragNodeY;
-			for (i = 0; i < g_d.dragListN; i++) {
-				UiDesignNode *dn = UiDesign_Node(&g_d.doc, g_d.dragListIdx[i]);
-				if (!dn) continue;
-				dn->x = g_d.dragListX[i] + sdx;
-				dn->y = g_d.dragListY[i] + sdy;
+			float dx = (x - g_d.viewTx) / g_d.zoom - g_d.dragStartX;
+			float dy = (y - g_d.viewTy) / g_d.zoom - g_d.dragStartY;
+			UiDesignNode *n = d_selnode();
+			int primary = g_d.selNode;
+			if (!n && g_d.selKind == DSEL_RADIOGROUP) {
+				primary = g_d.dragListN > 0 ? g_d.dragList[0].idx : -1;
+				n = UiDesign_Node(&g_d.doc, primary);
 			}
+			if (!n) return;
+			if (fabsf_local(dx) + fabsf_local(dy) > 1.5f) g_d.dragMoved = 1;
+			if (g_d.dragging == 1) {
+				int lp = d_layout_parent(primary);
+				if (lp >= 0 && d_parent_free(lp)) {
+				float nx = g_d.dragNodeX + dx, ny = g_d.dragNodeY + dy;
+				float sdx, sdy;
+				int i;
+				d_snap_move(n, &nx, &ny);
+				sdx = nx - g_d.dragNodeX;
+				sdy = ny - g_d.dragNodeY;
+				for (i = 0; i < g_d.dragListN; i++) {
+					DDragItem *item = &g_d.dragList[i];
+					UiDesignNode *dn = UiDesign_Node(&g_d.doc, item->idx);
+					if (!dn) continue;
+					dn->x = item->x + sdx;
+					dn->y = item->y + sdy;
+				}
+			} else d_reorder_drag(n, dx, dy);
 		} else {
 			/* 按抓取的手柄只改对应方向: 上下边只改高, 左右边只改宽,
 			 * 左边/上边同时移动节点原点. 手柄编号见 d_handle_at. */
@@ -4432,7 +5784,7 @@ static void d_mouse_up(void)
 		return;
 	}
 	if (g_d.editActive) {
-		UiInput_MouseUp(&g_d.propForm);
+		if (!g_d.editMultiline) UiInput_MouseUp(&g_d.propForm);
 		return;
 	}
 	if (g_d.panning) {
@@ -4445,7 +5797,7 @@ static void d_mouse_up(void)
 			g_d.marqueeY0 < g_d.marqueeY1 ? g_d.marqueeY0 : g_d.marqueeY1,
 			fabsf_local(g_d.marqueeX1 - g_d.marqueeX0),
 			fabsf_local(g_d.marqueeY1 - g_d.marqueeY0));
-		int i, n = g_d.selSetN;
+		int i;
 		g_d.marquee = 0;
 		if (r.w > 2.0f || r.h > 2.0f) {
 			for (i = 0; i < g_d.doc.nodeCount; i++) {
@@ -4457,24 +5809,27 @@ static void d_mouse_up(void)
 				if (nr.x < r.x + r.w && nr.x + nr.w > r.x &&
 				    nr.y < r.y + r.h && nr.y + nr.h > r.y) {
 					int k, has = 0;
-					for (k = 0; k < n; k++) if (g_d.selSet[k] == i) has = 1;
-					if (!has && n < 128) g_d.selSet[n++] = i;
+					for (k = 0; k < g_d.selSetN; k++)
+						if (g_d.selSet[k] == i) has = 1;
+					if (!has) d_sel_add(i);
 					g_d.selNode = i;
 				}
 			}
-			g_d.selSetN = n;
-			g_d.selKind = n > 0 ? DSEL_NODE : DSEL_WINDOW;
+			g_d.selKind = g_d.selSetN > 0 ? DSEL_NODE : DSEL_WINDOW;
 		}
 		UiApp_Invalidate(g_d.app);
 		return;
 	}
 	if (g_d.dragging) {
 		int moved = g_d.dragMoved;
+		int clickNode = g_d.dragClickNode;
 		g_d.dragging = 0;
 		g_d.dragMoved = 0;
+		g_d.dragClickNode = -1;
 		g_d.dragListN = 0;
 		g_d.snapX = g_d.snapY = 0;
 		if (moved) d_undo_push();
+		else if (clickNode >= 0) d_sel_single(clickNode);
 		d_status(moved ? "布局已修改" : "已选中");
 	}
 }
@@ -4511,11 +5866,20 @@ static int d_key(UINT vk)
 	if (!g_d.editActive && g_d.propColorBgReady &&
 	    UiColorSelect_Key(&g_d.propColorBg, &g_d.pm, &g_d.app->ui, vk))
 		return 1;
+	if (!g_d.editActive && g_d.propRgReady &&
+	    UiPopupManager_IsOpen(&g_d.pm, g_d.propRgSelect.id) &&
+	    UiSelect_Key(&g_d.propRgSelect, &g_d.pm, &g_d.app->ui, vk)) {
+		d_rg_combo_commit();
+		return 1;
+	}
 	if (g_d.editActive) {
-		if (vk == VK_ESCAPE || vk == VK_RETURN || vk == VK_TAB) {
+		if (vk == VK_ESCAPE || vk == VK_TAB ||
+		    (vk == VK_RETURN && !(GetKeyState(VK_SHIFT) & 0x8000))) {
 			d_after_edit();
 			return 1;
 		}
+		if (g_d.editMultiline)
+			return UiTextArea_Key(&g_d.propOptionsForm, &g_d.app->ui, vk);
 		return UiInput_Key(&g_d.propForm, g_d.app->hwnd, vk);
 	}
 	if (vk == VK_ESCAPE && g_d.insertType >= 0) {
@@ -4540,14 +5904,32 @@ static int d_key(UINT vk)
 		return 1;
 	}
 	if (vk == VK_DELETE) { d_del_selected(); return 1; }
+	if (g_d.selKind == DSEL_RADIOGROUP) {
+		int step = (GetKeyState(VK_SHIFT) & 0x8000) ? 8 : 1;
+		int count = d_rg_member_count(g_d.selRadioGroup);
+		int lp = d_layout_parent(d_rg_member_at(g_d.selRadioGroup, 0));
+		float dx = 0, dy = 0;
+		if (lp >= 0 && d_parent_free(lp) && count > 0) {
+			if (vk == VK_LEFT) dx = -(float)step;
+			else if (vk == VK_RIGHT) dx = (float)step;
+			else if (vk == VK_UP) dy = -(float)step;
+			else if (vk == VK_DOWN) dy = (float)step;
+			else return 0;
+			d_translate_layout_node(d_rg_member_at(g_d.selRadioGroup, 0), dx, dy);
+			goto moved;
+		}
+	}
 	if (g_d.selKind == DSEL_NODE && g_d.selNode >= 0) {
 		UiDesignNode *n = d_selnode();
 		int step = (GetKeyState(VK_SHIFT) & 0x8000) ? 8 : 1;
-		if (n && n->parent >= 0 && g_d.doc.nodes[n->parent].type == UI_DN_ABSOLUTE) {
-			if (vk == VK_LEFT) { n->x -= step; goto moved; }
-			if (vk == VK_RIGHT) { n->x += step; goto moved; }
-			if (vk == VK_UP) { n->y -= step; goto moved; }
-			if (vk == VK_DOWN) { n->y += step; goto moved; }
+		{
+			int lp = n ? d_layout_parent(g_d.selNode) : -1;
+			if (n && lp >= 0 && d_parent_free(lp)) {
+				if (vk == VK_LEFT) { d_translate_layout_node(g_d.selNode, -(float)step, 0); goto moved; }
+				if (vk == VK_RIGHT) { d_translate_layout_node(g_d.selNode, (float)step, 0); goto moved; }
+				if (vk == VK_UP) { d_translate_layout_node(g_d.selNode, 0, -(float)step); goto moved; }
+				if (vk == VK_DOWN) { d_translate_layout_node(g_d.selNode, 0, (float)step); goto moved; }
+			}
 		}
 	}
 	return 0;
@@ -4569,14 +5951,20 @@ static int d_chr(wchar_t ch)
 	if (!g_d.editActive && g_d.propColorBgReady &&
 	    UiColorSelect_Char(&g_d.propColorBg, &g_d.app->ui, ch))
 		return 1;
-	if (g_d.editActive) return UiInput_Char(&g_d.propForm, ch);
+	if (g_d.editActive) {
+		if (g_d.editMultiline) return UiTextArea_Char(&g_d.propOptionsForm, &g_d.app->ui, ch);
+		return UiInput_Char(&g_d.propForm, ch);
+	}
 	return 0;
 }
 
 static void d_ime(void)
 {
 	if (g_d.preview) { if (g_d.instReady) UiDesign_OnIme(&g_d.inst); }
-	else if (g_d.editActive) UiInput_OnIme(&g_d.propForm);
+	else if (g_d.editActive) {
+		if (g_d.editMultiline) UiTextArea_OnIme(&g_d.propOptionsForm, &g_d.app->ui);
+		else UiInput_OnIme(&g_d.propForm);
+	}
 	else {
 		if (g_d.propColorReady) UiColorSelect_OnIme(&g_d.propColor, &g_d.app->ui);
 		if (g_d.propColorBgReady) UiColorSelect_OnIme(&g_d.propColorBg, &g_d.app->ui);
@@ -4587,7 +5975,10 @@ static void d_blink(void)
 {
 	if (g_d.preview) { if (g_d.instReady) UiDesign_Blink(&g_d.inst); }
 	else {
-		if (g_d.editActive) UiInput_Blink(&g_d.propForm);
+		if (g_d.editActive) {
+			if (g_d.editMultiline) UiTextArea_Blink(&g_d.propOptionsForm, &g_d.app->ui);
+			else UiInput_Blink(&g_d.propForm);
+		}
 		else {
 			if (g_d.propColorReady) UiColorSelect_Blink(&g_d.propColor, &g_d.app->ui);
 			if (g_d.propColorBgReady) UiColorSelect_Blink(&g_d.propColorBg, &g_d.app->ui);
@@ -4599,6 +5990,7 @@ static int d_animating(UiApp *app, void *user)
 {
 	(void)app; (void)user;
 	if (g_d.preview && g_d.instReady) return UiDesign_Busy(&g_d.inst);
+	if (g_d.editActive && g_d.editMultiline && UiTextArea_Busy(&g_d.propOptionsForm)) return 1;
 	if (UiTooltip_Pending(&g_d.toolbarTip)) return 1;
 	if (UiPopupManager_IsOpen(&g_d.pm, g_d.toolbarMenu.id)) return 1;
 	if (!g_d.preview && g_d.propColorReady &&
@@ -4606,6 +5998,10 @@ static int d_animating(UiApp *app, void *user)
 		return 1;
 	if (!g_d.preview && g_d.propColorBgReady &&
 	    UiColorSelect_IsOpen(&g_d.pm, &g_d.propColorBg))
+		return 1;
+	if (!g_d.preview && g_d.propRgReady &&
+	    (UiPopupManager_IsOpen(&g_d.pm, g_d.propRgSelect.id) ||
+	     UiSelect_Busy(&g_d.propRgSelect)))
 		return 1;
 	return 0;
 }
@@ -4619,9 +6015,11 @@ static void d_on_init(UiApp *app, void *user)
 	UiPopupManager_Init(&g_d.pm);
 	d_qr_slots_free();
 	UiInput_Init(&g_d.propForm, &app->ui, &app->ime);
+	UiTextArea_Init(&g_d.propOptionsForm, Ui_Id("dsn.propoptions", 0, 0), 0);
+	UiTextArea_AttachIme(&g_d.propOptionsForm, &app->ime);
 	g_d.propForm.count = 0;
 	g_d.propField = UiInput_Add(&g_d.propForm, Ui_Id("dsn.prop", 0, 0),
-		256, 0, NULL, NULL);
+		0, 0, NULL, NULL);
 	UiColorSelect_Init(&g_d.propColor, Ui_Id("dsn.propcolor", 0, 0),
 		0xFF3B82F6u);
 	UiColorSelect_AttachIme(&g_d.propColor, &app->ime);
@@ -4632,6 +6030,11 @@ static void d_on_init(UiApp *app, void *user)
 	UiColorSelect_AttachIme(&g_d.propColorBg, &app->ime);
 	g_d.propColorBgReady = 1;
 	g_d.propColorBgNode = -1;
+	UiSelect_Init(&g_d.propRgSelect, Ui_Id("dsn.proprg", 0, 0));
+	UiSelect_SetFilterable(&g_d.propRgSelect, 0);
+	g_d.propRgReady = 1;
+	g_d.propRgNode = -1;
+	g_d.propRgOwner = -1;
 	UiMenu_Init(&g_d.toolbarMenu, Ui_Id("dsn.tool.menu", 0, 0));
 	UiTooltip_Init(&g_d.toolbarTip, Ui_Id("dsn.tool.tip", 0, 0));
 	UiTooltip_SetDelay(&g_d.toolbarTip, 400);
@@ -4654,12 +6057,12 @@ static void d_on_init(UiApp *app, void *user)
 	d_reset_selection();
 	d_undo_reset();
 	d_status("就绪 · 打开或新建 .cui 工程");
-	if (g_d.startupFile[0]) {
+	if (g_d.startupFile && g_d.startupFile[0]) {
 		if (UiDesign_LoadFile(&g_d.doc, g_d.startupFile)) {
 			d_normalize_modes();
 			d_reset_selection();
 			d_undo_reset();
-			d_dir_of(g_d.startupFile, g_d.lastDir, MAX_PATH);
+			d_set_dir(&g_d.lastDir, g_d.startupFile);
 			d_status("已打开 .cui 工程");
 		} else {
 			d_error("打开失败: .cui 解析错误");
@@ -4691,6 +6094,10 @@ static void d_on_frame(UiApp *app, void *user)
 	if (!g_d.preview && !g_d.genPreview && g_d.propColorReady) {
 		UiColorSelect_DrawPopup(&g_d.propColor, &g_d.pm, &app->ui);
 		UiColorSelect_DrawPopup(&g_d.propColorBg, &g_d.pm, &app->ui);
+	}
+	if (!g_d.preview && !g_d.genPreview && g_d.propRgReady) {
+		UiSelect_DrawPopup(&g_d.propRgSelect, &g_d.pm, &app->ui);
+		d_rg_combo_commit();
 	}
 	UiNavBar_DrawPopups(&g_d.nav, &g_d.pm, &app->ui);
 	UiMenu_Draw(&g_d.toolbarMenu, &g_d.pm, &app->ui);
@@ -4816,6 +6223,12 @@ static void d_on_wheel(UiApp *app, float x, float y, float delta, void *user)
 	float ry = TOP_H + PALETTE_H + GAP;
 	(void)user;
 	if (g_d.genPreview) return;
+	if (!g_d.preview && g_d.propRgReady &&
+	    UiPopupManager_IsOpen(&g_d.pm, g_d.propRgSelect.id) &&
+	    Ui_RectContains(g_d.propRgSelect.listRc, x, y)) {
+		Ui_OnMouseWheel(&app->ui, x, y, delta);
+		return;
+	}
 	if (!g_d.preview && d_in_canvas(x, y) &&
 	    (GetKeyState(VK_CONTROL) & 0x8000)) {
 		UiRect body = d_canvas_area();
@@ -4834,6 +6247,11 @@ static void d_on_wheel(UiApp *app, float x, float y, float delta, void *user)
 		g_d.panX = (x - dx * nz) - (body.x + (body.w - vw->w * nz) * 0.5f);
 		g_d.panY = (y - dy * nz) - (body.y + 10.0f);
 		UiApp_Invalidate(app);
+		return;
+	}
+	if (g_d.editActive && g_d.editMultiline &&
+	    Ui_RectContains(g_d.propOptionsForm.rc, x, y)) {
+		Ui_OnMouseWheel(&app->ui, x, y, delta);
 		return;
 	}
 	if (x >= rx && y >= ry) {
@@ -4867,26 +6285,41 @@ static void d_on_shutdown(UiApp *app, void *user)
 		UiColorSelect_Shutdown(&g_d.propColorBg);
 		g_d.propColorBgReady = 0;
 	}
+	if (g_d.propRgReady) {
+		d_rg_combo_clear();
+		UiSelect_Shutdown(&g_d.propRgSelect);
+		g_d.propRgReady = 0;
+	}
 	if (g_d.instReady) {
 		UiDesignInstance_Shutdown(&g_d.inst);
 		g_d.instReady = 0;
 	}
 	UiInput_Shutdown(&g_d.propForm);
+	UiTextArea_Shutdown(&g_d.propOptionsForm);
+	d_preview_restore_tabs();
+	d_preview_restore_radios();
 	d_qr_slots_free();
 	UiDesign_Free(&g_d.doc);
 	d_undo_free();
 	if (g_d.rects) HeapFree(GetProcessHeap(), 0, g_d.rects);
 	g_d.rects = NULL;
+	HeapFree(GetProcessHeap(), 0, g_d.lastDir);
+	HeapFree(GetProcessHeap(), 0, g_d.startupFile);
+	HeapFree(GetProcessHeap(), 0, g_d.genDir);
+	HeapFree(GetProcessHeap(), 0, g_d.selSet);
+	HeapFree(GetProcessHeap(), 0, g_d.dragList);
+	HeapFree(GetProcessHeap(), 0, g_d.treeRows);
+	if (g_d.genFiles) UiDesign_GenFilesFree(g_d.genFiles, g_d.genFileN);
+	HeapFree(GetProcessHeap(), 0, g_d.genFiles);
 }
 
-static void d_parse_startup_file(WCHAR *out, int cap)
+static WCHAR *d_parse_startup_file(void)
 {
 	const WCHAR *p;
-	int n = 0;
-	if (!out || cap <= 0) return;
-	out[0] = 0;
+	int n = 0, cap;
+	WCHAR *out;
 	p = GetCommandLineW();
-	if (!p) return;
+	if (!p) return NULL;
 	if (*p == L'"') {
 		p++;
 		while (*p && *p != L'"') p++;
@@ -4895,13 +6328,18 @@ static void d_parse_startup_file(WCHAR *out, int cap)
 		while (*p && *p != L' ' && *p != L'\t') p++;
 	}
 	while (*p == L' ' || *p == L'\t') p++;
+	if (!*p) return NULL;
+	cap = lstrlenW(p) + 1;
+	out = (WCHAR *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)cap * sizeof(*out));
+	if (!out) return NULL;
 	if (*p == L'"') {
 		p++;
-		while (*p && *p != L'"' && n < cap - 1) out[n++] = *p++;
+		while (*p && *p != L'"') out[n++] = *p++;
 	} else {
-		while (*p && *p != L' ' && *p != L'\t' && n < cap - 1) out[n++] = *p++;
+		while (*p && *p != L' ' && *p != L'\t') out[n++] = *p++;
 	}
 	out[n] = 0;
+	return out;
 }
 
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
@@ -4909,7 +6347,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 	UiAppCallbacks cb;
 	(void)inst; (void)prev; (void)cmd; (void)show;
 	ZeroMemory(&g_d, sizeof(g_d));
-	d_parse_startup_file(g_d.startupFile, MAX_PATH);
+	g_d.startupFile = d_parse_startup_file();
 	ZeroMemory(&cb, sizeof(cb));
 	cb.init = d_on_init;
 	cb.frame = d_on_frame;

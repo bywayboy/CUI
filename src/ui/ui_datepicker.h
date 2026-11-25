@@ -69,7 +69,7 @@ typedef struct UiDatePicker {
 	int wasOpen;
 	int changed;
 	int committed;
-	char placeholder[96];
+	wchar_t *placeholder;
 } UiDatePicker;
 
 void UiDatePicker_Init(UiDatePicker *dp, UiId id, int mode);

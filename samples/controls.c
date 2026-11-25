@@ -15,6 +15,7 @@ typedef struct ControlsDemo {
 	UiCheckbox checkA, checkB;
 	UiCheckbox checkC;          /* disabled */
 	UiCheckboxGroup features;
+	UiRadio modeItems[3];
 	UiRadioGroup mode;
 	UiSwitch sw;
 	UiSlider slider;
@@ -32,6 +33,32 @@ static const char *const kFeatureLabels[3] = {
 static const char *const kModeLabels[3] = {
 	"标准模式", "节能模式", "高性能模式"
 };
+
+static void draw_modes(ControlsDemo *d, UiContext *ui, UiRect rc)
+{
+	int i;
+	for (i = 0; i < 3; i++) {
+		Ui_Radio(&d->modeItems[i], &d->mode, ui,
+			Ui_Rect(rc.x, rc.y + (float)i * 28.0f, rc.w, 28.0f),
+			kModeLabels[i]);
+	}
+}
+
+static const char *selected_mode_label(const ControlsDemo *d)
+{
+	UiId selected = UiRadioGroup_SelectedId(&d->mode);
+	int i;
+	for (i = 0; i < 3; i++)
+		if (d->modeItems[i].id == selected) return kModeLabels[i];
+	return "";
+}
+
+static void set_mode_status(ControlsDemo *d)
+{
+	wsprintfA(d->status, "模式：%s", selected_mode_label(d));
+	UiApp_Invalidate(d->app);
+}
+
 static const char *const kIconTips[4] = {
 	"设置", "刷新", "信息", "删除"
 };
@@ -147,9 +174,9 @@ static void on_frame(UiApp *app, void *user)
 	Gfx_Text(g, t->fLabel, "RadioGroup", Ui_StackTake(&col, 18),
 		t->text2, GFX_TEXT_VCENTER);
 	Ui_StackSkip(&col, 8);
-	if (UiRadioGroup_Draw(&d->mode, ui, Ui_StackTake(&col, 84),
-		kModeLabels, 28, 1))
-		wsprintfA(d->status, "模式：%s", kModeLabels[d->mode.selected]);
+	draw_modes(d, ui, Ui_StackTake(&col, 84));
+	if (UiRadioGroup_TakeChanged(&d->mode))
+		set_mode_status(d);
 	Ui_StackSkip(&col, 16);
 
 	Gfx_Text(g, t->fLabel, "Switch / Slider", Ui_StackTake(&col, 18),
@@ -215,10 +242,9 @@ static int on_key(UiApp *app, UINT vk, void *user)
 		}
 	}
 	if (app->ui.navId == d->mode.id) {
-		prev = d->mode.selected;
 		if (UiRadioGroup_Key(&d->mode, &app->ui, vk)) {
-			if (d->mode.selected != prev)
-				wsprintfA(d->status, "模式：%s", kModeLabels[d->mode.selected]);
+			if (UiRadioGroup_TakeChanged(&d->mode))
+				set_mode_status(d);
 			UiApp_Invalidate(app);
 			return 1;
 		}
@@ -243,6 +269,7 @@ static int on_key(UiApp *app, UINT vk, void *user)
 static void on_init(UiApp *app, void *user)
 {
 	ControlsDemo *d = (ControlsDemo *)user;
+	int i;
 	d->app = app;
 	app->minW = 760.0f;
 	app->minH = 620.0f;
@@ -252,8 +279,13 @@ static void on_init(UiApp *app, void *user)
 	UiCheckbox_Init(&d->checkC, Ui_Id("ctrl.check.c", 0, 0), 1);
 	UiCheckboxGroup_Init(&d->features, Ui_Id("ctrl.features", 0, 0), 3);
 	UiCheckboxGroup_SetMask(&d->features, 0x1u);
-	UiRadioGroup_Init(&d->mode, Ui_Id("ctrl.mode", 0, 0), 3);
-	UiRadioGroup_SetSelected(&d->mode, 0);
+	UiRadioGroup_Init(&d->mode, Ui_Id("ctrl.mode", 0, 0));
+	for (i = 0; i < 3; i++) {
+		d->modeItems[i].id = Ui_Id("ctrl.mode.item", i, 0);
+		d->modeItems[i].enabled = 1;
+	}
+	UiRadioGroup_SetItems(&d->mode, d->modeItems, 3);
+	UiRadioGroup_SetSelectedId(&d->mode, d->modeItems[0].id);
 	UiSwitch_Init(&d->sw, Ui_Id("ctrl.wifi", 0, 0), 1);
 	UiSlider_Init(&d->slider, Ui_Id("ctrl.volume", 0, 0), 0.65f);
 	UiTooltip_Init(&d->tip, Ui_Id("ctrl.tooltip", 0, 0));

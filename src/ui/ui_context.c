@@ -391,7 +391,7 @@ static int rect_intersect(UiRect a, UiRect b, UiRect *out)
 	return 1;
 }
 
-void Ui_RegisterWidget(UiContext *ctx, UiId id, UiRect rc)
+static void register_widget(UiContext *ctx, UiId id, UiRect rc, uint8_t navOnly)
 {
 	UiWidget *w;
 	if (!ctx || !id || rc.w <= 0.0f || rc.h <= 0.0f) return;
@@ -410,11 +410,22 @@ void Ui_RegisterWidget(UiContext *ctx, UiId id, UiRect rc)
 	w->z = ctx->z;
 	w->cursor = UI_CURSOR_ARROW;
 	w->pressPoll = 0;
+	w->navOnly = navOnly;
 	w->hoverFn = NULL;
 	w->hoverUser = NULL;
 	w->clickFn = NULL;
 	w->clickUser = NULL;
 	w->scope = ctx->inputScope;
+}
+
+void Ui_RegisterWidget(UiContext *ctx, UiId id, UiRect rc)
+{
+	register_widget(ctx, id, rc, 0);
+}
+
+void Ui_RegisterNavTarget(UiContext *ctx, UiId id, UiRect rc)
+{
+	register_widget(ctx, id, rc, 1);
 }
 
 int Ui_WidgetRect(UiContext *ctx, UiId id, UiRect *out)
@@ -449,6 +460,7 @@ static int widget_at(const UiContext *ctx, float x, float y)
 	if (!ctx) return -1;
 	for (int i = ctx->widgetCount - 1; i >= 0; i--) {
 		const UiWidget *w = &ctx->widgets[i];
+		if (w->navOnly) continue;
 		if (ctx->inputOwner && w->scope != ctx->inputOwner) continue;
 		if (ctx->popupOpen && w->layer != UI_LAYER_OVERLAY) continue;
 		if (!Ui_RectContains(w->rect, x, y)) continue;

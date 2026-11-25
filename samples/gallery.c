@@ -195,6 +195,7 @@ typedef struct Gallery {
 
 	/* Radio */
 	struct {
+		UiRadio rgItems[3], pvItems[3];
 		UiRadioGroup rg, pv;
 		UiCheckbox dis1, dis2;
 	} radio;
@@ -2299,12 +2300,49 @@ static const char *const kModeLabels[3] = {
 	"标准模式", "节能模式", "高性能模式"
 };
 
+static void radio_draw_items(UiRadioGroup *group, UiRadio *items,
+	UiContext *ui, UiRect rc)
+{
+	int i;
+	for (i = 0; i < group->count; i++) {
+		Ui_Radio(&items[i], group, ui,
+			Ui_Rect(rc.x, rc.y + (float)i * 28.0f, rc.w, 28.0f),
+			kModeLabels[i]);
+	}
+}
+
+static const char *radio_selected_label(const UiRadioGroup *group,
+	const UiRadio *items)
+{
+	UiId selected = UiRadioGroup_SelectedId(group);
+	int i;
+	for (i = 0; i < group->count; i++)
+		if (items[i].id == selected) return kModeLabels[i];
+	return "";
+}
+
+static void radio_take_changed(Gallery *g, UiRadioGroup *group,
+	const UiRadio *items)
+{
+	if (UiRadioGroup_TakeChanged(group))
+		set_status(g, radio_selected_label(group, items));
+}
+
 static void radio_init(Gallery *g)
 {
-	UiRadioGroup_Init(&g->radio.rg, Ui_Id("gl.rg", 0, 0), 3);
-	UiRadioGroup_SetSelected(&g->radio.rg, 0);
-	UiRadioGroup_Init(&g->radio.pv, Ui_Id("gl.rg.pv", 0, 0), 3);
-	UiRadioGroup_SetSelected(&g->radio.pv, 1);
+	int i;
+	for (i = 0; i < 3; i++) {
+		g->radio.rgItems[i].id = Ui_Id("gl.rg.item", i, 0);
+		g->radio.rgItems[i].enabled = 1;
+		g->radio.pvItems[i].id = Ui_Id("gl.rg.pv.item", i, 0);
+		g->radio.pvItems[i].enabled = 1;
+	}
+	UiRadioGroup_Init(&g->radio.rg, Ui_Id("gl.rg", 0, 0));
+	UiRadioGroup_SetItems(&g->radio.rg, g->radio.rgItems, 3);
+	UiRadioGroup_SetSelectedId(&g->radio.rg, g->radio.rgItems[0].id);
+	UiRadioGroup_Init(&g->radio.pv, Ui_Id("gl.rg.pv", 0, 0));
+	UiRadioGroup_SetItems(&g->radio.pv, g->radio.pvItems, 3);
+	UiRadioGroup_SetSelectedId(&g->radio.pv, g->radio.pvItems[1].id);
 	UiCheckbox_Init(&g->radio.dis1, Ui_Id("gl.rg.d1", 0, 0), 0);
 	UiCheckbox_Init(&g->radio.dis2, Ui_Id("gl.rg.d2", 0, 0), 0);
 }
@@ -2321,10 +2359,9 @@ static void radio_demo(Gallery *g, UiRect rc)
 
 	lbl(gfx, t, Ui_StackTake(&col, 18.0f), "电源模式 (互斥单选)");
 	Ui_StackSkip(&col, 6.0f);
-	if (UiRadioGroup_Draw(&g->radio.rg, ui, Ui_StackTake(&col, 92.0f),
-			kModeLabels, 28.0f, 1)) {
-		set_status(g, kModeLabels[g->radio.rg.selected]);
-	}
+	radio_draw_items(&g->radio.rg, g->radio.rgItems, ui,
+		Ui_StackTake(&col, 92.0f));
+	radio_take_changed(g, &g->radio.rg, g->radio.rgItems);
 	Ui_StackSkip(&col, 12.0f);
 	note_txt(gfx, t, Ui_StackTakeFill(&col),
 		"选项 ≤5 个且需要一眼看全时用 RadioGroup;\n"
@@ -2340,23 +2377,30 @@ static void radio_props(Gallery *g, UiRect rc)
 	Gfx *gfx = app->gfx;
 	UiRect ed, pv;
 	UiStack col;
+	int itemsChanged = 0;
 
 	/* 实时代码 */
 	{
 		snprintf(g->codeText, sizeof(g->codeText),
+			"UiRadio items[3];\n"
 			"UiRadioGroup rg;\n"
-			"UiRadioGroup_Init(&rg, Ui_Id(\"rg.x\", 0, 0), 0);\n"
-			"UiRadioGroup_SetDisabledMask(&rg, 0x%X);\n"
-			"\n"
-			"if (UiRadioGroup_Draw(&rg, ui, rc, kLabels,\n"
-			"        28.0f, 1)) {\n"
-			"    /* changed: selected 已更新 */\n"
-			"    mode = rg.selected;\n"
-			"}\n",
-			(unsigned)((g->radio.dis1.checked ? 1u << 1 : 0u) |
-				(g->radio.dis2.checked ? 1u << 2 : 0u)));
+			"UiRadioGroup_Init(&rg, Ui_Id(\"rg.x\", 0, 0));\n"
+			"items[0].id = Ui_Id(\"rg.x.0\", 0, 0);\n"
+			"items[1].id = Ui_Id(\"rg.x.1\", 0, 0);\n"
+			"items[2].id = Ui_Id(\"rg.x.2\", 0, 0);\n"
+			"items[0].enabled = 1;\n"
+			"items[1].enabled = %d;\n"
+			"items[2].enabled = %d;\n"
+			"UiRadioGroup_SetItems(&rg, items, 3);\n"
+			"UiRadioGroup_SetSelectedId(&rg, items[0].id);\n"
+			"Ui_Radio(&items[0], &rg, ui, row0, labels[0]);\n"
+			"Ui_Radio(&items[1], &rg, ui, row1, labels[1]);\n"
+			"Ui_Radio(&items[2], &rg, ui, row2, labels[2]);\n"
+			"if (UiRadioGroup_TakeChanged(&rg))\n"
+			"    mode = UiRadioGroup_SelectedId(&rg);\n",
+			g->radio.dis1.checked ? 0 : 1,
+			g->radio.dis2.checked ? 0 : 1);
 	}
-	unsigned dis;
 
 	props_split(g, ui, rc, &ed, &pv);
 	Ui_StackBeginPad(&col, pane_in(ed, 16.0f), UI_COLUMN, 0.0f,
@@ -2364,32 +2408,43 @@ static void radio_props(Gallery *g, UiRect rc)
 
 	if (Ui_Checkbox(&g->radio.dis1, ui, Ui_StackTake(&col, 26.0f),
 			"禁用第 2 项 (节能模式)", 1))
-		;
+		itemsChanged = 1;
 	Ui_StackSkip(&col, 6.0f);
-	Ui_Checkbox(&g->radio.dis2, ui, Ui_StackTake(&col, 26.0f),
-		"禁用第 3 项 (高性能模式)", 1);
+	if (Ui_Checkbox(&g->radio.dis2, ui, Ui_StackTake(&col, 26.0f),
+			"禁用第 3 项 (高性能模式)", 1))
+		itemsChanged = 1;
 	Ui_StackSkip(&col, 10.0f);
 
-	dis = (unsigned)((g->radio.dis1.checked ? 1u << 1 : 0u) |
-		(g->radio.dis2.checked ? 1u << 2 : 0u));
-	UiRadioGroup_SetDisabledMask(&g->radio.pv, dis);
+	if (itemsChanged) {
+		g->radio.pvItems[1].enabled = !g->radio.dis1.checked;
+		g->radio.pvItems[2].enabled = !g->radio.dis2.checked;
+		UiRadioGroup_SetItems(&g->radio.pv, g->radio.pvItems, 3);
+	}
 
 	{
 		UiRect area = pane_in(pv, 20.0f);
 		small_txt(gfx, t, Ui_Rect(area.x, area.y, area.w, 20.0f),
 			"实时预览 (可点击切换)");
-		UiRadioGroup_Draw(&g->radio.pv, ui,
-			Ui_Rect(area.x, area.y + 30.0f, area.w, 92.0f),
-			kModeLabels, 28.0f, 1);
-		if (g->radio.pv.changed)
-			set_status(g, kModeLabels[g->radio.pv.selected]);
+		radio_draw_items(&g->radio.pv, g->radio.pvItems, ui,
+			Ui_Rect(area.x, area.y + 30.0f, area.w, 92.0f));
+		radio_take_changed(g, &g->radio.pv, g->radio.pvItems);
 	}
 }
 
 static int radio_key(Gallery *g, UINT vk)
 {
-	if (g->app->ui.navId == g->radio.rg.id)
-		return UiRadioGroup_Key(&g->radio.rg, &g->app->ui, vk);
+	if (g->app->ui.navId == g->radio.rg.id &&
+		UiRadioGroup_Key(&g->radio.rg, &g->app->ui, vk)) {
+		radio_take_changed(g, &g->radio.rg, g->radio.rgItems);
+		UiApp_Invalidate(g->app);
+		return 1;
+	}
+	if (g->app->ui.navId == g->radio.pv.id &&
+		UiRadioGroup_Key(&g->radio.pv, &g->app->ui, vk)) {
+		radio_take_changed(g, &g->radio.pv, g->radio.pvItems);
+		UiApp_Invalidate(g->app);
+		return 1;
+	}
 	return 0;
 }
 
@@ -8537,7 +8592,7 @@ static const GalleryPage kPages[PG_COUNT] = {
 		checks_init, checks_demo, checks_props, checks_key, checks_chr,
 		checks_ime, checks_blink, checks_mouse, NULL, NULL, NULL },
 	/* PG_RADIO */
-	{ "RadioGroup", "RadioGroup 单选组", "互斥选项 · 禁用位图 · 键盘",
+	{ "RadioGroup", "RadioGroup 单选组", "互斥选项 · 禁用项 · 键盘",
 		radio_init, radio_demo, radio_props, radio_key, NULL, NULL,
 		NULL, NULL, NULL, NULL, NULL },
 	/* PG_SWITCH */

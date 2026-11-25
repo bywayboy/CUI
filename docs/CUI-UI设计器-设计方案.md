@@ -5,33 +5,45 @@
 
 ## 1. 文件模型
 
-- `.cui` 是唯一设计工程文件（UTF-8 JSON，`format: "cui-design"`, `version: 1`）。
+- `.cui` 是唯一设计工程文件（UTF-8 JSON，`format: "cui-design"`, `version: 4`）。
 - 打开/另存只过滤 `*.cui`；生成出来的 `.ui.c/.ui.h` 不是设计文件。
-- 一个 `.cui` 可包含多个窗口和虚拟 Dialog。
+- 一个 `.cui` 可包含多个视图与宿主（Window / 虚拟 Dialog / 可嵌入 Panel）。
 - **生成组**是代码生成单元：
   - 单成员组 = 单独输出；
-  - 多成员组 = 多个窗口/Dialog 输出到同一对 `.ui.c/.ui.h`；
-  - 一个窗口/Dialog 只属于一个组。
+  - 多成员组 = 多个宿主输出到同一对 `.ui.c/.ui.h`；
+  - 一个宿主只属于一个组。
 
 顶层结构：
 
 ```json
 {
   "format": "cui-design",
-  "version": 1,
+  "version": 4,
   "name": "project",
   "groups": [
     { "id": "main", "name": "主分组",
       "outputC": "main.ui.c", "outputH": "main.ui.h",
       "symbolPrefix": "Main" }
   ],
-  "windows": [
-    { "id": "main", "kind": 0, "group": "main", "root": { } }
+  "views": [
+    { "id": "main", "name": "主视图", "width": 800, "height": 540,
+      "group": "main", "root": { } }
+  ],
+  "radioGroups": [
+    { "uid": 1, "owner": 0, "id": "radio", "name": "单选组",
+      "enabled": 1, "selectedRadioId": "radio1", "onChange": "on_radio" }
+  ],
+  "hosts": [
+    { "id": "main", "name": "主窗口", "title": "主窗口", "kind": 0,
+      "group": "main", "width": 800, "height": 540,
+      "minWidth": 320, "minHeight": 240, "theme": 0, "view": "main" }
   ]
 }
 ```
 
-`kind`: `0 = Native Window`，`1 = Virtual Dialog`。
+`hosts.kind`: `0 = Window`、`1 = 虚拟 Dialog`、`2 = 可嵌入 Panel`。
+`radioGroups` 是文档级元数据，不占节点槽；Radio 通过 `radioGroupUid` 归属，
+布局只认 Radio 的真实父容器。
 
 ## 2. 布局
 
@@ -79,8 +91,9 @@ UiDesign_DrawOverlay(&inst);
 ```
 
 支持的控件：`Panel / Absolute / Column / Row / Grid / Label / Button /
-Input / Checkbox / Switch / Slider / Progress / Select / RadioGroup / Image /
+Input / Checkbox / Switch / Slider / Progress / Select / Radio / Image /
 Separator / Tabs / TextArea / DatePicker / ColorSelect / QrCode / RingProgress`。
+RadioGroup 不是控件节点，只作为文档级元数据存在。
 复杂组件后续按同一注册表扩展。
 
 ## 4. 生成代码
@@ -154,6 +167,14 @@ if (Main_dialog1_DialogOpen(&gInst, ownerId))
   - 多选时显示对齐/分布操作条：左/水平/右/上/垂直/下、横向/纵向分布；
   - 属性分节可折叠：基本 / 布局 / 尺寸与位置 / 内容 / 事件 / 输出，
     内容超出可滚动；`Shift+拖动` 数值属性快速调整；
+  - Select 的 Options 使用不限长多行编辑器；模型、JSON、运行时解析与代码生成
+    均按实际长度动态存储，不设固定项数或标签长度上限；
+  - RadioGroup 是文档级元数据，不是布局节点；组只管理互斥、稳定选中项 ID
+    （`selectedRadioId`）、焦点和 OnChange；
+  - Radio 是真实布局父容器的直接子项，支持 Column/Row/Grid/Absolute 自由排布；
+    设计器树以虚拟行聚合连续成员，组选中轮廓为成员矩形并集，不参与运行时命中；
+  - 所有设计数据字符串均为堆分配并深拷贝；Grid 列轨道、Tabs 页面、选择集、
+    树行命中与生成预览列表按实际数量扩容。属性摘要可省略显示，但编辑始终使用完整值；
   - 属性页顶部是布局约束组：宽/高模式（固定/自动/填充/伸展）、
     对齐（起点/居中/末端）、容器方向（列/行/Grid/自由）；
   - 组件表只列当前窗口可达节点，删除后的节点不再出现。

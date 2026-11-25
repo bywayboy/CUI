@@ -408,6 +408,8 @@ void UiDatePicker_Shutdown(UiDatePicker *dp)
 		UiIme_SetFocus(dp->ime, NULL);
 	Edit_Shutdown(&dp->edit[0]);
 	Edit_Shutdown(&dp->edit[1]);
+	HeapFree(GetProcessHeap(), 0, dp->placeholder);
+	dp->placeholder = NULL;
 }
 
 void UiDatePicker_SetMode(UiDatePicker *dp, int mode)
@@ -482,8 +484,21 @@ void UiDatePicker_SetShowSeconds(UiDatePicker *dp, int on)
 
 void UiDatePicker_SetPlaceholder(UiDatePicker *dp, const char *text)
 {
+	int len;
+	wchar_t *next;
 	if (!dp) return;
-	lstrcpynA(dp->placeholder, text ? text : "", (int)sizeof(dp->placeholder));
+	if (!text || !text[0]) {
+		HeapFree(GetProcessHeap(), 0, dp->placeholder);
+		dp->placeholder = NULL;
+		return;
+	}
+	len = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0);
+	if (len <= 0) return;
+	next = (wchar_t *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)len * sizeof(*next));
+	if (!next) return;
+	MultiByteToWideChar(CP_UTF8, 0, text, -1, next, len);
+	HeapFree(GetProcessHeap(), 0, dp->placeholder);
+	dp->placeholder = next;
 }
 
 void UiDatePicker_AttachIme(UiDatePicker *dp, UiIme *ime)
@@ -501,8 +516,8 @@ int Ui_DatePicker(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui,
 	UiColor bg, border;
 	UiRect glyphRc, segRc[2];
 	float availW, segW, hv, manual;
-	int open, focus, i, nseg;
-	const char *ph;
+	int open, focus, i, nseg, freePh = 0;
+	const wchar_t *ph;
 	UiIcon cal;
 
 	if (!dp || !ui || !ui->theme || !ui->gfx) return 0;
@@ -557,18 +572,27 @@ int Ui_DatePicker(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui,
 	if (nseg == 2)
 		segRc[1] = Ui_Rect(segRc[0].x + segW + DP_ARROW_W, rc.y, segW, rc.h);
 
-	ph = (placeholder && placeholder[0]) ? placeholder : dp->placeholder;
+	ph = NULL;
+	if (placeholder && placeholder[0]) {
+		int len = MultiByteToWideChar(CP_UTF8, 0, placeholder, -1, NULL, 0);
+		if (len > 0) {
+			ph = (wchar_t *)HeapAlloc(GetProcessHeap(), 0,
+				(SIZE_T)len * sizeof(*ph));
+			if (ph) {
+				MultiByteToWideChar(CP_UTF8, 0, placeholder, -1,
+					(wchar_t *)ph, len);
+				freePh = 1;
+			}
+		}
+	} else {
+		ph = dp->placeholder;
+	}
 	for (i = 0; i < nseg; i++) {
 		UiId eid = dp_child(dp->id, "ui.dp.edit", i);
 		const wchar_t *hint = (i == 1) ? L"结束" : NULL;
-		wchar_t ph8[96];
 		dp->edit[i].focused = (dp->editActive == i) && enabled;
 		dp->edit[i].caretOn = dp->blinkOn;
-		if (i == 0 && ph && ph[0]) {
-			/* placeholder 是 UTF-8; Edit_Draw 需要 UTF-16 hint */
-			MultiByteToWideChar(CP_UTF8, 0, ph, -1, ph8, 96);
-			hint = ph8;
-		}
+		if (i == 0 && ph && ph[0]) hint = ph;
 		Edit_Draw(ui, eid, segRc[i], &dp->edit[i], hint);
 		if (enabled && ui->clicked == eid) {
 			dp_focus_edit(dp, ui, i);
@@ -577,6 +601,7 @@ int Ui_DatePicker(UiDatePicker *dp, UiPopupManager *pm, UiContext *ui,
 			dp_invalidate_trigger(dp, ui);
 		}
 	}
+	if (freePh) HeapFree(GetProcessHeap(), 0, (void *)ph);
 	if (nseg == 2) {
 		Gfx_Text(ui->gfx, t->fBody, "\xE2\x86\x92",
 			Ui_Rect(segRc[0].x + segW, rc.y, DP_ARROW_W, rc.h),

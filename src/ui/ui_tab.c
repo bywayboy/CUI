@@ -238,6 +238,16 @@ int UiTabBar_Key(UiTabBar *tb, UiContext *ui, UINT vk)
 	return 0;
 }
 
+void UiTabBarGeometry_Free(UiTabBarGeometry *geo)
+{
+	if (!geo) return;
+	HeapFree(GetProcessHeap(), 0, geo->items);
+	HeapFree(GetProcessHeap(), 0, geo->textW);
+	geo->items = NULL;
+	geo->textW = NULL;
+	geo->count = geo->capacity = 0;
+}
+
 int UiTabBar_Measure(UiContext *ui, UiRect rc, const char *const *labels,
 	const UiIcon *icons, const UiTabStyle *style, int count,
 	UiTabBarGeometry *geo)
@@ -248,7 +258,20 @@ int UiTabBar_Measure(UiContext *ui, UiRect rc, const char *const *labels,
 
 	if (!ui || !ui->theme || !ui->gfx || !labels || !geo || count <= 0) return 0;
 	if (rc.w <= 0.0f || rc.h <= 0.0f) return 0;
-	if (count > UI_TAB_GEOM_MAX) count = UI_TAB_GEOM_MAX;
+	geo->count = 0;
+	if (count > geo->capacity) {
+		UiRect *items;
+		float *textW;
+		items = (UiRect *)HeapReAlloc(GetProcessHeap(), 0, geo->items,
+			(SIZE_T)count * sizeof(*items));
+		if (!items) return 0;
+		geo->items = items;
+		textW = (float *)HeapReAlloc(GetProcessHeap(), 0, geo->textW,
+			(SIZE_T)count * sizeof(*textW));
+		if (!textW) return 0;
+		geo->textW = textW;
+		geo->capacity = count;
+	}
 	stl = style ? *style : UiTabStyle_Line();
 	variant = stl.variant == UI_TAB_PILL ? UI_TAB_PILL :
 		(stl.variant == UI_TAB_CARD ? UI_TAB_CARD : UI_TAB_LINE);
@@ -299,7 +322,7 @@ int UiTabBar_DrawEx(UiTabBar *tb, UiContext *ui, UiRect rc,
 	UiTabStyle stl;
 	UiTheme *t;
 	Gfx *g;
-	UiTabBarGeometry geo;
+	UiTabBarGeometry geo = { 0 };
 	UiRect header;
 	float radius, itemRadius, indicatorW;
 	int variant, showDivider;
@@ -521,6 +544,7 @@ int UiTabBar_DrawEx(UiTabBar *tb, UiContext *ui, UiRect rc,
 
 	Ui_PopClipRect(ui);
 	Gfx_PopClip(g);
+	UiTabBarGeometry_Free(&geo);
 	return clicked;
 }
 

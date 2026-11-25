@@ -2434,7 +2434,7 @@ UiCheckboxGroup_Draw(&feats, &ui, rc, labels, 28.0f, 1);
   indeterminate→checked 时横线淡出、对勾淡入，底色保持。
 - **indeterminate 优先于 checked**：两者同时为 1 时只画横线（对勾目标值按
   `checked && !indeterminate`），避免初始“部分应用”状态出现对勾与横线重叠。
-- Group 用 mask（最多 32 项），行高由 `rowH` 指定；键盘方向键/Home/End 移焦点，
+- CheckboxGroup 用 mask（最多 32 项），行高由 `rowH` 指定；键盘方向键/Home/End 移焦点，
   Space/Enter 切换。
 - Group 的绘制和命中裁剪到 rc；超出 rc 的行不画、不命中。绘制裁剪左右各
   放宽 1 DIP：复选框描边中心正好在 `rc.x` 上，严格按 rc 裁剪会切掉左半像素
@@ -2446,14 +2446,28 @@ UiCheckboxGroup_Draw(&feats, &ui, rc, labels, 28.0f, 1);
 #### 8.15.2 RadioGroup
 
 ```c
-UiRadioGroup mode;
-UiRadioGroup_Init(&mode, Ui_Id("form.mode", 0, 0), 3);
-UiRadioGroup_Draw(&mode, &ui, rc, labels, 28.0f, 1);
+static UiRadioGroup mode;
+static UiRadio items[] = {
+    { Ui_Id("mode.standard", 0, 0), 1 },
+    { Ui_Id("mode.compact", 0, 0), 1 },
+    { Ui_Id("mode.custom", 0, 0), 1 }
+};
+static const char *labels[] = { "标准", "紧凑", "自定义" };
+
+UiRadioGroup_Init(&mode, Ui_Id("form.mode", 0, 0));
+UiRadioGroup_SetItems(&mode, items, 3);
+UiRadioGroup_SetSelectedId(&mode, items[0].id);
+for (int i = 0; i < 3; i++)
+    Ui_Radio(&items[i], &mode, &ui, rows[i], labels[i]);
+if (UiRadioGroup_TakeChanged(&mode))
+    apply_mode(UiRadioGroup_SelectedId(&mode));
+if (UiRadioGroup_Key(&mode, &ui, vk)) { /* handled */ }
 ```
 
-- selected/focus/disabledMask 由应用持有的 manager 管理；点击或 Space 选择；
-- 圆形选中点、hover 边框与 Checkbox 使用同一套主题色；换项时旧圆点淡出、
-  新圆点淡入（每行独立 `UI_AN_USER` 通道）。
+- RadioGroup 是透明语义容器：只管互斥、稳定选项 ID、焦点和 changed；不计算行矩形、不裁剪、不占布局槽。
+- 每个 Radio 的矩形由调用方或 Column/Row/Grid/Absolute 布局决定；Group 数组只是当前帧的语义成员表。
+- 一个 Group 是一个 Tab stop；方向键/Home/End 移动焦点，Space/Enter 选择，禁用项自动跳过。
+- 换项时旧圆点淡出、新圆点淡入，DComp 只补间旧/新 Radio ID；重复选择当前项不产生 changed。
 
 #### 8.15.3 Switch / Slider
 
@@ -2507,8 +2521,9 @@ Ui_IconButton(ui, targetId, rc, &icon, &style, 1);
 
 #### 8.15.5 边界
 
-- CheckboxGroup/RadioGroup 是固定行高，不做内部滚动；需要长列表时外层用
-  ScrollView 或后续提供虚拟 provider。
+- CheckboxGroup 是固定行高，不做内部滚动；需要长列表时外层用
+  ScrollView 或后续提供虚拟 provider。RadioGroup 不拥有行几何；Radio 可由
+  外层布局或 ScrollView 自由排列。
 - 弹层交互（点击外部/Esc 关闭、焦点回归、单弹层）已在 8.16 的
   `UiPopupManager` 中实现；Select/Menu 见下一节。菜单暂不支持子菜单。
 - Tooltip 无淡入淡出；Checkbox/Radio 已有勾选/选中淡入淡出，但无缩放/描边宽度过渡。
@@ -4440,9 +4455,12 @@ README 第 10 节给出了路线。核心步骤：
 30. **ButtonGroup 状态在应用侧**：selected/mask/focus 由应用持有的
     `UiButtonGroup` 保存；MULTI 最多 32 项。键盘事件返回 1 后要立即读取
     `group.clicked`，下一帧 Draw 会清空本帧事件。
-31. **Radio 不是独立叶子控件**：CUI 提供 `UiRadioGroup`，单选行由组持有
-    labels/selected/focus；设计器同样以 RadioGroup 节点接入，用逗号分隔选项，
-    最多 8 项，鼠标或键盘选择会同步回文档并触发 OnChange。
+31. **Radio 是独立布局项，RadioGroup 是文档级元数据**：CUI 提供独立
+    `UiRadio` 与无几何 `UiRadioGroup`；设计器中单选组不生成节点，只保存组
+    ID/名称/所属视图/`selectedRadioId`/OnChange 等元数据。组只管互斥、稳定
+    选中项 ID、焦点和 OnChange；Radio 作为真实布局父容器的直接子项排布，
+    支持任意项数与稳定重排身份。设计器树以虚拟行聚合成员，组轮廓只是成员
+    矩形并集，不参与运行时命中、裁剪或动画。
 32. **ScrollView 只做纵向**：v1 不提供水平/双轴自由滚动；圆角视口按矩形裁剪，
     嵌套滚动不向上传递。内容尺寸必须由应用的 measure/layout 提供，库不会
     遍历控件树自动发现高度。
@@ -4454,6 +4472,9 @@ README 第 10 节给出了路线。核心步骤：
 35. **TabPager 转场期间页面输入整体锁定**（约 260ms），header 仍可操作；
     页面内控件在转场前/后正常。若需要“新页先可点”，要重新设计命中矩形
     随位移变化的注册方式。
+36. **设计器数据不设固定容量**：`.cui` 模型字符串由堆分配并深拷贝，Options、
+    Grid 列轨道/布局数组、Tabs 页面与标签几何按实际规模扩容；代码生成路径、
+    符号和预览文件名同样动态分配。属性栏可省略显示长文本，但编辑值保持完整。
 
 ---
 
@@ -4657,7 +4678,7 @@ Ui_IconButton
 ```c
 UiCheckbox_Init / Ui_Checkbox / UiCheckbox_Key
 UiCheckboxGroup_Init / SetMask / SetDisabledMask / Draw / Key
-UiRadioGroup_Init / SetSelected / SetDisabledMask / Draw / Key
+UiRadioGroup_Init / SetItems / SetSelectedId / SelectedId / TakeChanged / Key / Ui_Radio
 UiSwitch_Init / Ui_Switch / UiSwitch_Key
 UiSlider_Init / SetValue / Ui_Slider / UiSlider_Key
 UiPopup_Place

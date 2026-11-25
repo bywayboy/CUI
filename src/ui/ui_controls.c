@@ -350,30 +350,76 @@ int UiCheckboxGroup_Key(UiCheckboxGroup *g, UiContext *ui, UINT vk)
 
 /* ── RadioGroup ────────────────────────────────────────────────────── */
 
-void UiRadioGroup_Init(UiRadioGroup *g, UiId id, int count)
+static int radio_index(const UiRadioGroup *g, UiId id)
+{
+	int i;
+	if (!g || !g->items || !id) return -1;
+	for (i = 0; i < g->count; i++)
+		if (g->items[i].id == id) return i;
+	return -1;
+}
+
+static int radio_first_enabled(const UiRadioGroup *g)
+{
+	int i;
+	if (!g || !g->items) return -1;
+	for (i = 0; i < g->count; i++)
+		if (g->items[i].enabled) return i;
+	return -1;
+}
+
+static int radio_focus_valid(const UiRadioGroup *g)
+{
+	int i = radio_index(g, g->focusId);
+	return i >= 0 && g->items[i].enabled;
+}
+
+static void radio_normalize_focus(UiRadioGroup *g)
+{
+	int i;
+	if (radio_focus_valid(g)) return;
+	i = radio_index(g, g->selectedId);
+	if (i < 0 || !g->items[i].enabled) i = radio_first_enabled(g);
+	g->focusId = i >= 0 ? g->items[i].id : 0;
+}
+
+void UiRadioGroup_Init(UiRadioGroup *g, UiId id)
 {
 	if (!g) return;
 	ZeroMemory(g, sizeof(*g));
 	g->id = id;
-	g->count = count > 0 ? count : 0;
-	g->selected = g->count > 0 ? 0 : -1;
-	g->focus = g->selected;
 }
 
-void UiRadioGroup_SetSelected(UiRadioGroup *g, int index)
+void UiRadioGroup_SetItems(UiRadioGroup *g, const UiRadio *items, int count)
 {
 	if (!g) return;
-	if (index < 0) index = -1;
-	if (index >= g->count) index = g->count - 1;
-	g->selected = index;
-	if (index >= 0) g->focus = index;
+	g->items = items;
+	g->count = items && count > 0 ? count : 0;
+	radio_normalize_focus(g);
 }
 
-void UiRadioGroup_SetDisabledMask(UiRadioGroup *g, unsigned mask)
+void UiRadioGroup_SetSelectedId(UiRadioGroup *g, UiId id)
 {
+	int i;
 	if (!g) return;
-	if (g->count < 32) mask &= (1u << g->count) - 1u;
-	g->disabledMask = mask;
+	g->selectedId = id;
+	i = radio_index(g, id);
+	g->focusId = i >= 0 && g->items[i].enabled ? id : 0;
+	radio_normalize_focus(g);
+}
+
+UiId UiRadioGroup_SelectedId(const UiRadioGroup *g)
+{
+	return g ? g->selectedId : 0;
+}
+
+int UiRadioGroup_TakeChanged(UiRadioGroup *g)
+{
+	int changed;
+	if (!g) return 0;
+	changed = g->changed;
+	g->changed = 0;
+	return changed;
 }
 
 static int radio_find(const UiRadioGroup *g, int from, int dir)
@@ -382,122 +428,119 @@ static int radio_find(const UiRadioGroup *g, int from, int dir)
 	for (i = 0; i < g->count; i++) {
 		int idx = (from + dir * i) % g->count;
 		if (idx < 0) idx += g->count;
-		if (ctrl_item_enabled(&g->disabledMask, idx, 1)) return idx;
+		if (g->items[idx].enabled) return idx;
 	}
 	return -1;
+}
+
+static int radio_select(UiRadioGroup *g, UiContext *ui, int index)
+{
+	UiId old;
+	if (!g || !ui || !g->items || index < 0 || index >= g->count ||
+		!g->items[index].enabled) return 0;
+	g->focusId = g->items[index].id;
+	ui->navId = g->id;
+	ui->navFocusVisible = 1;
+	if (g->selectedId == g->focusId) return 0;
+	old = g->selectedId;
+	g->selectedId = g->focusId;
+	g->changed = 1;
+	if (old) Ui_FxChange(ui, old, Ui_AnimFxMs(UI_AN_USER));
+	Ui_FxChange(ui, g->selectedId, Ui_AnimFxMs(UI_AN_USER));
+	return 1;
 }
 
 static void radio_click_cb(void *user, UiContext *ui, UiId id)
 {
 	UiRadioGroup *g = (UiRadioGroup *)user;
 	int i;
-	if (!g || !ui) return;
+	if (!g || !ui || !g->items) return;
 	for (i = 0; i < g->count; i++) {
-		UiId rowId = ctrl_child(g->id, "ui.ctrl.rad", i);
-		if (rowId != id) continue;
-		if (!ctrl_item_enabled(&g->disabledMask, i, 1)) return;
-		if (g->selected == i) {
-			g->focus = i;
-			ui->navId = g->id;
-			return;
-		}
-		{
-			int old = g->selected;
-			g->selected = i;
-			g->focus = i;
-			ui->navId = g->id;
-			g->changed = 1;
-			Ui_FxChange(ui, rowId, Ui_AnimFxMs(UI_AN_USER));
-			if (old >= 0)
-				Ui_FxChange(ui, ctrl_child(g->id, "ui.ctrl.rad",
-					old), Ui_AnimFxMs(UI_AN_USER));
-		}
+		if (g->items[i].id != id) continue;
+		radio_select(g, ui, i);
 		return;
 	}
 }
 
-int UiRadioGroup_Draw(UiRadioGroup *g, UiContext *ui, UiRect rc,
-	const char *const *labels, float rowH, int enabled)
+void Ui_Radio(UiRadio *item, UiRadioGroup *g, UiContext *ui, UiRect rc,
+	const char *label)
 {
 	UiTheme *t;
-	int i, hitClip, changed;
-	if (!g || !ui || !ui->theme || !ui->gfx || !labels || g->count <= 0) return 0;
-	if (rc.w <= 0.0f || rc.h <= 0.0f) return 0;
+	UiWidgetState st;
+	UiRect dot;
+	UiColor col;
+	float onT;
+	int enabled, focus;
+	if (!item || !g || !ui || !ui->theme || !ui->gfx ||
+		rc.w <= 0.0f || rc.h <= 0.0f) return;
 	t = ui->theme;
-	changed = g->changed;
-	g->changed = 0;
-	if (rowH <= 0.0f) rowH = 28.0f;
-	/* 同 CheckboxGroup: 放宽绘制裁剪, 保住左边描边/AA. */
-	Gfx_PushClip(ui->gfx,
-		Ui_Rect(rc.x - 1.0f, rc.y, rc.w + 2.0f, rc.h));
-	hitClip = Ui_PushClipRect(ui, rc);
-	for (i = 0; i < g->count; i++) {
-		UiRect row = Ui_Rect(rc.x, rc.y + (float)i * rowH, rc.w, rowH);
-		UiId id = ctrl_child(g->id, "ui.ctrl.rad", i);
-		UiWidgetState st;
-		int en = ctrl_item_enabled(&g->disabledMask, i, enabled);
-		UiRect dot = Ui_Rect(row.x, row.y + (row.h - 18.0f) * 0.5f, 18, 18);
-		UiColor col;
-		float onT;
-		int focus;
-		if (row.y >= rc.y + rc.h) break;
-		st = Ui_State(ui, id, row, en);
-		if (en) Ui_SetClickFn(ui, id, radio_click_cb, g);
-		onT = ctrl_state_t(ui, id, UI_AN_USER, g->selected == i);
-		if (st.hover > 0.004f && en)
-			Gfx_FillRoundRect(ui->gfx, Ui_RectInset(row, 2.0f), 6.0f,
-				Ui_ColorAlpha(t->primary.base, (int)(st.hover * 16.0f)));
-		focus = ui->navFocusVisible && ui->navId == g->id && g->focus == i;
-		ctrl_focus_bg(ui, row, focus);
-		draw_radio_dot(ui, dot, g->selected == i, en, st.hover, focus, onT);
-		col = en ? t->text2 : t->btnDisabledText;
-		if (en && st.hover > 0.004f) col = Ui_ColorMix(col, t->text, st.hover);
-		Gfx_Text(ui->gfx, t->fBody, labels[i],
-			Ui_Rect(dot.x + 26.0f, row.y, row.w - 26.0f, row.h), col,
+	enabled = item->enabled != 0;
+	st = Ui_State(ui, item->id, rc, enabled);
+	if (enabled) {
+		/* 一个组只有一个 Tab 停靠点: 首个启用项的矩形. */
+		if (radio_index(g, item->id) == radio_first_enabled(g))
+			Ui_RegisterNavTarget(ui, g->id, rc);
+		Ui_SetClickFn(ui, item->id, radio_click_cb, g);
+	}
+	onT = ctrl_state_t(ui, item->id, UI_AN_USER,
+		g->selectedId == item->id);
+	if (st.hover > 0.004f && enabled)
+		Gfx_FillRoundRect(ui->gfx, Ui_RectInset(rc, 2.0f), 6.0f,
+			Ui_ColorAlpha(t->primary.base, (int)(st.hover * 16.0f)));
+	focus = ui->navFocusVisible && ui->navId == g->id &&
+		g->focusId == item->id;
+	ctrl_focus_bg(ui, rc, focus);
+	dot = Ui_Rect(rc.x, rc.y + (rc.h - 18.0f) * 0.5f, 18.0f, 18.0f);
+	draw_radio_dot(ui, dot, g->selectedId == item->id, enabled,
+		st.hover, focus, onT);
+	if (label && label[0]) {
+		col = enabled ? t->text2 : t->btnDisabledText;
+		if (enabled && st.hover > 0.004f)
+			col = Ui_ColorMix(col, t->text, st.hover);
+		Gfx_Text(ui->gfx, t->fBody, label,
+			Ui_Rect(dot.x + 26.0f, rc.y, rc.w - 26.0f, rc.h), col,
 			GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
 	}
-	if (hitClip) Ui_PopClipRect(ui);
-	Gfx_PopClip(ui->gfx);
-	return changed;
 }
 
 int UiRadioGroup_Key(UiRadioGroup *g, UiContext *ui, UINT vk)
 {
 	int idx;
-	if (!g || !ui || g->count <= 0 || ui->navId != g->id) return 0;
+	if (!g || !ui || !g->items || g->count <= 0 ||
+		ui->navId != g->id) return 0;
+	if (vk != VK_UP && vk != VK_LEFT && vk != VK_DOWN &&
+		vk != VK_RIGHT && vk != VK_HOME && vk != VK_END &&
+		vk != VK_SPACE && vk != VK_RETURN) return 0;
+	idx = radio_index(g, g->focusId);
+	if (idx < 0 || !g->items[idx].enabled) {
+		radio_normalize_focus(g);
+		idx = radio_index(g, g->focusId);
+	}
+	if (idx < 0) return 0;
 	ui->navFocusVisible = 1;
-	if (g->focus < 0 || g->focus >= g->count) g->focus = g->selected >= 0 ? g->selected : 0;
 	switch (vk) {
 	case VK_UP: case VK_LEFT:
-		idx = radio_find(g, (g->focus + g->count - 1) % g->count, -1);
-		if (idx >= 0) g->focus = idx;
+		idx = radio_find(g, (idx + g->count - 1) % g->count, -1);
+		if (idx >= 0) g->focusId = g->items[idx].id;
 		return 1;
 	case VK_DOWN: case VK_RIGHT:
-		idx = radio_find(g, (g->focus + 1) % g->count, 1);
-		if (idx >= 0) g->focus = idx;
+		idx = radio_find(g, (idx + 1) % g->count, 1);
+		if (idx >= 0) g->focusId = g->items[idx].id;
 		return 1;
 	case VK_HOME:
 		idx = radio_find(g, 0, 1);
-		if (idx >= 0) g->focus = idx;
+		if (idx >= 0) g->focusId = g->items[idx].id;
 		return 1;
 	case VK_END:
 		idx = radio_find(g, g->count - 1, -1);
-		if (idx >= 0) g->focus = idx;
+		if (idx >= 0) g->focusId = g->items[idx].id;
 		return 1;
 	case VK_SPACE: case VK_RETURN:
-		if (ctrl_item_enabled(&g->disabledMask, g->focus, 1)) {
-			int old = g->selected;
-			g->selected = g->focus;
-			g->changed = 1;
-			Ui_FxChange(ui, ctrl_child(g->id, "ui.ctrl.rad",
-				g->selected), Ui_AnimFxMs(UI_AN_USER));
-			if (old >= 0 && old != g->selected)
-				Ui_FxChange(ui, ctrl_child(g->id, "ui.ctrl.rad",
-					old), Ui_AnimFxMs(UI_AN_USER));
-		}
+		radio_select(g, ui, idx);
 		return 1;
+	default:
+		return 0;
 	}
-	return 0;
 }
 
 /* ── Switch ────────────────────────────────────────────────────────── */

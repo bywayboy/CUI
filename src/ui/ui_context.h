@@ -53,6 +53,7 @@ typedef struct {
 	int z;
 	uint8_t cursor;   /* UI_CURSOR_*: 命中此控件时的鼠标形状 */
 	uint8_t pressPoll; /* 1 = 按下期间指针移动需逐次重绘 (滑块/拖选等) */
+	uint8_t navOnly;  /* 1 = 仅供导航/焦点扫描, 不参与鼠标命中 */
 	UiHoverFn hoverFn; /* 非 NULL: 指针在控件上移动时调用 */
 	void *hoverUser;
 	UiClickFn clickFn; /* 非 NULL: 同一控件按下并抬起时同步调用 */
@@ -167,6 +168,7 @@ int Ui_InputAllowed(const UiContext *ctx);
 int  Ui_PushInputOwner(UiContext *ctx, UiId owner);
 void Ui_PopInputOwner(UiContext *ctx, UiId owner);
 void Ui_RegisterWidget(UiContext *ctx, UiId id, UiRect rc);
+void Ui_RegisterNavTarget(UiContext *ctx, UiId id, UiRect rc);
 UiId Ui_HitTest(const UiContext *ctx, float x, float y);
 
 /* 给本帧已注册的控件声明光标形状 (同一 ID 的多次注册一起生效, 例如

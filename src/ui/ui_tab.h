@@ -52,18 +52,18 @@ UiTabStyle UiTabStyle_Line(void);
 UiTabStyle UiTabStyle_Pill(void);
 UiTabStyle UiTabStyle_Card(void);
 
-#define UI_TAB_GEOM_MAX 32
-
-/* header 与可见 tab 项的几何. 与 DrawEx 共用同一套宽度/间距规则,
- * 设计器静态画布用它避免维护第二套公式. */
 typedef struct UiTabBarGeometry {
 	UiRect header;
 	UiRect inner;
 	int variant;
 	int count;
-	UiRect items[UI_TAB_GEOM_MAX];
-	float textW[UI_TAB_GEOM_MAX];
+	UiRect *items;
+	float *textW;
+	int capacity;
 } UiTabBarGeometry;
+
+/* 释放 Measure 分配的项几何; 可重复调用. */
+void UiTabBarGeometry_Free(UiTabBarGeometry *geo);
 
 /* 只计算几何, 不绘制、不注册命中. 返回可见项数. */
 int UiTabBar_Measure(UiContext *ui, UiRect rc, const char *const *labels,

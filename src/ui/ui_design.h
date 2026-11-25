@@ -26,17 +26,6 @@
 extern "C" {
 #endif
 
-#define UI_DN_ID_MAX    64
-#define UI_DN_NAME_MAX  64
-#define UI_DN_TEXT_MAX  1024
-#define UI_DN_PATH_MAX  260
-#define UI_DN_SYM_MAX   64
-#define UI_DN_GRID_MAX_COLS    16
-#define UI_DN_GRID_TRACKS_MAX  128
-#define UI_DN_TABS_MAX_PAGES   32
-#define UI_DN_OPTIONS_MAX      8
-#define UI_DN_OPTION_TEXT_MAX  48
-
 typedef enum {
 	UI_DN_ABSOLUTE = 0,
 	UI_DN_COLUMN,
@@ -59,7 +48,7 @@ typedef enum {
 	UI_DN_COLORSEL,
 	UI_DN_QRCODE,
 	UI_DN_RINGPROGRESS,
-	UI_DN_RADIOGROUP,
+	UI_DN_RADIO,
 	UI_DN_COUNT
 } UiDesignType;
 
@@ -97,8 +86,8 @@ typedef struct UiDesignNode {
 	int childCount, childCap;
 	int visible, locked;
 
-	char id[UI_DN_ID_MAX];
-	char name[UI_DN_NAME_MAX];
+	char *id;
+	char *name;
 
 	/* 通用尺寸/布局 */
 	int wMode, hMode;
@@ -122,26 +111,27 @@ typedef struct UiDesignNode {
 	int gridRow, gridCol, rowSpan, colSpan;
 	/* 列宽轨道: "120,1fr,auto" (px / fr 权重 / auto=列内子项设计宽);
 	 * 空 = 均分. 列数由 gridCols 决定 (0 = 取轨道数). */
-	char gridColTracks[UI_DN_GRID_TRACKS_MAX];
+	char *gridColTracks;
 
 	/* 数据 */
-	char text[UI_DN_TEXT_MAX];
-	char hint[128];
-	char options[UI_DN_TEXT_MAX];
+	char *text;
+	char *hint;
+	char *options;        /* 节点持有; UTF-8 逗号分隔 */
 	float value;
 	int checked, enabled, selected, variant;
+	unsigned radioGroupUid; /* 0 = 未分组; 仅 Radio 使用 */
 	int mode;           /* DatePicker: UiDatePickerMode */
 	int readonly;       /* TextArea */
 	unsigned color;     /* ColorSelect / QR 前景色: 0xAARRGGBB */
 	unsigned bgColor;   /* QR 背景色: 0xAARRGGBB */
 	int ecc;            /* QR 纠错等级: UiQrEcc */
-	char logoSrc[UI_DN_PATH_MAX]; /* QR 中央 Logo 图片路径 (UTF-8) */
+	char *logoSrc;      /* QR 中央 Logo 图片路径 (UTF-8) */
 	float logoRatio;    /* QR Logo 边长 / 码区边长 */
 	float qrPad;        /* QR 绘制区域到组件四边留白 (模块) */
 	float ringMax;      /* RingProgress 数值范围上限 */
 	float ringWidth;    /* RingProgress 环宽 (DIP) */
-	char onClick[UI_DN_ID_MAX];
-	char onChange[UI_DN_ID_MAX];
+	char *onClick;
+	char *onChange;
 } UiDesignNode;
 
 typedef enum {
@@ -152,8 +142,8 @@ typedef enum {
 
 /* 视图: 可复用的根容器树, 不含宿主外壳. */
 typedef struct UiDesignView {
-	char id[UI_DN_ID_MAX];
-	char name[UI_DN_NAME_MAX];
+	char *id;
+	char *name;
 	float w, h;         /* 设计尺寸 (宿主可覆盖) */
 	int group;          /* group index, -1 = 不生成 */
 	int root;           /* node index, -1 = 无 */
@@ -161,9 +151,9 @@ typedef struct UiDesignView {
 
 /* 宿主: 窗口/Dialog/Panel 外壳, 挂载一个视图. */
 typedef struct UiDesignHost {
-	char id[UI_DN_ID_MAX];
-	char name[UI_DN_NAME_MAX];
-	char title[128];
+	char *id;
+	char *name;
+	char *title;
 	int kind;           /* UiDesignHostKind */
 	int group;          /* group index, -1 = 不生成 */
 	float w, h, minW, minH;
@@ -172,24 +162,38 @@ typedef struct UiDesignHost {
 } UiDesignHost;
 
 typedef struct UiDesignGroup {
-	char id[UI_DN_ID_MAX];
-	char name[UI_DN_NAME_MAX];
-	char outputC[UI_DN_PATH_MAX];
-	char outputH[UI_DN_PATH_MAX];
-	char symbolPrefix[UI_DN_SYM_MAX];
+	char *id;
+	char *name;
+	char *outputC;
+	char *outputH;
+	char *symbolPrefix;
 } UiDesignGroup;
+
+/* RadioGroup 是元数据, 不是布局节点. Radio 用 groupUid 归属. */
+typedef struct UiDesignRadioGroup {
+	unsigned uid;
+	int owner;            /* view index */
+	char *id;
+	char *name;
+	char *selectedRadioId; /* 稳定 Radio 节点 ID */
+	char *onChange;
+	int enabled;
+} UiDesignRadioGroup;
 
 typedef struct UiDesignDoc {
 	UiDesignGroup *groups;
 	int groupCount, groupCap;
+	UiDesignRadioGroup *radioGroups;
+	int radioGroupCount, radioGroupCap;
+	unsigned nextRadioGroupUid;
 	UiDesignView *views;
 	int viewCount, viewCap;
 	UiDesignHost *hosts;
 	int hostCount, hostCap;
 	UiDesignNode *nodes;
 	int nodeCount, nodeCap;
-	char name[UI_DN_NAME_MAX];
-	char path[UI_DN_PATH_MAX];   /* 最近打开/保存的 .cui, UTF-8 */
+	char *name;
+	char *path;           /* 最近打开/保存的 .cui, UTF-8 */
 	int dirty;
 } UiDesignDoc;
 
@@ -233,15 +237,42 @@ int  UiDesign_TabsRemovePage(UiDesignDoc *doc, int tabs, int page);
 int  UiDesign_TabsMovePage(UiDesignDoc *doc, int tabs, int from, int to);
 void UiDesign_TabsNormalize(UiDesignDoc *doc, int tabs);
 
-int  UiDesign_FindNode(const UiDesignDoc *doc, int view, const char *id);
-int  UiDesign_FindView(const UiDesignDoc *doc, const char *id);
-int  UiDesign_FindHost(const UiDesignDoc *doc, const char *id);
-int  UiDesign_FindGroup(const UiDesignDoc *doc, const char *id);
+int UiDesign_FindNode(const UiDesignDoc *doc, int view, const char *id);
+int UiDesign_FindView(const UiDesignDoc *doc, const char *id);
+int UiDesign_FindHost(const UiDesignDoc *doc, const char *id);
+int UiDesign_FindGroup(const UiDesignDoc *doc, const char *id);
 
+/* RadioGroup 元数据: 独立于节点树. */
+int UiDesign_RadioGroupAdd(UiDesignDoc *doc, int view,
+	const char *id, const char *name);
+int UiDesign_RadioGroupRemove(UiDesignDoc *doc, int group);
+UiDesignRadioGroup *UiDesign_RadioGroup(UiDesignDoc *doc, int group);
+int UiDesign_RadioGroupFind(const UiDesignDoc *doc, unsigned uid);
+int UiDesign_RadioGroupForNode(const UiDesignDoc *doc, int node);
+int UiDesign_RadioGroupAssign(UiDesignDoc *doc, int node, int group);
+int UiDesign_RadioGroupNormalize(UiDesignDoc *doc, int group);
+int UiDesign_RadioGroupSelectedNode(const UiDesignDoc *doc, int group);
+int UiDesign_RadioGroupSetSelectedNode(UiDesignDoc *doc, int group, int node);
+/* 按视图树的先序返回组成员; ordinal 为 0..count-1. */
+int UiDesign_RadioGroupMemberCount(const UiDesignDoc *doc, int group);
+int UiDesign_RadioGroupMemberAt(const UiDesignDoc *doc, int group, int ordinal);
+
+int  UiDesign_SetString(char **dst, const char *src);
 void UiDesign_SetText(char *dst, int cap, const char *src);
-void UiDesign_NodeSetText(UiDesignNode *n, const char *text);
-void UiDesign_NodeSetHint(UiDesignNode *n, const char *hint);
-void UiDesign_NodeSetOptions(UiDesignNode *n, const char *options);
+int  UiDesign_NodeSetText(UiDesignNode *n, const char *text);
+int  UiDesign_NodeSetHint(UiDesignNode *n, const char *hint);
+int  UiDesign_NodeSetOptions(UiDesignNode *n, const char *options);
+
+typedef struct UiDesignOptions {
+	char *cache;
+	char *storage;
+	const char **items;
+	int count;
+	int itemCap;
+} UiDesignOptions;
+int  UiDesign_OptionCount(const char *options);
+int  UiDesign_OptionsUpdate(UiDesignOptions *opt, const char *options);
+void UiDesign_OptionsFree(UiDesignOptions *opt);
 
 /* 新建默认工程 / 默认节点尺寸 */
 int  UiDesign_DefaultDoc(UiDesignDoc *doc);
@@ -249,6 +280,9 @@ const char *UiDesign_TypeName(int type);
 float UiDesign_DefaultW(int type);
 float UiDesign_DefaultH(int type);
 int  UiDesign_IsContainer(int type);
+int  UiDesign_IsLayoutContainer(int type);
+int  UiDesign_CanParent(int parentType, int childType);
+int  UiDesign_LayoutParent(const UiDesignDoc *doc, int index);
 int  UiDesign_TypeFromName(const char *name);
 
 /* ── JSON / 文件 ────────────────────────────────────────────────────── */
@@ -267,7 +301,7 @@ int UiDesign_FindNodeAt(const UiDesignDoc *doc, int view,
 	const UiRect *rects, float x, float y);
 
 /* 解析/求解 Grid 列轨道并输出每列绝对位置.
- * xs/ws 长度 >= UI_DN_GRID_MAX_COLS; 返回有效列数 (>=1).
+ * xs/ws 由调用方按目标列数分配; 返回实际列数 (>=1).
  * 规格空或无效时各列 1fr 均分; AUTO 取该列子项的设计宽度. */
 int UiDesign_GridColumns(const UiDesignDoc *doc, const UiDesignNode *n,
 	UiRect inner, float *xs, float *ws, int cap);
@@ -281,7 +315,7 @@ typedef struct UiDesignNodeState {
 	UiSwitch sw;
 	UiSlider slider;
 	UiSelect select;
-	UiRadioGroup radio;
+	int radioSlot;        /* 组内可见项下标, -1 = 无 */
 	UiTextArea ta;
 	UiDatePicker dp;
 	UiColorSelect cs;
@@ -289,13 +323,19 @@ typedef struct UiDesignNodeState {
 	UiRingProgress ring;
 	UiTabBar bar;
 	int barCount;
-	wchar_t taHint[128];   /* TextArea placeholder 由控件保存指针, 需自持 */
-	char text[UI_DN_TEXT_MAX];
-	char optItems[UI_DN_OPTIONS_MAX][UI_DN_OPTION_TEXT_MAX];
-	const char *optPtrs[UI_DN_OPTIONS_MAX];
-	int optCount;
-	char optCache[UI_DN_TEXT_MAX];
+	const char **tabLabels;
+	int tabLabelCap;
+	wchar_t *taHint;      /* TextArea placeholder 由控件保存指针, 需自持 */
+	char *text;
+	UiDesignOptions options;
 } UiDesignNodeState;
+
+/* 每个 RadioGroup 的运行时状态, 下标与 doc->radioGroups 对齐. */
+typedef struct UiDesignRadioGroupState {
+	UiRadioGroup radio;
+	UiRadio *items;
+	int itemCap;
+} UiDesignRadioGroupState;
 
 typedef struct UiDesignInstance {
 	UiDesignDoc *doc;
@@ -307,6 +347,8 @@ typedef struct UiDesignInstance {
 	UiRect *rects;
 	UiDesignNodeState *states;
 	int stateCount;
+	UiDesignRadioGroupState *radioStates;
+	int radioStateCount;
 	UiDialog dialog;
 	int dialogReady;
 	int lastEventNode;
@@ -357,7 +399,7 @@ int UiDesign_GenerateAll(const UiDesignDoc *doc, const wchar_t *dir,
 /* 生成预览: 不写文件, 报告每个输出文件的状态.
  * status: 0 = 新增, 1 = 内容有变化, 2 = 无变化. 返回文件总数, -1 = 失败. */
 typedef struct UiDesignGenFile {
-	char name[UI_DN_PATH_MAX];
+	char *name;
 	int status;
 	int oldLines;
 	int newLines;
@@ -367,9 +409,11 @@ typedef struct UiDesignGenFile {
 
 int UiDesign_PreviewAll(const UiDesignDoc *doc, const wchar_t *dir,
 	UiDesignGenFile *files, int maxFiles, char *report, int cap);
+void UiDesign_GenFilesFree(UiDesignGenFile *files, int count);
 
 /* 由组/宿主 id 生成合法 C 标识/枚举名. */
 const char *UiDesign_Symbol(const char *id, char *out, int cap);
+char *UiDesign_SymbolAlloc(const char *id);
 
 #ifdef __cplusplus
 }

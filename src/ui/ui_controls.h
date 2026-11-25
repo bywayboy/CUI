@@ -37,21 +37,28 @@ int  UiCheckboxGroup_Draw(UiCheckboxGroup *g, UiContext *ui, UiRect rc,
 	const char *const *labels, float rowH, int enabled);
 int  UiCheckboxGroup_Key(UiCheckboxGroup *g, UiContext *ui, UINT vk);
 
+typedef struct UiRadio {
+	UiId id;
+	int enabled;
+} UiRadio;
+
 typedef struct UiRadioGroup {
 	UiId id;
+	const UiRadio *items;
 	int count;
-	int selected;
-	unsigned disabledMask;
-	int focus;
+	UiId selectedId;
+	UiId focusId;
 	int changed;
 } UiRadioGroup;
 
-void UiRadioGroup_Init(UiRadioGroup *g, UiId id, int count);
-void UiRadioGroup_SetSelected(UiRadioGroup *g, int index);
-void UiRadioGroup_SetDisabledMask(UiRadioGroup *g, unsigned mask);
-int  UiRadioGroup_Draw(UiRadioGroup *g, UiContext *ui, UiRect rc,
-	const char *const *labels, float rowH, int enabled);
-int  UiRadioGroup_Key(UiRadioGroup *g, UiContext *ui, UINT vk);
+void UiRadioGroup_Init(UiRadioGroup *g, UiId id);
+void UiRadioGroup_SetItems(UiRadioGroup *g, const UiRadio *items, int count);
+void UiRadioGroup_SetSelectedId(UiRadioGroup *g, UiId id);
+UiId UiRadioGroup_SelectedId(const UiRadioGroup *g);
+int UiRadioGroup_TakeChanged(UiRadioGroup *g);
+int UiRadioGroup_Key(UiRadioGroup *g, UiContext *ui, UINT vk);
+void Ui_Radio(UiRadio *item, UiRadioGroup *g, UiContext *ui, UiRect rc,
+	const char *label);
 
 typedef struct UiSwitch {
 	UiId id;
