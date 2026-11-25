@@ -18,11 +18,30 @@ static float ctrl_clamp01(float v)
 	return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
 }
 
-static void ctrl_focus_bg(UiContext *ui, UiRect rc, int focus)
+/* hover/focus 底: 以 2 DIP 内缩的行底为基础, 并上字形(圆点/方框/开关轨道)
+ * 外扩 1 DIP 的描边范围, 再夹回控件矩形. 字形描边中心在 rc.x 上, 只铺内缩
+ * 矩形会让左缘描边露在底色外. 圆角 4 与方框描边圆角一致, 并集后不削角. */
+static UiRect ctrl_bg_rect(UiRect rc, UiRect glyph)
 {
-	if (!focus) return;
-	Gfx_FillRoundRect(ui->gfx, Ui_RectInset(rc, 2.0f), 6.0f,
-		Ui_ColorAlpha(ui->theme->primary.base, 26));
+	UiRect bg = Ui_RectInset(rc, 2.0f);
+	float x0 = glyph.x - 1.0f, y0 = glyph.y - 1.0f;
+	float x1 = glyph.x + glyph.w + 1.0f, y1 = glyph.y + glyph.h + 1.0f;
+	if (x0 < rc.x) x0 = rc.x;
+	if (y0 < rc.y) y0 = rc.y;
+	if (x1 > rc.x + rc.w) x1 = rc.x + rc.w;
+	if (y1 > rc.y + rc.h) y1 = rc.y + rc.h;
+	if (x0 < bg.x) { bg.w += bg.x - x0; bg.x = x0; }
+	if (y0 < bg.y) { bg.h += bg.y - y0; bg.y = y0; }
+	if (x1 > bg.x + bg.w) bg.w = x1 - bg.x;
+	if (y1 > bg.y + bg.h) bg.h = y1 - bg.y;
+	return bg;
+}
+
+static void ctrl_fill_bg(UiContext *ui, UiRect bg, int alpha, float radius)
+{
+	if (alpha <= 0) return;
+	Gfx_FillRoundRect(ui->gfx, bg, radius,
+		Ui_ColorAlpha(ui->theme->primary.base, alpha));
 }
 
 /* 状态 0..1: 合成器路径直接取最终值 (过渡由 SnapshotFx 负责);
@@ -176,16 +195,18 @@ int Ui_Checkbox(UiCheckbox *c, UiContext *ui, UiRect rc,
 	box = Ui_Rect(rc.x, rc.y + (rc.h - 18.0f) * 0.5f, 18.0f, 18.0f);
 	st = Ui_State(ui, c->id, rc, enabled);
 	if (enabled) Ui_SetClickFn(ui, c->id, checkbox_click_cb, c);
-	if (st.hover > 0.004f && enabled)
-		Gfx_FillRoundRect(ui->gfx, Ui_RectInset(rc, 2.0f), 6.0f,
-			Ui_ColorAlpha(t->primary.base, (int)(st.hover * 16.0f)));
+	{
+		UiRect bg = ctrl_bg_rect(rc, box);
+		if (st.hover > 0.004f && enabled)
+			ctrl_fill_bg(ui, bg, (int)(st.hover * 16.0f), 4.0f);
+		focus = ui->navFocusVisible && ui->navId == c->id;
+		if (focus) ctrl_fill_bg(ui, bg, 26, 4.0f);
+	}
 	/* indeterminate 优先于 checked: 两者同时为真时只画横线; 点击后
 	 * indeterminate 清 0, 对勾再从 0 淡入. */
 	checkT = ctrl_state_t(ui, c->id, UI_AN_USER,
 		c->checked && !c->indeterminate);
 	minusT = ctrl_state_t(ui, c->id, UI_AN_USER + 1, c->indeterminate);
-	focus = ui->navFocusVisible && ui->navId == c->id;
-	ctrl_focus_bg(ui, rc, focus);
 	draw_check_box(ui, box, enabled, st.hover, focus, checkT, minusT);
 	if (label && label[0]) {
 		col = enabled ? (st.hover > 0.004f
@@ -297,10 +318,10 @@ int UiCheckboxGroup_Draw(UiCheckboxGroup *g, UiContext *ui, UiRect rc,
 		checkT = ctrl_state_t(ui, id, UI_AN_USER,
 			(g->mask & ctrl_bit(i)) != 0);
 		if (st.hover > 0.004f && en)
-			Gfx_FillRoundRect(ui->gfx, Ui_RectInset(row, 2.0f), 6.0f,
-				Ui_ColorAlpha(t->primary.base, (int)(st.hover * 16.0f)));
+			ctrl_fill_bg(ui, ctrl_bg_rect(row, box),
+				(int)(st.hover * 16.0f), 4.0f);
 		focus = ui->navFocusVisible && ui->navId == g->id && g->focus == i;
-		ctrl_focus_bg(ui, row, focus);
+		if (focus) ctrl_fill_bg(ui, ctrl_bg_rect(row, box), 26, 4.0f);
 		draw_check_box(ui, box, en, st.hover, focus, checkT, 0.0f);
 		col = en ? t->text2 : t->btnDisabledText;
 		if (en && st.hover > 0.004f) col = Ui_ColorMix(col, t->text, st.hover);
@@ -484,13 +505,13 @@ void Ui_Radio(UiRadio *item, UiRadioGroup *g, UiContext *ui, UiRect rc,
 	}
 	onT = ctrl_state_t(ui, item->id, UI_AN_USER,
 		g->selectedId == item->id);
-	if (st.hover > 0.004f && enabled)
-		Gfx_FillRoundRect(ui->gfx, Ui_RectInset(rc, 2.0f), 6.0f,
-			Ui_ColorAlpha(t->primary.base, (int)(st.hover * 16.0f)));
+	dot = Ui_Rect(rc.x, rc.y + (rc.h - 18.0f) * 0.5f, 18.0f, 18.0f);
 	focus = ui->navFocusVisible && ui->navId == g->id &&
 		g->focusId == item->id;
-	ctrl_focus_bg(ui, rc, focus);
-	dot = Ui_Rect(rc.x, rc.y + (rc.h - 18.0f) * 0.5f, 18.0f, 18.0f);
+	if (enabled && st.hover > 0.004f)
+		ctrl_fill_bg(ui, ctrl_bg_rect(rc, dot),
+			(int)(st.hover * 16.0f), 4.0f);
+	if (focus) ctrl_fill_bg(ui, ctrl_bg_rect(rc, dot), 26, 4.0f);
 	draw_radio_dot(ui, dot, g->selectedId == item->id, enabled,
 		st.hover, focus, onT);
 	if (label && label[0]) {
@@ -602,7 +623,10 @@ int Ui_Switch(UiSwitch *s, UiContext *ui, UiRect rc,
 	st = Ui_State(ui, s->id, rc, enabled);
 	if (enabled) Ui_SetClickFn(ui, s->id, switch_click_cb, s);
 	focus = ui->navFocusVisible && ui->navId == s->id;
-	ctrl_focus_bg(ui, rc, focus);
+	if (focus) {
+		UiRect bg = ctrl_bg_rect(rc, track);
+		ctrl_fill_bg(ui, bg, 26, bg.h * 0.5f);
+	}
 	pos = ctrl_state_t(ui, s->id, UI_AN_USER, s->on);
 	fx = Ui_FxActive(ui);
 	trackCol = enabled ? Ui_ColorMix(t->switchOff, t->switchOn, pos)
@@ -754,10 +778,16 @@ int Ui_Slider(UiSlider *s, UiContext *ui, UiRect rc,
 	}
 	if (enabled && ui->released == s->id && wasDrag) s->committed = 1;
 
+	/* 无标签时轨道从 rc.x 起, 拇指悬停/拖动会向左溢出内缩底; 焦点底按拇指
+	 * 实际外沿取并集, 保证整颗拇指落在底色内. */
 	focus = ui->navFocusVisible && ui->navId == s->id;
-	ctrl_focus_bg(ui, rc, focus);
-
 	r = SLIDER_THUMB_R + hov * 1.1f + prs * 1.5f;
+	vx = ux0 + uw * s->value;
+	if (focus) {
+		UiRect glyph = Ui_Rect(vx - r, cy - r, r * 2.0f, r * 2.0f);
+		ctrl_fill_bg(ui, ctrl_bg_rect(rc, glyph), 26, 4.0f);
+	}
+
 	th = 4.0f + hov * 1.6f + prs * 1.2f;
 	track.y = cy - th * 0.5f;
 	track.h = th;
