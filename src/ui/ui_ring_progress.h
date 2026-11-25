@@ -41,6 +41,7 @@ typedef struct UiRingProgress {
 	int overlayDirty;
 	int overlayUnavailable;
 	int ringDirty;
+	int ringSettled;
 	int drew;
 } UiRingProgress;
 
