@@ -1599,6 +1599,100 @@ static int md_fence_close(const MdLine *ln, char fch, int flen)
 	return k == ln->len;
 }
 
+/* 围栏 info 串: 第一个 token 是语言, 其余识别标题栏文件名:
+ *   ```ts                  lang=ts
+ *   ```ts:app.ts           lang=ts, file=app.ts
+ *   ```ts title="a b.ts"   引号值可含空格 (也认 file/filename/path)
+ *   ```ts [app.ts]
+ *   ```ts src/app.ts       含 '.' 或路径分隔符的裸 token 视为文件名
+ * 其它 token (linenums 等) 忽略; 文件名为空时 fileOff = -1. */
+static void md_fence_info(MdDoc *d, MdBlock *b, const char *p, int len)
+{
+	int i = 0, tok, tokEnd;
+	int fileOff = -1, fileLen = 0, langOff = -1, langLen = 0;
+	while (i < len && (p[i] == ' ' || p[i] == '\t')) i++;
+	tok = i;
+	while (i < len && p[i] != ' ' && p[i] != '\t') i++;
+	tokEnd = i;
+	if (tokEnd - tok >= 2 && (p[tok] == '"' || p[tok] == '\'') &&
+		p[tokEnd - 1] == p[tok]) {
+		tok++;
+		tokEnd--;
+	}
+	{
+		int c;
+		for (c = tok; c < tokEnd; c++)
+			if (p[c] == ':') break;
+		if (c > tok && c + 1 < tokEnd) {
+			langOff = md_url_put(d, p + tok, c - tok, 0, &langLen);
+			fileOff = md_url_put(d, p + c + 1, tokEnd - c - 1, 0, &fileLen);
+		} else {
+			langOff = md_url_put(d, p + tok, tokEnd - tok, 0, &langLen);
+		}
+	}
+	while (i < len) {
+		int ts, te, vs, ve, q;
+		while (i < len && (p[i] == ' ' || p[i] == '\t')) i++;
+		if (i >= len) break;
+		ts = i;
+		while (i < len && p[i] != ' ' && p[i] != '\t') i++;
+		te = i;
+		if (p[ts] == '[' && te - ts >= 3 && p[te - 1] == ']' && fileOff < 0) {
+			vs = ts + 1;
+			ve = te - 1;
+			fileOff = md_url_put(d, p + vs, ve - vs, 0, &fileLen);
+			continue;
+		}
+		q = ts;
+		while (q < te && p[q] != '=') q++;
+		if (q < te) {
+			int ke = q, isFile, isLang;
+			vs = q + 1;
+			ve = te;
+			if (vs < len && (p[vs] == '"' || p[vs] == '\'')) {
+				char quote = p[vs];
+				int e = vs + 1;
+				while (e < len && p[e] != quote) e++;
+				if (e < len) {
+					ve = e;
+					i = e + 1;
+				}
+				vs++;
+			}
+			isFile = md_attr_eq(p + ts, ke - ts, "file") ||
+				md_attr_eq(p + ts, ke - ts, "title") ||
+				md_attr_eq(p + ts, ke - ts, "filename") ||
+				md_attr_eq(p + ts, ke - ts, "path");
+			isLang = md_attr_eq(p + ts, ke - ts, "lang") ||
+				md_attr_eq(p + ts, ke - ts, "language");
+			if (ve > vs) {
+				if (isFile && fileOff < 0)
+					fileOff = md_url_put(d, p + vs, ve - vs, 0, &fileLen);
+				else if (isLang && langLen == 0)
+					langOff = md_url_put(d, p + vs, ve - vs, 0, &langLen);
+			}
+			continue;
+		}
+		if (fileOff < 0) {
+			int k, looks = 0;
+			for (k = ts; k < te; k++) {
+				if (p[k] == '.' || p[k] == '/' || p[k] == '\\') {
+					looks = 1;
+					break;
+				}
+			}
+			if (looks)
+				fileOff = md_url_put(d, p + ts, te - ts, 0, &fileLen);
+		}
+	}
+	if (langOff < 0) langLen = 0;
+	if (fileOff < 0) fileLen = 0;
+	b->u.code.langOff = langOff;
+	b->u.code.langLen = langLen;
+	b->u.code.fileOff = fileOff;
+	b->u.code.fileLen = fileLen;
+}
+
 static int md_quote(const MdLine *ln, int *contentOff)
 {
 	int i = 0;
@@ -2588,15 +2682,7 @@ static void md_parse_blocks(MdDoc *d, MdLines *ls, int *ip, MdBlock *parent,
 			if (!b) break;
 			b->type = MD_BLOCK_CODE;
 			b->fence = 1;
-			{
-				int wordLen = 0;
-				while (infoOff + wordLen < ln->len &&
-					ln->p[infoOff + wordLen] != ' ' &&
-					ln->p[infoOff + wordLen] != '\t')
-					wordLen++;
-				b->u.code.langOff = md_url_put(d, ln->p + infoOff, wordLen, 0, NULL);
-				b->u.code.langLen = wordLen;
-			}
+			md_fence_info(d, b, ln->p + infoOff, infoLen);
 			inl_init(&ib, d);
 			j = i + 1;
 			while (j < ls->n) {

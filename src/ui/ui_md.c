@@ -15,6 +15,7 @@
 #include "ui/ui_md.h"
 #include "ui/ui_md_parse.h"
 #include "ui/ui_image.h"
+#include "ui/ui_icon.h"
 #include "ui/ui_scroll.h"
 #include "ui/ui_frame.h"
 #include "ui/ui_layout.h"
@@ -24,6 +25,14 @@
 #define MD_OVERSCAN      32
 #define MD_MARKER_W      22.0f
 #define MD_OWN_FONT_MAX  12
+
+/* 围栏代码标题栏: 文件名 + 语言标签 + 复制图标按钮 */
+#define MD_CODE_HEAD_H   32.0f
+#define MD_CODE_BTN_H    24.0f
+#define MD_CODE_TAG_H    20.0f
+#define MD_CODE_TAG_MAX  140.0f
+#define MD_CODE_COPY_MS  1200
+#define MD_AN_COPY       (UI_AN_USER + 0)
 
 static void md_free_(void *p)
 {
@@ -212,6 +221,13 @@ struct UiMarkdown {
 	int needEstimate;
 	int pendingTop, followTail;
 	int hasLinks;       /* 文档含可悬停链接: 指针移动需逐次重绘 */
+	int hasCopyHead;    /* 文档含带标题栏的围栏代码块 */
+	float copyBtnW;     /* 复制按钮宽 (缓存; 字体变化时清零) */
+	int hoverCopy;      /* 悬停/本帧命中的复制按钮行, -1 = 无 */
+	int downCopy;       /* 按下时所在的复制按钮行 */
+	int copiedRow;      /* 刚复制的代码行 (反馈期间生效) */
+	uint32_t copiedHash;
+	UiId copyAnimId;    /* 反馈计时通道独占 ID, 避免整窗动画脏区 */
 
 	/* 粘性定位: >=0 时每帧把该行顶到视口 (懒测量收敛前不松手) */
 	int stickRow;
@@ -431,6 +447,7 @@ static void md_build_fonts(UiMarkdown *md)
 	md->fSmall = md->st.tiny ? md->st.tiny : md_own_font(md, 12.0f, 400);
 	md->fSmallBold = md_own_font(md, 12.0f, 700);
 	if (!md->fSmallBold) md->fSmallBold = md->fSmall;
+	md->copyBtnW = 0.0f;
 	md->fontsReady = md->fBody && md->fH[0] && md->fCode && md->fSmall;
 }
 
@@ -814,6 +831,151 @@ static float md_row_wrap_w(const UiMarkdown *md, const MdRow *r)
 	return w < 1.0f ? 1.0f : w;
 }
 
+/* ── 围栏代码标题栏 ────────────────────────────────────────────────── */
+
+/* 不透明混色: 标题栏底由卡面底色与文字色调出, 深浅主题共用一条规则.
+ * 不用 alpha 叠加, 是因为圆角上沿与直角下沿两段填充会在接缝处叠两次. */
+static UiColor md_mix_color(UiColor a, UiColor b, int pct)
+{
+	int r, g, bl;
+	if (pct <= 0) return a;
+	if (pct > 100) pct = 100;
+	r = (int)((a >> 16) & 255) * (100 - pct) + (int)((b >> 16) & 255) * pct;
+	g = (int)((a >> 8) & 255) * (100 - pct) + (int)((b >> 8) & 255) * pct;
+	bl = (int)(a & 255) * (100 - pct) + (int)(b & 255) * pct;
+	return 0xFF000000u | ((UiColor)(r / 100) << 16) | ((UiColor)(g / 100) << 8) |
+		(UiColor)(bl / 100);
+}
+
+static int md_code_has_head(const MdRow *r)
+{
+	return r->blk->type == MD_BLOCK_CODE && r->blk->fence;
+}
+
+/* 代码文本可用宽: 卡面宽减去左右内边距 (绘制起点在 x+codePadX) */
+static float md_code_text_w(const UiMarkdown *md, const MdRow *r)
+{
+	float w = md_row_wrap_w(md, r) - md->codePadX * 2.0f;
+	return w < 1.0f ? 1.0f : w;
+}
+
+/* 复制按钮宽: 有图标字体时是正方形图标钮, 否则退回文字按钮 */
+static GfxFont *md_icon_font(const UiMarkdown *md)
+{
+	if (!md->ui || !md->ui->theme) return NULL;
+	return md->ui->theme->fIconS ? md->ui->theme->fIconS
+		: md->ui->theme->fIcon;
+}
+
+static float md_copy_btn_w(UiMarkdown *md)
+{
+	if (md->copyBtnW <= 0.0f) {
+		float w;
+		if (md_icon_font(md)) {
+			w = MD_CODE_BTN_H;
+		} else {
+			w = 40.0f;
+			if (md->gfx && md->fSmall) {
+				float a = Gfx_TextWidth(md->gfx, md->fSmall,
+					"\xE5\xA4\x8D\xE5\x88\xB6");
+				float b = Gfx_TextWidth(md->gfx, md->fSmall,
+					"\xE5\xB7\xB2\xE5\xA4\x8D\xE5\x88\xB6");
+				float t = a > b ? a : b;
+				if (t > 0.0f) w = t + 16.0f;
+			}
+		}
+		md->copyBtnW = w;
+	}
+	return md->copyBtnW;
+}
+
+static UiRect md_code_copy_rect(UiMarkdown *md, int index, UiRect content)
+{
+	MdRow *r = &md->rows[index];
+	float y = content.y + UiScrollLayout_ItemY(&md->layout, index);
+	float w = md_row_wrap_w(md, r);
+	float x = content.x + (float)r->indent + r->markerW;
+	float bw = md_copy_btn_w(md);
+	return Ui_Rect(x + w - md->codePadX - bw,
+		y + (MD_CODE_HEAD_H - MD_CODE_BTN_H) * 0.5f, bw, MD_CODE_BTN_H);
+}
+
+/* 反馈计时走独立动画 ID: Ui_State 每帧把控件矩形写进默认 ID 的动画脏区,
+ * 共用会退化成整窗重绘; 独立 ID 只失效标题栏. */
+static int md_copy_feedback(const UiMarkdown *md, UiContext *ui, int index,
+	uint32_t hash)
+{
+	if (!ui || md->copiedRow != index || md->copiedHash != hash) return 0;
+	return Ui_AnimGet(ui, md->copyAnimId, MD_AN_COPY, 1.0f) < 1.0f;
+}
+
+static int md_copy_clipboard(UiMarkdown *md, const wchar_t *t, int n)
+{
+	HWND hwnd = md->ui ? md->ui->hwnd : NULL;
+	HGLOBAL h;
+	wchar_t *p;
+	int i, k = 0;
+	size_t cap;
+	if (!t || n < 0) n = 0;
+	cap = (size_t)n * 2 + 2;
+	h = GlobalAlloc(GMEM_MOVEABLE, cap * sizeof(wchar_t));
+	if (!h) return 0;
+	p = (wchar_t *)GlobalLock(h);
+	if (!p) {
+		GlobalFree(h);
+		return 0;
+	}
+	for (i = 0; i < n; i++) {
+		if (t[i] == L'\n') {
+			p[k++] = L'\r';
+			p[k++] = L'\n';
+		} else {
+			p[k++] = t[i];
+		}
+	}
+	if (k == 0 || p[k - 1] != L'\n') {
+		p[k++] = L'\r';
+		p[k++] = L'\n';
+	}
+	p[k] = 0;
+	if (!OpenClipboard(hwnd)) {
+		GlobalUnlock(h);
+		GlobalFree(h);
+		return 0;
+	}
+	EmptyClipboard();
+	if (!SetClipboardData(CF_UNICODETEXT, h)) {
+		CloseClipboard();
+		GlobalUnlock(h);
+		GlobalFree(h);
+		return 0;
+	}
+	CloseClipboard();
+	GlobalUnlock(h);
+	return 1;
+}
+
+static void md_copy_row(UiMarkdown *md, UiContext *ui, int row)
+{
+	MdRow *r;
+	const wchar_t *t;
+	int n;
+	if (!md || !ui || row < 0 || row >= md->rowCount) return;
+	r = &md->rows[row];
+	if (r->blk->type != MD_BLOCK_CODE) return;
+	t = r->blk->p.text.text16 ? r->blk->p.text.text16 : L"";
+	n = r->blk->p.text.text16 ? r->blk->p.text.len16 : 0;
+	if (md->copyFn)
+		md->copyFn(md->copyUser, t, n);
+	else
+		md_copy_clipboard(md, t, n);
+	md->copiedRow = row;
+	md->copiedHash = r->hash;
+	Ui_AnimSet(ui, md->copyAnimId, MD_AN_COPY, 0.0f);
+	Ui_AnimTo(ui, md->copyAnimId, MD_AN_COPY, 1.0f, MD_CODE_COPY_MS,
+		UI_AN_EASE_LINEAR);
+}
+
 static MdRow *md_row_push(UiMarkdown *md, MdBlock *blk, int indent, int qd,
 	int mk, int no, int task)
 {
@@ -944,6 +1106,7 @@ static int md_flatten(UiMarkdown *md, MdBlock *b, int indent, int qd,
 		return added;
 	default:
 		if (MD_BT_TEXT(b->type) && b->p.text.linkCount > 0) md->hasLinks = 1;
+		if (b->type == MD_BLOCK_CODE && b->fence) md->hasCopyHead = 1;
 		return md_row_push(md, b, indent, qd, mk, no, task) ? 1 : 0;
 	}
 }
@@ -989,7 +1152,7 @@ static void md_row_pads(const UiMarkdown *md, const MdRow *r,
 		*bottom = md->headGapBelow;
 		break;
 	case MD_BLOCK_CODE:
-		*top = md->codePadY;
+		*top = md->codePadY + (r->blk->fence ? MD_CODE_HEAD_H : 0.0f);
 		*bottom = md->codePadY + md->blockGap;
 		break;
 	case MD_BLOCK_HR:
@@ -1048,8 +1211,8 @@ static float md_row_estimate(const UiMarkdown *md, const MdRow *r)
 		h = (float)(r->blk->u.table.rows > 0 ? r->blk->u.table.rows : 1) * 22.0f + 12.0f;
 		return h + top + bottom;
 	case MD_BLOCK_CODE:
-		h = md_est_text(r->blk->p.text.text16, r->blk->p.text.len16, wrapW, size,
-			md->lineSpacing);
+		h = md_est_text(r->blk->p.text.text16, r->blk->p.text.len16,
+			md_code_text_w(md, r), size, md->lineSpacing);
 		return h + top + bottom;
 	case MD_BLOCK_MATH:
 		return 52.0f + top + bottom;
@@ -1411,6 +1574,29 @@ static int md_hit_links(UiMarkdown *md, UiContext *ui, UiRect content,
 		rowOut, linkOut);
 }
 
+static int md_hit_copy_at(UiMarkdown *md, UiRect content, int first, int last,
+	float mx, float my, int *rowOut)
+{
+	int i;
+	*rowOut = -1;
+	for (i = first; i <= last && i < md->rowCount; i++) {
+		if (i < 0 || !md_code_has_head(&md->rows[i])) continue;
+		if (Ui_RectContains(md_code_copy_rect(md, i, content), mx, my)) {
+			*rowOut = i;
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int md_hit_copy(UiMarkdown *md, UiContext *ui, UiRect content,
+	int first, int last, int *rowOut)
+{
+	if (!ui || !ui->mouseOver || !Ui_InputAllowed(ui)) return 0;
+	return md_hit_copy_at(md, content, first, last, ui->mouseX, ui->mouseY,
+		rowOut);
+}
+
 static UiRect md_row_display_rect(const UiMarkdown *md, int row)
 {
 	UiRect rc = { 0, 0, 0, 0 };
@@ -1449,9 +1635,11 @@ static int md_hover_fn(void *user, UiContext *ui, float x, float y,
 {
 	UiMarkdown *md = (UiMarkdown *)user;
 	UiRect content;
-	int first, last, r = -1, l = -1, changed, oldRow;
-	if (!md || !ui || !md->hasLinks || md->rowCount <= 0) return 0;
+	int first, last, r = -1, l = -1, c = -1, changed, oldRow, oldCopy;
+	if (!md || !ui || (!md->hasLinks && !md->hasCopyHead) || md->rowCount <= 0)
+		return 0;
 	oldRow = md->hoverRow;
+	oldCopy = md->hoverCopy;
 	if (md->sv.inner.w > 0.0f && md->sv.inner.h > 0.0f &&
 		Ui_RectContains(md->sv.inner, x, y)) {
 		content = UiScrollView_ContentRect(&md->sv);
@@ -1459,15 +1647,22 @@ static int md_hover_fn(void *user, UiContext *ui, float x, float y,
 			md->sv.inner.h, &first, &last);
 		if (first < 0) first = 0;
 		if (last >= md->rowCount) last = md->rowCount - 1;
-		md_hit_links_at(md, content, first, last, x, y, &r, &l);
+		if (!md_hit_links_at(md, content, first, last, x, y, &r, &l) &&
+			md->hasCopyHead)
+			md_hit_copy_at(md, content, first, last, x, y, &c);
 	}
-	changed = (r != md->hoverRow || l != md->hoverLink);
+	changed = (r != md->hoverRow || l != md->hoverLink || c != md->hoverCopy);
 	md->hoverRow = r;
 	md->hoverLink = l;
-	Ui_SetCursor(ui, md->id, r >= 0 ? UI_CURSOR_HAND : UI_CURSOR_ARROW);
+	md->hoverCopy = c;
+	Ui_SetCursor(ui, md->id, (r >= 0 || c >= 0) ? UI_CURSOR_HAND
+		: UI_CURSOR_ARROW);
 	if (changed && dirty)
-		*dirty = md_rect_union(md_row_display_rect(md, oldRow),
-			md_row_display_rect(md, r));
+		*dirty = md_rect_union(
+			md_rect_union(md_row_display_rect(md, oldRow),
+				md_row_display_rect(md, r)),
+			md_rect_union(md_row_display_rect(md, oldCopy),
+				md_row_display_rect(md, c)));
 	return changed;
 }
 
@@ -1561,7 +1756,8 @@ static GfxRichText *md_row_make_rt(UiMarkdown *md, int index)
 		r->blk->type == MD_BLOCK_TABLE ||
 		r->blk->type == MD_BLOCK_MATH)
 		return NULL;
-	wrapW = md_row_wrap_w(md, r);
+	wrapW = r->blk->type == MD_BLOCK_CODE ? md_code_text_w(md, r)
+		: md_row_wrap_w(md, r);
 	font = md_row_font(md, r);
 	if (!font || !r->blk->p.text.text16) return NULL;
 	/* 含行内对象时用自然行距: UNIFORM 固定行高会压扁/裁掉行内对象 */
@@ -2715,6 +2911,7 @@ static void md_rebuild_rows_incremental(UiMarkdown *md, MdRow *oldRows,
 {
 	int i;
 	md->hasLinks = 0;
+	md->hasCopyHead = 0;
 	for (i = 0; i < md->doc.count; i++)
 		md_flatten(md, &md->doc.blocks[i], 0, 0, MD_MK_NONE, 0, MD_TASK_NONE);
 	md_anchors_build(md);
@@ -2886,6 +3083,92 @@ static void md_draw_boxes(UiMarkdown *md, UiRect content)
 	}
 }
 
+/* 围栏代码标题栏: 左文件名(无则语言, 再无则"代码"), 右语言标签 + 复制图标钮 */
+static void md_draw_code_head(UiMarkdown *md, UiContext *ui, int index,
+	const MdRow *r, UiRect card)
+{
+	const char *name = NULL, *lang = NULL;
+	float padX = md->codePadX, bh = MD_CODE_HEAD_H;
+	float btnW, btnX, tagW = 0.0f, tagX = 0.0f;
+	UiRect btn, tag, nm;
+	UiColor headBg, fg, tagBg, tagFg;
+	GfxFont *iconFont;
+	int copied, hovered;
+
+	if (!ui || card.w < 56.0f) return;
+	if (r->blk->u.code.fileLen > 0)
+		name = MdDoc_Url(&md->doc, r->blk->u.code.fileOff);
+	if (r->blk->u.code.langLen > 0)
+		lang = MdDoc_Url(&md->doc, r->blk->u.code.langOff);
+	if (!name && lang) {
+		name = lang;
+		lang = NULL;
+	}
+	if (!name) name = "\xE4\xBB\xA3\xE7\xA0\x81";
+	headBg = md_mix_color(md->cCodeBg, md->cText2, 6);
+	/* 圆角上沿 + 直角下沿: 同色不透明, 接缝处叠两次也看不出 */
+	Gfx_FillRoundRect(md->gfx, Ui_Rect(card.x, card.y, card.w, bh),
+		md->codeRadius, headBg);
+	Gfx_FillRect(md->gfx, Ui_Rect(card.x, card.y + bh - md->codeRadius,
+		card.w, md->codeRadius), headBg);
+	Gfx_FillRect(md->gfx, Ui_Rect(card.x, card.y + bh, card.w, 1.0f),
+		md->cCodeBorder);
+
+	copied = md_copy_feedback(md, ui, index, r->hash);
+	hovered = md->hoverCopy == index;
+	btnW = md_copy_btn_w(md);
+	btnX = card.x + card.w - padX - btnW;
+	btn = Ui_Rect(btnX, card.y + (bh - MD_CODE_BTN_H) * 0.5f, btnW,
+		MD_CODE_BTN_H);
+	if (copied || hovered)
+		Gfx_FillRoundRect(md->gfx, btn, 5.0f,
+			copied ? md_mix_color(headBg,
+					ui->theme ? ui->theme->green : md->cLink, 14)
+				: md_mix_color(headBg, md->cText2, 12));
+	fg = copied ? (ui->theme ? ui->theme->green : md->cTokProperty)
+		: (hovered ? md->cCodeText : md->cText2);
+	iconFont = md_icon_font(md);
+	if (iconFont) {
+		UiIcon ic = UiIcon_Glyph(iconFont, copied ? 0xE73Eu : 0xE8C8u);
+		UiIcon_Draw(ui, &ic, btn, fg, 1);
+	} else {
+		Gfx_Text(md->gfx, md->fSmall,
+			copied ? "\xE5\xB7\xB2\xE5\xA4\x8D\xE5\x88\xB6"
+				: "\xE5\xA4\x8D\xE5\x88\xB6",
+			btn, fg, GFX_TEXT_CENTER | GFX_TEXT_VCENTER);
+	}
+
+	/* 语言标签: Element Plus 风格, 圆角浅底小标签 */
+	if (lang) {
+		float tw = md->fSmall ? Gfx_TextWidth(md->gfx, md->fSmall, lang) : 0.0f;
+		if (tw > MD_CODE_TAG_MAX) tw = MD_CODE_TAG_MAX;
+		tagW = tw + 14.0f;
+		if (tagW < 24.0f) tagW = 24.0f;
+		tagX = btnX - 8.0f - tagW;
+		if (tagX < card.x + padX) tagW = 0.0f;
+	}
+	if (tagW > 0.0f) {
+		tag = Ui_Rect(tagX, card.y + (bh - MD_CODE_TAG_H) * 0.5f, tagW,
+			MD_CODE_TAG_H);
+		tagBg = md_mix_color(headBg, md->cLink, 12);
+		tagFg = md->cLink;
+		Gfx_FillRoundRect(md->gfx, tag, 4.0f, tagBg);
+		if (md->fSmall)
+			Gfx_Text(md->gfx, md->fSmall, lang,
+				Ui_Rect(tag.x + 7.0f, tag.y, tag.w - 14.0f, tag.h),
+				tagFg, GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+	}
+	nm = Ui_Rect(card.x + padX, card.y, 1.0f, bh);
+	nm.w = (tagW > 0.0f ? tagX : btnX) - 10.0f - nm.x;
+	if (nm.w > 8.0f)
+		Gfx_Text(md->gfx, md->fSmallBold ? md->fSmallBold : md->fSmall,
+			name, nm, md->cCodeText,
+			GFX_TEXT_VCENTER | GFX_TEXT_ELLIPSIS);
+	if (copied)
+		Ui_AnimSetRect(ui, md->copyAnimId,
+			Ui_Rect(card.x, card.y, card.w, bh));
+}
+
 static void md_draw_row(UiMarkdown *md, UiContext *ui, int index,
 	UiRect content)
 {
@@ -2949,14 +3232,17 @@ static void md_draw_row(UiMarkdown *md, UiContext *ui, int index,
 		}
 		break;
 	}
-	case MD_BLOCK_CODE:
+	case MD_BLOCK_CODE: {
 		/* 卡面从行顶画到行底-blockGap: 上/下外间距与容器卡一致,
-		 * 卡内上下内边距均为 codePadY */
-		Gfx_FillRoundRect(md->gfx, Ui_Rect(x, y, wrapW,
-			h - md->blockGap), md->codeRadius, md->cCodeBg);
-		if (r->p.text.rt) Gfx_RichDraw(r->p.text.rt, md->gfx, x + md->codePadX,
-			y + top, md->cCodeText);
+		 * 卡内上下内边距均为 codePadY (围栏块另有标题栏) */
+		UiRect card = Ui_Rect(x, y, wrapW, h - md->blockGap);
+		Gfx_FillRoundRect(md->gfx, card, md->codeRadius, md->cCodeBg);
+		if (r->blk->fence) md_draw_code_head(md, ui, index, r, card);
+		if (r->p.text.rt)
+			Gfx_RichDraw(r->p.text.rt, md->gfx, x + md->codePadX,
+				y + top, md->cCodeText);
 		break;
+	}
 	default: {
 		int k;
 		if (r->p.text.rt) {
@@ -2988,6 +3274,10 @@ UiMarkdown *UiMarkdown_Create(Gfx *gfx, UiId id, UiNet *net)
 	md->styleDirty = 1;
 	md->downRow = -1;
 	md->downLink = -1;
+	md->downCopy = -1;
+	md->hoverCopy = -1;
+	md->copiedRow = -1;
+	md->copyAnimId = md->id ^ 0xD6E8FEB86659FD93ull;
 	md->stickRow = -1;
 	md->firstVisible = -1;
 	md->activeAnchor = -1;
@@ -3307,6 +3597,7 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 	md->clickedUrl = NULL;
 	md->hoverRow = -1;
 	md->hoverLink = -1;
+	md->hoverCopy = -1;
 
 	{
 		/* 样式是 (theme, st, followTheme) 的纯函数: 只在输入变化时重算.
@@ -3378,7 +3669,7 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 		UiScrollLayout_ContentHeight(&md->layout));
 	/* 悬停钩子放在 ScrollView 注册之后: 它用同一个 id 再注册视口,
 	 * 后注册项才是命中项. */
-	if (md->hasLinks)
+	if (md->hasLinks || md->hasCopyHead)
 		Ui_SetHoverFn(ui, md->id, md_hover_fn, md);
 
 	if (anchorValid)
@@ -3431,7 +3722,7 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 	md_update_active(md, viewH);
 	{
 		UiRect content = UiScrollView_ContentRect(&md->sv);
-		int i, event = 0, hr = -1, hl = -1;
+		int i, event = 0, hr = -1, hl = -1, cr = -1;
 		/* 只对滚动位移整体取整一次: 所有行共享同一整数设备偏移,
 		 * 行内/行间的亚像素相位恒定. 逐行取整会让不同行在不同
 		 * 舍入阈值切换, 块间距逐帧 ±1px 抖动. */
@@ -3439,10 +3730,15 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 		if (first < 0) first = 0;
 		if (last >= md->rowCount) last = md->rowCount - 1;
 		if (!md->sv.draggingThumb &&
-			Ui_RectContains(rc, ui->mouseX, ui->mouseY) &&
-			md_hit_links(md, ui, content, first, last, &hr, &hl)) {
+			Ui_RectContains(rc, ui->mouseX, ui->mouseY)) {
+			if (!md_hit_links(md, ui, content, first, last, &hr, &hl) &&
+				md->hasCopyHead)
+				md_hit_copy(md, ui, content, first, last, &cr);
+		}
+		if (hr >= 0 || cr >= 0) {
 			md->hoverRow = hr;
 			md->hoverLink = hl;
+			md->hoverCopy = cr;
 			Ui_SetCursor(ui, md->id, UI_CURSOR_HAND);
 		} else {
 			Ui_SetCursor(ui, md->id, UI_CURSOR_ARROW);
@@ -3453,19 +3749,25 @@ int Ui_Markdown(UiMarkdown *md, UiContext *ui, UiRect rc)
 				md->pressActive = 1;
 				md->downRow = hr;
 				md->downLink = hl;
+				md->downCopy = cr;
 			}
 		} else {
-			if (ui->clicked == md->id && md->pressActive && hr >= 0 &&
-				hr == md->downRow && hl == md->downLink) {
-				MdRow *lr = &md->rows[hr];
-				MdLink *ll = &lr->blk->p.text.links[hl];
-				md->clickedUrl = MdDoc_Url(&md->doc, ll->urlOff);
-				/* #锚点: 内部平滑滚到对应标题; 仍然回调, 应用可自行拦截 */
-				if (md->clickedUrl && md->clickedUrl[0] == '#' &&
-					md->clickedUrl[1])
-					md_scroll_to_anchor(md, ui, md->clickedUrl + 1, 1);
-				if (md->linkFn) md->linkFn(md->linkUser, md->clickedUrl);
-				event = 1;
+			if (ui->clicked == md->id && md->pressActive) {
+				if (hr >= 0 && hr == md->downRow &&
+					hl == md->downLink) {
+					MdRow *lr = &md->rows[hr];
+					MdLink *ll = &lr->blk->p.text.links[hl];
+					md->clickedUrl = MdDoc_Url(&md->doc, ll->urlOff);
+					/* #锚点: 内部平滑滚到对应标题; 仍然回调, 应用可自行拦截 */
+					if (md->clickedUrl && md->clickedUrl[0] == '#' &&
+						md->clickedUrl[1])
+						md_scroll_to_anchor(md, ui, md->clickedUrl + 1, 1);
+					if (md->linkFn) md->linkFn(md->linkUser, md->clickedUrl);
+					event = 1;
+				} else if (cr >= 0 && cr == md->downCopy) {
+					md_copy_row(md, ui, cr);
+					event = 1;
+				}
 			}
 			if (!ui->mouseDown) md->pressActive = 0;
 		}

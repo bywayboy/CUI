@@ -2,8 +2,9 @@
 
 > 状态：主体已实现（2026-11-16）。已完成解析器、行模型与懒测量、图片（块级 +
 > 行内）、表格、`:::` 容器与 GitHub 警报、数学公式、语法高亮、链接点击与章节
-> 锚点、HTML 排版容器（`<div>` / `<p>` / `<center>`）、增量复用与解析热路径优化。
-> 剩余：全文选区 / Ctrl+C 复制、代码块复制按钮。
+> 锚点、HTML 排版容器（`<div>` / `<p>` / `<center>`）、围栏代码标题栏
+> （文件名 / 语言 tag / 复制图标钮）、增量复用与解析热路径优化。
+> 剩余：全文选区 / Ctrl+C 复制。
 > 关联：`src/ui/ui_md_parse.*`（新增，纯解析器）、`src/ui/ui_md.*`（新增，组件）、
 > `src/ui/ui_md_highlight.*`（内置语法着色，纯 C）、
 > `src/gfx/gfx_rich.h` + `src/gfx/gfx_rich.cpp` + `src/gfx/gfx_internal.h`
@@ -24,7 +25,7 @@
 - 复用 `UiScrollView` + `UiScrollLayout`：可见区间裁剪、高度缓存、宽度失效；
 - **流式追加**（LLM 输出场景）：`Append` 只重解析未闭合尾块；
 - 块级图片内嵌 `UiImage`：网络 / 文件 / 内存源、spinner、淡入、设备丢失重建全继承；
-- 链接 hover / 点击回调、代码块复制按钮；
+- 链接 hover / 点击回调、围栏代码标题栏（文件名 / 语言 tag / 复制图标钮）；
 - **性能与文档规模解耦**：解析/估算 O(n)，首帧不建 DWrite 布局，滚动只测量可见行，
   超长代码块/大表格切分为有界单元；
 - 内置 **Light / Dark 两套样式**，支持自定义，也可跟随当前主题；
@@ -452,7 +453,7 @@ PushClip(视口 inner)
   链接:   下划线 & hover 动画 (RangeRects + 动画色)
   表格:   边框线 (1px, 主题色 @ 半透明)
   图片:   UiImage_Draw(居中于行矩形)
-  代码复制按钮 (hover 才显, 120ms 淡入)
+  围栏代码标题栏: 文件名 + 语言 tag + 复制图标钮
 PopClip
 滚动条 (UiScrollView_End)
 ```
@@ -483,16 +484,27 @@ PopClip
 ScrollView 自身的注册不受影响。链接是否换行、是否与其它 run 相邻都不影响
 命中——矩形来自 DWrite 实测。
 
-### 6.3 代码块复制
+### 6.3 围栏代码标题栏与复制
 
-- 代码块 hover 时右上角出现复制按钮（24×24，图标用 `theme->fIcon` 的 MDL2
-  字形；无图标字体时退化为"复制"小字）；
-- 与链接共用同一个 widget 命中：按钮矩形优先于链接矩形；
+- 仅围栏代码块（` ``` `）有标题栏：高 32 DIP，卡面底色混 6% 文字色，
+  下沿 1px 分隔线；缩进代码块不显示；
+- 标题栏信息取自围栏 info string，兼容以下写法：
+  ` ```ts `、` ```ts:app.ts `、` ```ts title="src/app.ts" `、
+  ` ```ts [app.ts] `；键名支持 file/filename/path/title，值可带引号与空格；
+  无文件名时用语言作标题，两者皆无显示"代码"；
+- 语言以 Element Plus tag 样式显示：圆角 4、浅底（混入链接色 12%）、
+  语言色文字，最大宽 140 DIP 超出省略；位于复制按钮左侧 8 DIP；
+- 复制是图标按钮：24×24、圆角 5，hover 出现浅底；图标用 `theme->fIconS`
+  （缺省回退 `fIcon`）的 MDL2 字形（Copy `0xE8C8`）；无图标字体时退化为
+  "复制"小字；
+- 与链接共用同一个 widget 命中：标题栏按钮矩形优先于链接矩形；
 - 点击把该块**完整原始代码文本**（UTF-16，跨分片合并）写入剪贴板：
   `OpenClipboard` / `EmptyClipboard` / `GlobalAlloc` /
   `SetClipboardData(CF_UNICODETEXT)`，与 `ui_textarea.c` 的复制逻辑同构
-  （约 20 行，v1 在 `ui_md.c` 内实现）；
-- 成功后按钮短暂变勾（300ms）作为反馈。
+  （约 20 行，v1 在 `ui_md.c` 内实现）；换行转 CRLF 并补尾换行；
+- 成功后按钮换绿色对勾（`0xE73E`）并在标题栏底色上淡出，1200ms；反馈计时
+  走独立动画 ID（`Ui_AnimSetRect` 只失效标题栏），并以 copiedRow + 行 hash
+  双重匹配，滚动/编辑后不会串块。
 
 ### 6.4 装饰细节
 

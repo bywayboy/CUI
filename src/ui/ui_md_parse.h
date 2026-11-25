@@ -14,6 +14,7 @@
  *   MdRun.start/len            UTF-16 码元, 相对 block->text16
  *   MdLink.urlOff/urlLen       MdDoc.urls 内的字节偏移 (0 结尾)
  *   MdBlock.langOff/langLen    MdDoc.urls 内的语言串偏移 (0 结尾)
+ *   MdBlock.fileOff/fileLen    围栏代码的文件名 (标题栏用), 同上
  *   MdBlock.urlOff/urlLen      MdDoc.urls 内的图片 URL 偏移
  *   MdMathRef.srcOff/srcLen    MdDoc.urls 内的 LaTeX 源码 (0 结尾)
  *   MdBlock.mathOff/mathLen    MdDoc.urls 内的块级公式源码 (0 结尾)
@@ -145,7 +146,10 @@ typedef struct MdBlock {
 
 	/* 类型独占标量: 必须按 type 访问 u.code / u.image / ... */
 	union {
-		struct { int langOff, langLen; } code;
+		struct {
+			int langOff, langLen;
+			int fileOff, fileLen;    /* 标题栏文件名; 0 = 未指定 */
+		} code;
 		struct {
 			int urlOff, urlLen;
 			int imgW, imgH;          /* 显式尺寸 (DIP); 0 = 未指定 */

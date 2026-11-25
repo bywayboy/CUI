@@ -214,6 +214,44 @@ static void test_code(void)
 	CHECK(d.count == 2 && d.blocks[1].type == MD_BLOCK_CODE);
 	CHECK(wstr_eq(d.blocks[1].p.text.text16, L"b\nc"));
 	MdDoc_Shutdown(&d);
+
+	/* 标题栏: 语言 + 文件名 (title/file/filename/path 键, [名], lang:名,
+	 * 含扩展名的裸 token; 其它 token 不当文件名) */
+	CHECK(parse_(&d, "```ts title=\"src/app.ts\"\nlet x;\n```"));
+	CHECK(d.count == 1 && d.blocks[0].type == MD_BLOCK_CODE);
+	CHECK(d.blocks[0].u.code.langLen == 2 &&
+		strcmp(MdDoc_Url(&d, d.blocks[0].u.code.langOff), "ts") == 0);
+	CHECK(d.blocks[0].u.code.fileLen == 10 &&
+		strcmp(MdDoc_Url(&d, d.blocks[0].u.code.fileOff), "src/app.ts") == 0);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "```c:main.c\nint x;\n```"));
+	CHECK(d.blocks[0].u.code.langLen == 1 &&
+		strcmp(MdDoc_Url(&d, d.blocks[0].u.code.langOff), "c") == 0);
+	CHECK(d.blocks[0].u.code.fileLen == 6 &&
+		strcmp(MdDoc_Url(&d, d.blocks[0].u.code.fileOff), "main.c") == 0);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "```c file='a b.c'\nx\n```"));
+	CHECK(d.blocks[0].u.code.fileLen == 5 &&
+		strcmp(MdDoc_Url(&d, d.blocks[0].u.code.fileOff), "a b.c") == 0);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "```c [app.js]\nx\n```"));
+	CHECK(d.blocks[0].u.code.fileLen == 6 &&
+		strcmp(MdDoc_Url(&d, d.blocks[0].u.code.fileOff), "app.js") == 0);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "```c main.c\nx\n```"));
+	CHECK(d.blocks[0].u.code.fileLen == 6 &&
+		strcmp(MdDoc_Url(&d, d.blocks[0].u.code.fileOff), "main.c") == 0);
+	MdDoc_Shutdown(&d);
+
+	CHECK(parse_(&d, "```c linenums\nx\n```"));
+	CHECK(d.blocks[0].u.code.langLen == 1 &&
+		strcmp(MdDoc_Url(&d, d.blocks[0].u.code.langOff), "c") == 0);
+	CHECK(d.blocks[0].u.code.fileLen == 0);
+	MdDoc_Shutdown(&d);
 }
 
 static void test_quote(void)
