@@ -276,6 +276,11 @@ int  Gfx_RingAnimating(GfxRing *r);
 float Gfx_RingValue(GfxRing *r);
 void Gfx_RingDestroy(GfxRing *r);
 
+/* 等已 Present 的主帧与已 Commit 的合成器改动进入同一次合成。
+ * 合成器视觉与主表面交接 (挂上/换新) 必须用它定序, 否则两条异步
+ * 路径先后错位会闪一帧。ULW 路径空操作。 */
+void Gfx_WaitComposited(Gfx *g);
+
 /* 通用合成器 layer: 独立 swapchain 的 DComp 子 visual, 默认加在所有
  * 已有 overlay/layer 之上; 内容用回调画一次, opacity 可交给 DWM 补间
  * (新系统用 IDCompositionVisual3, 老系统自动退回 effect group)。

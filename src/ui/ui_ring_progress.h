@@ -41,7 +41,7 @@ typedef struct UiRingProgress {
 	int overlayDirty;
 	int overlayUnavailable;
 	int ringDirty;
-	int ringSettled;
+	int ringPreferred;   /* 曾用合成器弧: 生命周期重建后仍走 overlay */
 	int drew;
 } UiRingProgress;
 

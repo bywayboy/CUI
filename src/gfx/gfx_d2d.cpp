@@ -2616,6 +2616,12 @@ static void FxWaitComposited(void)
 	if (fn) fn();
 }
 
+void Gfx_WaitComposited(Gfx *g)
+{
+	if (!g || !g->useDcomp || !g->compDevice) return;
+	FxWaitComposited();
+}
+
 static void FxStartAnim(Gfx *g)
 {
 	GfxFx *f;

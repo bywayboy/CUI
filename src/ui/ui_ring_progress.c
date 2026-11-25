@@ -106,7 +106,6 @@ static void ring_destroy(UiRingProgress *p)
 	p->overlayRect.x = p->overlayRect.y = 0.0f;
 	p->overlayRect.w = p->overlayRect.h = 0.0f;
 	p->ringDirty = 0;
-	p->ringSettled = 0;
 }
 
 static void ring_stop_timeline(UiRingProgress *p)
@@ -290,29 +289,12 @@ void UiRingProgress_Draw(UiRingProgress *p, UiRect rc)
 	titleRc.w = rc.w;
 	titleRc.h = titleH;
 
-	/* 收尾交接分两帧: 补间结束的首帧 overlay 仍可见, 先把最终圆弧画进
-	 * 窗口表面; 下一帧再摘 overlay. 若先摘后画 (即使同一 UI 帧内), DWM
-	 * 可能先合成"无视觉 + 未画圆的旧表面", 闪一帧. 重叠帧对不透明颜色
-	 * 像素一致, 对半透明颜色仅一次短暂叠加. */
-	if (p->ring && Gfx_RingVisible(p->ring)) {
-		if (Gfx_RingAnimating(p->ring) ||
-			(p->ringDirty && p->cpuAnimating)) {
-			p->ringSettled = 0;
-		} else if (!p->ringSettled) {
-			p->ringSettled = 1;
-			if (p->cpuAnimating) {
-				Ui_AnimSet(p->ui, p->id, UI_AN_USER,
-					(float)ring_ratio(p));
-				p->cpuAnimating = 0;
-			}
-		} else {
-			Gfx_RingSetVisible(p->ring, 0);
-			p->ringSettled = 0;
-			p->ringDirty = 0;
-		}
-	}
-
-	overlayOn = p->ring && Gfx_RingVisible(p->ring) && !p->ringSettled;
+	/* 弧只由合成器一层画. 主表面与合成器之间只要发生交接, 就会有一帧
+	 * 两侧都在画弧 (union) 或都不在画 (缺口), 这是 Present/Commit 两条
+	 * 异步路径无法消除的窗口. 所以补间结束不摘 overlay, 静止态继续由
+	 * 合成器持有弧; 只在生命周期变化时同帧重建. 静止帧 ratio 取
+	 * Gfx_RingValue, 与文字/合成器同源. */
+	overlayOn = p->ring && Gfx_RingVisible(p->ring);
 	ratio = overlayOn ? Gfx_RingValue(p->ring) :
 		Ui_AnimGet(p->ui, p->id, UI_AN_USER, (float)ring_ratio(p));
 	ratio = ring_clamp(ratio, 0.0, 1.0);
@@ -414,8 +396,12 @@ void UiRingProgress_EndFrame(UiRingProgress *p)
 	}
 	if (p->cpuAnimating &&
 		Ui_AnimGet(p->ui, p->id, UI_AN_USER, (float)ring_ratio(p)) ==
-			(float)ring_ratio(p))
+			(float)ring_ratio(p)) {
 		p->cpuAnimating = 0;
+		/* 收尾补一帧: 合成器弧与文字同源, 这一帧把中心文字落到终值.
+		 * 不在这里摘 overlay, 也不改画主表面弧. */
+		request = 1;
+	}
 	if (p->ring && (p->overlayRect.x != p->ringRect.x ||
 			p->overlayRect.y != p->ringRect.y ||
 			p->overlayRect.w != p->ringRect.w ||
@@ -424,18 +410,12 @@ void UiRingProgress_EndFrame(UiRingProgress *p)
 		ring_destroy(p);
 		p->ringDirty = p->cpuAnimating;
 	}
-
-	/* 收尾交接在 Draw 里分两帧完成 (先画后摘). 这里只补一次重绘:
-	 * 补间恰好在两帧之间结束、且没有其它来源驱动下一帧时, 确保还有
-	 * 一帧能完成重叠绘制和摘除. */
-	if (p->ring && Gfx_RingVisible(p->ring) &&
-		!Gfx_RingAnimating(p->ring) &&
-		!(p->ringDirty && p->cpuAnimating))
-		request = 1;
 	if (request) ring_request_paint(p, p->ringRect);
-	if (!p->cpuAnimating) return;
 
-	if (!p->ring && !p->overlayUnavailable) {
+	/* 用过合成器弧的控件, 生命周期重建 (样式/主题/尺寸/设备) 后立刻
+	 * 重新挂上, 不退回主表面画弧 —— 任何一次来回都意味着交接窗口. */
+	if (!p->ring && !p->overlayUnavailable &&
+		(p->cpuAnimating || p->ringPreferred)) {
 		float cur = Ui_AnimGet(p->ui, p->id, UI_AN_USER,
 			(float)ring_ratio(p));
 		p->ring = Gfx_CreateRing(g, p->ringRect, p->ringWidth,
@@ -445,13 +425,19 @@ void UiRingProgress_EndFrame(UiRingProgress *p)
 			return;
 		}
 		p->overlayRect = p->ringRect;
+		p->ringPreferred = 1;
 		p->ringDirty = 1;
 	}
 	if (!p->ring) return;
-	if (!Gfx_RingVisible(p->ring) && !Gfx_RingSetVisible(p->ring, 1))
-		return;
+	if (!Gfx_RingVisible(p->ring)) {
+		if (!Gfx_RingSetVisible(p->ring, 1)) return;
+		/* 视觉已 Commit: 等它进入合成, 下一帧主表面才能停止自绘圆弧,
+		 * 否则新主帧可能先于视觉上屏, 圆弧闪掉一帧. 挂上后一路到
+		 * 生命周期重建才摘, 补间结束不再来回交接. */
+		Gfx_WaitComposited(g);
+	}
 	if (p->ringDirty) {
-		int ms = p->durationMs > 0 ? p->durationMs : 1;
+		int ms = p->cpuAnimating && p->durationMs > 0 ? p->durationMs : 0;
 		Gfx_RingSetValue(p->ring, (float)ring_ratio(p), ms, GFX_EASE_OUT);
 		p->ringDirty = 0;
 	}
